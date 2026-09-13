@@ -56,14 +56,18 @@ impl PreviewHandle {
                 p.is_file().then_some(p)
             })
             .ok_or_else(|| anyhow::anyhow!("preview engine not built (see engine/README.md)"))?;
-        let mut cmd = Command::new(&bin);
+        // MLT's Qt module (qtblend, qtcrop) refuses to load without an X display, so run
+        // the engine under Xvfb when headless — same trick as the melt render path.
+        let headless = std::env::var_os("DISPLAY").is_none() && std::env::var_os("WAYLAND_DISPLAY").is_none();
+        let mut cmd = if headless {
+            let mut c = Command::new("xvfb-run");
+            c.arg("-a").arg(&bin);
+            c
+        } else {
+            Command::new(&bin)
+        };
         cmd.stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::inherit());
-        cmd.env("LC_NUMERIC", "C");
-        if std::env::var_os("DISPLAY").is_none() && std::env::var_os("SDL_VIDEODRIVER").is_none() {
-            // Qt-based MLT filters need an X display; the engine itself starts Xvfb if
-            // asked to, but a dummy SDL video driver keeps it from opening windows.
-            cmd.env("SDL_VIDEODRIVER", "dummy");
-        }
+        cmd.env("LC_NUMERIC", "C").env("SDL_VIDEODRIVER", "dummy");
         let mut child = cmd.spawn()?;
         let stdin = child.stdin.take().unwrap();
         let stdout = child.stdout.take().unwrap();

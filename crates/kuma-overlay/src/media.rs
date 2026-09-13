@@ -24,8 +24,6 @@ struct FfStream {
     #[serde(default)]
     r_frame_rate: Option<String>,
     #[serde(default)]
-    pix_fmt: Option<String>,
-    #[serde(default)]
     duration: Option<String>,
 }
 

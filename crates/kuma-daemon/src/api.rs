@@ -106,8 +106,11 @@ async fn health(State(st): S) -> Json<Value> {
         "ffprobe": kuma_overlay::media::ffprobe_available(),
         "hyperframes": st.baker.available().ok(),
         "browser": st.baker.browser,
-        "preview_engine": st.config.preview_engine.as_ref().map(|p| p.is_file()).unwrap_or(false)
-            || st.config.repo_root.join("engine/build/kuma-preview").is_file(),
+        "preview_engine": crate::preview::PreviewHandle::engine_path(&st).is_file(),
+        "preview_engine_path": crate::preview::PreviewHandle::engine_path(&st),
+        "preview_running": st.preview.get().is_some(),
+        "preview_error": st.preview.last_error.lock().unwrap().clone(),
+        "preview_scale": *st.preview.scale.lock().unwrap(),
     }))
 }
 
@@ -375,10 +378,11 @@ async fn preview_ws(State(st): S, ws: WebSocketUpgrade) -> Response {
         let engine = match st.preview.ensure(&st).await {
             Ok(e) => e,
             Err(e) => {
-                let _ = socket.send(Message::Text(json!({ "error": e.to_string() }).to_string().into())).await;
+                let _ = socket.send(Message::Text(json!({ "error": format!("{e:#}") }).to_string().into())).await;
                 return;
             }
         };
+        let _ = socket.send(Message::Text(json!({ "ready": true, "scale": *st.preview.scale.lock().unwrap() }).to_string().into())).await;
         if preview::reload(&st).await.is_err() {
             let _ = socket.send(Message::Text(json!({ "error": "compile failed" }).to_string().into())).await;
         }
@@ -406,6 +410,12 @@ async fn preview_ws(State(st): S, ws: WebSocketUpgrade) -> Response {
                         } else if t == "reload" {
                             let _ = preview::reload(&st).await;
                             None
+                        } else if let Some(s) = t.strip_prefix("scale ") {
+                            if let Ok(v) = s.trim().parse::<f64>() {
+                                *st.preview.scale.lock().unwrap() = v.clamp(0.25, 1.0);
+                                let _ = preview::reload(&st).await;
+                            }
+                            None
                         } else { None };
                         if let Some(c) = cmd { let _ = engine.send(&c).await; }
                     }
@@ -418,9 +428,19 @@ async fn preview_ws(State(st): S, ws: WebSocketUpgrade) -> Response {
     })
 }
 
-async fn preview_reload(State(st): S) -> ApiResult {
+#[derive(Deserialize, Default)]
+struct PreviewReload {
+    /// Preview resolution as a fraction of the project size (0.25..=1).
+    #[serde(default)]
+    scale: Option<f64>,
+}
+
+async fn preview_reload(State(st): S, body: Option<Json<PreviewReload>>) -> ApiResult {
+    if let Some(s) = body.and_then(|b| b.0.scale) {
+        *st.preview.scale.lock().unwrap() = s.clamp(0.25, 1.0);
+    }
     let path = preview::reload(&st).await?;
-    Ok(Json(json!({ "mlt": path })))
+    Ok(Json(json!({ "mlt": path, "scale": *st.preview.scale.lock().unwrap() })))
 }
 
 // ---------- overlay preview (live DOM) ----------

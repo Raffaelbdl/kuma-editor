@@ -30,6 +30,8 @@ export class Preview {
   private snapshotTimer = 0;
   private lastSentSeek = -1;
   private lastRevision = -1;
+  /** Why the engine is unavailable, as reported by the daemon. */
+  private engineError = "";
 
   constructor(private host: HTMLElement) {
     this.stage = document.createElement("div");
@@ -58,7 +60,17 @@ export class Preview {
       if (typeof m.data === "string") {
         try {
           const j = JSON.parse(m.data);
-          if (j.error) { this.badge.textContent = "snapshot (no engine)"; this.wsOk = false; }
+          if (j.error) {
+            this.engineError = String(j.error);
+            this.badge.textContent = "snapshot (no engine)";
+            this.badge.title = this.engineError;
+            this.wsOk = false;
+            toast(`Preview engine unavailable: ${this.engineError}`, "err", 12000);
+          } else if (j.ready) {
+            this.engineError = "";
+            this.badge.textContent = `engine · ${Math.round((j.scale ?? 0.5) * 100)}%`;
+            this.badge.title = "";
+          }
         } catch { /* ignore */ }
         return;
       }
@@ -88,14 +100,29 @@ export class Preview {
     clearTimeout(this.snapshotTimer);
     this.snapshotTimer = window.setTimeout(async () => {
       try {
-        const bmp = await createImageBitmap(await (await fetch(api.snapshotUrl(t))).blob());
+        // Ask for as many pixels as the stage actually shows (device pixels), never more
+        // than the project is.
+        const p = store.state.project;
+        const want = Math.ceil(this.stage.clientWidth * (window.devicePixelRatio || 1));
+        const width = Math.min(p?.width ?? 1920, Math.max(640, want));
+        const bmp = await createImageBitmap(await (await fetch(api.snapshotUrl(t, width))).blob());
         this.draw(bmp);
       } catch { /* daemon busy or missing media */ }
     }, 250);
   }
 
-  play() { if (this.wsOk) this.send("play"); else toast("Preview engine not running — build engine/ for playback", "err"); }
+  play() {
+    if (this.wsOk) { this.send("play"); return; }
+    toast(`Cannot play: ${this.engineError || "preview engine not connected"}`, "err", 12000);
+  }
   pause() { this.send("pause"); }
+
+  /** Change the engine's preview resolution (fraction of the project size). */
+  setScale(scale: number) {
+    if (this.wsOk) this.send(`scale ${scale}`);
+    else api.previewReload(scale).catch(() => {});
+    setTimeout(() => this.sendSeek(store.state.playhead, true), 400);
+  }
 
   /** Called after edits so the engine reloads the compiled timeline. */
   async reload() {

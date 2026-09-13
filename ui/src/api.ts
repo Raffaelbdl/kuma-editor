@@ -30,7 +30,7 @@ export const api = {
     json<{ id: string; revision: number }>("/api/assets", { method: "POST", body: JSON.stringify({ path, base_revision, origin: "ui: add asset" }) }),
   render: (preset: string, supersample = 1) => json<{ job: number }>("/api/render", { method: "POST", body: JSON.stringify({ preset, supersample }) }),
   bake: (clips?: string[]) => json<{ job: number }>("/api/bake", { method: "POST", body: JSON.stringify({ clips }) }),
-  previewReload: () => json<{ mlt: string }>("/api/preview/reload", { method: "POST", body: "{}" }),
+  previewReload: (scale?: number) => json<{ mlt: string; scale: number }>("/api/preview/reload", { method: "POST", body: JSON.stringify(scale === undefined ? {} : { scale }) }),
   snapshotUrl: (t: number, width = 960) => `/api/snapshot?t=${t.toFixed(3)}&width=${width}&_=${Date.now()}`,
 };
 

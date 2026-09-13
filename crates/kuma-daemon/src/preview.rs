@@ -25,9 +25,18 @@ pub struct PreviewFrame {
     pub jpeg: Arc<Vec<u8>>,
 }
 
-#[derive(Default)]
 pub struct PreviewHandle {
     inner: Mutex<Option<Arc<Engine>>>,
+    /// Why the engine is not running, for the UI and `/api/health`.
+    pub last_error: Mutex<Option<String>>,
+    /// Preview resolution as a fraction of the project size (0.25..=1.0).
+    pub scale: Mutex<f64>,
+}
+
+impl Default for PreviewHandle {
+    fn default() -> Self {
+        PreviewHandle { inner: Mutex::new(None), last_error: Mutex::new(None), scale: Mutex::new(0.5) }
+    }
 }
 
 pub struct Engine {
@@ -42,20 +51,38 @@ impl PreviewHandle {
         self.inner.lock().unwrap().clone()
     }
 
+    pub fn engine_path(state: &AppState) -> PathBuf {
+        state.config.preview_engine.clone().unwrap_or_else(|| state.config.repo_root.join("engine/build/kuma-preview"))
+    }
+
     /// Start (or reuse) the engine process.
     pub async fn ensure(&self, state: &Arc<AppState>) -> anyhow::Result<Arc<Engine>> {
         if let Some(e) = self.get() {
             return Ok(e);
         }
-        let bin = state
-            .config
-            .preview_engine
-            .clone()
-            .or_else(|| {
-                let p = state.config.repo_root.join("engine/build/kuma-preview");
-                p.is_file().then_some(p)
-            })
-            .ok_or_else(|| anyhow::anyhow!("preview engine not built (see engine/README.md)"))?;
+        match self.start(state).await {
+            Ok(e) => {
+                *self.last_error.lock().unwrap() = None;
+                Ok(e)
+            }
+            Err(e) => {
+                *self.last_error.lock().unwrap() = Some(format!("{e:#}"));
+                Err(e)
+            }
+        }
+    }
+
+    async fn start(&self, state: &Arc<AppState>) -> anyhow::Result<Arc<Engine>> {
+        let bin = Self::engine_path(state);
+        if !bin.is_file() {
+            anyhow::bail!(
+                "preview engine not found at {} — build it with `cmake -S engine -B engine/build && cmake --build engine/build -j` (needs libmlt++-dev, libsdl2-dev, libturbojpeg0-dev)",
+                bin.display()
+            );
+        }
+        if std::env::var_os("DISPLAY").is_none() && std::env::var_os("WAYLAND_DISPLAY").is_none() && !has_bin("xvfb-run") {
+            anyhow::bail!("no DISPLAY and xvfb-run is not installed; MLT's Qt module needs a display (install `xvfb`)");
+        }
         // MLT's Qt module (qtblend, qtcrop) refuses to load without an X display, so run
         // the engine under Xvfb when headless — same trick as the melt render path.
         let headless = std::env::var_os("DISPLAY").is_none() && std::env::var_os("WAYLAND_DISPLAY").is_none();
@@ -68,7 +95,7 @@ impl PreviewHandle {
         };
         cmd.stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::inherit());
         cmd.env("LC_NUMERIC", "C").env("SDL_VIDEODRIVER", "dummy");
-        let mut child = cmd.spawn()?;
+        let mut child = cmd.spawn().map_err(|e| anyhow::anyhow!("cannot start {}: {e}", bin.display()))?;
         let stdin = child.stdin.take().unwrap();
         let stdout = child.stdout.take().unwrap();
         let (frames, _) = broadcast::channel(8);
@@ -77,9 +104,11 @@ impl PreviewHandle {
         *self.inner.lock().unwrap() = Some(engine.clone());
 
         // Reader task: parse the line protocol and fan out frames.
+        let st = state.clone();
         tokio::spawn(async move {
             let mut rd = BufReader::new(stdout);
             let mut line = String::new();
+            let mut ready = false;
             loop {
                 line.clear();
                 match rd.read_line(&mut line).await {
@@ -103,9 +132,18 @@ impl PreviewHandle {
                     }
                 } else if let Some(e) = l.strip_prefix("err ") {
                     tracing::warn!("preview engine: {e}");
+                } else if l.starts_with("ok ready") {
+                    ready = true;
                 }
             }
-            tracing::info!("preview engine exited");
+            let msg = if ready {
+                "preview engine exited; it will be restarted on the next preview connection".to_string()
+            } else {
+                "preview engine exited before becoming ready — run it by hand (engine/build/kuma-preview) and check the daemon log for missing libraries or display errors".to_string()
+            };
+            tracing::warn!("{msg}");
+            *st.preview.last_error.lock().unwrap() = Some(msg);
+            *st.preview.inner.lock().unwrap() = None;
         });
         Ok(engine)
     }
@@ -125,11 +163,19 @@ impl Engine {
     }
 }
 
-/// Compile the current project for preview (half resolution, unbaked overlays skipped —
-/// they are live DOM in the UI) and (re)load it into the engine.
+fn has_bin(name: &str) -> bool {
+    std::env::var_os("PATH")
+        .map(|p| std::env::split_paths(&p).any(|d| d.join(name).is_file()))
+        .unwrap_or(false)
+}
+
+/// Compile the current project for preview (at the preview scale, unbaked overlays
+/// skipped — they are live DOM in the UI) and (re)load it into the engine.
 pub async fn reload(state: &Arc<AppState>) -> anyhow::Result<PathBuf> {
     let project = state.project.read().unwrap().clone();
-    let (w, h) = ((project.width / 2).max(2) & !1, (project.height / 2).max(2) & !1);
+    let scale = (*state.preview.scale.lock().unwrap()).clamp(0.25, 1.0);
+    let even = |v: f64| ((v.round() as u32).max(2)) & !1;
+    let (w, h) = (even(project.width as f64 * scale), even(project.height as f64 * scale));
     let path = crate::jobs::compile_project(state, &project, HashMap::new(), "preview", UnbakedPolicy::Skip, Some((w, h)))?;
     if let Ok(engine) = state.preview.ensure(state).await {
         engine.send(&format!("load {}", path.display())).await?;

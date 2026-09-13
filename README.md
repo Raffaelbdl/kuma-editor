@@ -159,6 +159,21 @@ picture-in-picture, dim) and expand to ordinary effects.
   the clock; browser UI showing engine frames under live overlay iframes at the same
   playhead.
 
+## Troubleshooting
+
+- **"Preview engine unavailable: …"** — the toast carries the daemon's reason; `GET /api/health`
+  shows `preview_engine_path` and `preview_error`. The engine is a separate build step:
+  `cmake -S engine -B engine/build && cmake --build engine/build -j` (needs `libmlt++-dev
+  libsdl2-dev libturbojpeg0-dev`). Without it the preview falls back to single-frame
+  snapshots (scrubbing works, playback does not).
+- **Preview looks soft** — the engine defaults to half resolution for speed; pick
+  `preview ¾` or `preview full` in the transport bar. Snapshots are requested at the
+  stage's device-pixel width.
+- **No display** (SSH, CI) — MLT's Qt module needs X11; install `xvfb` and kuma wraps
+  `melt`/the engine in `xvfb-run` automatically.
+- **Bakes fail with "timelines did not become ready"** — a template without a GSAP timeline
+  needs `data-no-timeline` on its composition root (see `overlays/CLAUDE.md`).
+
 ## Known limitations
 
 - Headless MLT needs Xvfb (Qt module). The daemon and CLI wrap `melt`/the engine

@@ -71,7 +71,12 @@ function transport(preview: Preview) {
     addTrackSel.value = "";
     if (kind) await addTrack(kind);
   };
-  el.append(toStart, play, time, split, addTrackSel, zoomLabel, zoom);
+  const quality = document.createElement("select");
+  quality.style.width = "auto";
+  quality.title = "Preview resolution (fraction of the project size)";
+  quality.innerHTML = `<option value="0.5">preview ½</option><option value="0.75">preview ¾</option><option value="1">preview full</option>`;
+  quality.onchange = () => preview.setScale(Number(quality.value));
+  el.append(toStart, play, time, split, addTrackSel, quality, zoomLabel, zoom);
   store.subscribe((s) => {
     play.textContent = s.playing ? "⏸" : "▶";
     time.textContent = `${fmtTime(s.playhead, store.fps)} / ${fmtTime(store.duration, store.fps)}`;

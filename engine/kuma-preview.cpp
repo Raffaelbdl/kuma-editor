@@ -279,7 +279,8 @@ private:
             if (img && w > 0 && h > 0) {
                 unsigned char *out = nullptr;
                 unsigned long size = 0;
-                if (tjCompress2(jpeg_, img, w, 0, h, TJPF_RGB, &out, &size, TJSAMP_420, 80, TJFLAG_FASTDCT) == 0) {
+                // 4:4:4 keeps text and thin overlay strokes crisp; localhost bandwidth is not a concern.
+                if (tjCompress2(jpeg_, img, w, 0, h, TJPF_RGB, &out, &size, TJSAMP_444, 88, TJFLAG_FASTDCT) == 0) {
                     std::string header = "frame " + std::to_string(frame_index) + " " + std::to_string(size) + "\n";
                     std::lock_guard<std::mutex> l(out_m_);
                     std::fwrite(header.data(), 1, header.size(), stdout);

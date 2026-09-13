@@ -455,9 +455,10 @@ async fn overlay_preview(State(st): S, Path(clip): Path<String>) -> Result<Respo
     };
     let templates = st.templates.read().unwrap();
     let (dir, manifest) = templates.get(overlay).ok_or(ApiError(StatusCode::NOT_FOUND, json!({ "error": "unknown template" })))?;
-    let html = std::fs::read_to_string(dir.join(&manifest.entry)).map_err(|e| anyhow::anyhow!(e))?;
     let resolved = manifest.resolve_vars(vars);
     let internal_duration = c.duration() * c.speed.abs();
+    // Same stamp as the bake, so preview and export read identical markup.
+    let html = kuma_overlay::stamp_root_duration(&std::fs::read_to_string(dir.join(&manifest.entry)).map_err(|e| anyhow::anyhow!(e))?, internal_duration);
     let css_vars: String = resolved
         .iter()
         .map(|(k, v)| format!("--var-{}: {};", k, match v { Value::String(s) => s.clone(), o => o.to_string() }.replace(';', "")))

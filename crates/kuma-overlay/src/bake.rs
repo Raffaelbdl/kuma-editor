@@ -75,6 +75,8 @@ pub enum BakeError {
     Render(String),
     #[error("bake produced no frames in {0}")]
     NoFrames(PathBuf),
+    #[error("renderer produced {got} frames but {want} were needed — the composition's duration did not take effect")]
+    ShortRender { want: i64, got: i64 },
     #[error("alpha lost: encoded pix_fmt is `{0}`")]
     AlphaLost(String),
     #[error("unsupported speed {0}: effective fps must stay within 1..240")]
@@ -129,7 +131,7 @@ impl Baker {
     /// Cache key for a request. Covers every input that changes the pixels.
     pub fn key(&self, req: &BakeRequest) -> Result<String, BakeError> {
         let mut h = Sha256::new();
-        h.update(b"kuma-bake-v1\n");
+        h.update(b"kuma-bake-v2\n");
         h.update(HYPERFRAMES_VERSION.as_bytes());
         h.update(hash_dir(req.template_dir)?.as_bytes());
         let vars = req.manifest.resolve_vars(req.vars);
@@ -283,7 +285,12 @@ impl Baker {
                     }
                     n += 1;
                 }
-                // Pad by repeating the last frame if the renderer came up short by rounding.
+                // Tolerate a frame or two of rounding; anything more means the renderer
+                // ignored the duration we asked for, and padding would silently freeze the
+                // overlay for the rest of the clip.
+                if want_frames - n > 2 {
+                    return Err(BakeError::ShortRender { want: want_frames, got: n });
+                }
                 let last = frames_dir.join(format!("frame_{:06}.png", n));
                 while n < want_frames {
                     n += 1;
@@ -382,7 +389,7 @@ fn gcd(a: u64, b: u64) -> u64 {
 
 /// Insert kuma's variable/time contract into the entry HTML.
 fn inject(entry: &Path, vars: &Map<String, Value>, req: &BakeRequest, internal_duration: f64) -> Result<(), BakeError> {
-    let html = std::fs::read_to_string(entry)?;
+    let html = stamp_root_duration(&std::fs::read_to_string(entry)?, internal_duration);
     let css_vars: String = vars
         .iter()
         .map(|(k, v)| {
@@ -429,6 +436,100 @@ r.setAttribute('data-width','{w}');r.setAttribute('data-height','{h}');\
     };
     std::fs::write(entry, out)?;
     Ok(())
+}
+
+/// hyperframes sizes the render from the root composition's `data-duration` **as written in
+/// the file**, before any script runs, and mounts/unmounts every timed child by its own
+/// `data-start`/`data-duration`. So the clip's real length must be stamped into the markup:
+/// the root gets `duration`, and every child whose end coincided with the old root default
+/// (i.e. was meant to last "until the end") is stretched to the new end. Children that end
+/// earlier keep their timing; nested compositions are left alone.
+pub fn stamp_root_duration(html: &str, duration: f64) -> String {
+    let Some(marker) = html.find("data-composition-id") else { return html.to_string() };
+    let Some(root_start) = html[..marker].rfind('<') else { return html.to_string() };
+    let Some(end_rel) = html[marker..].find('>') else { return html.to_string() };
+    let root_end = marker + end_rel;
+    let old_default = attr_num(&html[root_start..root_end], "data-duration");
+
+    let mut out = String::with_capacity(html.len() + 64);
+    let mut pos = 0;
+    let mut first_root = true;
+    while let Some(lt_rel) = html[pos..].find('<') {
+        let lt = pos + lt_rel;
+        let Some(gt_rel) = html[lt..].find('>') else { break };
+        let gt = lt + gt_rel;
+        let tag = &html[lt..gt];
+        out.push_str(&html[pos..lt]);
+        let is_root = first_root && lt == root_start;
+        let stamped = if is_root {
+            first_root = false;
+            set_attr(tag, "data-duration", &fmt_secs(duration))
+        } else if let (Some(d0), Some(child_dur)) = (old_default, attr_num(tag, "data-duration")) {
+            let start = attr_num(tag, "data-start").unwrap_or(0.0);
+            let ends_at_root = (start + child_dur - d0).abs() < 1e-6 && !tag.contains("data-composition-src");
+            if ends_at_root && tag.contains("data-start") || (ends_at_root && start == 0.0) {
+                set_attr(tag, "data-duration", &fmt_secs((duration - start).max(0.0)))
+            } else {
+                tag.to_string()
+            }
+        } else {
+            tag.to_string()
+        };
+        out.push_str(&stamped);
+        pos = gt;
+    }
+    out.push_str(&html[pos..]);
+    out
+}
+
+/// Numeric value of `name="…"` / `name='…'` in an opening tag, if present.
+fn attr_num(tag: &str, name: &str) -> Option<f64> {
+    let (_, v_start, v_end) = attr_span(tag, name)?;
+    tag[v_start..v_end].trim().parse().ok()
+}
+
+/// (attr start, value start, value end) for `name=` inside a tag.
+fn attr_span(tag: &str, name: &str) -> Option<(usize, usize, usize)> {
+    let mut from = 0;
+    while let Some(i) = tag[from..].find(name) {
+        let i = from + i;
+        let before_ok = i == 0 || !tag.as_bytes()[i - 1].is_ascii_alphanumeric() && tag.as_bytes()[i - 1] != b'-';
+        let after = &tag[i + name.len()..];
+        let after_trim = after.trim_start();
+        if before_ok && after_trim.starts_with('=') {
+            let eq = i + name.len() + (after.len() - after_trim.len());
+            let rest = &tag[eq + 1..];
+            let rest_start = eq + 1 + (rest.len() - rest.trim_start().len());
+            return Some(match tag[rest_start..].chars().next() {
+                Some(q @ ('"' | '\'')) => {
+                    let vs = rest_start + 1;
+                    let ve = tag[vs..].find(q).map(|x| vs + x).unwrap_or(tag.len());
+                    (i, vs, ve)
+                }
+                _ => {
+                    let ve = tag[rest_start..].find(char::is_whitespace).map(|x| rest_start + x).unwrap_or(tag.len());
+                    (i, rest_start, ve)
+                }
+            });
+        }
+        from = i + name.len();
+    }
+    None
+}
+
+/// Replace (or append) an attribute value in an opening tag.
+fn set_attr(tag: &str, name: &str, value: &str) -> String {
+    match attr_span(tag, name) {
+        Some((_, vs, ve)) => format!("{}{}{}", &tag[..vs], value, &tag[ve..]),
+        None => format!("{tag} {name}=\"{value}\""),
+    }
+}
+
+/// Seconds as a compact decimal (`32.633`, `4`), never exponent notation.
+pub fn fmt_secs(v: f64) -> String {
+    let s = format!("{v:.4}");
+    let s = s.trim_end_matches('0').trim_end_matches('.');
+    if s.is_empty() { "0".into() } else { s.to_string() }
 }
 
 fn copy_dir(src: &Path, dst: &Path) -> std::io::Result<()> {
@@ -520,6 +621,28 @@ mod tests {
     }
 
     #[test]
+    fn stamps_root_duration_only() {
+        let html = "<html><body><div id=\"root\" data-composition-id=\"main\" data-start=\"0\" data-duration=\"4\" data-width=\"1920\"><div class=\"clip\" data-start=\"0\" data-duration=\"4\"></div></div></body></html>";
+        let out = stamp_root_duration(html, 32.5);
+        assert!(out.contains("data-composition-id=\"main\" data-start=\"0\" data-duration=\"32.5\" data-width=\"1920\""), "{out}");
+        // A child that ended together with the old root default is stretched with it…
+        assert!(out.contains("<div class=\"clip\" data-start=\"0\" data-duration=\"32.5\">"), "child stretched: {out}");
+        // …but one that ended earlier keeps its own timing, and a later-starting one that
+        // ended at the root end is stretched relative to its start.
+        let html2 = "<div data-composition-id=\"main\" data-duration=\"4\"><div data-start=\"1\" data-duration=\"1\"></div><div data-start=\"1\" data-duration=\"3\"></div></div>";
+        let out2 = stamp_root_duration(html2, 10.0);
+        assert!(out2.contains("data-start=\"1\" data-duration=\"1\""), "{out2}");
+        assert!(out2.contains("data-start=\"1\" data-duration=\"9\""), "{out2}");
+        // Single quotes, and a root without the attribute.
+        let out = stamp_root_duration("<div data-composition-id='main' data-duration='5'>", 8.0);
+        assert!(out.contains("data-duration='8'"), "{out}");
+        let out = stamp_root_duration("<div data-composition-id=\"main\">", 2.25);
+        assert_eq!(out, "<div data-composition-id=\"main\" data-duration=\"2.25\">");
+        assert_eq!(fmt_secs(32.633), "32.633");
+        assert_eq!(fmt_secs(4.0), "4");
+    }
+
+    #[test]
     fn injection_places_scripts() {
         let tmp = tempfile::tempdir().unwrap();
         let entry = tmp.path().join("index.html");
@@ -535,6 +658,7 @@ mod tests {
         assert!(html.contains("window.kuma = "));
         assert!(html.contains("--var-label: hi;"));
         assert!(html.contains("setAttribute('data-duration',String(2))"));
+        assert!(html.contains("data-composition-id=\"main\" data-duration=\"2\""), "markup stamped: {html}");
         assert!(html.find("kuma-inject").unwrap() < html.find("<title>").unwrap());
         assert!(html.find("kuma-timing").unwrap() < html.find("</body>").unwrap());
     }

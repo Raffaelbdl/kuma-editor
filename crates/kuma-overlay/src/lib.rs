@@ -11,5 +11,5 @@
 pub mod bake;
 pub mod media;
 
-pub use bake::{BakeError, BakeRequest, Baker, BakeResult, Format};
+pub use bake::{stamp_root_duration, BakeError, BakeRequest, Baker, BakeResult, Format};
 pub use media::{probe, Probe};

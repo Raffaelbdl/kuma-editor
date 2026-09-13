@@ -73,6 +73,18 @@ fn bakes_location_tag_with_alpha_and_caches() {
     assert_eq!(r3.frames, 60);
     assert_ne!(r3.key, r.key);
 
+    // A clip LONGER than the template's markup default (4 s) must keep animating: the bake
+    // used to render only the default and pad the rest with the last frame.
+    let long = BakeRequest { fps: Fps::new(4, 1), duration: 8.0, speed: 1.0, ..req.clone() };
+    let r4 = baker.bake(&long).expect("long bake");
+    assert_eq!(r4.frames, 32, "8 s at 4 fps");
+    let f = |n: u32| std::fs::read(r4.dir.join(format!("frames/frame_{n:06}.png"))).unwrap();
+    // t=4.0 (past the 4 s default) must still show the tag: frame 1 (t=0) is the empty
+    // pre-entrance state, so a frozen/unmounted overlay would make them identical.
+    assert_ne!(f(17), f(1), "overlay must still be mounted past the template's default duration");
+    // The template anchors its out-animation to the real end (7.55–8 s): t=7.75 differs from t=4.0.
+    assert_ne!(f(32), f(17), "out-animation must happen at the clip's real end, not the default's");
+
     // A static template bakes a single still frame regardless of the clip duration.
     let wm_dir = root.join("overlays/watermark");
     let wm = TemplateManifest::load(&wm_dir).unwrap();

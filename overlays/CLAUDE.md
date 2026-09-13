@@ -24,9 +24,17 @@ daemon serves it under every template.
   clip's internal duration in seconds (clip length × |speed|).
 - CSS custom properties `--var-<name>` on `:root` for every var (strings raw, objects
   JSON-stringified).
-- At the end of `<body>`: the root `[data-composition-id]` element gets
-  `data-duration`, `data-width`, `data-height` set from the clip/project. **Never hard-code
-  the duration in logic; read `window.kuma.duration`.**
+- The root `[data-composition-id]` element's `data-duration` (and `data-width`/`data-height`)
+  are **rewritten in the markup** to the clip's real length before the renderer sees the
+  file — hyperframes sizes the render from the attribute as written, before any script runs.
+  The value in your template is only the standalone default; do not try to set it from a
+  script (it has no effect on the render). **Never hard-code the duration in logic; read
+  `window.kuma.duration`.**
+- Timed children are **mounted only for their own `data-start`/`data-duration`** — a child
+  that keeps `data-duration="4"` disappears after 4 s even in a 30 s clip. kuma stretches
+  every child whose end coincides with the root's default (`start + duration == root
+  default`) to the clip's real end; a child that ends earlier keeps its timing. So: give
+  "whole clip" children the same end as the root, and shorter ones their real length.
 
 **The template must:**
 

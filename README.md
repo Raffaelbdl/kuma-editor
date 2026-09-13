@@ -62,6 +62,22 @@ cmake -S engine -B engine/build && cmake --build engine/build -j
 (cd ui && npm install && npm run build)
 ```
 
+`cargo build --release` produces the `kuma` binary at `target/release/kuma` (it is the
+`crates/kuma-cli` crate). Either run it from there or install it on your `PATH`:
+
+```
+cargo install --path crates/kuma-cli
+```
+
+`kuma` needs the checkout for `overlays/`, `node_modules/hyperframes` and
+`engine/build/kuma-preview`. It finds it by walking up from the current directory or from
+the executable's location, so from `target/release/` nothing is needed; if you installed
+it into `~/.cargo/bin`, tell it where the repository is once:
+
+```
+export KUMA_REPO=/path/to/kuma-editor        # or pass --repo <path> on each call
+```
+
 A project is a directory with `<name>.kuma.json` and your media:
 
 ```

@@ -1,0 +1,15 @@
+[package]
+name = "kuma-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Project model, schema, validation and time math for kuma-editor"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+schemars.workspace = true
+json-patch.workspace = true
+thiserror.workspace = true
+sha2.workspace = true
+hex.workspace = true

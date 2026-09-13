@@ -1,0 +1,21 @@
+# Rust
+/target
+**/*.rs.bk
+
+# Node
+node_modules/
+ui/dist/
+.pnpm-store/
+
+# C++ engine build
+/engine/build
+
+# Project working data
+/.kuma/
+**/.kuma-cache/
+/renders/
+/media/
+
+# Scratch
+*.log
+.DS_Store

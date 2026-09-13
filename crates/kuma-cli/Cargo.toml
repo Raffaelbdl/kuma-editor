@@ -1,0 +1,12 @@
+[package]
+name = "kuma-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "kuma"
+path = "src/main.rs"
+
+[dependencies]
+kuma-core.workspace = true

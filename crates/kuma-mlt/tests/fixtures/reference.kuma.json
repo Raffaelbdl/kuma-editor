@@ -1,0 +1,68 @@
+{
+  "version": 1,
+  "name": "reference",
+  "fps": { "num": 30, "den": 1 },
+  "width": 1920,
+  "height": 1080,
+  "sample_rate": 48000,
+  "assets": {
+    "screen": { "path": "media/screen.mp4", "kind": "video" },
+    "cam": { "path": "media/cam.mp4", "kind": "video" },
+    "logo": { "path": "media/logo.png", "kind": "image" }
+  },
+  "tracks": [
+    {
+      "id": "v1", "kind": "video", "name": "Main",
+      "clips": [
+        {
+          "id": "c1", "start": 0.0, "end": 10.0,
+          "src": { "asset": "screen", "in": 3.0 },
+          "effects": [
+            { "type": "crop", "left": 0.05, "right": 0.05, "top": 0.05, "bottom": 0.05 },
+            { "type": "transform", "keyframes": [
+              { "t": 0.0, "scale": 1.0 },
+              { "t": 3.0, "scale": 1.4, "x": -120, "y": -80 },
+              { "t": 10.0, "scale": 1.4, "x": -120, "y": -80 } ] },
+            { "type": "fade", "in": 0.5, "out": 0.5 }
+          ]
+        },
+        {
+          "id": "c2", "start": 10.0, "end": 14.0,
+          "src": { "asset": "cam", "in": 1.0 },
+          "speed": 0.5, "volume": 0.5,
+          "effects": [ { "type": "color", "saturation": 1.2 } ]
+        },
+        { "id": "c3", "start": 14.0, "end": 15.0, "src": { "color": "#102030" } }
+      ],
+      "transitions": [ { "from": "c1", "to": "c2", "duration": 1.0, "kind": "dissolve" } ]
+    },
+    {
+      "id": "v2", "kind": "video", "name": "PiP",
+      "clips": [
+        {
+          "id": "pip", "start": 4.0, "end": 9.0, "muted": true,
+          "src": { "asset": "logo" },
+          "effects": [
+            { "type": "transform", "x": 600, "y": 300, "scale": 0.25, "opacity": 0.9 },
+            { "type": "blend", "mode": "screen" },
+            { "type": "blur", "radius": 4 }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "o1", "kind": "overlay", "name": "Overlays",
+      "clips": [
+        {
+          "id": "o_c1", "start": 2.0, "end": 5.0,
+          "src": { "overlay": "location-tag", "vars": { "label": "Paris, France" } }
+        },
+        {
+          "id": "o_c2", "start": 6.0, "end": 8.0,
+          "src": { "overlay": "lower-third" }
+        }
+      ]
+    }
+  ],
+  "markers": [ { "t": 4.0, "label": "zoom done" } ]
+}

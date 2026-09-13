@@ -1,0 +1,47 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/kuma-core",
+    "crates/kuma-mlt",
+    "crates/kuma-overlay",
+    "crates/kuma-daemon",
+    "crates/kuma-mcp",
+    "crates/kuma-cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/Raffaelbdl/kuma-editor"
+
+[workspace.dependencies]
+kuma-core = { path = "crates/kuma-core" }
+kuma-mlt = { path = "crates/kuma-mlt" }
+kuma-overlay = { path = "crates/kuma-overlay" }
+kuma-daemon = { path = "crates/kuma-daemon" }
+kuma-mcp = { path = "crates/kuma-mcp" }
+
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+schemars = "1"
+json-patch = "4"
+thiserror = "2"
+anyhow = "1"
+sha2 = "0.10"
+hex = "0.4"
+tokio = { version = "1", features = ["full"] }
+axum = { version = "0.8", features = ["ws", "macros"] }
+tower-http = { version = "0.6", features = ["fs", "cors"] }
+rmcp = { version = "3", features = ["server", "transport-io", "macros", "schemars"] }
+clap = { version = "4", features = ["derive"] }
+reqwest = { version = "0.12", default-features = false, features = ["json"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+futures = "0.3"
+base64 = "0.22"
+tempfile = "3"
+
+[profile.release]
+opt-level = 3
+debug = 1

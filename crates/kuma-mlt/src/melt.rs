@@ -1,0 +1,178 @@
+//! Driving `melt` as a subprocess. Wraps in `xvfb-run` when there is no display, because
+//! MLT's Qt module (qtblend, qtcrop) refuses to load without X11.
+
+use std::io::{BufRead, BufReader};
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+
+use crate::presets::ExportPreset;
+
+#[derive(Debug, thiserror::Error)]
+pub enum MeltError {
+    #[error("melt not found on PATH (install the `melt` package)")]
+    NotFound,
+    #[error("melt failed (exit {code:?}): {stderr}")]
+    Failed { code: Option<i32>, stderr: String },
+    #[error("io: {0}")]
+    Io(#[from] std::io::Error),
+}
+
+#[derive(Debug, Clone)]
+pub struct RenderJob {
+    pub mlt_file: PathBuf,
+    pub output: PathBuf,
+    pub preset: &'static ExportPreset,
+    /// Optional frame range (inclusive) to render.
+    pub range: Option<(i64, i64)>,
+    /// Extra consumer properties overriding the preset.
+    pub extra: Vec<(String, String)>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct RenderProgress {
+    pub frame: i64,
+    pub percent: u8,
+}
+
+pub fn melt_available() -> bool {
+    Command::new("melt").arg("-version").output().map(|o| o.status.success()).unwrap_or(false)
+}
+
+fn needs_xvfb() -> bool {
+    std::env::var_os("DISPLAY").is_none() && std::env::var_os("WAYLAND_DISPLAY").is_none()
+}
+
+/// Build the command line. Public so callers can log it.
+pub fn command(job: &RenderJob) -> Command {
+    let mut args: Vec<String> = Vec::new();
+    args.push("-silent".into());
+    args.push("-progress".into());
+    args.push(job.mlt_file.to_string_lossy().into_owned());
+    if let Some((in_, out)) = job.range {
+        args.push(format!("in={in_}"));
+        args.push(format!("out={out}"));
+    }
+    args.push("-consumer".into());
+    args.push(format!("avformat:{}", job.output.to_string_lossy()));
+    for (k, v) in job.preset.properties {
+        args.push(format!("{k}={v}"));
+    }
+    for (k, v) in &job.extra {
+        args.push(format!("{k}={v}"));
+    }
+
+    let mut cmd = if needs_xvfb() {
+        let mut c = Command::new("xvfb-run");
+        c.arg("-a").arg("melt");
+        c
+    } else {
+        Command::new("melt")
+    };
+    cmd.args(&args);
+    cmd.env("LC_NUMERIC", "C");
+    cmd
+}
+
+/// Render synchronously, reporting progress lines as they arrive.
+pub fn render(job: &RenderJob, mut on_progress: impl FnMut(RenderProgress)) -> Result<(), MeltError> {
+    if !melt_available() {
+        return Err(MeltError::NotFound);
+    }
+    if let Some(parent) = job.output.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let mut cmd = command(job);
+    cmd.stdout(Stdio::null()).stderr(Stdio::piped());
+    let mut child = cmd.spawn()?;
+    let stderr = child.stderr.take().expect("piped stderr");
+    let mut tail = String::new();
+    // melt writes progress as "Current Frame: N, percentage: P" on stderr, using \r.
+    let reader = BufReader::new(stderr);
+    for chunk in reader.split(b'\r') {
+        let chunk = chunk?;
+        for line in chunk.split(|b| *b == b'\n') {
+            let line = String::from_utf8_lossy(line);
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            if let Some(p) = parse_progress(line) {
+                on_progress(p);
+            } else {
+                tail.push_str(line);
+                tail.push('\n');
+                if tail.len() > 8000 {
+                    tail.drain(..tail.len() - 8000);
+                }
+            }
+        }
+    }
+    let status = child.wait()?;
+    if !status.success() {
+        return Err(MeltError::Failed { code: status.code(), stderr: tail });
+    }
+    Ok(())
+}
+
+fn parse_progress(line: &str) -> Option<RenderProgress> {
+    let rest = line.strip_prefix("Current Frame:")?;
+    let (frame, pct) = rest.split_once(", percentage:")?;
+    Some(RenderProgress {
+        frame: frame.trim().parse().ok()?,
+        percent: pct.trim().parse().ok()?,
+    })
+}
+
+/// Extract a single frame (as PNG) at a timeline frame index, for previews and MCP
+/// sampling. Uses the avformat consumer with an image2 muxer.
+pub fn snapshot(mlt_file: &Path, frame: i64, out_png: &Path, width: Option<u32>) -> Result<(), MeltError> {
+    if !melt_available() {
+        return Err(MeltError::NotFound);
+    }
+    if let Some(parent) = out_png.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let mut args: Vec<String> = vec![
+        "-silent".into(),
+        mlt_file.to_string_lossy().into_owned(),
+        format!("in={frame}"),
+        format!("out={frame}"),
+        "-consumer".into(),
+        format!("avformat:{}", out_png.to_string_lossy()),
+        "f=image2".into(),
+        "vcodec=png".into(),
+        "an=1".into(),
+    ];
+    if let Some(w) = width {
+        args.push(format!("width={w}"));
+        args.push("height=0".into());
+    }
+    let mut cmd = if needs_xvfb() {
+        let mut c = Command::new("xvfb-run");
+        c.arg("-a").arg("melt");
+        c
+    } else {
+        Command::new("melt")
+    };
+    cmd.args(&args).env("LC_NUMERIC", "C");
+    let out = cmd.output()?;
+    if !out.status.success() || !out_png.is_file() {
+        return Err(MeltError::Failed {
+            code: out.status.code(),
+            stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+        });
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_progress() {
+        let p = parse_progress("Current Frame:        120, percentage:         26").unwrap();
+        assert_eq!((p.frame, p.percent), (120, 26));
+        assert!(parse_progress("something else").is_none());
+    }
+}

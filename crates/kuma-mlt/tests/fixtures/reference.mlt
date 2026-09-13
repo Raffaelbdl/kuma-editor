@@ -1,0 +1,151 @@
+<?xml version="1.0" encoding="utf-8"?>
+<mlt LC_NUMERIC="C" version="7.22.0" root="/proj" producer="main_tractor">
+  <profile description="kuma 1920x1080 30" width="1920" height="1080" progressive="1" sample_aspect_num="1" sample_aspect_den="1" display_aspect_num="1920" display_aspect_den="1080" frame_rate_num="30" frame_rate_den="1" colorspace="709"/>
+  <producer id="black" in="0" out="449">
+    <property name="mlt_service">color</property>
+    <property name="resource">black</property>
+    <property name="length">450</property>
+    <property name="mlt_image_format">rgba</property>
+  </producer>
+  <playlist id="background">
+    <entry producer="black" in="0" out="449"/>
+  </playlist>
+  <chain id="clip_c1" in="90" out="404">
+    <property name="mlt_service">avformat-novalidate</property>
+    <property name="resource">/proj/media/screen.mp4</property>
+    <filter id="clip_c1_crop1" in="90" out="404">
+      <property name="mlt_service">qtcrop</property>
+      <property name="rect">5%/5%:90%x90%</property>
+    </filter>
+    <filter id="clip_c1_xform2" in="90" out="404">
+      <property name="mlt_service">qtblend</property>
+      <property name="compositing">0</property>
+      <property name="rect">0=0 0 1920 1080 1;90=-504 -296 2688 1512 1;300=-504 -296 2688 1512 1</property>
+      <property name="rotation">0=0;90=0;300=0</property>
+    </filter>
+    <filter id="clip_c1_fadein3" in="90" out="104">
+      <property name="mlt_service">brightness</property>
+      <property name="alpha">0=0;-1=1</property>
+    </filter>
+    <filter id="clip_c1_fadeout4" in="390" out="404">
+      <property name="mlt_service">brightness</property>
+      <property name="alpha">0=1;-1=0</property>
+    </filter>
+  </chain>
+  <producer id="clip_c2" in="45" out="179">
+    <property name="mlt_service">timewarp</property>
+    <property name="resource">0.5:/proj/media/cam.mp4</property>
+    <property name="warp_pitch">1</property>
+    <filter id="clip_c2_vol1" in="45" out="179">
+      <property name="mlt_service">volume</property>
+      <property name="level">-6.0206</property>
+    </filter>
+    <filter id="clip_c2_color2" in="45" out="179">
+      <property name="mlt_service">avfilter.eq</property>
+      <property name="av.brightness">0</property>
+      <property name="av.contrast">1</property>
+      <property name="av.saturation">1.2</property>
+      <property name="av.gamma">1</property>
+    </filter>
+  </producer>
+  <producer id="clip_c3" in="0" out="29">
+    <property name="mlt_service">color</property>
+    <property name="resource">0x102030ff</property>
+    <property name="length">30</property>
+    <property name="mlt_image_format">rgba</property>
+  </producer>
+  <playlist id="v1_a">
+    <entry producer="clip_c1" in="90" out="404"/>
+    <blank length="105"/>
+    <entry producer="clip_c3" in="0" out="29"/>
+  </playlist>
+  <playlist id="v1_b">
+    <blank length="285"/>
+    <entry producer="clip_c2" in="45" out="179"/>
+  </playlist>
+  <tractor id="track_v1" in="0" out="449">
+    <multitrack>
+      <track producer="v1_a"/>
+      <track producer="v1_b"/>
+    </multitrack>
+    <transition id="luma_c1_c2" in="285" out="314">
+      <property name="mlt_service">luma</property>
+      <property name="a_track">0</property>
+      <property name="b_track">1</property>
+      <property name="progressive">1</property>
+    </transition>
+    <transition id="xfade_c1_c2" in="285" out="314">
+      <property name="mlt_service">mix</property>
+      <property name="a_track">0</property>
+      <property name="b_track">1</property>
+      <property name="start">0</property>
+      <property name="end">1</property>
+    </transition>
+  </tractor>
+  <producer id="clip_pip" in="0" out="149">
+    <property name="mlt_service">pixbuf</property>
+    <property name="resource">/proj/media/logo.png</property>
+    <property name="length">150</property>
+    <property name="ttl">1</property>
+    <property name="audio_index">-1</property>
+    <filter id="clip_pip_xform1" in="0" out="149">
+      <property name="mlt_service">qtblend</property>
+      <property name="compositing">0</property>
+      <property name="rect">1320 705 480 270 0.9</property>
+      <property name="rotation">0</property>
+    </filter>
+    <filter id="clip_pip_blur2" in="0" out="149">
+      <property name="mlt_service">avfilter.gblur</property>
+      <property name="av.sigma">2</property>
+      <property name="av.steps">2</property>
+    </filter>
+  </producer>
+  <playlist id="v2_a">
+    <blank length="120"/>
+    <entry producer="clip_pip" in="0" out="149"/>
+  </playlist>
+  <producer id="clip_o_c1" in="0" out="89">
+    <property name="mlt_service">avformat</property>
+    <property name="resource">/proj/.kuma/bakes/abc/frame_%06d.png</property>
+    <property name="length">90</property>
+    <property name="mlt_image_format">rgba</property>
+  </producer>
+  <playlist id="o1_a">
+    <blank length="60"/>
+    <entry producer="clip_o_c1" in="0" out="89"/>
+  </playlist>
+  <tractor id="main_tractor" in="0" out="449">
+    <multitrack>
+      <track producer="background"/>
+      <track producer="track_v1"/>
+      <track producer="v2_a" hide="audio"/>
+      <track producer="o1_a" hide="audio"/>
+    </multitrack>
+    <transition id="mix_v1">
+      <property name="mlt_service">mix</property>
+      <property name="a_track">0</property>
+      <property name="b_track">1</property>
+      <property name="always_active">1</property>
+      <property name="sum">1</property>
+    </transition>
+    <transition id="comp_v1">
+      <property name="mlt_service">qtblend</property>
+      <property name="a_track">0</property>
+      <property name="b_track">1</property>
+      <property name="always_active">1</property>
+    </transition>
+    <transition id="comp_v2">
+      <property name="mlt_service">qtblend</property>
+      <property name="a_track">0</property>
+      <property name="b_track">2</property>
+      <property name="always_active">1</property>
+      <property name="compositing">0|=0;120|=14;270|=0</property>
+    </transition>
+    <transition id="comp_o1">
+      <property name="mlt_service">qtblend</property>
+      <property name="a_track">0</property>
+      <property name="b_track">3</property>
+      <property name="always_active">1</property>
+    </transition>
+  </tractor>
+</mlt>

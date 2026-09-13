@@ -1,0 +1,505 @@
+//! The bake driver: template instance → hyperframes → RGBA frames (cached).
+
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
+use kuma_core::template::{Region, TemplateManifest};
+use kuma_core::Fps;
+use kuma_mlt::OverlayBake;
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Map, Value};
+use sha2::{Digest, Sha256};
+
+pub const HYPERFRAMES_VERSION: &str = "0.8.37";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum Format {
+    /// Lossless RGBA PNG frames (default; what MLT composites from).
+    #[default]
+    PngSequence,
+    /// ProRes 4444 MOV with alpha — for hand-off to other tools.
+    Mov,
+    /// VP9 WebM with alpha — for web delivery or Kdenlive.
+    Webm,
+}
+
+#[derive(Debug, Clone)]
+pub struct BakeRequest<'a> {
+    pub template_dir: &'a Path,
+    pub manifest: &'a TemplateManifest,
+    /// Variable overrides (defaults are applied from the manifest).
+    pub vars: &'a Map<String, Value>,
+    pub fps: Fps,
+    pub width: u32,
+    pub height: u32,
+    /// Clip duration on the timeline, seconds.
+    pub duration: f64,
+    /// Playback speed; applied as a time remap of the seek (never by frame duplication).
+    pub speed: f64,
+    pub format: Format,
+    /// 1 = native, 2 = render at double DPR and downscale (crisper edges, 4× the pixels).
+    pub supersample: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BakeResult {
+    pub key: String,
+    pub dir: PathBuf,
+    /// File or `%06d` pattern.
+    pub resource: PathBuf,
+    pub frames: i64,
+    pub is_still: bool,
+    pub region: Option<Region>,
+    pub format: Format,
+    /// Wall time of the bake in seconds (0 when served from cache).
+    pub seconds: f64,
+    pub cached: bool,
+}
+
+impl BakeResult {
+    pub fn overlay_bake(&self) -> OverlayBake {
+        OverlayBake { resource: self.resource.clone(), region: self.region, is_still: self.is_still }
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum BakeError {
+    #[error("hyperframes not found: {0}")]
+    NoRenderer(String),
+    #[error("template entry `{0}` not found")]
+    NoEntry(PathBuf),
+    #[error("invalid vars: {0:?}")]
+    Vars(Vec<String>),
+    #[error("hyperframes failed: {0}")]
+    Render(String),
+    #[error("bake produced no frames in {0}")]
+    NoFrames(PathBuf),
+    #[error("alpha lost: encoded pix_fmt is `{0}`")]
+    AlphaLost(String),
+    #[error("unsupported speed {0}: effective fps must stay within 1..240")]
+    Speed(f64),
+    #[error("io: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("{0}")]
+    Other(String),
+}
+
+#[derive(Debug, Clone)]
+pub struct Baker {
+    /// Root of the cache; each bake lives in `<cache>/<key>/`.
+    pub cache_dir: PathBuf,
+    /// Path to the `hyperframes` executable (or a wrapper script).
+    pub hyperframes: PathBuf,
+    /// Chrome/Chromium headless shell path, if not left to hyperframes.
+    pub browser: Option<PathBuf>,
+    /// Force software GL (SwiftShader) for reproducible output. Default true.
+    pub software_gl: bool,
+}
+
+impl Baker {
+    /// Locate hyperframes and a browser, preferring the repo's own `node_modules`.
+    pub fn discover(repo_root: &Path, cache_dir: PathBuf) -> Self {
+        let hyperframes = std::env::var_os("KUMA_HYPERFRAMES")
+            .map(PathBuf::from)
+            .filter(|p| p.is_file())
+            .or_else(|| {
+                let p = repo_root.join("node_modules/.bin/hyperframes");
+                p.is_file().then_some(p)
+            })
+            .unwrap_or_else(|| PathBuf::from("hyperframes"));
+        let browser = std::env::var_os("HYPERFRAMES_BROWSER_PATH")
+            .map(PathBuf::from)
+            .or_else(|| std::env::var_os("PUPPETEER_EXECUTABLE_PATH").map(PathBuf::from))
+            .or_else(find_playwright_headless_shell);
+        Baker { cache_dir, hyperframes, browser, software_gl: true }
+    }
+
+    pub fn available(&self) -> Result<String, BakeError> {
+        let out = Command::new(&self.hyperframes)
+            .arg("--version")
+            .output()
+            .map_err(|e| BakeError::NoRenderer(format!("{}: {e}", self.hyperframes.display())))?;
+        if !out.status.success() {
+            return Err(BakeError::NoRenderer(String::from_utf8_lossy(&out.stderr).into_owned()));
+        }
+        Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+    }
+
+    /// Cache key for a request. Covers every input that changes the pixels.
+    pub fn key(&self, req: &BakeRequest) -> Result<String, BakeError> {
+        let mut h = Sha256::new();
+        h.update(b"kuma-bake-v1\n");
+        h.update(HYPERFRAMES_VERSION.as_bytes());
+        h.update(hash_dir(req.template_dir)?.as_bytes());
+        let vars = req.manifest.resolve_vars(req.vars);
+        h.update(serde_json::to_vec(&vars).unwrap_or_default());
+        h.update(
+            format!(
+                "\n{}/{} {}x{} d={:.6} s={:.6} f={:?} ss={} gl={}",
+                req.fps.num, req.fps.den, req.width, req.height, req.duration, req.speed, req.format, req.supersample, self.software_gl
+            )
+            .as_bytes(),
+        );
+        Ok(hex::encode(h.finalize())[..24].to_string())
+    }
+
+    /// Bake (or fetch from cache).
+    pub fn bake(&self, req: &BakeRequest) -> Result<BakeResult, BakeError> {
+        let problems = req.manifest.check_vars(req.vars);
+        if !problems.is_empty() {
+            return Err(BakeError::Vars(problems));
+        }
+        let key = self.key(req)?;
+        let dir = self.cache_dir.join(&key);
+        let done = dir.join("done.json");
+        if done.is_file() {
+            if let Ok(mut r) = serde_json::from_slice::<BakeResult>(&std::fs::read(&done)?) {
+                r.cached = true;
+                r.seconds = 0.0;
+                return Ok(r);
+            }
+        }
+        let started = std::time::Instant::now();
+        // Start clean: a partial previous attempt must not be mistaken for output.
+        if dir.exists() {
+            std::fs::remove_dir_all(&dir)?;
+        }
+        std::fs::create_dir_all(&dir)?;
+
+        // 1. Stage the template with kuma's injection script. Shared libraries live in
+        //    `overlays/_vendor` and are referenced by templates as `_vendor/...`, so copy
+        //    them into the staged directory.
+        let src = dir.join("src");
+        copy_dir(req.template_dir, &src)?;
+        if let Some(vendor) = req.template_dir.parent().map(|p| p.join("_vendor")) {
+            if vendor.is_dir() {
+                copy_dir(&vendor, &src.join("_vendor"))?;
+            }
+        }
+        let vars = req.manifest.resolve_vars(req.vars);
+        let is_still = req.manifest.is_static;
+        let internal_duration = if is_still { 1.0 / req.fps.as_f64() } else { req.duration * req.speed.abs() };
+        let entry = src.join(&req.manifest.entry);
+        if !entry.is_file() {
+            return Err(BakeError::NoEntry(entry));
+        }
+        inject(&entry, &vars, req, internal_duration)?;
+
+        // 2. Effective frame rate implements speed: frame k must show internal time k·s/fps.
+        let eff_fps = effective_fps(req.fps, req.speed.abs()).ok_or(BakeError::Speed(req.speed))?;
+        if is_still {
+            // One frame is enough; hyperframes still needs a positive duration.
+        }
+
+        // 3. Render.
+        let raw_dir = dir.join("raw");
+        let (fmt_arg, out_arg) = match req.format {
+            Format::PngSequence => ("png-sequence", raw_dir.clone()),
+            Format::Mov => ("mov", dir.join("raw.mov")),
+            Format::Webm => ("webm", dir.join("raw.webm")),
+        };
+        let mut cmd = Command::new(&self.hyperframes);
+        cmd.arg("render")
+            .arg(&src)
+            .args(["--format", fmt_arg])
+            .arg("-o")
+            .arg(&out_arg)
+            .args(["--workers", "1", "--quiet", "--no-best-effort"])
+            .args(["--fps", &eff_fps]);
+        if self.software_gl {
+            cmd.arg("--no-browser-gpu");
+        }
+        if req.supersample >= 2 {
+            let preset = match (req.width, req.height) {
+                (1920, 1080) => Some("landscape-4k"),
+                (1080, 1920) => Some("portrait-4k"),
+                (1080, 1080) => Some("square-4k"),
+                _ => None,
+            };
+            if let Some(p) = preset {
+                cmd.args(["--resolution", p]);
+            }
+        }
+        cmd.arg("--variables").arg(Value::Object(vars.clone()).to_string());
+        if let Some(b) = &self.browser {
+            cmd.env("HYPERFRAMES_BROWSER_PATH", b);
+        }
+        cmd.env("HYPERFRAMES_TELEMETRY", "0");
+        let out = cmd.output().map_err(|e| BakeError::NoRenderer(format!("{}: {e}", self.hyperframes.display())))?;
+        if !out.status.success() {
+            let mut msg = String::from_utf8_lossy(&out.stderr).into_owned();
+            msg.push_str(&String::from_utf8_lossy(&out.stdout));
+            let tail: String = msg.chars().rev().take(4000).collect::<Vec<_>>().into_iter().rev().collect();
+            return Err(BakeError::Render(tail));
+        }
+
+        // 4. Post-process into the final resource.
+        let frames_dir = dir.join("frames");
+        std::fs::create_dir_all(&frames_dir)?;
+        let want_frames = if is_still { 1 } else { req.fps.length(req.duration) };
+        let (resource, frames) = match req.format {
+            Format::PngSequence => {
+                let mut files: Vec<PathBuf> = std::fs::read_dir(&raw_dir)?
+                    .flatten()
+                    .map(|e| e.path())
+                    .filter(|p| p.extension().map(|e| e == "png").unwrap_or(false))
+                    .collect();
+                files.sort();
+                if files.is_empty() {
+                    return Err(BakeError::NoFrames(raw_dir));
+                }
+                if req.speed < 0.0 {
+                    files.reverse();
+                }
+                // Supersampled frames come back at 2× and are downscaled here.
+                let need_scale = req.supersample >= 2;
+                let mut n = 0i64;
+                for (i, f) in files.iter().enumerate() {
+                    if n >= want_frames {
+                        break;
+                    }
+                    let dst = frames_dir.join(format!("frame_{:06}.png", i + 1));
+                    if need_scale || req.manifest.region.is_some() {
+                        let mut vf = Vec::new();
+                        if need_scale {
+                            vf.push(format!("scale={}:{}:flags=lanczos", req.width, req.height));
+                        }
+                        if let Some(r) = req.manifest.region {
+                            vf.push(format!("crop={}:{}:{}:{}", r.w, r.h, r.x, r.y));
+                        }
+                        crate::media::ffmpeg(&[
+                            "-i".into(),
+                            f.to_string_lossy().into_owned(),
+                            "-vf".into(),
+                            vf.join(","),
+                            "-pix_fmt".into(),
+                            "rgba".into(),
+                            dst.to_string_lossy().into_owned(),
+                        ])
+                        .map_err(BakeError::Other)?;
+                    } else {
+                        std::fs::rename(f, &dst)?;
+                    }
+                    n += 1;
+                }
+                // Pad by repeating the last frame if the renderer came up short by rounding.
+                let last = frames_dir.join(format!("frame_{:06}.png", n));
+                while n < want_frames {
+                    n += 1;
+                    std::fs::copy(&last, frames_dir.join(format!("frame_{:06}.png", n)))?;
+                }
+                let _ = std::fs::remove_dir_all(&raw_dir);
+                let resource = if is_still { frames_dir.join("frame_000001.png") } else { frames_dir.join("frame_%06d.png") };
+                (resource, n)
+            }
+            Format::Mov | Format::Webm => {
+                let pf = crate::media::pix_fmt(&out_arg).map_err(BakeError::Other)?;
+                if !pf.starts_with("yuva") && !pf.contains("rgba") && !pf.contains("argb") {
+                    return Err(BakeError::AlphaLost(pf));
+                }
+                (out_arg.clone(), want_frames)
+            }
+        };
+
+        let result = BakeResult {
+            key: key.clone(),
+            dir: dir.clone(),
+            resource,
+            frames,
+            is_still,
+            region: req.manifest.region,
+            format: req.format,
+            seconds: started.elapsed().as_secs_f64(),
+            cached: false,
+        };
+        std::fs::write(&done, serde_json::to_vec_pretty(&result).unwrap())?;
+        Ok(result)
+    }
+}
+
+/// `fps / speed` as an ffmpeg-style rational string, or None if out of hyperframes' range.
+fn effective_fps(fps: Fps, speed: f64) -> Option<String> {
+    let (sn, sd) = to_rational(speed);
+    let mut num = fps.num as u64 * sd;
+    let mut den = fps.den as u64 * sn;
+    let g = gcd(num, den);
+    num /= g;
+    den /= g;
+    let f = num as f64 / den as f64;
+    if !(1.0..=240.0).contains(&f) {
+        return None;
+    }
+    Some(if den == 1 { num.to_string() } else { format!("{num}/{den}") })
+}
+
+fn to_rational(x: f64) -> (u64, u64) {
+    let den = 1000u64;
+    let num = (x * den as f64).round().max(1.0) as u64;
+    let g = gcd(num, den);
+    (num / g, den / g)
+}
+
+fn gcd(a: u64, b: u64) -> u64 {
+    if b == 0 { a } else { gcd(b, a % b) }
+}
+
+/// Insert kuma's variable/time contract into the entry HTML.
+fn inject(entry: &Path, vars: &Map<String, Value>, req: &BakeRequest, internal_duration: f64) -> Result<(), BakeError> {
+    let html = std::fs::read_to_string(entry)?;
+    let css_vars: String = vars
+        .iter()
+        .map(|(k, v)| {
+            let s = match v {
+                Value::String(s) => s.clone(),
+                other => other.to_string(),
+            };
+            format!("--var-{}: {};", k, s.replace(';', ""))
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+    let payload = json!({
+        "vars": vars,
+        "fps": { "num": req.fps.num, "den": req.fps.den },
+        "width": req.width,
+        "height": req.height,
+        "duration": internal_duration,
+        "speed": req.speed,
+        "bake": true,
+    });
+    let head_script = format!(
+        "<script id=\"kuma-inject\">window.kuma = {payload};</script>\n<style id=\"kuma-vars\">:root {{ {css_vars} }}</style>\n"
+    );
+    let body_script = format!(
+        "<script id=\"kuma-timing\">(function(){{\
+var r=document.querySelector('[data-composition-id]');if(!r)return;\
+r.setAttribute('data-duration',String({internal_duration}));\
+r.setAttribute('data-width','{w}');r.setAttribute('data-height','{h}');\
+}})();</script>\n",
+        w = req.width,
+        h = req.height,
+    );
+    let mut out = if let Some(i) = html.find("<head>") {
+        let (a, b) = html.split_at(i + "<head>".len());
+        format!("{a}\n{head_script}{b}")
+    } else {
+        format!("{head_script}{html}")
+    };
+    out = if let Some(i) = out.rfind("</body>") {
+        let (a, b) = out.split_at(i);
+        format!("{a}{body_script}{b}")
+    } else {
+        format!("{out}{body_script}")
+    };
+    std::fs::write(entry, out)?;
+    Ok(())
+}
+
+fn copy_dir(src: &Path, dst: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let p = entry.path();
+        let name = entry.file_name();
+        if name.to_string_lossy().starts_with('.') {
+            continue;
+        }
+        if p.is_dir() {
+            copy_dir(&p, &dst.join(name))?;
+        } else {
+            std::fs::copy(&p, dst.join(name))?;
+        }
+    }
+    Ok(())
+}
+
+/// Content hash of every file in a directory (sorted, path + bytes).
+fn hash_dir(dir: &Path) -> std::io::Result<String> {
+    fn walk(dir: &Path, base: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
+        for entry in std::fs::read_dir(dir)? {
+            let p = entry?.path();
+            if p.file_name().map(|n| n.to_string_lossy().starts_with('.')).unwrap_or(false) {
+                continue;
+            }
+            if p.is_dir() {
+                walk(&p, base, out)?;
+            } else {
+                out.push(p.strip_prefix(base).unwrap_or(&p).to_path_buf());
+            }
+        }
+        Ok(())
+    }
+    let mut files = Vec::new();
+    walk(dir, dir, &mut files)?;
+    files.sort();
+    let mut h = Sha256::new();
+    for rel in files {
+        h.update(rel.to_string_lossy().as_bytes());
+        h.update(b"\0");
+        h.update(std::fs::read(dir.join(&rel))?);
+        h.update(b"\0");
+    }
+    Ok(hex::encode(h.finalize()))
+}
+
+fn find_playwright_headless_shell() -> Option<PathBuf> {
+    let mut roots: Vec<PathBuf> = Vec::new();
+    if let Some(p) = std::env::var_os("PLAYWRIGHT_BROWSERS_PATH") {
+        roots.push(PathBuf::from(p));
+    }
+    roots.push(PathBuf::from("/opt/pw-browsers"));
+    if let Some(home) = std::env::var_os("HOME") {
+        roots.push(PathBuf::from(home).join(".cache/ms-playwright"));
+    }
+    for root in roots {
+        let Ok(rd) = std::fs::read_dir(&root) else { continue };
+        let mut candidates: Vec<PathBuf> = rd
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.file_name().map(|n| n.to_string_lossy().starts_with("chromium_headless_shell")).unwrap_or(false))
+            .collect();
+        candidates.sort();
+        for c in candidates.into_iter().rev() {
+            let bin = c.join("chrome-linux/headless_shell");
+            if bin.is_file() {
+                return Some(bin);
+            }
+        }
+    }
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn effective_fps_implements_speed() {
+        assert_eq!(effective_fps(Fps::new(30, 1), 1.0).unwrap(), "30");
+        assert_eq!(effective_fps(Fps::new(30, 1), 0.5).unwrap(), "60");
+        assert_eq!(effective_fps(Fps::new(30, 1), 2.0).unwrap(), "15");
+        assert_eq!(effective_fps(Fps::new(30000, 1001), 1.0).unwrap(), "30000/1001");
+        assert_eq!(effective_fps(Fps::new(30, 1), 0.7).unwrap(), "300/7");
+        assert!(effective_fps(Fps::new(30, 1), 0.05).is_none());
+    }
+
+    #[test]
+    fn injection_places_scripts() {
+        let tmp = tempfile::tempdir().unwrap();
+        let entry = tmp.path().join("index.html");
+        std::fs::write(&entry, "<html><head><title>x</title></head><body><div data-composition-id=\"main\" data-duration=\"4\"></div></body></html>").unwrap();
+        let manifest: TemplateManifest = serde_json::from_value(json!({ "id": "t", "vars": { "label": { "type": "string", "default": "hi" } } })).unwrap();
+        let vars = Map::new();
+        let req = BakeRequest {
+            template_dir: tmp.path(), manifest: &manifest, vars: &vars, fps: Fps::new(30, 1), width: 1920, height: 1080,
+            duration: 2.0, speed: 1.0, format: Format::PngSequence, supersample: 1,
+        };
+        inject(&entry, &manifest.resolve_vars(&vars), &req, 2.0).unwrap();
+        let html = std::fs::read_to_string(&entry).unwrap();
+        assert!(html.contains("window.kuma = "));
+        assert!(html.contains("--var-label: hi;"));
+        assert!(html.contains("setAttribute('data-duration',String(2))"));
+        assert!(html.find("kuma-inject").unwrap() < html.find("<title>").unwrap());
+        assert!(html.find("kuma-timing").unwrap() < html.find("</body>").unwrap());
+    }
+}

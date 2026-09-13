@@ -1,0 +1,17 @@
+{
+  "name": "kuma-editor",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Hybrid video editor: MLT-backed native timeline + HTML/CSS/TS overlays + MCP",
+  "license": "MIT",
+  "scripts": {
+    "ui:dev": "npm --prefix ui run dev",
+    "ui:build": "npm --prefix ui run build",
+    "overlay:preview": "hyperframes preview overlays",
+    "overlay:doctor": "hyperframes doctor"
+  },
+  "dependencies": {
+    "gsap": "3.14.2",
+    "hyperframes": "0.8.37"
+  }
+}

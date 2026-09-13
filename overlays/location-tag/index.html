@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=1920, height=1080" />
+    <script src="_vendor/gsap.min.js"></script>
+    <style>
+      /* kuma overlay contract: transparent all the way to the root. */
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { width: 100%; height: 100%; overflow: hidden; background: transparent; }
+      #root { position: relative; width: 100%; height: 100%; background: transparent; }
+
+      :root {
+        /* Defaults; kuma overrides these with --var-* from the manifest/instance. */
+        --var-accent: #ff4f00;
+        --var-size: 1;
+        --anchor-x: 0.68;
+        --anchor-y: 0.28;
+        /* Scale everything with the composition height so 9:16 and 16:9 both look right. */
+        --u: calc(1vh * var(--var-size));
+      }
+
+      .tag {
+        position: absolute;
+        left: calc(var(--anchor-x) * 100%);
+        top: calc(var(--anchor-y) * 100%);
+        transform-origin: 0% 100%;
+        display: flex;
+        align-items: center;
+        gap: calc(1.6 * var(--u));
+        font-family: "Inter", "Segoe UI", system-ui, sans-serif;
+        color: #fff;
+        will-change: transform, opacity;
+      }
+      .pin {
+        width: calc(4.2 * var(--u));
+        height: calc(4.2 * var(--u));
+        border-radius: 50% 50% 50% 0;
+        transform: rotate(-45deg);
+        background: var(--var-accent);
+        box-shadow: 0 calc(0.6 * var(--u)) calc(2 * var(--u)) rgba(0, 0, 0, 0.35);
+        position: relative;
+        flex: none;
+      }
+      .pin::after {
+        content: "";
+        position: absolute;
+        inset: 28%;
+        border-radius: 50%;
+        background: rgba(255, 255, 255, 0.92);
+      }
+      .chip {
+        padding: calc(1.2 * var(--u)) calc(2.2 * var(--u));
+        border-radius: calc(3 * var(--u));
+        background: rgba(14, 14, 20, 0.78);
+        border: 1px solid rgba(255, 255, 255, 0.18);
+        backdrop-filter: blur(6px);
+        box-shadow: 0 calc(0.8 * var(--u)) calc(2.4 * var(--u)) rgba(0, 0, 0, 0.35);
+        line-height: 1.1;
+        white-space: nowrap;
+      }
+      .label { font-size: calc(3.1 * var(--u)); font-weight: 600; letter-spacing: 0.01em; }
+      .sub { font-size: calc(1.5 * var(--u)); opacity: 0.78; margin-top: calc(0.5 * var(--u)); }
+      .chip .dot {
+        display: inline-block;
+        width: calc(1.1 * var(--u));
+        height: calc(1.1 * var(--u));
+        border-radius: 50%;
+        background: var(--var-accent);
+        margin-right: calc(0.9 * var(--u));
+        vertical-align: middle;
+      }
+
+      /* A CSS keyframe animation on purpose: it exercises the seekable-CSS path. */
+      .float { animation: float 2.4s ease-in-out infinite alternate; }
+      @keyframes float {
+        from { translate: 0 0; }
+        to   { translate: 0 calc(-0.8 * var(--u)); }
+      }
+      .style-chip .pin { display: none; }
+      .style-pin .chip .dot { display: none; }
+    </style>
+  </head>
+  <body>
+    <div id="root" data-composition-id="main" data-start="0" data-duration="4" data-width="1920" data-height="1080">
+      <div id="tag" class="clip tag float style-pin" data-start="0" data-duration="4">
+        <div class="pin"></div>
+        <div class="chip">
+          <div class="label"><span class="dot"></span><span id="label">Paris, France</span></div>
+          <div class="sub" id="sub">48.8566° N, 2.3522° E</div>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      // ---- kuma contract -------------------------------------------------------
+      // Vars arrive as window.kuma.vars (bake + preview) and as --var-* CSS custom
+      // properties. Fall back to the manifest defaults when previewed standalone.
+      const defaults = { label: "Paris, France", sub: "48.8566° N, 2.3522° E", accent: "#ff4f00",
+                         anchor: { x: 0.68, y: 0.28 }, style: "pin", size: 1 };
+      const vars = Object.assign({}, defaults, (window.kuma && window.kuma.vars) || {});
+      const root = document.documentElement;
+      root.style.setProperty("--var-accent", vars.accent);
+      root.style.setProperty("--var-size", String(vars.size));
+      root.style.setProperty("--anchor-x", String(vars.anchor.x));
+      root.style.setProperty("--anchor-y", String(vars.anchor.y));
+      document.getElementById("label").textContent = vars.label;
+      document.getElementById("sub").textContent = vars.sub;
+      const tag = document.getElementById("tag");
+      tag.classList.remove("style-pin", "style-chip");
+      tag.classList.add("style-" + vars.style);
+      if (!vars.sub) document.getElementById("sub").style.display = "none";
+
+      // Duration comes from the timeline clip; the out animation is anchored to the end.
+      const duration = (window.kuma && window.kuma.duration) || 4;
+
+      // ---- animation: a paused GSAP timeline the renderer/preview seeks ----------
+      window.__timelines = window.__timelines || {};
+      const tl = gsap.timeline({ paused: true });
+      tl.from(tag, { x: -40, scale: 0.6, opacity: 0, duration: 0.7, ease: "back.out(1.6)" }, 0);
+      tl.to(tag, { x: 30, opacity: 0, duration: 0.45, ease: "power2.in" }, Math.max(0.7, duration - 0.45));
+      window.__timelines["main"] = tl;
+    </script>
+  </body>
+</html>

@@ -200,7 +200,14 @@ dependencies = [
 name = "kuma-overlay"
 version = "0.1.0"
 dependencies = [
+ "hex",
  "kuma-core",
+ "kuma-mlt",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror",
 ]
 
 [[package]]

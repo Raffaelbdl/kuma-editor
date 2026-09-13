@@ -67,6 +67,8 @@ enum Cmd {
     Validate,
     /// Print the JSON Schema for project files.
     Schema,
+    /// Check the installation: repo, tools, engine, daemon, MCP config.
+    Doctor,
     /// Print the export presets.
     Presets,
     /// List overlay templates.
@@ -139,19 +141,42 @@ async fn main() -> anyhow::Result<()> {
         Cmd::Mcp { bind, daemon } => {
             let url = match daemon {
                 Some(u) => u.clone(),
-                None => {
-                    let cfg = config(&cli, *bind)?;
-                    let url = format!("http://{}", cfg.bind);
-                    // Reuse a running daemon on that port if there is one.
-                    let running = reqwest_get_ok(&format!("{url}/api/health")).await;
-                    if !running {
-                        let (_state, addr) = kuma_daemon::serve(cfg).await?;
-                        tracing::info!("started daemon at http://{addr}");
+                None => match resolve_daemon(&cli, *bind).await {
+                    Ok(u) => u,
+                    Err(e) => {
+                        // Never die silently: Claude Code only shows "Connection closed".
+                        tracing::error!("kuma mcp cannot start: {e:#}");
+                        eprintln!("kuma mcp: {e:#}\nRun `kuma doctor --project <file>` for details.");
+                        std::process::exit(2);
                     }
-                    url
-                }
+                },
             };
+            tracing::info!("kuma mcp serving stdio, daemon at {url}");
             kuma_mcp::run_stdio(url).await?;
+        }
+        Cmd::Doctor => {
+            let cfg = config(&cli, "127.0.0.1:7455".parse().unwrap())?;
+            println!("binary        {}", std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_default());
+            println!("repo root     {}", cfg.repo_root.display());
+            println!("project       {} ({})", cfg.project_file.display(), if cfg.project_file.is_file() { "exists" } else { "will be created" });
+            println!("overlays      {} templates", kuma_core::template::TemplateManifest::load_all(&cfg.repo_root.join("overlays")).len());
+            println!("ui            {}", cfg.ui_dir.as_ref().map(|p| p.display().to_string()).unwrap_or("ui/dist missing — run `cd ui && npm run build`".into()));
+            let engine = cfg.repo_root.join("engine/build/kuma-preview");
+            println!("engine        {}", if engine.is_file() { engine.display().to_string() } else { "missing — cmake -S engine -B engine/build && cmake --build engine/build -j".into() });
+            println!("melt          {}", if kuma_mlt::melt::melt_available() { "ok" } else { "MISSING (apt install melt)" });
+            println!("ffprobe       {}", if kuma_overlay::media::ffprobe_available() { "ok" } else { "MISSING (apt install ffmpeg)" });
+            let baker = kuma_overlay::Baker::discover(&cfg.repo_root, cfg.cache_dir().join("bakes"));
+            println!("hyperframes   {}", baker.available().map(|v| format!("{v} ({})", baker.hyperframes.display())).unwrap_or_else(|e| format!("MISSING — npm install at the repo root ({e})")));
+            println!("browser       {}", baker.browser.as_ref().map(|p| p.display().to_string()).unwrap_or("not set — hyperframes will download Chrome headless shell on first bake".into()));
+            println!("display       {}", if std::env::var_os("DISPLAY").is_some() || std::env::var_os("WAYLAND_DISPLAY").is_some() { "yes" } else if which("xvfb-run") { "none; xvfb-run available" } else { "NONE and no xvfb-run — melt/engine will fail (apt install xvfb)" });
+            let url = format!("http://{}", cfg.bind);
+            match kuma_mcp::client::health(&url).await {
+                Some(h) => println!("daemon        running at {url} for {}", h["project"].as_str().unwrap_or("?")),
+                None if port_busy(cfg.bind) => println!("daemon        port {} is busy but not answering /api/health", cfg.bind),
+                None => println!("daemon        not running (kuma serve, or kuma mcp starts one)"),
+            }
+            let mcp = cfg.project_root().join(".mcp.json");
+            println!("mcp config    {}", if mcp.is_file() { mcp.display().to_string() } else { "none — run `kuma mcp-config`".into() });
         }
         Cmd::Render { preset, output, supersample } => {
             let cfg = config(&cli, "127.0.0.1:0".parse().unwrap())?;
@@ -321,6 +346,40 @@ fn write_mcp_config(out: &std::path::Path, json: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn reqwest_get_ok(url: &str) -> bool {
-    kuma_mcp::client::health(url).await
+/// Decide which daemon the MCP server talks to:
+/// 1. a running daemon on the port that serves *this* project → use it;
+/// 2. a running daemon serving another project, or a busy port → start our own on a free port;
+/// 3. nothing there → start our own on the port.
+async fn resolve_daemon(cli: &Cli, bind: SocketAddr) -> anyhow::Result<String> {
+    let mut cfg = config(cli, bind)?;
+    let url = format!("http://{bind}");
+    let wanted = cfg.project_file.canonicalize().unwrap_or(cfg.project_file.clone());
+    match kuma_mcp::client::health(&url).await {
+        Some(h) => {
+            let theirs = h["project"].as_str().map(std::path::PathBuf::from).and_then(|p| p.canonicalize().ok());
+            if theirs.as_ref() == Some(&wanted) {
+                tracing::info!("using running daemon at {url}");
+                return Ok(url);
+            }
+            tracing::warn!("daemon at {url} serves {:?}, not {}; starting a private one", theirs, wanted.display());
+        }
+        None if port_busy(bind) => tracing::warn!("port {bind} is busy but not a kuma daemon; starting a private one"),
+        None => {
+            let (_state, addr) = kuma_daemon::serve(cfg).await.map_err(|e| anyhow::anyhow!("starting daemon on {bind}: {e:#}"))?;
+            tracing::info!("started daemon at http://{addr}");
+            return Ok(format!("http://{addr}"));
+        }
+    }
+    cfg.bind = "127.0.0.1:0".parse().unwrap();
+    let (_state, addr) = kuma_daemon::serve(cfg).await.map_err(|e| anyhow::anyhow!("starting private daemon: {e:#}"))?;
+    tracing::info!("started private daemon at http://{addr} (UI for this project: open that URL)");
+    Ok(format!("http://{addr}"))
+}
+
+fn port_busy(addr: SocketAddr) -> bool {
+    std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_millis(500)).is_ok()
+}
+
+fn which(name: &str) -> bool {
+    std::env::var_os("PATH").map(|p| std::env::split_paths(&p).any(|d| d.join(name).is_file())).unwrap_or(false)
 }

@@ -10,9 +10,16 @@ pub struct Client {
     http: reqwest::Client,
 }
 
-pub async fn health(base: &str) -> bool {
-    let http = reqwest::Client::builder().timeout(Duration::from_secs(2)).build().unwrap();
-    http.get(format!("{}/api/health", base.trim_end_matches('/'))).send().await.map(|r| r.status().is_success()).unwrap_or(false)
+/// Probe a daemon. Returns its health document when one answers. Never goes through a
+/// proxy: the daemon is always on loopback and `http_proxy` in the environment would
+/// otherwise swallow the request.
+pub async fn health(base: &str) -> Option<Value> {
+    let http = reqwest::Client::builder().no_proxy().timeout(Duration::from_secs(3)).build().ok()?;
+    let r = http.get(format!("{}/api/health", base.trim_end_matches('/'))).send().await.ok()?;
+    if !r.status().is_success() {
+        return None;
+    }
+    r.json::<Value>().await.ok()
 }
 
 impl Client {
@@ -20,7 +27,7 @@ impl Client {
         let base = base.into().trim_end_matches('/').to_string();
         // Sampling and renders can take a while; the daemon streams progress over WS but
         // these calls block until done.
-        let http = reqwest::Client::builder().timeout(Duration::from_secs(3600)).build().unwrap();
+        let http = reqwest::Client::builder().no_proxy().timeout(Duration::from_secs(3600)).build().unwrap();
         Client { base, http }
     }
 

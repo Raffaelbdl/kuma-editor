@@ -175,6 +175,15 @@ picture-in-picture, dim) and expand to ordinary effects.
 
 ## Troubleshooting
 
+- **Start with `kuma doctor --project <file>`** — it reports the binary, repo root, tools,
+  engine, display, whether a daemon answers on the port (and for which project), and the
+  MCP config.
+- **Claude Code says `kuma … Failed to connect ("Connection closed")`** — the `kuma mcp`
+  process exited at startup. Run the exact command from `.mcp.json` by hand
+  (`kuma mcp --project <file>`); the reason is printed on stderr. `kuma mcp` reuses a
+  running `kuma serve` for the same project, starts a private daemon on a free port if the
+  running one serves another project, and never routes loopback requests through
+  `http_proxy`. Then `/mcp` → reconnect in Claude Code.
 - **"Preview engine unavailable: …"** — the toast carries the daemon's reason; `GET /api/health`
   shows `preview_engine_path` and `preview_error`. The engine is a separate build step:
   `cmake -S engine -B engine/build && cmake --build engine/build -j` (needs `libmlt++-dev

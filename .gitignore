@@ -19,3 +19,5 @@ ui/dist/
 # Scratch
 *.log
 .DS_Store
+# Overlay thumbnails are generated (kuma thumbs)
+overlays/*/thumb.png

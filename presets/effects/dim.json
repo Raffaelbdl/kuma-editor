@@ -1,0 +1,9 @@
+{
+  "id": "dim",
+  "name": "Dim",
+  "description": "Darken and desaturate the clip so overlays stand out.",
+  "params": {
+    "amount": { "type": "number", "default": 0.35, "min": 0, "max": 0.9, "step": 0.05 }
+  },
+  "effects": [ { "type": "color", "brightness": "$-amount", "saturation": "$1 - amount * 0.6" } ]
+}

@@ -1,0 +1,14 @@
+{
+  "id": "label-pin",
+  "name": "Label pin",
+  "description": "A numbered badge with a short label at a point. Good for step markers on screencasts.",
+  "duration_default": 3.0,
+  "tags": ["label", "pin", "step", "badge", "screencast"],
+  "vars": {
+    "number": { "type": "string", "default": "1", "label": "Badge" },
+    "text":   { "type": "string", "default": "Click here", "label": "Text" },
+    "at":     { "type": "point",  "default": { "x": 0.5, "y": 0.5 }, "label": "Position (fraction)" },
+    "accent": { "type": "color",  "default": "#3b82f6", "label": "Accent" },
+    "size":   { "type": "number", "default": 1.0, "min": 0.5, "max": 2.5, "step": 0.1, "label": "Size" }
+  }
+}

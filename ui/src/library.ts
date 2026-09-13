@@ -18,6 +18,18 @@ export class Library {
 
     const h = document.createElement("h3");
     h.textContent = "Templates";
+    const tools = document.createElement("span");
+    tools.style.float = "right";
+    const thumbs = document.createElement("button");
+    thumbs.textContent = "thumbs";
+    thumbs.title = "Generate thumbnails for all templates";
+    thumbs.onclick = async () => { const r = await api.thumbs(); toast(`Thumbnail job #${r.job}`, "ok"); };
+    const reload = document.createElement("button");
+    reload.textContent = "⟳";
+    reload.title = "Reload templates from disk";
+    reload.onclick = async () => { store.set({ templates: await api.reloadTemplates() }); };
+    tools.append(thumbs, reload);
+    h.appendChild(tools);
     this.host.appendChild(h);
     for (const t of s.templates) {
       const el = document.createElement("div");

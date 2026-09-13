@@ -35,6 +35,8 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/project/validate", get(validate_project))
         .route("/api/schema", get(schema))
         .route("/api/templates", get(templates).post(reload_templates))
+        .route("/api/templates/thumbs", post(thumbs))
+        .route("/api/presets/effects", get(effect_presets))
         .route("/api/assets/probe", get(probe_asset))
         .route("/api/assets", post(add_asset))
         .route("/api/presets", get(presets))
@@ -179,6 +181,51 @@ async fn reload_templates(State(st): S) -> Json<Value> {
 
 async fn presets() -> Json<Value> {
     Json(json!(kuma_mlt::PRESETS))
+}
+
+/// Effect presets: `presets/effects/*.json` from the repo, then the project (wins on id).
+async fn effect_presets(State(st): S) -> Json<Value> {
+    let mut out: std::collections::BTreeMap<String, Value> = Default::default();
+    for dir in [st.config.repo_root.join("presets/effects"), st.config.project_root().join("presets/effects")] {
+        let Ok(rd) = std::fs::read_dir(&dir) else { continue };
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.extension().map(|x| x == "json").unwrap_or(false) {
+                if let Ok(v) = std::fs::read_to_string(&p).map_err(|_| ()).and_then(|s| serde_json::from_str::<Value>(&s).map_err(|_| ())) {
+                    if let Some(id) = v.get("id").and_then(Value::as_str) {
+                        out.insert(id.to_string(), v);
+                    }
+                }
+            }
+        }
+    }
+    Json(json!(out.into_values().collect::<Vec<_>>()))
+}
+
+/// Generate `thumb.png` for every template (or the given ids) as a background job.
+async fn thumbs(State(st): S, Json(req): Json<ThumbsReq>) -> Json<Value> {
+    let s2 = st.clone();
+    let id = jobs::spawn(st, "thumbs", move |progress| {
+        let project = s2.project.read().unwrap().clone();
+        let templates = s2.templates.read().unwrap().clone();
+        let wanted: Vec<_> = templates.iter().filter(|(id, _)| req.templates.as_ref().map(|t| t.contains(id)).unwrap_or(true)).collect();
+        let n = wanted.len().max(1);
+        let mut done = Vec::new();
+        for (i, (id, (dir, manifest))) in wanted.iter().enumerate() {
+            progress(((i * 100) / n) as u8, &format!("thumbnail {id}"));
+            let out = s2.baker.thumbnail(dir, manifest, project.width, project.height).map_err(|e| anyhow::anyhow!("{id}: {e}"))?;
+            done.push(json!({ "id": id, "thumb": out }));
+        }
+        s2.reload_templates();
+        Ok(json!({ "thumbs": done }))
+    });
+    Json(json!({ "job": id }))
+}
+
+#[derive(Deserialize)]
+struct ThumbsReq {
+    #[serde(default)]
+    templates: Option<Vec<String>>,
 }
 
 // ---------- assets ----------

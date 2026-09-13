@@ -56,6 +56,31 @@ export interface TemplateInfo { id: string; dir: string; manifest: TemplateManif
 
 export interface Preset { id: string; description: string; extension: string }
 
+/** An effect preset: typed params and effects whose values may be `$expr` strings. */
+export interface EffectPreset {
+  id: string; name: string; description: string;
+  params: Record<string, VarSpec>;
+  effects: unknown[];
+}
+
+/** Expand `$expr` placeholders (param names, + - * / parentheses) with the given values. */
+export function expandPreset(preset: EffectPreset, values: Record<string, number>): Effect[] {
+  const names = Object.keys(preset.params);
+  const args = names.map((n) => values[n] ?? Number(preset.params[n].default));
+  const evalExpr = (expr: string): number => {
+    if (!/^[\w\s+\-*/().]*$/.test(expr)) throw new Error(`bad expression: ${expr}`);
+    // eslint-disable-next-line no-new-func
+    return Number(new Function(...names, `return (${expr});`)(...args));
+  };
+  const walk = (v: unknown): unknown => {
+    if (typeof v === "string" && v.startsWith("$")) return evalExpr(v.slice(1));
+    if (Array.isArray(v)) return v.map(walk);
+    if (v && typeof v === "object") return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, walk(x)]));
+    return v;
+  };
+  return walk(preset.effects) as Effect[];
+}
+
 export interface Issue { severity: "error" | "warning"; path: string; message: string }
 
 export type PatchOp =

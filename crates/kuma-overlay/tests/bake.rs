@@ -72,4 +72,18 @@ fn bakes_location_tag_with_alpha_and_caches() {
     let r3 = baker.bake(&slow).expect("slow bake");
     assert_eq!(r3.frames, 60);
     assert_ne!(r3.key, r.key);
+
+    // A static template bakes a single still frame regardless of the clip duration.
+    let wm_dir = root.join("overlays/watermark");
+    let wm = TemplateManifest::load(&wm_dir).unwrap();
+    let novars = Map::new();
+    let still = baker
+        .bake(&BakeRequest { template_dir: &wm_dir, manifest: &wm, vars: &novars, fps: Fps::new(30, 1), width: 1920, height: 1080, duration: 10.0, speed: 1.0, format: Format::PngSequence, supersample: 1 })
+        .expect("static bake");
+    assert!(still.is_still);
+    assert_eq!(still.frames, 1);
+    assert!(still.resource.ends_with("frame_000001.png"));
+    // Bottom-right corner carries the watermark; top-left is transparent.
+    assert_eq!(rgba_at(&still.resource, 10, 10)[3], 0);
+    assert!(rgba_at(&still.resource, 1920 - 60, 1080 - 50)[3] > 60, "watermark chip expected at bottom-right");
 }

@@ -318,6 +318,42 @@ impl Baker {
     }
 }
 
+impl Baker {
+    /// Bake a library thumbnail for a template: a 480px-wide frame ~1 s in, over a
+    /// checkerboard-free transparent background, written to `<template>/thumb.png`.
+    pub fn thumbnail(&self, template_dir: &Path, manifest: &TemplateManifest, width: u32, height: u32) -> Result<PathBuf, BakeError> {
+        // Three frames at 2 fps over 1.5 s: the last one sits at t = 1.0 s, after most
+        // entrance animations have settled.
+        let vars = Map::new();
+        let req = BakeRequest {
+            template_dir,
+            manifest,
+            vars: &vars,
+            fps: Fps::new(2, 1),
+            width,
+            height,
+            duration: 1.5,
+            speed: 1.0,
+            format: Format::PngSequence,
+            supersample: 1,
+        };
+        let r = self.bake(&req)?;
+        let last = if r.is_still { r.resource.clone() } else { r.dir.join(format!("frames/frame_{:06}.png", r.frames)) };
+        let out = template_dir.join("thumb.png");
+        crate::media::ffmpeg(&[
+            "-i".into(),
+            last.to_string_lossy().into_owned(),
+            "-vf".into(),
+            "scale=480:-2".into(),
+            "-pix_fmt".into(),
+            "rgba".into(),
+            out.to_string_lossy().into_owned(),
+        ])
+        .map_err(BakeError::Other)?;
+        Ok(out)
+    }
+}
+
 /// `fps / speed` as an ffmpeg-style rational string, or None if out of hyperframes' range.
 fn effective_fps(fps: Fps, speed: f64) -> Option<String> {
     let (sn, sd) = to_rational(speed);

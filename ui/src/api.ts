@@ -1,4 +1,4 @@
-import type { DaemonEvent, Issue, PatchOp, Preset, Project, TemplateInfo } from "./types";
+import type { DaemonEvent, EffectPreset, Issue, PatchOp, Preset, Project, TemplateInfo } from "./types";
 
 async function json<T>(url: string, init?: RequestInit): Promise<T> {
   const r = await fetch(url, { headers: { "content-type": "application/json" }, ...init });
@@ -23,6 +23,9 @@ export const api = {
   validate: () => json<{ issues: Issue[]; duration: number }>("/api/project/validate"),
   templates: () => json<TemplateInfo[]>("/api/templates"),
   presets: () => json<Preset[]>("/api/presets"),
+  effectPresets: () => json<EffectPreset[]>("/api/presets/effects"),
+  thumbs: () => json<{ job: number }>("/api/templates/thumbs", { method: "POST", body: "{}" }),
+  reloadTemplates: () => json<TemplateInfo[]>("/api/templates", { method: "POST", body: "{}" }),
   addAsset: (path: string, base_revision: number) =>
     json<{ id: string; revision: number }>("/api/assets", { method: "POST", body: JSON.stringify({ path, base_revision, origin: "ui: add asset" }) }),
   render: (preset: string, supersample = 1) => json<{ job: number }>("/api/render", { method: "POST", body: JSON.stringify({ preset, supersample }) }),

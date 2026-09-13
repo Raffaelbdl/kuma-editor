@@ -1,8 +1,11 @@
 // Properties panel: clip fields, template vars (from the manifest), effects.
 
-import { store } from "./store";
+import { api } from "./api";
+import { store, toast } from "./store";
 import type { Clip, Effect, PatchOp, VarSpec } from "./types";
-import { isAsset, isOverlay } from "./types";
+import { expandPreset, isAsset, isOverlay } from "./types";
+
+const presetsPromise = api.effectPresets().catch(() => []);
 
 const EFFECT_DEFAULTS: Record<string, Effect> = {
   transform: { type: "transform", x: 0, y: 0, scale: 1, rotation: 0, opacity: 1 },
@@ -132,6 +135,24 @@ export class Inspector {
       store.patch(ops, `add ${add.value}`);
     };
     this.host.appendChild(add);
+
+    // Presets expand to ordinary effects (with their default params); tweak them after.
+    const preset = document.createElement("select");
+    preset.style.marginTop = "6px";
+    preset.innerHTML = `<option value="">+ apply preset…</option>`;
+    presetsPromise.then((ps) => { for (const p of ps) { const o = document.createElement("option"); o.value = p.id; o.textContent = p.name; o.title = p.description; preset.appendChild(o); } });
+    preset.onchange = async () => {
+      const p = (await presetsPromise).find((x) => x.id === preset.value);
+      if (!p) return;
+      try {
+        const effects = expandPreset(p, {});
+        const ops: PatchOp[] = effects.map((e) => ({ op: "add", path: `${path}/effects/-`, value: e }));
+        await store.patch(ops, `preset ${p.id}`);
+      } catch (e) {
+        toast((e as Error).message, "err");
+      }
+    };
+    this.host.appendChild(preset);
   }
 }
 

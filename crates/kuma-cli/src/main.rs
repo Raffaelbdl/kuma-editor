@@ -71,6 +71,8 @@ enum Cmd {
     Presets,
     /// List overlay templates.
     Templates,
+    /// Generate `thumb.png` for overlay templates (all, or the given ids).
+    Thumbs { templates: Vec<String> },
     /// Register a media file as an asset (probes it with ffprobe).
     AddAsset {
         path: PathBuf,
@@ -209,6 +211,17 @@ async fn main() -> anyhow::Result<()> {
             let state = kuma_daemon::AppState::load(cfg)?;
             for t in state.template_infos() {
                 println!("{:16} {:24} vars={}", t.id, t.manifest.name, t.manifest.vars.keys().cloned().collect::<Vec<_>>().join(","));
+            }
+        }
+        Cmd::Thumbs { templates } => {
+            let cfg = config(&cli, "127.0.0.1:0".parse().unwrap())?;
+            let state = kuma_daemon::AppState::load(cfg)?;
+            let project = state.project.read().unwrap().clone();
+            let all = state.templates.read().unwrap().clone();
+            for (id, (dir, manifest)) in all.iter().filter(|(id, _)| templates.is_empty() || templates.contains(id)) {
+                let started = std::time::Instant::now();
+                let out = state.baker.thumbnail(dir, manifest, project.width, project.height).map_err(|e| anyhow::anyhow!("{id}: {e}"))?;
+                println!("{id:16} {} ({:.1}s)", out.display(), started.elapsed().as_secs_f64());
             }
         }
         Cmd::AddAsset { path, id } => {

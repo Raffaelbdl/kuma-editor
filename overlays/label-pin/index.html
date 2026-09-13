@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=1920, height=1080" />
+    <script src="_vendor/gsap.min.js"></script>
+    <style>
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      html, body { width: 100%; height: 100%; overflow: hidden; background: transparent; }
+      #root { position: relative; width: 100%; height: 100%; background: transparent; }
+      :root { --var-accent: #3b82f6; --var-size: 1; --u: calc(1vh * var(--var-size)); }
+      .pin { position: absolute; transform: translate(-50%, -50%); display: flex; align-items: center; gap: calc(1.2 * var(--u));
+             font-family: "Inter", "Segoe UI", system-ui, sans-serif; color: #fff; will-change: transform, opacity; }
+      .badge { width: calc(5 * var(--u)); height: calc(5 * var(--u)); border-radius: 50%; background: var(--var-accent);
+               display: grid; place-items: center; font-weight: 800; font-size: calc(2.6 * var(--u));
+               box-shadow: 0 0 0 calc(0.45 * var(--u)) rgba(255,255,255,0.9), 0 calc(0.6 * var(--u)) calc(2 * var(--u)) rgba(0,0,0,0.4); flex: none; }
+      .text { padding: calc(0.9 * var(--u)) calc(1.6 * var(--u)); background: rgba(12,12,18,0.85); border-radius: calc(0.7 * var(--u));
+              font-size: calc(2.2 * var(--u)); font-weight: 600; white-space: nowrap; }
+      .pulse { position: absolute; left: calc(2.5 * var(--u)); top: 50%; width: calc(5 * var(--u)); height: calc(5 * var(--u));
+               margin: calc(-2.5 * var(--u)) 0 0 calc(-2.5 * var(--u)); border-radius: 50%; border: calc(0.3 * var(--u)) solid var(--var-accent);
+               animation: pulse 1.6s ease-out infinite; }
+      @keyframes pulse { from { transform: scale(0.8); opacity: 0.9; } to { transform: scale(2.4); opacity: 0; } }
+    </style>
+  </head>
+  <body>
+    <div id="root" data-composition-id="main" data-start="0" data-duration="3" data-width="1920" data-height="1080">
+      <div id="pin" class="clip pin" data-start="0" data-duration="3">
+        <div class="pulse"></div>
+        <div class="badge" id="badge">1</div>
+        <div class="text" id="text">Click here</div>
+      </div>
+    </div>
+    <script>
+      const defaults = { number: "1", text: "Click here", at: { x: 0.5, y: 0.5 }, accent: "#3b82f6", size: 1 };
+      const vars = Object.assign({}, defaults, (window.kuma && window.kuma.vars) || {});
+      document.documentElement.style.setProperty("--var-accent", vars.accent);
+      document.documentElement.style.setProperty("--var-size", String(vars.size));
+      document.getElementById("badge").textContent = vars.number;
+      document.getElementById("text").textContent = vars.text;
+      if (!vars.text) document.getElementById("text").style.display = "none";
+      const pin = document.getElementById("pin");
+      pin.style.left = `${vars.at.x * 100}%`;
+      pin.style.top = `${vars.at.y * 100}%`;
+      const duration = (window.kuma && window.kuma.duration) || 3;
+
+      window.__timelines = window.__timelines || {};
+      const tl = gsap.timeline({ paused: true });
+      tl.from("#badge", { scale: 0, duration: 0.45, ease: "back.out(2.5)" }, 0);
+      tl.from("#text", { x: -20, opacity: 0, duration: 0.4, ease: "power3.out" }, 0.2);
+      tl.to("#pin", { scale: 0.8, opacity: 0, duration: 0.3, ease: "power2.in" }, Math.max(0.8, duration - 0.3));
+      window.__timelines["main"] = tl;
+    </script>
+  </body>
+</html>

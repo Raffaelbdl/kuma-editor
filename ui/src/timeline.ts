@@ -1,6 +1,6 @@
 // Timeline: tracks, clips (move/trim), transitions, playhead, zoom.
 
-import { store } from "./store";
+import { store, toast } from "./store";
 import type { Clip, PatchOp, Project, Track } from "./types";
 import { isAsset, isOverlay } from "./types";
 
@@ -54,6 +54,13 @@ export class Timeline {
     // Tracks (top track of the composite is drawn first, i.e. reverse of array order)
     const tracks = [...p.tracks].map((t, i) => ({ t, i })).reverse();
     for (const { t, i } of tracks) this.root.appendChild(this.trackEl(p, t, i));
+    if (!p.tracks.length) {
+      const hint = document.createElement("div");
+      hint.className = "muted";
+      hint.style.padding = "16px";
+      hint.textContent = "No tracks yet — use “Add at playhead” in the library; the right track is created for you.";
+      this.root.appendChild(hint);
+    }
 
     // Markers and playhead
     for (const m of p.markers) {
@@ -88,6 +95,13 @@ export class Timeline {
     };
     if (t.kind !== "overlay") toggles.appendChild(mk("M", t.muted, "muted"));
     if (t.kind !== "audio") toggles.appendChild(mk("H", t.hidden, "hidden"));
+    if (!t.clips.length) {
+      const rm = document.createElement("button");
+      rm.textContent = "×";
+      rm.title = "Remove this empty track";
+      rm.onclick = () => store.patch([{ op: "remove", path: `/tracks/${ti}` }], `remove track ${t.id}`);
+      toggles.appendChild(rm);
+    }
     head.appendChild(toggles);
     row.appendChild(head);
 
@@ -243,16 +257,47 @@ export async function addItem(item: { template?: string; asset?: string }, t: nu
     kind = a?.kind === "audio" ? "audio" : "video";
   } else return;
   if (ti < 0 || p.tracks[ti]?.kind !== kind) ti = p.tracks.findIndex((tr) => tr.kind === kind);
-  if (ti < 0) return;
-  // Avoid overlaps: push to the end of the track if the slot is taken.
-  const track = p.tracks[ti];
-  if (track.clips.some((c) => clip.start < c.end && clip.end > c.start)) {
-    const endT = Math.max(0, ...track.clips.map((c) => c.end));
-    clip.end = endT + (clip.end - clip.start);
-    clip.start = endT;
+  const ops: PatchOp[] = [];
+  if (ti < 0) {
+    // No track of that kind yet (e.g. a project created by hand): add one, then the clip.
+    const { op, index } = newTrackOp(kind);
+    ti = index;
+    ops.push(op);
+    toast(`Added a ${kind} track`, "ok");
+  } else {
+    // Avoid overlaps: push to the end of the track if the slot is taken.
+    const track = p.tracks[ti];
+    if (track.clips.some((c) => clip.start < c.end && clip.end > c.start)) {
+      const endT = Math.max(0, ...track.clips.map((c) => c.end));
+      clip.end = endT + (clip.end - clip.start);
+      clip.start = endT;
+    }
   }
-  const ok = await store.patch([{ op: "add", path: `/tracks/${ti}/clips/-`, value: clip }], `add ${clip.id}`);
+  ops.push({ op: "add", path: `/tracks/${ti}/clips/-`, value: clip });
+  const ok = await store.patch(ops, `add ${clip.id}`);
   if (ok) store.set({ selection: clip.id });
+}
+
+/** Build the patch op that inserts a new empty track of `kind` at a sensible position:
+ *  audio at the bottom, video above audio, overlays on top. */
+function newTrackOp(kind: Track["kind"]): { op: PatchOp; index: number } {
+  const p = store.state.project!;
+  const ids = new Set(p.tracks.map((t) => t.id));
+  let n = 1;
+  while (ids.has(`${kind[0]}${n}`)) n++;
+  const count = p.tracks.filter((t) => t.kind === kind).length;
+  const name = `${kind[0].toUpperCase()}${kind.slice(1)}${count ? ` ${count + 1}` : ""}`;
+  const track: Track = { id: `${kind[0]}${n}`, kind, name, muted: false, hidden: false, clips: [], transitions: [] };
+  const audio = p.tracks.filter((t) => t.kind === "audio").length;
+  const video = p.tracks.filter((t) => t.kind === "video").length;
+  const index = kind === "audio" ? audio : kind === "video" ? audio + video : p.tracks.length;
+  return { op: { op: "add", path: `/tracks/${index}`, value: track }, index };
+}
+
+/** Add an empty track from the UI. */
+export async function addTrack(kind: Track["kind"]) {
+  const { op } = newTrackOp(kind);
+  await store.patch([op], `add ${kind} track`);
 }
 
 function niceStep(zoom: number): number {

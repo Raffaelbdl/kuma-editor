@@ -240,21 +240,14 @@ async fn main() -> anyhow::Result<()> {
         Cmd::Init { width, height, fps } => {
             let path = if cli.project.is_absolute() { cli.project.clone() } else { std::env::current_dir()?.join(&cli.project) };
             anyhow::ensure!(!path.exists(), "{} already exists", path.display());
-            let mut p = kuma_core::Project::default();
-            p.name = path.file_stem().map(|s| s.to_string_lossy().trim_end_matches(".kuma").to_string()).unwrap_or_default();
-            p.width = *width;
-            p.height = *height;
             // Accepts `30`, `29.97`, `30000/1001` or `{"num":30000,"den":1001}`.
-            p.fps = if let Some((n, d)) = fps.split_once('/') {
+            let fps = if let Some((n, d)) = fps.split_once('/') {
                 kuma_core::Fps::new(n.trim().parse()?, d.trim().parse()?)
             } else {
                 serde_json::from_str::<kuma_core::Fps>(fps)?
             };
-            p.tracks = vec![
-                kuma_core::Track { id: "v1".into(), kind: kuma_core::TrackKind::Video, name: "Video".into(), muted: false, hidden: false, clips: vec![], transitions: vec![] },
-                kuma_core::Track { id: "o1".into(), kind: kuma_core::TrackKind::Overlay, name: "Overlays".into(), muted: false, hidden: false, clips: vec![], transitions: vec![] },
-                kuma_core::Track { id: "a1".into(), kind: kuma_core::TrackKind::Audio, name: "Audio".into(), muted: false, hidden: false, clips: vec![], transitions: vec![] },
-            ];
+            let name = path.file_stem().map(|s| s.to_string_lossy().trim_end_matches(".kuma").to_string()).unwrap_or_default();
+            let p = kuma_core::Project::new_default(name, *width, *height, fps);
             std::fs::create_dir_all(path.parent().unwrap())?;
             std::fs::write(&path, serde_json::to_string_pretty(&p)?)?;
             println!("created {}", path.display());

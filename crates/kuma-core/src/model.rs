@@ -78,6 +78,32 @@ impl Default for Project {
 }
 
 impl Project {
+    /// A fresh project with the three default tracks (video, overlays, audio). Used by
+    /// `kuma init` and by the daemon when the project file does not exist yet.
+    pub fn new_default(name: impl Into<String>, width: u32, height: u32, fps: Fps) -> Self {
+        let track = |id: &str, kind: TrackKind, name: &str| Track {
+            id: id.into(),
+            kind,
+            name: name.into(),
+            muted: false,
+            hidden: false,
+            clips: Vec::new(),
+            transitions: Vec::new(),
+        };
+        Project {
+            name: name.into(),
+            width,
+            height,
+            fps,
+            tracks: vec![
+                track("v1", TrackKind::Video, "Video"),
+                track("o1", TrackKind::Overlay, "Overlays"),
+                track("a1", TrackKind::Audio, "Audio"),
+            ],
+            ..Project::default()
+        }
+    }
+
     /// Timeline duration in seconds: the latest clip end across all tracks.
     pub fn duration(&self) -> f64 {
         self.tracks

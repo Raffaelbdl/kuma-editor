@@ -3,7 +3,7 @@ import { Inspector } from "./inspector";
 import { Library } from "./library";
 import { Preview } from "./preview";
 import { fmtTime, store, toast } from "./store";
-import { Timeline } from "./timeline";
+import { addTrack, Timeline } from "./timeline";
 import type { PatchOp, Preset } from "./types";
 import { isAsset } from "./types";
 
@@ -62,7 +62,16 @@ function transport(preview: Preview) {
   zoom.type = "range"; zoom.min = "8"; zoom.max = "600"; zoom.step = "1";
   zoom.oninput = () => store.set({ zoom: Number(zoom.value) });
   const split = button("Split (S)", () => splitAtPlayhead());
-  el.append(toStart, play, time, split, zoomLabel, zoom);
+  const addTrackSel = document.createElement("select");
+  addTrackSel.style.width = "auto";
+  addTrackSel.title = "Add a track";
+  addTrackSel.innerHTML = `<option value="">+ track…</option><option value="video">video</option><option value="overlay">overlay</option><option value="audio">audio</option>`;
+  addTrackSel.onchange = async () => {
+    const kind = addTrackSel.value as "video" | "overlay" | "audio" | "";
+    addTrackSel.value = "";
+    if (kind) await addTrack(kind);
+  };
+  el.append(toStart, play, time, split, addTrackSel, zoomLabel, zoom);
   store.subscribe((s) => {
     play.textContent = s.playing ? "⏸" : "▶";
     time.textContent = `${fmtTime(s.playhead, store.fps)} / ${fmtTime(store.duration, store.fps)}`;

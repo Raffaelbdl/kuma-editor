@@ -74,13 +74,12 @@ impl AppState {
             let text = std::fs::read_to_string(&config.project_file)?;
             serde_json::from_str::<Project>(&text)?
         } else {
-            let mut p = Project::default();
-            p.name = config
+            let name = config
                 .project_file
                 .file_stem()
                 .map(|s| s.to_string_lossy().trim_end_matches(".kuma").to_string())
                 .unwrap_or_default();
-            p
+            Project::new_default(name, 1920, 1080, kuma_core::Fps::default())
         };
         std::fs::create_dir_all(config.cache_dir())?;
         let baker = Baker::discover(&config.repo_root, config.cache_dir().join("bakes"));

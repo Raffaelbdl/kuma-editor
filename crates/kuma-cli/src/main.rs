@@ -79,7 +79,7 @@ enum Cmd {
         #[arg(long)]
         id: Option<String>,
     },
-    /// Create a new empty project file.
+    /// Create a new empty project file (and a project-scoped `.mcp.json` for Claude Code).
     Init {
         #[arg(long, default_value_t = 1920)]
         width: u32,
@@ -87,6 +87,15 @@ enum Cmd {
         height: u32,
         #[arg(long, default_value = "30")]
         fps: String,
+        /// Do not write `.mcp.json` next to the project.
+        #[arg(long)]
+        no_mcp: bool,
+    },
+    /// Write (or print) a project-scoped `.mcp.json` so `claude` in this directory gets the kuma server.
+    McpConfig {
+        /// Print the JSON instead of writing the file.
+        #[arg(long)]
+        print: bool,
     },
 }
 
@@ -237,7 +246,19 @@ async fn main() -> anyhow::Result<()> {
             let (rev, _) = state.apply_patch(&patch.0, None, "cli")?;
             println!("added asset `{id}` (revision {rev})");
         }
-        Cmd::Init { width, height, fps } => {
+        Cmd::McpConfig { print } => {
+            let path = if cli.project.is_absolute() { cli.project.clone() } else { std::env::current_dir()?.join(&cli.project) };
+            let cfg = config(&cli, "127.0.0.1:7455".parse().unwrap())?;
+            let json = mcp_config_json(&path, &cfg.repo_root)?;
+            if *print {
+                println!("{json}");
+            } else {
+                let out = path.parent().unwrap().join(".mcp.json");
+                write_mcp_config(&out, &json)?;
+                println!("wrote {}", out.display());
+            }
+        }
+        Cmd::Init { width, height, fps, no_mcp } => {
             let path = if cli.project.is_absolute() { cli.project.clone() } else { std::env::current_dir()?.join(&cli.project) };
             anyhow::ensure!(!path.exists(), "{} already exists", path.display());
             // Accepts `30`, `29.97`, `30000/1001` or `{"num":30000,"den":1001}`.
@@ -251,8 +272,52 @@ async fn main() -> anyhow::Result<()> {
             std::fs::create_dir_all(path.parent().unwrap())?;
             std::fs::write(&path, serde_json::to_string_pretty(&p)?)?;
             println!("created {}", path.display());
+            if !*no_mcp {
+                match cli.repo.clone().or_else(find_repo_root) {
+                    Some(repo) => {
+                        let out = path.parent().unwrap().join(".mcp.json");
+                        let json = mcp_config_json(&path, &repo)?;
+                        write_mcp_config(&out, &json)?;
+                        println!("wrote {} — run `claude` in this directory to use the kuma MCP server", out.display());
+                    }
+                    None => eprintln!("note: repository root not found; skipping .mcp.json (set KUMA_REPO and run `kuma mcp-config`)"),
+                }
+            }
         }
     }
+    Ok(())
+}
+
+/// A project-scoped Claude Code MCP entry. Absolute paths, so it works even when `kuma`
+/// is not on PATH and regardless of where `claude` resolves relative paths.
+fn mcp_config_json(project_file: &std::path::Path, repo_root: &std::path::Path) -> anyhow::Result<String> {
+    let exe = std::env::current_exe()?.canonicalize()?;
+    let repo = repo_root.canonicalize().unwrap_or_else(|_| repo_root.to_path_buf());
+    let v = serde_json::json!({
+        "mcpServers": {
+            "kuma": {
+                "command": exe,
+                "args": ["mcp", "--project", project_file],
+                "env": { "KUMA_REPO": repo }
+            }
+        }
+    });
+    Ok(serde_json::to_string_pretty(&v)?)
+}
+
+/// Write `.mcp.json`, merging into an existing file's `mcpServers` if there is one.
+fn write_mcp_config(out: &std::path::Path, json: &str) -> anyhow::Result<()> {
+    let new: serde_json::Value = serde_json::from_str(json)?;
+    let merged = match std::fs::read_to_string(out) {
+        Ok(text) => {
+            let mut existing: serde_json::Value = serde_json::from_str(&text).unwrap_or_else(|_| serde_json::json!({}));
+            let servers = existing.as_object_mut().unwrap().entry("mcpServers").or_insert_with(|| serde_json::json!({}));
+            servers["kuma"] = new["mcpServers"]["kuma"].clone();
+            existing
+        }
+        Err(_) => new,
+    };
+    std::fs::write(out, serde_json::to_string_pretty(&merged)?)?;
     Ok(())
 }
 

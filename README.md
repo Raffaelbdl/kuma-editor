@@ -92,8 +92,22 @@ Drag templates and assets onto the timeline, scrub, edit vars in the inspector, 
 
 ### Claude Code
 
+`kuma init` writes a **project-scoped** `.mcp.json` next to the project file, so running
+`claude` in that directory offers the kuma server (Claude Code asks once to approve it).
+Nothing is installed globally. To (re)generate it for an existing project, or to see what
+it contains:
+
 ```
-claude mcp add kuma -- kuma mcp --project /path/to/myvideo.kuma.json
+kuma mcp-config            # writes ./.mcp.json (merges into an existing one)
+kuma mcp-config --print
+```
+
+The equivalent by hand, for any of Claude Code's scopes:
+
+```
+claude mcp add --scope project kuma -- kuma mcp --project myvideo.kuma.json   # .mcp.json, shareable
+claude mcp add --scope local   kuma -- kuma mcp --project myvideo.kuma.json   # this directory, you only
+claude mcp add --scope user    kuma -- kuma mcp --project /abs/path.kuma.json  # everywhere
 ```
 
 `kuma mcp` starts the daemon in-process if none is running on the port, so the browser UI

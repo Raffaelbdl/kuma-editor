@@ -4,8 +4,10 @@ use std::path::PathBuf;
 use clap::{Parser, Subcommand};
 use kuma_daemon::{Config, find_repo_root};
 
+const VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), " (", env!("KUMA_GIT"), ")");
+
 #[derive(Parser)]
-#[command(name = "kuma", version, about = "Hybrid video editor: MLT timeline + HTML overlays + MCP")]
+#[command(name = "kuma", version = VERSION, about = "Hybrid video editor: MLT timeline + HTML overlays + MCP")]
 struct Cli {
     /// Project file (`*.kuma.json`). Created if missing.
     #[arg(short, long, global = true, env = "KUMA_PROJECT", default_value = "project.kuma.json")]
@@ -156,7 +158,7 @@ async fn main() -> anyhow::Result<()> {
         }
         Cmd::Doctor => {
             let cfg = config(&cli, "127.0.0.1:7455".parse().unwrap())?;
-            println!("binary        {}", std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_default());
+            println!("binary        {} — version {VERSION}", std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_default());
             println!("repo root     {}", cfg.repo_root.display());
             println!("project       {} ({})", cfg.project_file.display(), if cfg.project_file.is_file() { "exists" } else { "will be created" });
             println!("overlays      {} templates", kuma_core::template::TemplateManifest::load_all(&cfg.repo_root.join("overlays")).len());

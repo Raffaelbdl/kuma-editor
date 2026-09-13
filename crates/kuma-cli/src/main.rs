@@ -141,10 +141,10 @@ async fn main() -> anyhow::Result<()> {
             tokio::signal::ctrl_c().await?;
         }
         Cmd::Mcp { bind, daemon } => {
-            let url = match daemon {
-                Some(u) => u.clone(),
+            let (url, note) = match daemon {
+                Some(u) => (u.clone(), None),
                 None => match resolve_daemon(&cli, *bind).await {
-                    Ok(u) => u,
+                    Ok(r) => r,
                     Err(e) => {
                         // Never die silently: Claude Code only shows "Connection closed".
                         tracing::error!("kuma mcp cannot start: {e:#}");
@@ -154,7 +154,7 @@ async fn main() -> anyhow::Result<()> {
                 },
             };
             tracing::info!("kuma mcp serving stdio, daemon at {url}");
-            kuma_mcp::run_stdio(url).await?;
+            kuma_mcp::run_stdio(url, note).await?;
         }
         Cmd::Doctor => {
             let cfg = config(&cli, "127.0.0.1:7455".parse().unwrap())?;
@@ -352,30 +352,39 @@ fn write_mcp_config(out: &std::path::Path, json: &str) -> anyhow::Result<()> {
 /// 1. a running daemon on the port that serves *this* project → use it;
 /// 2. a running daemon serving another project, or a busy port → start our own on a free port;
 /// 3. nothing there → start our own on the port.
-async fn resolve_daemon(cli: &Cli, bind: SocketAddr) -> anyhow::Result<String> {
+async fn resolve_daemon(cli: &Cli, bind: SocketAddr) -> anyhow::Result<(String, Option<String>)> {
     let mut cfg = config(cli, bind)?;
     let url = format!("http://{bind}");
     let wanted = cfg.project_file.canonicalize().unwrap_or(cfg.project_file.clone());
+    let note;
     match kuma_mcp::client::health(&url).await {
         Some(h) => {
             let theirs = h["project"].as_str().map(std::path::PathBuf::from).and_then(|p| p.canonicalize().ok());
             if theirs.as_ref() == Some(&wanted) {
                 tracing::info!("using running daemon at {url}");
-                return Ok(url);
+                return Ok((url, None));
             }
-            tracing::warn!("daemon at {url} serves {:?}, not {}; starting a private one", theirs, wanted.display());
+            let theirs_s = theirs.as_ref().map(|p| p.display().to_string()).unwrap_or("?".into());
+            tracing::warn!("daemon at {url} serves {theirs_s}, not {}; starting a private one", wanted.display());
+            note = format!(
+                "This MCP server is connected to a PRIVATE daemon for {} because the daemon at {url} (the one behind the browser UI) serves a different project, {theirs_s}. Edits here will not show in that UI. To unify: run `kuma mcp-config --project {theirs_s}` and reconnect, or restart `kuma serve -p {}`.",
+                wanted.display(), wanted.display()
+            );
         }
-        None if port_busy(bind) => tracing::warn!("port {bind} is busy but not a kuma daemon; starting a private one"),
+        None if port_busy(bind) => {
+            tracing::warn!("port {bind} is busy but not a kuma daemon; starting a private one");
+            note = format!("Port {bind} is busy but not a kuma daemon; this MCP server started a private daemon for {}.", wanted.display());
+        }
         None => {
             let (_state, addr) = kuma_daemon::serve(cfg).await.map_err(|e| anyhow::anyhow!("starting daemon on {bind}: {e:#}"))?;
             tracing::info!("started daemon at http://{addr}");
-            return Ok(format!("http://{addr}"));
+            return Ok((format!("http://{addr}"), None));
         }
     }
     cfg.bind = "127.0.0.1:0".parse().unwrap();
     let (_state, addr) = kuma_daemon::serve(cfg).await.map_err(|e| anyhow::anyhow!("starting private daemon: {e:#}"))?;
     tracing::info!("started private daemon at http://{addr} (UI for this project: open that URL)");
-    Ok(format!("http://{addr}"))
+    Ok((format!("http://{addr}"), Some(format!("{note} Its own UI is at http://{addr}."))))
 }
 
 fn port_busy(addr: SocketAddr) -> bool {

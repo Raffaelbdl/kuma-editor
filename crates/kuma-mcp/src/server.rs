@@ -32,12 +32,13 @@ returns the composited frames as images plus their PNG paths.
 #[derive(Clone)]
 pub struct KumaServer {
     client: Client,
+    note: Option<String>,
     tool_router: ToolRouter<Self>,
 }
 
 impl KumaServer {
-    pub fn new(client: Client) -> Self {
-        Self { client, tool_router: Self::tool_router() }
+    pub fn new(client: Client, note: Option<String>) -> Self {
+        Self { client, note, tool_router: Self::tool_router() }
     }
 }
 
@@ -261,14 +262,27 @@ impl KumaServer {
 
     #[tool(description = "Daemon health: tool availability (melt, ffprobe, hyperframes, browser, preview engine) and project path.")]
     async fn health(&self) -> Result<CallToolResult, McpError> {
-        Ok(ok_json(&self.client.get("/api/health").await.map_err(err)?))
+        let mut h = self.client.get("/api/health").await.map_err(err)?;
+        if let Some(obj) = h.as_object_mut() {
+            if let Some(n) = &self.note {
+                obj.insert("note".into(), Value::String(n.clone()));
+            }
+            if obj.get("browser").map(Value::is_null).unwrap_or(true) {
+                obj.insert("browser_note".into(), Value::String("no Chrome headless shell configured; hyperframes downloads one on the first bake (or set HYPERFRAMES_BROWSER_PATH)".into()));
+            }
+        }
+        Ok(ok_json(&h))
     }
 }
 
 #[tool_handler(router = self.tool_router)]
 impl ServerHandler for KumaServer {
     fn get_info(&self) -> ServerInfo {
-        ServerInfo::new(ServerCapabilities::builder().enable_tools().build()).with_instructions(INSTRUCTIONS)
+        let instructions = match &self.note {
+            Some(n) => format!("{INSTRUCTIONS}\nIMPORTANT — tell the user at the start: {n}\n"),
+            None => INSTRUCTIONS.to_string(),
+        };
+        ServerInfo::new(ServerCapabilities::builder().enable_tools().build()).with_instructions(instructions)
     }
 }
 

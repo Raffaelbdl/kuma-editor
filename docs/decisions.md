@@ -4,9 +4,10 @@ Decisions taken during the review and bin refactor on `claude/happy-davinci-tspn
 (commits `eede385` and `25849c1`). `docs/plan.md` is the original plan and predates
 these; where the two disagree, this file is later.
 
-Status key: **adopted** is in the code; **rejected** was considered and turned down;
-**superseded** was adopted earlier in the same session and then replaced; **deferred**
-is agreed direction, not yet built.
+Status key: **adopted** is in the code, unless the entry says otherwise; **rejected** was
+considered and turned down; **superseded** was adopted earlier in the same session and
+then replaced; **deferred** is agreed direction, not yet built. Where a decision was to
+*not* build something, the entry says so rather than implying an implementation.
 
 ---
 
@@ -150,11 +151,12 @@ They appear in URLs and are used to name cached thumbnails, so they take the sam
 
 ## Plugins and generated content
 
-**Plugins call generic endpoints; kuma gains no plugin API** — adopted as direction.
-There are two seams. Anything that terminates in a file goes through the bin: write it
-into the project directory, call `add_media`, place it with `apply_edits`. Anything that
-terminates in a filter goes through the `mlt` effect, which takes any MLT service by name
-with raw properties. The MCP server is already a client of exactly this shape.
+**Plugins call generic endpoints; kuma gains no plugin API** — adopted as direction; no
+code was added for it. Two seams already exist. Anything that terminates in a file goes
+through the bin: write it into the project directory, call `add_media`, place it with
+`apply_edits`. Anything that terminates in a filter goes through the `mlt` effect, which
+takes any MLT service by name with raw properties. The MCP server is already a client of
+exactly this shape, which is the evidence the seams work.
 
 **An upload endpoint** — rejected.
 Proposed so a browser plugin could hand kuma bytes. Turned down because a desktop plugin
@@ -163,12 +165,15 @@ templates, libraries and presets are all directories. A blob path would add a se
 answer to "where is my image" and break the round trip through other tools, where editing
 a generated PNG in an image editor is picked up by the next render with no export step.
 
-**Provenance goes in the file, not in the project JSON** — adopted as convention.
-A generated image records its prompt in a PNG text chunk, the way ComfyUI and
-AUTOMATIC1111's web UI do, so the record survives being moved or copied and kuma stays
-out of it. The caveat is that an image editor may strip unknown chunks on save, so it is
-a convention rather than a guarantee. This supersedes an earlier proposal to add a
-free-form attribute map to bin entries.
+**A free-form attribute map on bin entries** — rejected.
+Proposed so a generation plugin could record the prompt behind an image, since entries
+deny unknown fields and unknown keys inside probed metadata are dropped on the next save.
+Turned down because kuma neither produces nor consumes that data, and a field nothing
+validates becomes a dumping ground. A plugin that wants provenance can put it in the file
+it writes, as a PNG text chunk, the way ComfyUI and AUTOMATIC1111's web UI do; that
+survives copying and keeps kuma out of it, at the cost of image editors sometimes
+stripping unknown chunks. **Nothing here is implemented**: kuma does not read or write
+image metadata, and this entry exists only so the attribute map is not proposed again.
 
 ## Stale probed metadata
 

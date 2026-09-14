@@ -8,20 +8,21 @@ import { expandPreset, isAsset, isOverlay } from "./types";
 
 const presetsPromise = api.effectPresets().catch(() => []);
 
-/** Per effect kind: the value to add, and its numeric fields with their input steps.
- *  Non-numeric fields (blend mode, keyframes, mlt service/properties) are special-cased
- *  in `renderEffects`. Adding an effect kind means one row here plus the Rust model. */
-const EFFECTS: Record<Effect["type"], { add: Effect; num: [string, number][] }> = {
-  transform: { add: { type: "transform", x: 0, y: 0, scale: 1, rotation: 0, opacity: 1, keyframes: [] }, num: [["x", 1], ["y", 1], ["scale", 0.05], ["rotation", 1], ["opacity", 0.05]] },
+/** Per effect kind: the value to add and how each field is edited (numeric with a step,
+ *  a choice, free text, or JSON). Adding an effect kind is one row here plus the Rust
+ *  model; a kind the daemon knows but this table does not renders with no fields. */
+interface EffectSpec { add: Effect; num?: [string, number][]; enum?: [string, string[]][]; text?: string[]; json?: string[] }
+const BLEND_MODES = ["normal", "multiply", "screen", "overlay", "darken", "lighten", "color_dodge", "color_burn", "hard_light", "soft_light", "difference", "exclusion"];
+const EFFECTS: Partial<Record<Effect["type"], EffectSpec>> = {
+  transform: { add: { type: "transform", x: 0, y: 0, scale: 1, rotation: 0, opacity: 1, keyframes: [] }, num: [["x", 1], ["y", 1], ["scale", 0.05], ["rotation", 1], ["opacity", 0.05]], json: ["keyframes"] },
   crop: { add: { type: "crop", left: 0, right: 0, top: 0, bottom: 0, radius: 0 }, num: [["left", 0.01], ["right", 0.01], ["top", 0.01], ["bottom", 0.01], ["radius", 0.01]] },
-  blend: { add: { type: "blend", mode: "screen" }, num: [] },
+  blend: { add: { type: "blend", mode: "screen" }, enum: [["mode", BLEND_MODES]] },
   blur: { add: { type: "blur", radius: 4 }, num: [["radius", 0.5]] },
   color: { add: { type: "color", brightness: 0, contrast: 1, saturation: 1, gamma: 1 }, num: [["brightness", 0.05], ["contrast", 0.05], ["saturation", 0.05], ["gamma", 0.05]] },
   fade: { add: { type: "fade", in: 0.5, out: 0.5 }, num: [["in", 0.1], ["out", 0.1]] },
-  volume: { add: { type: "volume", keyframes: [{ t: 0, gain: 1 }] }, num: [] },
-  mlt: { add: { type: "mlt", service: "frei0r.vignette", properties: {} }, num: [] },
+  volume: { add: { type: "volume", keyframes: [{ t: 0, gain: 1 }] }, json: ["keyframes"] },
+  mlt: { add: { type: "mlt", service: "frei0r.vignette", properties: {} }, text: ["service"], json: ["properties"] },
 };
-const BLEND_MODES = ["normal", "multiply", "screen", "overlay", "darken", "lighten", "color_dodge", "color_burn", "hard_light", "soft_light", "difference", "exclusion"];
 
 export class Inspector {
   constructor(private host: HTMLElement) {
@@ -89,46 +90,58 @@ export class Inspector {
       box.appendChild(head);
       const set = (key: string, v: unknown) => store.patch([{ op: "replace", path: `${path}/effects/${ei}`, value: { ...e, [key]: v } }], `${e.type}.${key}`);
       const rec = e as unknown as Record<string, unknown>;
-      for (const [key, step] of EFFECTS[e.type].num) {
-        const fallback = (EFFECTS[e.type].add as unknown as Record<string, number>)[key];
-        box.appendChild(field(key, numInput(Number(rec[key] ?? fallback), (v) => set(key, v), step)));
-      }
-      if (e.type === "blend") {
+      const spec = EFFECTS[e.type] ?? { add: e };
+      const defaults = spec.add as unknown as Record<string, unknown>;
+      const cur = (key: string) => rec[key] ?? defaults[key];
+      for (const [key, step] of spec.num ?? []) box.appendChild(field(key, numInput(Number(cur(key)), (v) => set(key, v), step)));
+      for (const [key, choices] of spec.enum ?? []) {
         const sel = el("select");
-        options(sel, BLEND_MODES.map((value) => ({ value })), e.mode);
-        sel.onchange = () => set("mode", sel.value);
-        box.appendChild(field("mode", sel));
+        options(sel, choices.map((value) => ({ value })), String(cur(key)));
+        sel.onchange = () => set(key, sel.value);
+        box.appendChild(field(key, sel));
       }
-      if (e.type === "transform" || e.type === "volume") box.appendChild(field("keyframes", jsonInput(e.keyframes ?? [], (v) => set("keyframes", v))));
-      if (e.type === "mlt") {
-        box.appendChild(field("service", textInput(e.service, (v) => set("service", v))));
-        box.appendChild(field("properties", jsonInput(e.properties ?? {}, (v) => set("properties", v))));
-      }
+      for (const key of spec.text ?? []) box.appendChild(field(key, textInput(String(cur(key) ?? ""), (v) => set(key, v))));
+      for (const key of spec.json ?? []) box.appendChild(field(key, jsonInput(cur(key) ?? null, (v) => set(key, v))));
       this.host.appendChild(box);
     });
     const add = el("select");
     options(add, Object.keys(EFFECTS).map((value) => ({ value })), undefined, "+ add effect…");
     add.onchange = () => {
       const kind = add.value as Effect["type"] | "";
-      if (kind) store.patch([{ op: "add", path: `${path}/effects/-`, value: EFFECTS[kind].add }], `add ${kind}`);
+      add.value = "";
+      if (kind) store.patch([{ op: "add", path: `${path}/effects/-`, value: EFFECTS[kind]!.add }], `add ${kind}`);
     };
     this.host.appendChild(add);
+    this.host.appendChild(this.presetPicker(path));
+  }
 
-    // Presets expand to ordinary effects (with their default params); tweak them after.
+  /** Presets expand to ordinary effects; their params are edited here before applying. */
+  private presetPicker(path: string): HTMLElement {
+    const wrap = el("div");
     const preset = el("select");
     preset.style.marginTop = "6px";
+    const params = el("div");
     presetsPromise.then((ps) => options(preset, ps.map((p) => ({ value: p.id, label: p.name, title: p.description })), undefined, "+ apply preset…"));
     preset.onchange = async () => {
+      params.innerHTML = "";
       const p = (await presetsPromise).find((x) => x.id === preset.value);
       if (!p) return;
-      try {
-        const ops: PatchOp[] = expandPreset(p, {}).map((e) => ({ op: "add", path: `${path}/effects/-`, value: e }));
-        await store.patch(ops, `preset ${p.id}`);
-      } catch (e) {
-        toast((e as Error).message, "err");
+      const values: Record<string, number> = {};
+      for (const [k, spec] of Object.entries(p.params)) {
+        values[k] = Number(spec.default);
+        params.appendChild(field(spec.label ?? k, varInput(spec, values[k], (v) => { values[k] = Number(v); })));
       }
+      params.appendChild(button("Apply", async () => {
+        try {
+          const ops: PatchOp[] = expandPreset(p, values).map((e) => ({ op: "add", path: `${path}/effects/-`, value: e }));
+          if (await store.patch(ops, `preset ${p.id}`)) { preset.value = ""; params.innerHTML = ""; }
+        } catch (e) {
+          toast((e as Error).message, "err");
+        }
+      }));
     };
-    this.host.appendChild(preset);
+    wrap.append(preset, params);
+    return wrap;
   }
 }
 
@@ -144,7 +157,7 @@ function numInput(value: number, onChange: (v: number) => void, step = 1): HTMLI
   const i = el("input");
   i.type = "number";
   i.step = String(step);
-  i.value = String(Number(value.toFixed(4)));
+  i.value = Number.isFinite(value) ? String(Number(value.toFixed(4))) : "";
   i.onchange = () => { const v = Number(i.value); if (Number.isFinite(v)) onChange(v); };
   return i;
 }

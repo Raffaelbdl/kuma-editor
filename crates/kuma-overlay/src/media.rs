@@ -16,6 +16,8 @@ pub struct Probe {
 struct FfStream {
     codec_type: String,
     #[serde(default)]
+    disposition: Disposition,
+    #[serde(default)]
     codec_name: Option<String>,
     #[serde(default)]
     width: Option<u32>,
@@ -25,6 +27,13 @@ struct FfStream {
     r_frame_rate: Option<String>,
     #[serde(default)]
     duration: Option<String>,
+}
+
+/// Cover art in audio files is a "video" stream with `attached_pic`; it is not footage.
+#[derive(Debug, Default, Deserialize)]
+struct Disposition {
+    #[serde(default)]
+    attached_pic: u8,
 }
 
 #[derive(Debug, Deserialize)]
@@ -58,7 +67,7 @@ pub fn probe(path: &Path) -> Result<Probe, String> {
         return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
     }
     let ff: FfOut = serde_json::from_slice(&out.stdout).map_err(|e| e.to_string())?;
-    let video = ff.streams.iter().find(|s| s.codec_type == "video");
+    let video = ff.streams.iter().find(|s| s.codec_type == "video" && s.disposition.attached_pic == 0);
     let audio = ff.streams.iter().any(|s| s.codec_type == "audio");
     let fmt_dur = ff.format.as_ref().and_then(|f| f.duration.as_deref()).and_then(|d| d.parse::<f64>().ok());
     let format_name = ff.format.as_ref().and_then(|f| f.format_name.clone()).unwrap_or_default();
@@ -95,6 +104,9 @@ pub fn pix_fmt(path: &Path) -> Result<String, String> {
         .arg(path)
         .output()
         .map_err(|e| e.to_string())?;
+    if !out.status.success() {
+        return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
+    }
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 

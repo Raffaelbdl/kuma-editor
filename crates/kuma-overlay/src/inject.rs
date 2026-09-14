@@ -32,16 +32,22 @@ pub struct Contract<'a> {
 impl Contract<'_> {
     pub fn apply(&self, html: &str) -> String {
         let html = stamp_root(html, self.duration, self.width, self.height);
+        // One custom property per scalar var; a point becomes `--var-<name>-x`/`-y`.
         // Values are user text: keep them from closing the declaration or the block.
+        let css = |name: &str, v: &Value| {
+            let s = match v {
+                Value::String(s) => s.clone(),
+                other => other.to_string(),
+            };
+            format!("--var-{name}: {};", s.replace([';', '{', '}', '<', '>', '\n'], " "))
+        };
         let css_vars: String = self
             .vars
             .iter()
-            .map(|(k, v)| {
-                let s = match v {
-                    Value::String(s) => s.clone(),
-                    other => other.to_string(),
-                };
-                format!("--var-{}: {};", k, s.replace([';', '{', '}', '<', '>', '\n'], " "))
+            .flat_map(|(k, v)| match v {
+                Value::Object(o) => o.iter().map(|(sub, x)| css(&format!("{k}-{sub}"), x)).collect::<Vec<_>>(),
+                Value::Array(_) => vec![],
+                other => vec![css(k, other)],
             })
             .collect::<Vec<_>>()
             .join(" ");
@@ -58,16 +64,20 @@ impl Contract<'_> {
         })
         .to_string()
         .replace("</", "<\\/");
-        let head = format!(
-            "{}<script id=\"kuma-inject\">window.kuma = {payload};</script>\n<style id=\"kuma-vars\">:root {{ {css_vars} }}</style>\n",
-            self.head_extra
-        );
-        match html.find("<head>") {
+        let head = format!("{}<script id=\"kuma-inject\">window.kuma = {payload};</script>\n", self.head_extra);
+        // The script goes first so the template's own scripts see `window.kuma`; the vars
+        // go last so they win over any `:root { --var-… }` fallback in the template's CSS.
+        let style = format!("<style id=\"kuma-vars\">:root {{ {css_vars} }}</style>\n");
+        let html = match html.find("<head>") {
             Some(i) => {
                 let (a, b) = html.split_at(i + "<head>".len());
                 format!("{a}\n{head}{b}")
             }
             None => format!("{head}{html}"),
+        };
+        match html.find("</head>") {
+            Some(i) => format!("{}{style}{}", &html[..i], &html[i..]),
+            None => format!("{style}{html}"),
         }
     }
 }
@@ -185,12 +195,17 @@ mod tests {
     fn contract_injects_payload_and_css_vars() {
         let mut vars = Map::new();
         vars.insert("label".into(), json!("hi"));
+        vars.insert("at".into(), json!({ "x": 0.5, "y": 0.25 }));
         let c = Contract { vars: &vars, fps: Fps::new(30, 1), width: 1920, height: 1080, duration: 2.0, speed: 1.0, bake: true, clip: None, head_extra: "<base href=\"/x/\">\n" };
         let html = c.apply("<html><head><title>x</title></head><body><div data-composition-id=\"main\" data-duration=\"4\"></div></body></html>");
         assert!(html.find("<base").unwrap() < html.find("kuma-inject").unwrap());
         assert!(html.find("kuma-inject").unwrap() < html.find("<title>").unwrap());
+        // The vars style comes after the template's own <head> content so it wins the cascade.
+        assert!(html.find("<title>").unwrap() < html.find("kuma-vars").unwrap());
+        assert!(html.find("kuma-vars").unwrap() < html.find("</head>").unwrap());
         assert!(html.contains("window.kuma = {"));
         assert!(html.contains("--var-label: hi;"));
+        assert!(html.contains("--var-at-x: 0.5; --var-at-y: 0.25;"), "{html}");
         assert!(html.contains("data-composition-id=\"main\" data-duration=\"2\""), "{html}");
     }
 

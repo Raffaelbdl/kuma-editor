@@ -3,7 +3,9 @@
 //!
 //! The sidecar speaks a tiny line protocol on stdin/stdout:
 //!   → `load <path.mlt>` | `seek <frame>` | `play` | `pause` | `quit`
-//!   ← `ok …` | `err …` | `frame <frame> <len>` followed by `<len>` JPEG bytes
+//!   ← `ok …` | `err …` | `pos <frame>` | `frame <frame> <len>` followed by `<len>` JPEG bytes
+//!
+//! Frames and `ok end` are fanned out to every preview socket; `pos` lines are ignored.
 //!
 //! Until the engine is built, `snapshot` (single frame via melt) is the fallback the UI uses.
 
@@ -25,6 +27,14 @@ pub struct PreviewFrame {
     pub jpeg: Arc<Vec<u8>>,
 }
 
+/// What the engine reports to every connected preview.
+#[derive(Debug, Clone)]
+pub enum EngineEvent {
+    Frame(PreviewFrame),
+    /// Playback ran off the end of the timeline and the engine paused itself.
+    End,
+}
+
 pub struct PreviewHandle {
     inner: Mutex<Option<Arc<Engine>>>,
     /// Serializes `ensure` so two first connections cannot both spawn an engine.
@@ -43,7 +53,7 @@ impl Default for PreviewHandle {
 
 pub struct Engine {
     stdin: AsyncMutex<ChildStdin>,
-    pub frames: broadcast::Sender<PreviewFrame>,
+    pub events: broadcast::Sender<EngineEvent>,
     _child: Child,
 }
 
@@ -96,8 +106,8 @@ impl PreviewHandle {
         let mut child = cmd.spawn().map_err(|e| anyhow::anyhow!("cannot start {}: {e}", bin.display()))?;
         let stdin = child.stdin.take().unwrap();
         let stdout = child.stdout.take().unwrap();
-        let (frames, _) = broadcast::channel(8);
-        let engine = Arc::new(Engine { stdin: AsyncMutex::new(stdin), frames: frames.clone(), _child: child });
+        let (events, _) = broadcast::channel(8);
+        let engine = Arc::new(Engine { stdin: AsyncMutex::new(stdin), events: events.clone(), _child: child });
         *self.inner.lock().unwrap() = Some(engine.clone());
 
         // Reader task: parse the line protocol and fan out frames. It holds only a weak
@@ -127,9 +137,11 @@ impl PreviewHandle {
                     if rd.read_exact(&mut buf).await.is_err() {
                         break;
                     }
-                    let _ = frames.send(PreviewFrame { frame: f, jpeg: Arc::new(buf) });
+                    let _ = events.send(EngineEvent::Frame(PreviewFrame { frame: f, jpeg: Arc::new(buf) }));
                 } else if let Some(e) = l.strip_prefix("err ") {
                     tracing::warn!("preview engine: {e}");
+                } else if l == "ok end" {
+                    let _ = events.send(EngineEvent::End);
                 } else if l.starts_with("ok ready") {
                     ready = true;
                 }

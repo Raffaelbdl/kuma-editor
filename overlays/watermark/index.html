@@ -2,14 +2,11 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=1920, height=1080" />
+    <script src="_vendor/kuma.js"></script>
+    <link rel="stylesheet" href="_vendor/kuma.css" />
     <style>
-      * { margin: 0; padding: 0; box-sizing: border-box; }
-      html, body { width: 100%; height: 100%; overflow: hidden; background: transparent; }
-      #root { position: relative; width: 100%; height: 100%; background: transparent; }
-      :root { --var-size: 1; --var-opacity: 0.6; --u: calc(1vh * var(--var-size)); }
       .wm { position: absolute; margin: calc(3 * var(--u)); padding: calc(0.8 * var(--u)) calc(1.4 * var(--u));
-            font: 600 calc(2.4 * var(--u))/1 "Inter", "Segoe UI", system-ui, sans-serif; color: #fff; opacity: var(--var-opacity);
+            font: 600 calc(2.4 * var(--u))/1 "Segoe UI", system-ui, sans-serif; color: #fff; opacity: var(--var-opacity);
             background: rgba(0,0,0,0.35); border-radius: calc(0.6 * var(--u)); letter-spacing: 0.02em; }
       .wm.top-left { left: 0; top: 0; } .wm.top-right { right: 0; top: 0; }
       .wm.bottom-left { left: 0; bottom: 0; } .wm.bottom-right { right: 0; bottom: 0; }
@@ -21,13 +18,8 @@
       <div id="wm" class="clip wm bottom-right" data-start="0" data-duration="10">@kuma</div>
     </div>
     <script>
-      const defaults = { text: "@kuma", corner: "bottom-right", opacity: 0.6, size: 1 };
-      const vars = Object.assign({}, defaults, (window.kuma && window.kuma.vars) || {});
-      document.documentElement.style.setProperty("--var-size", String(vars.size));
-      document.documentElement.style.setProperty("--var-opacity", String(vars.opacity));
-      const wm = document.getElementById("wm");
-      wm.textContent = vars.text;
-      wm.className = `clip wm ${vars.corner}`;
+      const { vars, text } = kumaTemplate({ text: "@kuma", corner: "bottom-right", opacity: 0.6, size: 1 });
+      text("wm", vars.text).className = `clip wm ${vars.corner}`;
       // Static template: no timeline (see data-no-timeline on the root). The bake takes one frame.
     </script>
   </body>

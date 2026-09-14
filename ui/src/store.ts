@@ -1,6 +1,6 @@
 import { api, subscribeEvents } from "./api";
 import type { Clip, DaemonEvent, PatchOp, Project, TemplateInfo, Track } from "./types";
-import { fpsValue } from "./types";
+import { fpsValue, freeId } from "./types";
 
 export interface State {
   project: Project | null;
@@ -45,7 +45,10 @@ class Store {
 
   set(partial: Partial<State>) {
     this.state = { ...this.state, ...partial };
-    for (const l of this.listeners) l(this.state);
+    // One panel throwing must not stop the others from updating.
+    for (const l of this.listeners) {
+      try { l(this.state); } catch (e) { console.error(e); }
+    }
   }
 
   async init() {
@@ -84,6 +87,8 @@ class Store {
           const selection = project.tracks.some((t) => t.clips.some((c) => c.id === this.state.selection)) ? this.state.selection : null;
           this.set({ project, selection });
         } while (this.refreshAgain);
+      } catch (e) {
+        toast(`Cannot reload the project: ${(e as Error).message}`, "err");
       } finally {
         this.refreshing = null;
       }
@@ -143,12 +148,9 @@ class Store {
     return f ? `/tracks/${f.ti}/clips/${f.ci}` : null;
   }
 
+  /** A clip id that is free across all tracks (clip ids are global). */
   newId(prefix: string): string {
-    const p = this.state.project!;
-    const ids = new Set(p.tracks.flatMap((t) => t.clips.map((c) => c.id)));
-    let n = 1;
-    while (ids.has(`${prefix}${n}`)) n++;
-    return `${prefix}${n}`;
+    return freeId(prefix, this.state.project!.tracks.flatMap((t) => t.clips.map((c) => c.id)));
   }
 
   /** Round to the frame grid. */
@@ -157,8 +159,9 @@ class Store {
     return Math.max(0, Math.round(t * f) / f);
   }
 
+  /** Move the playhead; it may sit past the last clip (that is where new clips go). */
   seek(t: number) {
-    this.set({ playhead: this.snap(Math.min(Math.max(0, t), Math.max(this.duration, 0))) });
+    this.set({ playhead: this.snap(Math.min(Math.max(0, t), this.duration + 10)) });
   }
 }
 
@@ -175,10 +178,10 @@ export function toast(text: string, kind: "ok" | "err" | "" = "", ms = 3500) {
   setTimeout(() => el.remove(), ms);
 }
 
+/** `mm:ss.ff`, computed from whole frames so the frame field never reaches `fps`. */
 export const fmtTime = (t: number, fps: number) => {
-  const s = Math.max(0, t);
-  const m = Math.floor(s / 60);
-  const sec = Math.floor(s % 60);
-  const fr = Math.round((s - Math.floor(s)) * fps);
-  return `${String(m).padStart(2, "0")}:${String(sec).padStart(2, "0")}.${String(fr).padStart(2, "0")}`;
+  const frames = Math.max(0, Math.round(t * fps));
+  const whole = Math.floor(frames / fps);
+  const fr = frames - Math.round(whole * fps);
+  return `${String(Math.floor(whole / 60)).padStart(2, "0")}:${String(whole % 60).padStart(2, "0")}.${String(fr).padStart(2, "0")}`;
 };

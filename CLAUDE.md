@@ -26,8 +26,8 @@ presets/effects/      effect presets (typed params + `$expr` substitution)
 cargo build && cargo test                 # Rust; render/bake tests skip without melt/ffmpeg/hyperframes
 cmake -S engine -B engine/build && cmake --build engine/build -j
 npm install && (cd ui && npm install && npm run build)
-kuma serve -p demo/demo.kuma.json         # http://127.0.0.1:7455
-kuma mcp -p demo/demo.kuma.json           # stdio MCP; starts the daemon in-process if none is running
+kuma serve -p myvideo.kuma.json           # http://127.0.0.1:7455
+kuma mcp -p myvideo.kuma.json             # stdio MCP; starts the daemon in-process if none is running
 ```
 
 System deps (Debian/Ubuntu): `ffmpeg melt libmlt-dev libmlt++-dev libsdl2-dev libturbojpeg0-dev cmake xvfb`.

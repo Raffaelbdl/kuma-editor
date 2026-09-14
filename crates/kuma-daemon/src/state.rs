@@ -148,11 +148,17 @@ impl AppState {
         Ok(prev)
     }
 
+    /// The edit guard. A panic inside a mutation must not poison editing for good: the
+    /// guard protects only ordering, so a poisoned lock is safe to reuse.
+    fn edit_guard(&self) -> std::sync::MutexGuard<'_, ()> {
+        self.edit.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
     fn edit<F>(&self, origin: &str, f: F) -> Result<(u64, Vec<Issue>), EditError>
     where
         F: FnOnce(&Project) -> Result<edit::EditOutcome, EditError>,
     {
-        let _guard = self.edit.lock().unwrap();
+        let _guard = self.edit_guard();
         let out = f(&self.project.read().unwrap())?;
         let rev = out.project.revision;
         let prev = self.commit(out.project, origin).map_err(|e| EditError::Patch(e.to_string()))?;
@@ -174,30 +180,32 @@ impl AppState {
     }
 
     /// Undo/redo swap whole snapshots; the revision keeps increasing so clients never
-    /// confuse an undone state with an older one.
-    pub fn undo(&self) -> Option<u64> {
+    /// confuse an undone state with an older one. `Ok(None)` means nothing to undo/redo.
+    pub fn undo(&self) -> anyhow::Result<Option<u64>> {
         self.swap(false)
     }
 
-    pub fn redo(&self) -> Option<u64> {
+    pub fn redo(&self) -> anyhow::Result<Option<u64>> {
         self.swap(true)
     }
 
-    fn swap(&self, redo: bool) -> Option<u64> {
-        let _guard = self.edit.lock().unwrap();
+    fn swap(&self, redo: bool) -> anyhow::Result<Option<u64>> {
+        let _guard = self.edit_guard();
         let mut u = self.undo.lock().unwrap();
-        let (mut restored, origin) = if redo { u.future.pop()? } else { u.past.pop()? };
+        let Some((mut restored, origin)) = (if redo { u.future.pop() } else { u.past.pop() }) else { return Ok(None) };
+        let keep = restored.clone();
         restored.revision = self.project.read().unwrap().revision + 1;
         let rev = restored.revision;
         let label = format!("{}:{origin}", if redo { "redo" } else { "undo" });
         match self.commit(restored, &label) {
             Ok(now) => {
                 if redo { &mut u.past } else { &mut u.future }.push((now, origin));
-                Some(rev)
+                Ok(Some(rev))
             }
             Err(e) => {
-                tracing::warn!("{label} failed: {e:#}");
-                None
+                // A failed save changed nothing; the history step must survive it.
+                if redo { &mut u.future } else { &mut u.past }.push((keep, origin));
+                Err(e)
             }
         }
     }

@@ -2,16 +2,13 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=1920, height=1080" />
     <script src="_vendor/gsap.min.js"></script>
+    <script src="_vendor/kuma.js"></script>
+    <link rel="stylesheet" href="_vendor/kuma.css" />
     <style>
-      * { margin: 0; padding: 0; box-sizing: border-box; }
-      html, body { width: 100%; height: 100%; overflow: hidden; background: transparent; }
-      #root { position: relative; width: 100%; height: 100%; background: transparent; }
-      :root { --var-accent: #ff4f00; --var-size: 1; --u: calc(1vh * var(--var-size)); }
       .dim { position: absolute; inset: 0; background: rgba(0, 0, 0, 0.55); }
       .card { position: absolute; left: 8%; right: 8%; top: 50%; transform: translateY(-50%);
-              font-family: "Inter", "Segoe UI", system-ui, sans-serif; color: #fff; }
+              font-family: "Segoe UI", system-ui, sans-serif; color: #fff; }
       .card.center { text-align: center; }
       .rule { width: calc(9 * var(--u)); height: calc(0.7 * var(--u)); background: var(--var-accent); border-radius: 2px; margin-bottom: calc(2.2 * var(--u)); }
       .card.center .rule { margin-left: auto; margin-right: auto; }
@@ -32,25 +29,21 @@
       </div>
     </div>
     <script>
-      const defaults = { title: "Chapter one", subtitle: "Setting things up", accent: "#ff4f00", align: "left", dim: true, size: 1 };
-      const vars = Object.assign({}, defaults, (window.kuma && window.kuma.vars) || {});
-      document.documentElement.style.setProperty("--var-accent", vars.accent);
-      document.documentElement.style.setProperty("--var-size", String(vars.size));
+      const { vars, duration, text, timeline } = kumaTemplate({
+        title: "Chapter one", subtitle: "Setting things up", accent: "#ff4f00", align: "left", dim: true, size: 1,
+      });
       const title = document.getElementById("title");
       for (const w of String(vars.title).split(/\s+/)) { const s = document.createElement("span"); s.className = "w"; s.textContent = w; title.appendChild(s); }
-      document.getElementById("sub").textContent = vars.subtitle;
+      text("sub", vars.subtitle);
       document.getElementById("dim").style.display = vars.dim ? "" : "none";
       document.getElementById("card").classList.toggle("center", vars.align === "center");
-      const duration = (window.kuma && window.kuma.duration) || 4;
 
-      window.__timelines = window.__timelines || {};
-      const tl = gsap.timeline({ paused: true });
+      const tl = timeline();
       tl.from("#dim", { opacity: 0, duration: 0.5 }, 0);
       tl.from("#rule", { scaleX: 0, transformOrigin: "0 50%", duration: 0.5, ease: "power3.out" }, 0.1);
       tl.from(".title .w", { y: 60, opacity: 0, duration: 0.6, ease: "power3.out", stagger: 0.08 }, 0.25);
       tl.from("#sub", { y: 20, opacity: 0, duration: 0.5, ease: "power3.out" }, 0.7);
       tl.to("#scene", { opacity: 0, duration: 0.5, ease: "power2.in" }, Math.max(1.5, duration - 0.5));
-      window.__timelines["main"] = tl;
     </script>
   </body>
 </html>

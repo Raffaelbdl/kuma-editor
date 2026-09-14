@@ -33,7 +33,8 @@ pub struct Project {
     pub width: u32,
     #[serde(default = "default_height")]
     pub height: u32,
-    /// Audio sample rate for mixing and export.
+    /// Audio sample rate of the export (`ar` on the melt consumer). The preview engine
+    /// mixes at 48 kHz regardless.
     #[serde(default = "default_sample_rate")]
     pub sample_rate: u32,
     /// Media referenced by clips, keyed by a short stable id.
@@ -151,7 +152,8 @@ pub struct Asset {
     pub path: String,
     #[serde(default)]
     pub kind: AssetKind,
-    /// Optional low-resolution proxy used for preview instead of `path`.
+    /// Optional low-resolution proxy used instead of `path` when compiling for preview
+    /// (never for renders or samples).
     #[serde(default)]
     pub proxy: Option<String>,
     /// Probed metadata, filled in by `probe_asset`. Informational.

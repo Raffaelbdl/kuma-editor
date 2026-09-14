@@ -1,7 +1,7 @@
 //! End-to-end: generate synthetic media with ffmpeg, compile the reference project, render
 //! with melt, and check the output. Skips (with a message) when ffmpeg/melt are missing.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 
 use kuma_core::Project;
@@ -25,9 +25,10 @@ fn make_media(root: &Path) {
     ffmpeg(&["-f", "lavfi", "-i", "smptebars=size=1920x1080:rate=30:duration=6", "-f", "lavfi", "-i", "sine=frequency=220:duration=6",
         "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-c:a", "aac", &m("cam.mp4")]);
     ffmpeg(&["-f", "lavfi", "-i", "color=c=red@0.8:size=640x360:rate=1,format=rgba", "-frames:v", "1", &m("logo.png")]);
-    // A fake overlay bake: 90 RGBA frames of a semi-transparent blue box on a transparent frame.
+    // A fake overlay bake: 90 RGBA frames of a half-transparent blue box (600,400 500×300)
+    // padded onto a fully transparent frame. (`drawbox` would leave alpha at 0.)
     std::fs::create_dir_all(root.join("bake")).unwrap();
-    ffmpeg(&["-f", "lavfi", "-i", "color=c=black@0.0:size=1920x1080:rate=30:duration=3,format=rgba,drawbox=x=600:y=400:w=500:h=300:color=blue@0.5:t=fill",
+    ffmpeg(&["-f", "lavfi", "-i", "color=c=blue@0.5:size=500x300:rate=30:duration=3,format=rgba,pad=1920:1080:600:400:color=black@0.0",
         "-pix_fmt", "rgba", &root.join("bake/frame_%06d.png").to_string_lossy()]);
 }
 
@@ -68,18 +69,39 @@ fn renders_reference_project_with_melt() {
     let dur: f64 = text.lines().last().unwrap().trim().parse().unwrap();
     assert!((dur - 15.0).abs() < 0.2, "duration {dur}");
 
-    // A frame at t=3.5 s must contain the blue overlay box over the zoomed test pattern:
-    // check that the pixel at the box centre is bluish.
-    let png = root.join("f105.png");
-    snapshot(&mlt_file, 105, &png, None).expect("snapshot");
-    let raw = Command::new("ffmpeg")
-        .args(["-v", "error", "-i"])
-        .arg(&png)
-        .args(["-vf", "crop=1:1:850:550", "-pix_fmt", "rgb24", "-f", "rawvideo", "-"])
-        .output()
-        .unwrap()
-        .stdout;
-    assert_eq!(raw.len(), 3, "one rgb pixel");
-    assert!(raw[2] as i32 > raw[0] as i32 + 40, "expected bluish pixel, got {raw:?}");
-    let _ = PathBuf::from(&png);
+    // A frame at t=3.5 s must contain the semi-transparent blue overlay box over the test
+    // pattern: the same frame compiled without the bake must differ inside the box and
+    // match outside it, which proves the overlay is composited (with alpha) where it belongs.
+    let pixel = |png: &Path, x: u32, y: u32| -> Vec<u8> {
+        Command::new("ffmpeg")
+            .args(["-v", "error", "-i"])
+            .arg(png)
+            .args(["-vf", &format!("crop=1:1:{x}:{y}"), "-pix_fmt", "rgb24", "-f", "rawvideo", "-"])
+            .output()
+            .unwrap()
+            .stdout
+    };
+    let with = root.join("f105.png");
+    snapshot(&mlt_file, 105, &with, None).expect("snapshot");
+    let bare_mlt = root.join("bare.mlt");
+    std::fs::write(&bare_mlt, compile(&p, &CompileOptions::new(&root)).unwrap()).unwrap();
+    let without = root.join("f105-bare.png");
+    snapshot(&bare_mlt, 105, &without, None).expect("snapshot without overlay");
+    if let Some(out) = std::env::var_os("KUMA_TEST_OUT") {
+        let _ = std::fs::create_dir_all(&out);
+        for f in ["f105.png", "f105-bare.png", "project.mlt"] {
+            let _ = std::fs::copy(root.join(f), Path::new(&out).join(f));
+        }
+    }
+    let inside = (pixel(&with, 850, 550), pixel(&without, 850, 550));
+    let outside = (pixel(&with, 200, 950), pixel(&without, 200, 950));
+    assert_eq!(inside.0.len(), 3);
+    assert_ne!(inside.0, inside.1, "overlay must change the pixels under it");
+    // Half-transparent blue over the footage: blue goes up, the others halve.
+    let (r, g, b) = (inside.1[0] as i32, inside.1[1] as i32, inside.1[2] as i32);
+    let expect = [r / 2, g / 2, (b + 255) / 2];
+    for (i, e) in expect.iter().enumerate() {
+        assert!((inside.0[i] as i32 - e).abs() <= 8, "channel {i}: expected ≈{e}, got {:?} over {:?}", inside.0, inside.1);
+    }
+    assert_eq!(outside.0, outside.1, "overlay must not change pixels outside its box");
 }

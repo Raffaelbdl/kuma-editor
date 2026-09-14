@@ -5,25 +5,32 @@ An overlay template is a folder under `overlays/` (the library) or `<project>/ov
 
 ```
 overlays/<id>/
-  template.json   manifest: id, name, description, duration_default, vars, static, region, sfx
-  index.html      the composition
+  template.json   manifest: id, name, description, duration_default, entry, vars, static, region
+  index.html      the composition (or whatever `entry` names, inside this folder)
   fonts/…         any fonts, referenced with relative @font-face paths
-  thumb.png       generated (`kuma thumbs`); do not hand-edit
+  thumb.png       generated (`kuma thumbs`); never part of a bake, do not hand-edit
 ```
 
-`_vendor/` next to the templates holds shared libraries (`gsap.min.js`). Reference them
-as `_vendor/gsap.min.js` from the template — the bake copies that folder in and the
-daemon serves it under every template.
+`_vendor/` holds shared files, referenced as `_vendor/<file>` from the template. A
+template's own `_vendor/` wins, then the one next to the templates, then the library's;
+the bake stages and the daemon serves exactly the same folder.
+
+- `_vendor/kuma.js` — `kumaTemplate(defaults)` applies the vars, returns `{ vars, width,
+  height, duration, text(id, value), timeline() }` and works standalone.
+- `_vendor/kuma.css` — the transparent reset and the `--u` unit (`1vh × --var-size`).
+- `_vendor/gsap.min.js`.
 
 ## The contract (what kuma guarantees, what the template must do)
 
-**kuma injects, before your `<head>` content:**
+**kuma injects:**
 
-- `window.kuma = { vars, fps: {num, den}, width, height, duration, speed, bake }` —
-  `vars` are the manifest defaults overlaid with the clip's overrides; `duration` is the
-  clip's internal duration in seconds (clip length × |speed|).
-- CSS custom properties `--var-<name>` on `:root` for every var (strings raw, objects
-  JSON-stringified).
+- At the top of `<head>`: `window.kuma = { vars, fps: {num, den}, width, height,
+  duration, speed, bake, clip }` — `vars` are the manifest defaults overlaid with the
+  clip's overrides; `duration` is the clip's internal duration in seconds (clip length ×
+  |speed|).
+- At the end of `<head>` (so they win over the template's own `:root` fallbacks): CSS
+  custom properties `--var-<name>` on `:root` for every scalar var, and
+  `--var-<name>-x` / `--var-<name>-y` for `point` vars.
 - The root `[data-composition-id]` element's `data-duration` (and `data-width`/`data-height`)
   are **rewritten in the markup** to the clip's real length before the renderer sees the
   file — hyperframes sizes the render from the attribute as written, before any script runs.
@@ -38,13 +45,14 @@ daemon serves it under every template.
 
 **The template must:**
 
-1. Be transparent all the way to the root: `html, body, #root { background: transparent }`.
-   Any opaque wrapper becomes an opaque video.
+1. Be transparent all the way to the root (`_vendor/kuma.css` does it). Any opaque
+   wrapper becomes an opaque video.
 2. Have one root: `<div id="root" data-composition-id="main" data-start="0" data-duration="4"
    data-width="1920" data-height="1080">`. Timed children carry `class="clip"`,
    `data-start`, `data-duration` (seconds, relative to the root).
 3. Be a **pure function of time**. Animation must be seekable:
-   - GSAP: one paused timeline registered as `window.__timelines["main"] = gsap.timeline({ paused: true })`.
+   - GSAP: one paused timeline, `const tl = timeline()` from `kumaTemplate` (it registers
+     `window.__timelines["main"]`).
    - **No GSAP timeline at all** (static templates, pure CSS animation): put `data-no-timeline`
      on the composition root, or the renderer waits 45 s for a timeline and fails the bake.
    - CSS `@keyframes`/transitions and WAAPI are fine — the renderer scrubs them.
@@ -52,17 +60,19 @@ daemon serves it under every template.
    - **Forbidden:** `setTimeout`/`setInterval`/`requestAnimationFrame`-driven state,
      `Date.now()`, `Math.random()` without a fixed seed, autoplaying `<video>`. Anything
      wall-clock driven renders wrong or frozen.
-4. Read vars with a fallback so the page also works standalone:
-   `const vars = Object.assign({}, defaults, (window.kuma && window.kuma.vars) || {})`.
-   Apply them to the DOM at load (text content, `style.setProperty("--var-…")`).
+4. Start with `const { vars, duration, text, timeline } = kumaTemplate({ …defaults })`,
+   with the manifest defaults repeated so the page works standalone; then apply `vars`
+   to the DOM (`text("id", vars.label)` hides the element when the value is empty).
 5. Anchor the out-animation to the end: `tl.to(el, {...}, Math.max(minIn, duration - 0.45))`.
-6. Be **responsive**: size in `vh`/`vw`/`%` (use a `--u: calc(1vh * var(--var-size))` unit),
-   positions as fractions via `point` vars. A template must look right at 1920×1080 and
-   1080×1920 without edits.
-7. Bundle fonts (`@font-face` with relative `src`). No Google Fonts links: the bake is
-   headless and must be deterministic.
+6. Be **responsive**: size in `--u`, `vh`/`vw`/`%`, positions as fractions via `point` vars
+   (`left: calc(var(--var-anchor-x) * 100%)`). A template must look right at 1920×1080
+   and 1080×1920 without edits.
+7. Bundle fonts (`@font-face` with relative `src`) or use a system stack. No Google Fonts
+   links: the bake is headless and must be deterministic.
 8. Keep `_vendor`, `data-*` timing and the `__timelines` contract as the only
    hyperframes-specific surface, so the runtime stays replaceable.
+
+Transitions (dissolve/wipe) are refused on overlay clips: bakes carry no handle frames.
 
 ## Manifest (`template.json`)
 
@@ -84,14 +94,16 @@ daemon serves it under every template.
     "note":   { "type": "text",   "default": "multi-line" },
     "logo":   { "type": "asset",  "default": "" }
   },
-  "sfx": [ { "path": "whoosh.mp3", "at": 0.1, "gain": 0.8 } ],
+  "sfx": [ { "path": "whoosh.mp3", "at": 0.1, "gain": 0.8 } ],   // parsed, not yet placed on a track
   "tags": ["label"]
 }
 ```
 
 Var types → UI controls: `string` input, `text` textarea, `number` slider (min/max/step),
 `color` picker, `boolean` checkbox, `enum` select, `point` x/y (fraction of frame),
-`asset` path. Clip `vars` are validated against this manifest; unknown keys are rejected.
+`asset` path. The manifest is checked on load (defaults must fit their specs, enums need
+options, `entry` stays in the folder, `duration_default` > 0); clip `vars` are validated
+against it and unknown keys are rejected.
 
 ## Timing responsibilities
 

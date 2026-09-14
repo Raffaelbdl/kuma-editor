@@ -155,13 +155,16 @@ pub fn compile_xml(state: &AppState, project: &Project, bakes: HashMap<String, O
     Ok(compile(project, &opts)?)
 }
 
-/// Compile to `.kuma/<name>.mlt`. Names are per purpose (`render`, `preview`), so two
-/// concurrent compiles with the same name would race; use a temp file for those.
+/// Compile to `.kuma/<name>.mlt`, replacing the file atomically: a melt or engine that
+/// is still reading the previous compile keeps its own (unlinked) copy.
 pub fn compile_project(state: &AppState, project: &Project, bakes: HashMap<String, OverlayBake>, name: &str, unbaked: UnbakedPolicy, size: Option<(u32, u32)>) -> anyhow::Result<PathBuf> {
     let xml = compile_xml(state, project, bakes, unbaked, size)?;
-    let path = state.config.cache_dir().join(format!("{name}.mlt"));
-    std::fs::create_dir_all(path.parent().unwrap())?;
-    std::fs::write(&path, xml)?;
+    let dir = state.config.cache_dir();
+    std::fs::create_dir_all(&dir)?;
+    let path = dir.join(format!("{name}.mlt"));
+    let tmp = tempfile::Builder::new().prefix(name).suffix(".mlt.tmp").tempfile_in(&dir)?;
+    std::fs::write(tmp.path(), xml)?;
+    tmp.persist(&path)?;
     Ok(path)
 }
 
@@ -196,7 +199,8 @@ pub fn render(state: &AppState, req: &RenderRequest, progress: &dyn Fn(u8, &str)
         let f = project.fps.clip_frames(a, b);
         (f.in_, f.out)
     });
-    let job = RenderJob { mlt_file: mlt.clone(), output: output.clone(), preset, range, extra: vec![] };
+    let extra = vec![("ar".to_string(), project.sample_rate.to_string())];
+    let job = RenderJob { mlt_file: mlt.clone(), output: output.clone(), preset, range, extra };
     progress(50, "rendering with melt");
     kuma_mlt::render(&job, |p| progress(50 + p.percent / 2, &format!("frame {}", p.frame)))?;
     Ok(serde_json::json!({ "output": output, "mlt": mlt, "preset": preset.id }))
@@ -254,6 +258,9 @@ pub fn sample_frames(state: &AppState, req: &SampleRequest, progress: &dyn Fn(u8
     // Samples run concurrently (agent + UI snapshots), so each gets its own XML file.
     let out_dir = state.config.cache_dir().join("samples");
     std::fs::create_dir_all(&out_dir)?;
+    // Overlay templates can change without a project revision (the agent edits the HTML),
+    // so the bake keys are part of the frame cache key.
+    let bake_stamp = hash_str(&bakes.values().map(|b| b.resource.to_string_lossy().into_owned()).collect::<Vec<_>>().join("\n"));
     let xml = compile_xml(state, &project, bakes, UnbakedPolicy::Skip, None)?;
     let mlt_file = tempfile::Builder::new().prefix("sample-").suffix(".mlt").tempfile_in(state.config.cache_dir())?;
     std::fs::write(mlt_file.path(), xml)?;
@@ -263,9 +270,9 @@ pub fn sample_frames(state: &AppState, req: &SampleRequest, progress: &dyn Fn(u8
         let t = if count == 1 { req.t0 } else { req.t0 + (t1 - req.t0) * i as f64 / (count - 1) as f64 };
         let frame = project.fps.frame(t);
         progress((50 + 50 * i / count) as u8, &format!("frame {frame}"));
-        // The overlays flag is part of the key: the UI's snapshot (no overlays) and the
-        // agent's sample (with overlays) must never share a cached frame.
-        let stamp = format!("{}_{}{}", project.revision, frame, if req.overlays { "o" } else { "" });
+        // The UI's snapshot (no overlays) and the agent's sample (with overlays, whose
+        // bakes are hashed in) must never share a cached frame.
+        let stamp = format!("{}_{}{}", project.revision, frame, if req.overlays { format!("o{bake_stamp}") } else { String::new() });
         let full = out_dir.join(format!("f{stamp}.png"));
         if !full.is_file() {
             kuma_mlt::melt::snapshot(mlt, frame, &full, None)?;

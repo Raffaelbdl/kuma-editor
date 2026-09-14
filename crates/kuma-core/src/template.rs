@@ -119,7 +119,36 @@ impl TemplateManifest {
         if m.id != folder {
             return Err(TemplateError::IdMismatch { path, id: m.id, folder: folder.into() });
         }
+        if let Some(problem) = m.check() {
+            return Err(TemplateError::Invalid(path, problem));
+        }
         Ok(m)
+    }
+
+    /// The manifest's own consistency: defaults obey their specs, enums have options,
+    /// the entry stays inside the folder, durations and regions are positive.
+    pub fn check(&self) -> Option<String> {
+        let entry = Path::new(&self.entry);
+        if entry.is_absolute() || entry.components().any(|c| !matches!(c, std::path::Component::Normal(_))) {
+            return Some(format!("entry `{}` must be a plain relative path inside the template folder", self.entry));
+        }
+        if !(self.duration_default > 0.0) {
+            return Some("duration_default must be > 0".into());
+        }
+        if let Some(r) = self.region {
+            if r.w == 0 || r.h == 0 {
+                return Some("region must have a positive width and height".into());
+            }
+        }
+        for (k, spec) in &self.vars {
+            if spec.ty == VarType::Enum && spec.options.is_empty() {
+                return Some(format!("var `{k}`: enum needs options"));
+            }
+            if let Some(p) = spec.check(&spec.default) {
+                return Some(format!("var `{k}`: default {p}"));
+            }
+        }
+        None
     }
 
     /// Load every `overlays/*/template.json` under `root`.
@@ -230,6 +259,8 @@ pub enum TemplateError {
     Parse(PathBuf, String),
     #[error("{path}: manifest id `{id}` does not match folder `{folder}`")]
     IdMismatch { path: PathBuf, id: String, folder: String },
+    #[error("{0}: {1}")]
+    Invalid(PathBuf, String),
 }
 
 #[cfg(test)]
@@ -270,5 +301,16 @@ mod tests {
         o.insert("nope".into(), json!(1));
         let p = m.check_vars(&o);
         assert_eq!(p.len(), 4, "{p:?}");
+    }
+
+    #[test]
+    fn manifest_checks_itself() {
+        let bad = |v: serde_json::Value| serde_json::from_value::<TemplateManifest>(v).unwrap().check().expect("should be rejected");
+        assert!(bad(json!({ "id": "t", "entry": "../x.html" })).contains("entry"));
+        assert!(bad(json!({ "id": "t", "duration_default": 0 })).contains("duration"));
+        assert!(bad(json!({ "id": "t", "vars": { "s": { "type": "enum", "default": "a", "options": [] } } })).contains("options"));
+        assert!(bad(json!({ "id": "t", "vars": { "n": { "type": "number", "default": "big" } } })).contains("default"));
+        assert!(bad(json!({ "id": "t", "vars": { "n": { "type": "number", "default": 5, "max": 1 } } })).contains("max"));
+        assert!(manifest().check().is_none());
     }
 }

@@ -126,10 +126,10 @@ impl Baker {
         b
     }
 
-    /// The `_vendor/` folder a template resolves `_vendor/...` against: its sibling, else
-    /// the shared library. The preview route must agree with this.
+    /// The `_vendor/` folder a template resolves `_vendor/...` against: its own, else its
+    /// sibling, else the shared library. The preview route serves exactly this folder.
     pub fn vendor_for(&self, template_dir: &Path) -> Option<PathBuf> {
-        template_dir.parent().map(|p| p.join("_vendor")).filter(|p| p.is_dir()).or_else(|| self.vendor_dir.is_dir().then(|| self.vendor_dir.clone()))
+        [template_dir.join("_vendor"), template_dir.parent()?.join("_vendor"), self.vendor_dir.clone()].into_iter().find(|p| p.is_dir())
     }
 
     /// hyperframes only supersamples at its preset sizes; elsewhere the request degrades
@@ -198,37 +198,35 @@ impl Baker {
         }
         let started = std::time::Instant::now();
         let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
-        let work = self.cache_dir.join(format!("{key}.tmp-{}-{nanos:x}", std::process::id()));
-        std::fs::create_dir_all(&work)?;
-        let outcome = self.bake_into(req, &work, &dir);
-        match outcome {
-            Ok(mut result) => {
-                std::fs::create_dir_all(&self.cache_dir)?;
-                if dir.exists() {
-                    // Someone finished the same key first; theirs is as good as ours.
-                    let _ = std::fs::remove_dir_all(&work);
-                    return read_done(&dir).ok_or_else(|| BakeError::Other(format!("cache entry {} is incomplete", dir.display())));
-                }
-                std::fs::rename(&work, &dir)?;
-                result.seconds = started.elapsed().as_secs_f64();
-                std::fs::write(dir.join("done.json"), serde_json::to_vec_pretty(&result).unwrap())?;
-                Ok(result)
-            }
-            Err(e) => {
-                let _ = std::fs::remove_dir_all(&work);
-                Err(e)
-            }
+        let work = WorkDir(self.cache_dir.join(format!("{key}.tmp-{}-{nanos:x}", std::process::id())));
+        std::fs::create_dir_all(&work.0)?;
+        let mut result = self.bake_into(req, &work.0, &dir)?;
+        result.seconds = started.elapsed().as_secs_f64();
+        // The marker goes in before the rename, so what lands under `dir` is complete.
+        std::fs::write(work.0.join("done.json"), serde_json::to_vec_pretty(&result).unwrap())?;
+        if dir.exists() {
+            // Someone finished the same key first; theirs is as good as ours.
+            return read_done(&dir).ok_or_else(|| BakeError::Other(format!("cache entry {} is incomplete", dir.display())));
         }
+        std::fs::rename(&work.0, &dir)?;
+        std::mem::forget(work);
+        Ok(result)
     }
 
     /// Render into `work`; the result describes paths under `dir`, where `work` ends up.
     fn bake_into(&self, req: &BakeRequest, work: &Path, dir: &Path) -> Result<BakeResult, BakeError> {
         // 1. Stage the template with kuma's injection script. Shared libraries live in
-        //    `_vendor/` and are referenced by templates as `_vendor/...`, so copy them in.
+        //    `_vendor/` and are referenced by templates as `_vendor/...`; a template's own
+        //    copy (already staged with it) wins, exactly as the preview serves it.
         let src = work.join("src");
         copy_dir(req.template_dir, &src)?;
-        if let Some(vendor) = self.vendor_for(req.template_dir) {
+        if let Some(vendor) = self.vendor_for(req.template_dir).filter(|v| !v.starts_with(req.template_dir)) {
             copy_dir(&vendor, &src.join("_vendor"))?;
+        }
+        if let Some(r) = req.manifest.region {
+            if r.x + r.w > req.width || r.y + r.h > req.height {
+                return Err(BakeError::Other(format!("template region {r:?} does not fit a {}x{} composition", req.width, req.height)));
+            }
         }
         let vars = req.manifest.resolve_vars(req.vars);
         let is_still = req.manifest.is_static;
@@ -361,6 +359,15 @@ impl Baker {
             seconds: 0.0,
             cached: false,
         })
+    }
+}
+
+/// A bake's private directory: removed on drop unless it was renamed into the cache.
+struct WorkDir(PathBuf);
+
+impl Drop for WorkDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
     }
 }
 

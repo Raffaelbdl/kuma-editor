@@ -184,7 +184,9 @@ public:
                 emit("ok end");
                 continue;
             }
-            bool late = audio_ok_ && ahead < target / 3; // < 1 frame buffered: skip JPEG to catch up
+            // < 1 frame buffered: skip the JPEG to catch up — except right after play(),
+            // when the ring is empty by construction and the picture must still update.
+            bool late = audio_ok_ && pos_ > play_start_frame_ + 3 && ahead < target / 3;
             pull(pos_, /*with_audio=*/true, /*emit_image=*/!late || (pos_ % 3 == 0));
             pos_++;
         }

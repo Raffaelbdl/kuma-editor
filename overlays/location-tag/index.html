@@ -2,33 +2,19 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=1920, height=1080" />
     <script src="_vendor/gsap.min.js"></script>
+    <script src="_vendor/kuma.js"></script>
+    <link rel="stylesheet" href="_vendor/kuma.css" />
     <style>
-      /* kuma overlay contract: transparent all the way to the root. */
-      * { margin: 0; padding: 0; box-sizing: border-box; }
-      html, body { width: 100%; height: 100%; overflow: hidden; background: transparent; }
-      #root { position: relative; width: 100%; height: 100%; background: transparent; }
-
-      :root {
-        /* Defaults; kuma overrides these with --var-* from the manifest/instance. */
-        --var-accent: #ff4f00;
-        --var-size: 1;
-        --anchor-x: 0.68;
-        --anchor-y: 0.28;
-        /* Scale everything with the composition height so 9:16 and 16:9 both look right. */
-        --u: calc(1vh * var(--var-size));
-      }
-
       .tag {
         position: absolute;
-        left: calc(var(--anchor-x) * 100%);
-        top: calc(var(--anchor-y) * 100%);
+        left: calc(var(--var-anchor-x) * 100%);
+        top: calc(var(--var-anchor-y) * 100%);
         transform-origin: 0% 100%;
         display: flex;
         align-items: center;
         gap: calc(1.6 * var(--u));
-        font-family: "Inter", "Segoe UI", system-ui, sans-serif;
+        font-family: "Segoe UI", system-ui, sans-serif;
         color: #fff;
         will-change: transform, opacity;
       }
@@ -93,33 +79,18 @@
     </div>
 
     <script>
-      // ---- kuma contract -------------------------------------------------------
-      // Vars arrive as window.kuma.vars (bake + preview) and as --var-* CSS custom
-      // properties. Fall back to the manifest defaults when previewed standalone.
-      const defaults = { label: "Paris, France", sub: "48.8566° N, 2.3522° E", accent: "#ff4f00",
-                         anchor: { x: 0.68, y: 0.28 }, style: "pin", size: 1 };
-      const vars = Object.assign({}, defaults, (window.kuma && window.kuma.vars) || {});
-      const root = document.documentElement;
-      root.style.setProperty("--var-accent", vars.accent);
-      root.style.setProperty("--var-size", String(vars.size));
-      root.style.setProperty("--anchor-x", String(vars.anchor.x));
-      root.style.setProperty("--anchor-y", String(vars.anchor.y));
-      document.getElementById("label").textContent = vars.label;
-      document.getElementById("sub").textContent = vars.sub;
+      const { vars, duration, text, timeline } = kumaTemplate({
+        label: "Paris, France", sub: "48.8566° N, 2.3522° E", accent: "#ff4f00", anchor: { x: 0.68, y: 0.28 }, style: "pin", size: 1,
+      });
+      text("label", vars.label);
+      text("sub", vars.sub);
       const tag = document.getElementById("tag");
       tag.classList.remove("style-pin", "style-chip");
       tag.classList.add("style-" + vars.style);
-      if (!vars.sub) document.getElementById("sub").style.display = "none";
 
-      // Duration comes from the timeline clip; the out animation is anchored to the end.
-      const duration = (window.kuma && window.kuma.duration) || 4;
-
-      // ---- animation: a paused GSAP timeline the renderer/preview seeks ----------
-      window.__timelines = window.__timelines || {};
-      const tl = gsap.timeline({ paused: true });
+      const tl = timeline();
       tl.from(tag, { x: -40, scale: 0.6, opacity: 0, duration: 0.7, ease: "back.out(1.6)" }, 0);
       tl.to(tag, { x: 30, opacity: 0, duration: 0.45, ease: "power2.in" }, Math.max(0.7, duration - 0.45));
-      window.__timelines["main"] = tl;
     </script>
   </body>
 </html>

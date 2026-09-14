@@ -10,8 +10,8 @@
 
 import { api } from "./api";
 import { store, toast } from "./store";
-import type { Clip, Effect, TransformKeyframe } from "./types";
-import { isOverlay } from "./types";
+import type { Clip } from "./types";
+import { isOverlay, transformAt } from "./types";
 
 interface OverlayView {
   clipId: string;
@@ -39,6 +39,8 @@ export class Preview {
   /** Timeline time of the last frame the engine sent while playing. */
   private engineT = -1;
   private lastFrame = -1;
+  /** Frame index of the last seek; frames from superseded seeks are dropped while paused. */
+  private wantFrame = -1;
 
   constructor(private host: HTMLElement) {
     this.stage = document.createElement("div");
@@ -79,6 +81,9 @@ export class Preview {
             this.engineError = "";
             this.badge.textContent = `engine · ${Math.round((j.scale ?? 0.5) * 100)}%`;
             this.badge.title = "";
+          } else if (j.end) {
+            // The engine paused itself at the end of the timeline.
+            if (store.state.playing) store.set({ playing: false });
           }
         } catch { /* ignore */ }
         return;
@@ -86,12 +91,14 @@ export class Preview {
       const buf = m.data as ArrayBuffer;
       const frame = Number(new DataView(buf).getBigInt64(0, true));
       const bmp = await createImageBitmap(new Blob([buf.slice(8)], { type: "image/jpeg" }));
-      // Decoding is async: a big frame can finish after the next one. Never step back.
-      if (store.state.playing && frame < this.lastFrame) { bmp.close(); return; }
+      // Decoding is async: a frame can finish after a later one. While playing never step
+      // back; while paused only the frame of the latest seek counts.
+      if (store.state.playing ? frame < this.lastFrame : frame !== this.wantFrame) { bmp.close(); return; }
       this.lastFrame = frame;
       this.draw(bmp);
       if (store.state.playing) {
         this.engineT = frame / store.fps;
+        this.lastSentSeek = this.engineT;
         store.set({ playhead: this.engineT });
       }
     };
@@ -113,6 +120,7 @@ export class Preview {
   private sendSeek(t: number, force = false) {
     if (!force && Math.abs(t - this.lastSentSeek) < 1e-6) return;
     this.lastSentSeek = t;
+    this.wantFrame = Math.round(t * store.fps);
     if (this.wsOk) this.send(`seek ${t.toFixed(4)}`);
     else this.scheduleSnapshot(t);
   }
@@ -127,6 +135,8 @@ export class Preview {
         const want = Math.ceil(this.stage.clientWidth * (window.devicePixelRatio || 1));
         const width = Math.min(p?.width ?? 1920, Math.max(640, want));
         const bmp = await createImageBitmap(await (await fetch(api.snapshotUrl(t, width))).blob());
+        // The engine may have connected while melt was rendering; its frame wins.
+        if (this.wsOk) { bmp.close(); return; }
         this.draw(bmp);
       } catch { /* daemon busy or missing media */ }
     }, 250);
@@ -143,7 +153,11 @@ export class Preview {
     this.send("play");
     return true;
   }
-  pause() { this.send("pause"); }
+  pause() {
+    this.send("pause");
+    // The next scrub back to this position must fetch a frame again.
+    this.lastSentSeek = -1;
+  }
 
   /** Change the engine's preview resolution (fraction of the project size). */
   setScale(scale: number) {
@@ -156,7 +170,8 @@ export class Preview {
   async reload() {
     if (!this.wsOk) return;
     this.send("reload");
-    setTimeout(() => this.sendSeek(store.state.playhead, true), 300);
+    // The engine keeps playing through a reload; only a paused preview needs a fresh frame.
+    setTimeout(() => { if (!store.state.playing) this.sendSeek(store.state.playhead, true); }, 300);
   }
 
   // ---- rendering ---------------------------------------------------------------
@@ -184,7 +199,8 @@ export class Preview {
   private onState(playhead: number, playing: boolean, revision: number) {
     const p = store.state.project;
     if (!p) return;
-    if (revision !== this.lastRevision) {
+    const edited = revision !== this.lastRevision;
+    if (edited) {
       this.lastRevision = revision;
       this.syncOverlays();
       if (this.wsOk) this.reload();
@@ -197,6 +213,8 @@ export class Preview {
         this.send(`seek ${playhead.toFixed(4)}`);
         this.send("play");
       }
+    } else if (!this.wsOk) {
+      this.sendSeek(playhead, edited); // snapshot fallback: an edit changes the picture too
     } else {
       this.sendSeek(playhead);
     }
@@ -229,6 +247,8 @@ export class Preview {
       iframe.src = `/overlay-preview/${encodeURIComponent(id)}?rev=${p.revision}`;
       wrap.appendChild(iframe);
       this.layer.appendChild(wrap);
+      // `?rev=` only defeats the browser cache on (re)creation; a view survives revisions
+      // whose content key is unchanged, so a stale rev in the URL is expected.
       const view: OverlayView = { clipId: id, key: contentKey(c), wrap, iframe, ready: false, lastT: -1 };
       iframe.addEventListener("load", () => {
         // The hyperframes runtime (injected by the daemon) pauses CSS/WAAPI animations and
@@ -280,22 +300,6 @@ function seekFrame(v: OverlayView, t: number) {
   } catch { /* cross-origin or not ready */ }
 }
 
-function lerpTransform(e: Extract<Effect, { type: "transform" }>, local: number) {
-  const base = { x: e.x ?? 0, y: e.y ?? 0, scale: e.scale ?? 1, rotation: e.rotation ?? 0, opacity: e.opacity ?? 1 };
-  const kfs = e.keyframes ?? [];
-  if (!kfs.length) return base;
-  const fill = (k: TransformKeyframe) => ({ x: k.x ?? base.x, y: k.y ?? base.y, scale: k.scale ?? base.scale, rotation: k.rotation ?? base.rotation, opacity: k.opacity ?? base.opacity });
-  if (local <= kfs[0].t) return fill(kfs[0]);
-  for (let i = 1; i < kfs.length; i++) {
-    if (local <= kfs[i].t) {
-      const a = fill(kfs[i - 1]), b = fill(kfs[i]);
-      const u = (local - kfs[i - 1].t) / Math.max(1e-6, kfs[i].t - kfs[i - 1].t);
-      return { x: a.x + (b.x - a.x) * u, y: a.y + (b.y - a.y) * u, scale: a.scale + (b.scale - a.scale) * u, rotation: a.rotation + (b.rotation - a.rotation) * u, opacity: a.opacity + (b.opacity - a.opacity) * u };
-    }
-  }
-  return fill(kfs[kfs.length - 1]);
-}
-
 /** Approximate MLT-side effects with CSS on the overlay wrapper (see the header comment). */
 function applyEffects(wrap: HTMLDivElement, iframe: HTMLIFrameElement, c: Clip, local: number, W: number, H: number) {
   let transform = "";
@@ -305,7 +309,7 @@ function applyEffects(wrap: HTMLDivElement, iframe: HTMLIFrameElement, c: Clip, 
   let clip = "";
   for (const e of c.effects) {
     if (e.type === "transform") {
-      const t = lerpTransform(e, local);
+      const t = transformAt(e, local);
       transform += ` translate(${t.x}px, ${t.y}px) scale(${t.scale}) rotate(${t.rotation}deg)`;
       opacity *= t.opacity;
     } else if (e.type === "blur") filter += ` blur(${e.radius}px)`;

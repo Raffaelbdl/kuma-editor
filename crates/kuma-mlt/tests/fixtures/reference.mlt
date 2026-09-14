@@ -110,9 +110,18 @@
     <property name="length">90</property>
     <property name="mlt_image_format">rgba</property>
   </producer>
+  <producer id="clip_o_c2" in="0" out="59">
+    <property name="mlt_service">pixbuf</property>
+    <property name="ttl">1</property>
+    <property name="resource">/proj/.kuma/bakes/def/frame_000001.png</property>
+    <property name="length">60</property>
+    <property name="mlt_image_format">rgba</property>
+  </producer>
   <playlist id="o1_a">
     <blank length="60"/>
     <entry producer="clip_o_c1" in="0" out="89"/>
+    <blank length="30"/>
+    <entry producer="clip_o_c2" in="0" out="59"/>
   </playlist>
   <tractor id="main_tractor" in="0" out="449">
     <multitrack>

@@ -5,8 +5,8 @@ import { Library } from "./library";
 import { Preview } from "./preview";
 import { fmtTime, store, toast } from "./store";
 import { addTrack, Timeline } from "./timeline";
-import type { Clip, Effect, PatchOp, TrackKind } from "./types";
-import { isAsset } from "./types";
+import type { Clip, PatchOp, TrackKind } from "./types";
+import { isAsset, shiftEffect, trimEffect } from "./types";
 
 async function main() {
   await store.init();
@@ -87,7 +87,7 @@ async function splitAtPlayhead() {
   if (!f || t <= f.clip.start || t >= f.clip.end) { toast("Select a clip under the playhead to split", ""); return; }
   const c = f.clip;
   const cut = t - c.start;
-  const left: Clip = { ...c, end: t, effects: c.effects.map((e) => (e.type === "fade" ? { ...e, out: 0 } : e)) };
+  const left: Clip = { ...c, end: t, effects: c.effects.map((e) => trimEffect(e, cut)) };
   const right: Clip = { ...c, id: store.newId(c.id + "_"), start: t, effects: c.effects.map((e) => shiftEffect(e, cut)) };
   if (isAsset(right)) right.src = { ...right.src, in: (right.src.in ?? 0) + cut * Math.abs(c.speed) };
   const path = `/tracks/${f.ti}/clips/${f.ci}`;
@@ -98,18 +98,9 @@ async function splitAtPlayhead() {
   await store.patch(ops, `split ${c.id}`);
 }
 
-/** An effect as seen from a clip that starts `cut` seconds later. */
-function shiftEffect(e: Effect, cut: number): Effect {
-  if (e.type === "fade") return { ...e, in: 0 };
-  if (e.type === "transform" && e.keyframes?.length) return { ...e, keyframes: e.keyframes.map((k) => ({ ...k, t: k.t - cut })).filter((k) => k.t >= 0) };
-  if (e.type === "volume") return { ...e, keyframes: e.keyframes.map((k) => ({ ...k, t: k.t - cut })).filter((k) => k.t >= 0) };
-  return e;
-}
-
 function shortcuts(preview: Preview) {
   window.addEventListener("keydown", async (e) => {
-    const tag = (e.target as HTMLElement).tagName;
-    if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+    if ((e.target as HTMLElement).closest?.("input, textarea, select, button, [contenteditable]")) return;
     const mod = e.ctrlKey || e.metaKey;
     const frame = 1 / store.fps;
     if (e.code === "Space") { e.preventDefault(); togglePlay(preview); }

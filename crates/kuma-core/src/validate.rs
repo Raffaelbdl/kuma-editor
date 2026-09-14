@@ -81,11 +81,14 @@ pub fn validate(p: &Project, ctx: &ValidationContext) -> Vec<Issue> {
             check_id(&mut issues, &mut clip_ids, &c.id, format!("{cp}/id"), "clip");
             if !(c.start >= 0.0 && c.end > c.start) {
                 issues.push(Issue::error(format!("{cp}/end"), "clip must have start >= 0 and end > start"));
-            } else if p.fps.frame(c.end) - p.fps.frame(c.start) < 1 {
+            } else if c.duration() * p.fps.as_f64() < 1.0 - 1e-9 {
                 issues.push(Issue::error(format!("{cp}/end"), "clip is shorter than one frame"));
             }
             if c.speed == 0.0 || !c.speed.is_finite() || c.speed.abs() > 20.0 || c.speed.abs() < 0.01 {
                 issues.push(Issue::error(format!("{cp}/speed"), "speed must be in ±[0.01, 20]"));
+            } else if matches!(c.src, ClipSource::Overlay { .. }) && !(1.0..=240.0).contains(&(p.fps.as_f64() / c.speed.abs())) {
+                // The bake renders at fps/|speed|, which hyperframes bounds to 1..240.
+                issues.push(Issue::error(format!("{cp}/speed"), "overlay speed must keep fps/|speed| within 1..240"));
             }
             match &c.src {
                 ClipSource::Asset { asset, source_in } => {
@@ -146,9 +149,13 @@ pub fn validate(p: &Project, ctx: &ValidationContext) -> Vec<Issue> {
                             issues.push(Issue::error(ep.clone(), "crop values must be within 0..1"));
                         }
                     }
-                    Effect::Transform { keyframes, opacity, .. } => {
+                    Effect::Transform { keyframes, opacity, scale, .. } => {
                         if !(0.0..=1.0).contains(opacity) {
                             issues.push(Issue::error(format!("{ep}/opacity"), "opacity must be 0..1"));
+                        }
+                        let good_scale = |s: f64| s.is_finite() && s > 0.0;
+                        if !good_scale(*scale) {
+                            issues.push(Issue::error(format!("{ep}/scale"), "scale must be > 0"));
                         }
                         let mut last = f64::NEG_INFINITY;
                         for (ki, k) in keyframes.iter().enumerate() {
@@ -158,6 +165,9 @@ pub fn validate(p: &Project, ctx: &ValidationContext) -> Vec<Issue> {
                             last = k.t;
                             if k.t > c.duration() + 1e-9 {
                                 issues.push(Issue::warn(format!("{ep}/keyframes/{ki}/t"), "keyframe beyond clip end"));
+                            }
+                            if k.scale.is_some_and(|s| !good_scale(s)) {
+                                issues.push(Issue::error(format!("{ep}/keyframes/{ki}/scale"), "scale must be > 0"));
                             }
                         }
                     }
@@ -261,8 +271,13 @@ pub fn validate(p: &Project, ctx: &ValidationContext) -> Vec<Issue> {
                     issues.push(Issue::error(format!("{xp}/softness"), "softness must be 0..1"));
                 }
                 if let Some(l) = &x.luma {
-                    if !LUMAS.contains(&l.as_str()) && ctx.check_files && !ctx.root.join(l).is_file() {
-                        issues.push(Issue::error(format!("{xp}/luma"), format!("unknown luma `{l}`: use one of {LUMAS:?} or a file under the project")));
+                    if !LUMAS.contains(&l.as_str()) {
+                        let lp = std::path::Path::new(l);
+                        if lp.is_absolute() || lp.components().any(|c| !matches!(c, std::path::Component::Normal(_))) {
+                            issues.push(Issue::error(format!("{xp}/luma"), "luma path must stay inside the project"));
+                        } else if ctx.check_files && !ctx.root.join(lp).is_file() {
+                            issues.push(Issue::error(format!("{xp}/luma"), format!("unknown luma `{l}`: use one of {LUMAS:?} or a file under the project")));
+                        }
                     }
                 }
             }

@@ -6,10 +6,12 @@ use std::path::{Path, PathBuf};
 use kuma_core::LUMAS;
 
 /// Resolve a luma name or project-relative path to a file, generating built-ins under
-/// `cache_dir`.
+/// `cache_dir`. Paths may not leave the project (the validator checks this too).
 pub fn resolve(name: &str, root: &Path, cache_dir: &Path) -> std::io::Result<PathBuf> {
-    let p = root.join(name);
-    if p.is_file() {
+    let rel = Path::new(name);
+    let inside = !rel.is_absolute() && rel.components().all(|c| matches!(c, std::path::Component::Normal(_)));
+    let p = root.join(rel);
+    if inside && p.is_file() {
         return Ok(p);
     }
     if LUMAS.contains(&name) {

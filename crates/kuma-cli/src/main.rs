@@ -264,8 +264,21 @@ async fn main() -> anyhow::Result<()> {
             }
         }
         Cmd::AddAsset { path, id } => {
-            let state = open(&cli)?;
-            let (id, rev, _) = kuma_daemon::jobs::add_asset(&state, &absolute(path)?, id.clone(), None, "cli")?;
+            // The daemon owns the project while it runs: route the edit through it rather
+            // than writing the file underneath it.
+            let path = absolute(path)?;
+            let cfg = config(&cli, "127.0.0.1:7455".parse().unwrap())?;
+            let url = format!("http://{}", cfg.bind);
+            let served = kuma_mcp::client::health(&url).await.and_then(|h| h["project"].as_str().map(std::path::PathBuf::from)).and_then(|p| p.canonicalize().ok());
+            let (id, rev) = if served.as_ref() == Some(&cfg.project_file) {
+                let body = serde_json::json!({ "path": path, "id": id, "origin": "cli: add asset" });
+                let v = kuma_mcp::client::Client::new(&url).post("/api/assets", &body).await?;
+                (v["id"].as_str().unwrap_or_default().to_string(), v["revision"].as_u64().unwrap_or_default())
+            } else {
+                let state = open(&cli)?;
+                let (id, rev, _) = kuma_daemon::jobs::add_asset(&state, &path, id.clone(), None, "cli")?;
+                (id, rev)
+            };
             println!("added asset `{id}` (revision {rev})");
         }
         Cmd::McpConfig { print } => {
@@ -337,7 +350,8 @@ fn write_mcp_config(out: &std::path::Path, json: &str) -> anyhow::Result<()> {
             servers.as_object_mut().ok_or_else(|| bad("`mcpServers` is not an object"))?.insert("kuma".into(), new["mcpServers"]["kuma"].clone());
             existing
         }
-        Err(_) => new,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => new,
+        Err(e) => anyhow::bail!("cannot read {}: {e}", out.display()),
     };
     std::fs::write(out, serde_json::to_string_pretty(&merged)?)?;
     Ok(())
@@ -377,11 +391,15 @@ async fn resolve_daemon(cli: &Cli, bind: SocketAddr) -> anyhow::Result<(String, 
             }
             Err(e) => {
                 // Two `kuma mcp` starting at once (two Claude Code windows): the loser
-                // joins the winner if it serves this project, else goes private.
-                if let Some(h) = kuma_mcp::client::health(&url).await {
-                    if h["project"].as_str().map(std::path::PathBuf::from).and_then(|p| p.canonicalize().ok()).as_ref() == Some(&wanted) {
-                        tracing::info!("using daemon that came up meanwhile at {url}");
-                        return Ok((url, None));
+                // joins the winner once it answers, which can take a moment after the bind.
+                for _ in 0..10 {
+                    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                    if let Some(h) = kuma_mcp::client::health(&url).await {
+                        if h["project"].as_str().map(std::path::PathBuf::from).and_then(|p| p.canonicalize().ok()).as_ref() == Some(&wanted) {
+                            tracing::info!("using daemon that came up meanwhile at {url}");
+                            return Ok((url, None));
+                        }
+                        break;
                     }
                 }
                 tracing::warn!("cannot bind {bind} ({e:#}); starting a private daemon");

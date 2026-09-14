@@ -11,8 +11,7 @@ ui/dist/
 /engine/build
 
 # Project working data
-/.kuma/
-**/.kuma-cache/
+.kuma/
 /renders/
 /media/
 

@@ -153,8 +153,10 @@ fn default_origin() -> String {
     "ui".into()
 }
 
+// Mutations validate, serialize and write the file under the edit lock, so they run on
+// the blocking pool rather than an async worker.
 async fn put_project(State(st): S, Json(req): Json<PutProject>) -> ApiResult {
-    let (rev, warnings) = st.replace_project(req.project, req.base_revision, &req.origin)?;
+    let (rev, warnings) = blocking(move || st.replace_project(req.project, req.base_revision, &req.origin)).await??;
     Ok(Json(json!({ "revision": rev, "warnings": warnings })))
 }
 
@@ -168,15 +170,15 @@ struct PatchProject {
 }
 
 async fn patch_project(State(st): S, Json(req): Json<PatchProject>) -> ApiResult {
-    let (rev, warnings) = st.apply_patch(&req.patch.0, req.base_revision, &req.origin)?;
+    let (rev, warnings) = blocking(move || st.apply_patch(&req.patch.0, req.base_revision, &req.origin)).await??;
     Ok(Json(json!({ "revision": rev, "warnings": warnings })))
 }
 
 async fn undo(State(st): S) -> ApiResult {
-    Ok(Json(json!({ "revision": st.undo() })))
+    Ok(Json(json!({ "revision": blocking(move || st.undo()).await?? })))
 }
 async fn redo(State(st): S) -> ApiResult {
-    Ok(Json(json!({ "revision": st.redo() })))
+    Ok(Json(json!({ "revision": blocking(move || st.redo()).await?? })))
 }
 async fn history(State(st): S) -> Json<Value> {
     let (past, future) = st.history();
@@ -280,7 +282,13 @@ struct AddAsset {
 
 /// Probe and register an asset. The id defaults to the file stem.
 async fn add_asset(State(st): S, Json(req): Json<AddAsset>) -> ApiResult {
-    let (id, rev, warnings) = blocking(move || jobs::add_asset(&st, &req.path, req.id, req.base_revision, &req.origin)).await??;
+    let (id, rev, warnings) = blocking(move || jobs::add_asset(&st, &req.path, req.id, req.base_revision, &req.origin))
+        .await?
+        // Keep the 409/422 contract of every other edit; anything else is the caller's input.
+        .map_err(|e| match e.downcast::<EditError>() {
+            Ok(edit) => ApiError::from(edit),
+            Err(other) => ApiError::bad_request(format!("{other:#}")),
+        })?;
     Ok(Json(json!({ "id": id, "revision": rev, "warnings": warnings })))
 }
 
@@ -385,19 +393,24 @@ async fn preview_ws(State(st): S, ws: WebSocketUpgrade) -> Response {
             }
         };
         let _ = socket.send(Message::Text(json!({ "ready": true, "scale": *st.preview.scale.lock().unwrap() }).to_string().into())).await;
-        let mut frames = engine.frames.subscribe();
-        let fps = st.project.read().unwrap().fps;
+        let mut events = engine.events.subscribe();
         if let Some(e) = reload_into(&st, &engine).await {
             let _ = socket.send(Message::Text(json!({ "error": e }).to_string().into())).await;
+            if e != "compile failed" {
+                return;
+            }
         }
         loop {
             tokio::select! {
-                f = frames.recv() => match f {
-                    Ok(f) => {
+                ev = events.recv() => match ev {
+                    Ok(preview::EngineEvent::Frame(f)) => {
                         let mut buf = Vec::with_capacity(8 + f.jpeg.len());
                         buf.extend_from_slice(&f.frame.to_le_bytes());
                         buf.extend_from_slice(&f.jpeg);
                         if socket.send(Message::Binary(Bytes::from(buf))).await.is_err() { break; }
+                    }
+                    Ok(preview::EngineEvent::End) => {
+                        if socket.send(Message::Text(json!({ "end": true }).to_string().into())).await.is_err() { break; }
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
                     Err(_) => break,
@@ -408,6 +421,8 @@ async fn preview_ws(State(st): S, ws: WebSocketUpgrade) -> Response {
                         let mut cmd = None;
                         let mut err = None;
                         if let Some(s) = t.strip_prefix("seek ") {
+                            // Read the fps per seek: the project may have changed it meanwhile.
+                            let fps = st.project.read().unwrap().fps;
                             cmd = s.trim().parse::<f64>().ok().map(|secs| format!("seek {}", fps.frame(secs)));
                         } else if t == "play" || t == "pause" {
                             cmd = Some(t.clone());
@@ -432,7 +447,11 @@ async fn preview_ws(State(st): S, ws: WebSocketUpgrade) -> Response {
                 }
             }
         }
-        let _ = engine.send("pause").await;
+        // The engine is shared by every open window: only the last one leaving pauses it.
+        drop(events);
+        if engine.events.receiver_count() == 0 {
+            let _ = engine.send("pause").await;
+        }
     })
 }
 

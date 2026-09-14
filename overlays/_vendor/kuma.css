@@ -1,0 +1,7 @@
+/* Shared base for kuma overlay templates: transparent to the root, no default margins,
+   and `--u`, a unit that scales with the composition height and the `size` var, so a
+   template looks the same at 1920×1080 and 1080×1920. */
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html, body { width: 100%; height: 100%; overflow: hidden; background: transparent; }
+#root { position: relative; width: 100%; height: 100%; background: transparent; }
+:root { --u: calc(1vh * var(--var-size, 1)); }

@@ -98,7 +98,7 @@ Nothing is installed globally. To (re)generate it for an existing project, or to
 it contains:
 
 ```
-kuma mcp-config            # writes ./.mcp.json (merges into an existing one)
+kuma mcp-config            # writes .mcp.json next to the project file (merges into an existing one)
 kuma mcp-config --print
 ```
 
@@ -209,6 +209,8 @@ picture-in-picture, dim) and expand to ordinary effects.
 - `.mlt` output opens in Kdenlive as a clip/timeline import; Kdenlive's own project
   scaffolding (`main_bin`, `kdenlive:` properties) is not emitted.
 - Overlay SFX (`sfx` in manifests) are parsed but not yet placed on an audio track.
+- Transitions are refused on overlay clips: bakes carry no handle frames yet.
+- Clip and track ids must match `[A-Za-z_][A-Za-z0-9_-]*` (they double as XML ids and URL segments).
 
 ## Licence
 

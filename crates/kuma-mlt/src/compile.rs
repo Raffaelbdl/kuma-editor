@@ -197,6 +197,14 @@ struct Ctx<'a> {
     total: i64,
 }
 
+impl Ctx<'_> {
+    /// The validator rejects unknown asset ids, but a project loaded from disk is only
+    /// validated on edit, so never index the map.
+    fn asset(&self, id: &str) -> Result<&Asset, CompileError> {
+        self.project.assets.get(id).ok_or_else(|| CompileError::Internal(format!("unknown asset `{id}`")))
+    }
+}
+
 struct CompiledTrack {
     id: String,
     producer_id: String,
@@ -278,7 +286,7 @@ fn compile_track(ctx: &Ctx, track: &Track, w: &mut XmlWriter) -> Result<Option<C
         let len = tl_out - tl_in + 1;
 
         let (p_in, p_out) = match &clip.src {
-            ClipSource::Asset { asset, source_in } if ctx.project.assets[asset].kind != AssetKind::Image => {
+            ClipSource::Asset { asset, source_in } if ctx.asset(asset)?.kind != AssetKind::Image => {
                 // Producer time is warped by the speed; the handle is already in source
                 // time, so it is subtracted after the warp.
                 let sin = fps.frame(source_in / clip.speed.abs()) - e.before;
@@ -300,9 +308,9 @@ fn compile_track(ctx: &Ctx, track: &Track, w: &mut XmlWriter) -> Result<Option<C
     let mut blends = Vec::new();
     let mut has_audio = false;
     for p in &plans {
-        emit_clip_producer(ctx, p, w);
+        emit_clip_producer(ctx, p, w)?;
         if let ClipSource::Asset { asset, .. } = &p.clip.src {
-            has_audio |= ctx.project.assets[asset].kind != AssetKind::Image && !p.clip.muted;
+            has_audio |= ctx.asset(asset)?.kind != AssetKind::Image && !p.clip.muted;
         }
         for e in &p.clip.effects {
             if let Effect::Blend { mode } = e {
@@ -396,15 +404,17 @@ fn compile_track(ctx: &Ctx, track: &Track, w: &mut XmlWriter) -> Result<Option<C
     Ok(Some(CompiledTrack { id: tid.clone(), producer_id, hide, has_video, has_audio, blends }))
 }
 
-fn emit_clip_producer(ctx: &Ctx, p: &Plan, w: &mut XmlWriter) {
+fn emit_clip_producer(ctx: &Ctx, p: &Plan, w: &mut XmlWriter) -> Result<(), CompileError> {
     let clip = p.clip;
     let len = p.p_out - p.p_in + 1;
     let base = [("id", p.producer_id.clone()), ("in", p.p_in.to_string()), ("out", p.p_out.to_string())];
 
     match &clip.src {
         ClipSource::Asset { asset, .. } => {
-            let a = &ctx.project.assets[asset];
-            let path = resource_path(&ctx.opts.root, a.proxy.as_deref().unwrap_or(&a.path));
+            let a = ctx.asset(asset)?;
+            // Proxies stand in for the media only in a scaled (preview) compile.
+            let source = a.proxy.as_deref().filter(|_| ctx.opts.size.is_some()).unwrap_or(&a.path);
+            let path = resource_path(&ctx.opts.root, source);
             let warped = (clip.speed - 1.0).abs() > 1e-9;
             // Plain media goes through a `chain` (MLT 7 avformat with link filters);
             // stills and time-warped media are classic producers.
@@ -439,7 +449,7 @@ fn emit_clip_producer(ctx: &Ctx, p: &Plan, w: &mut XmlWriter) {
             w.close("producer");
         }
         ClipSource::Overlay { .. } => {
-            let bake = &ctx.opts.bakes[&clip.id];
+            let bake = ctx.opts.bakes.get(&clip.id).ok_or_else(|| CompileError::Unbaked(clip.id.clone()))?;
             w.open("producer", &base);
             if bake.is_still {
                 w.property("mlt_service", "pixbuf");
@@ -471,6 +481,7 @@ fn emit_clip_producer(ctx: &Ctx, p: &Plan, w: &mut XmlWriter) {
             w.close("producer");
         }
     }
+    Ok(())
 }
 
 fn emit_filters(ctx: &Ctx, p: &Plan, w: &mut XmlWriter) {

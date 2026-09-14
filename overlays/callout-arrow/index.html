@@ -2,23 +2,21 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=1920, height=1080" />
     <script src="_vendor/gsap.min.js"></script>
+    <script src="_vendor/kuma.js"></script>
+    <link rel="stylesheet" href="_vendor/kuma.css" />
     <style>
-      * { margin: 0; padding: 0; box-sizing: border-box; }
-      html, body { width: 100%; height: 100%; overflow: hidden; background: transparent; }
-      #root { position: relative; width: 100%; height: 100%; background: transparent; }
-      :root { --var-accent: #ffd166; --var-size: 1; --u: calc(1vh * var(--var-size)); }
       svg { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
       .line { fill: none; stroke: var(--var-accent); stroke-width: calc(0.45 * var(--u)); stroke-linecap: round;
               filter: drop-shadow(0 0 calc(0.6 * var(--u)) rgba(0,0,0,0.5)); }
       .dot { fill: var(--var-accent); }
       .ring { fill: none; stroke: var(--var-accent); stroke-width: calc(0.3 * var(--u)); opacity: 0.7; }
       .label {
-        position: absolute; transform: translate(-50%, -50%);
+        position: absolute; left: calc(var(--var-label-x) * 100%); top: calc(var(--var-label-y) * 100%);
+        transform: translate(-50%, -50%);
         max-width: 34%; padding: calc(1.3 * var(--u)) calc(2 * var(--u));
         background: rgba(12, 12, 18, 0.86); color: #fff; border-left: calc(0.6 * var(--u)) solid var(--var-accent);
-        border-radius: calc(0.8 * var(--u)); font: 500 calc(2.6 * var(--u))/1.25 "Inter", "Segoe UI", system-ui, sans-serif;
+        border-radius: calc(0.8 * var(--u)); font: 500 calc(2.6 * var(--u))/1.25 "Segoe UI", system-ui, sans-serif;
         box-shadow: 0 calc(0.8 * var(--u)) calc(2.4 * var(--u)) rgba(0,0,0,0.35); will-change: transform, opacity;
       }
     </style>
@@ -35,19 +33,13 @@
       </div>
     </div>
     <script>
-      const defaults = { text: "This is the terminal", target: { x: 0.55, y: 0.55 }, label: { x: 0.7, y: 0.25 }, accent: "#ffd166", size: 1 };
-      const vars = Object.assign({}, defaults, (window.kuma && window.kuma.vars) || {});
-      const W = (window.kuma && window.kuma.width) || 1920, H = (window.kuma && window.kuma.height) || 1080;
-      document.documentElement.style.setProperty("--var-accent", vars.accent);
-      document.documentElement.style.setProperty("--var-size", String(vars.size));
-      const svg = document.getElementById("svg");
-      svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+      const { vars, width: W, height: H, duration, text, timeline } = kumaTemplate({
+        text: "This is the terminal", target: { x: 0.55, y: 0.55 }, label: { x: 0.7, y: 0.25 }, accent: "#ffd166", size: 1,
+      });
+      text("label", vars.text);
+      document.getElementById("svg").setAttribute("viewBox", `0 0 ${W} ${H}`);
       const tx = vars.target.x * W, ty = vars.target.y * H;
       const lx = vars.label.x * W, ly = vars.label.y * H;
-      const label = document.getElementById("label");
-      label.textContent = vars.text;
-      label.style.left = `${vars.label.x * 100}%`;
-      label.style.top = `${vars.label.y * 100}%`;
       // Quadratic curve bending away from the straight line for a hand-drawn feel.
       const mx = (tx + lx) / 2 + (ty - ly) * 0.25, my = (ty + ly) / 2 + (lx - tx) * 0.25;
       const line = document.getElementById("line");
@@ -56,16 +48,13 @@
       line.style.strokeDasharray = String(len);
       line.style.strokeDashoffset = String(len);
       for (const id of ["dot", "ring"]) { const c = document.getElementById(id); c.setAttribute("cx", tx); c.setAttribute("cy", ty); }
-      const duration = (window.kuma && window.kuma.duration) || 4;
 
-      window.__timelines = window.__timelines || {};
-      const tl = gsap.timeline({ paused: true });
+      const tl = timeline();
       tl.from("#label", { scale: 0.7, opacity: 0, duration: 0.5, ease: "back.out(1.8)" }, 0);
       tl.to("#line", { strokeDashoffset: 0, duration: 0.7, ease: "power2.inOut" }, 0.25);
       tl.from("#dot", { scale: 0, transformOrigin: "50% 50%", duration: 0.3, ease: "back.out(3)" }, 0.9);
       tl.fromTo("#ring", { scale: 0.4, opacity: 0.9, transformOrigin: "50% 50%" }, { scale: 2.2, opacity: 0, duration: 1.2, ease: "power2.out", repeat: -1 }, 0.95);
       tl.to(".clip", { opacity: 0, duration: 0.4, ease: "power2.in" }, Math.max(1.5, duration - 0.4));
-      window.__timelines["main"] = tl;
     </script>
   </body>
 </html>

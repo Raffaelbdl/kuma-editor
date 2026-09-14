@@ -25,11 +25,14 @@ Dependencies (Debian/Ubuntu): `libmlt++-dev libmlt-dev libsdl2-dev libturbojpeg0
 ← frame <frame> <bytes>\n<bytes of JPEG>      one composited frame, JPEG, profile size
 ```
 
-Audio goes to the default SDL2 device. The pull loop decodes the next frame only while
-the audio ring holds less than about three frames of sound, so playback runs at the
-device's rate and the picture leads the sound by at most that much; a `load` that fails
-leaves the current timeline playing. When no device exists (`SDL_AUDIODRIVER=dummy` or
-headless CI) a wall clock stands in.
+Audio goes to the default SDL2 device, opened at 48 kHz stereo (the engine mixes at that
+rate whatever the project's `sample_rate`). The pull loop decodes the next frame only
+while the audio ring holds less than about three frames of sound, so playback runs at
+the device's rate and the picture leads the sound by at most that much; a `load` that
+fails leaves the current timeline playing. When no device can be opened (no sound server
+in CI) a wall clock stands in; note that `SDL_AUDIODRIVER=dummy` opens fine and keeps the
+audio-paced path. The daemon forwards `frame` lines and `ok end` to every preview
+socket and drops `pos` lines.
 
 MLT's Qt module (qtblend, qtcrop) needs an X display, so the daemon starts the engine
 under `xvfb-run -a` when `DISPLAY` is unset.

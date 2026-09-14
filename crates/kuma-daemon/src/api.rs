@@ -15,7 +15,6 @@ use kuma_core::{validate, ClipSource, Project};
 use kuma_mlt::UnbakedPolicy;
 use serde::Deserialize;
 use serde_json::{json, Value};
-use tower_http::cors::CorsLayer;
 use tower_http::services::ServeDir;
 
 use crate::jobs::{self, RenderRequest, SampleRequest};
@@ -54,8 +53,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/overlay-preview/{clip}/{*rest}", get(overlay_file))
         .route("/overlays/{id}/{*rest}", get(overlay_static))
         .route("/vendor/{*rest}", get(vendor))
-        .route("/file", get(file))
-        .layer(CorsLayer::permissive());
+        .route("/file", get(file));
     if let Some(ui) = &state.config.ui_dir {
         if ui.is_dir() {
             app = app.fallback_service(ServeDir::new(ui).append_index_html_on_directories(true));
@@ -456,37 +454,20 @@ async fn overlay_preview(State(st): S, Path(clip): Path<String>) -> Result<Respo
     let templates = st.templates.read().unwrap();
     let (dir, manifest) = templates.get(overlay).ok_or(ApiError(StatusCode::NOT_FOUND, json!({ "error": "unknown template" })))?;
     let resolved = manifest.resolve_vars(vars);
-    let internal_duration = c.duration() * c.speed.abs();
-    // Same stamp as the bake, so preview and export read identical markup.
-    let html = kuma_overlay::stamp_root_duration(&std::fs::read_to_string(dir.join(&manifest.entry)).map_err(|e| anyhow::anyhow!(e))?, internal_duration);
-    let css_vars: String = resolved
-        .iter()
-        .map(|(k, v)| format!("--var-{}: {};", k, match v { Value::String(s) => s.clone(), o => o.to_string() }.replace(';', "")))
-        .collect::<Vec<_>>()
-        .join(" ");
-    let payload = json!({
-        "vars": resolved, "fps": project.fps, "width": project.width, "height": project.height,
-        "duration": internal_duration, "speed": c.speed, "bake": false, "clip": c.id,
-    });
-    let head = format!(
-        "<base href=\"/overlay-preview/{clip}/\">\n<script id=\"kuma-inject\">window.kuma = {payload};</script>\n<style id=\"kuma-vars\">:root {{ {css_vars} }}</style>\n<script src=\"/vendor/hyperframe.runtime.iife.js\"></script>\n"
-    );
-    let timing = format!(
-        "<script id=\"kuma-timing\">(function(){{var r=document.querySelector('[data-composition-id]');if(!r)return;r.setAttribute('data-duration',String({internal_duration}));r.setAttribute('data-width','{}');r.setAttribute('data-height','{}');}})();</script>\n",
-        project.width, project.height
-    );
-    let mut out = if let Some(i) = html.find("<head>") {
-        let (a, b) = html.split_at(i + 6);
-        format!("{a}\n{head}{b}")
-    } else {
-        format!("{head}{html}")
-    };
-    out = if let Some(i) = out.rfind("</body>") {
-        let (a, b) = out.split_at(i);
-        format!("{a}{timing}{b}")
-    } else {
-        format!("{out}{timing}")
-    };
+    let html = std::fs::read_to_string(dir.join(&manifest.entry)).map_err(|e| anyhow::anyhow!(e))?;
+    let head_extra = format!("<base href=\"/overlay-preview/{clip}/\">\n<script src=\"/vendor/hyperframe.runtime.iife.js\"></script>\n");
+    let out = kuma_overlay::Contract {
+        vars: &resolved,
+        fps: project.fps,
+        width: project.width,
+        height: project.height,
+        duration: c.duration() * c.speed.abs(),
+        speed: c.speed,
+        bake: false,
+        clip: Some(&c.id),
+        head_extra: &head_extra,
+    }
+    .apply(&html);
     Ok(([(header::CONTENT_TYPE, "text/html; charset=utf-8"), (header::CACHE_CONTROL, "no-store")], out).into_response())
 }
 

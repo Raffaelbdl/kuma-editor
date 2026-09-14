@@ -20,7 +20,7 @@ const BLEND_MODES = ["normal", "multiply", "screen", "overlay", "darken", "light
 
 export class Inspector {
   constructor(private host: HTMLElement) {
-    store.subscribe(() => this.render());
+    store.select((s) => [s.project, s.selection, s.templates], () => this.render());
   }
 
   private render() {

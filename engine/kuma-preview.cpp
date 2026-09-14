@@ -209,9 +209,6 @@ private:
         } else if (c.op == "pause") {
             pause();
             emit("pos " + std::to_string(pos_));
-        } else if (c.op == "speed") {
-            speed_ = std::max(0.1, std::min(4.0, std::atof(c.arg.c_str())));
-            emit("ok speed");
         } else {
             emit("err unknown command " + c.op);
         }
@@ -336,7 +333,6 @@ private:
     int length_ = 0;
     int width_ = 0, height_ = 0;
     double fps_ = 30.0;
-    double speed_ = 1.0;
     int rate_ = 48000;
 };
 

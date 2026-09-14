@@ -27,7 +27,7 @@
       <property name="mlt_service">brightness</property>
       <property name="alpha">0=0;-1=1</property>
     </filter>
-    <filter id="clip_c1_fadeout4" in="390" out="404">
+    <filter id="clip_c1_fadeout4" in="375" out="389">
       <property name="mlt_service">brightness</property>
       <property name="alpha">0=1;-1=0</property>
     </filter>

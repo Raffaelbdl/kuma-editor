@@ -225,6 +225,18 @@ pub fn validate(p: &Project, ctx: &ValidationContext) -> Vec<Issue> {
                             ));
                         }
                     }
+                    // The `from` side needs material after its out point; only checkable with probed metadata.
+                    if let ClipSource::Asset { asset, source_in } = &a.src {
+                        if let Some(d) = p.assets.get(asset).and_then(|as_| as_.meta.as_ref()).and_then(|m| m.duration) {
+                            let need = source_in + (a.duration() + half) * a.speed.abs();
+                            if need > d + 1e-6 {
+                                issues.push(Issue::warn(
+                                    format!("{xp}/duration"),
+                                    format!("`{}` has no {half:.2}s of handle after its out point; the dissolve tail will be black", a.id),
+                                ));
+                            }
+                        }
+                    }
                     if half > a.duration() || half > b.duration() {
                         issues.push(Issue::error(format!("{xp}/duration"), "transition longer than the clips it joins"));
                     }

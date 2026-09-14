@@ -4,10 +4,12 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use kuma_core::template::{Region, TemplateManifest};
+
+use crate::inject::Contract;
 use kuma_core::Fps;
 use kuma_mlt::OverlayBake;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 
 pub const HYPERFRAMES_VERSION: &str = "0.8.37";
@@ -97,6 +99,8 @@ pub struct Baker {
     pub browser: Option<PathBuf>,
     /// Force software GL (SwiftShader) for reproducible output. Default true.
     pub software_gl: bool,
+    /// Installed hyperframes version (part of the cache key); `None` if it cannot run.
+    pub version: Option<String>,
 }
 
 impl Baker {
@@ -114,7 +118,9 @@ impl Baker {
             .map(PathBuf::from)
             .or_else(|| std::env::var_os("PUPPETEER_EXECUTABLE_PATH").map(PathBuf::from))
             .or_else(find_playwright_headless_shell);
-        Baker { cache_dir, hyperframes, browser, software_gl: true }
+        let mut b = Baker { cache_dir, hyperframes, browser, software_gl: true, version: None };
+        b.version = b.available().ok();
+        b
     }
 
     pub fn available(&self) -> Result<String, BakeError> {
@@ -132,7 +138,7 @@ impl Baker {
     pub fn key(&self, req: &BakeRequest) -> Result<String, BakeError> {
         let mut h = Sha256::new();
         h.update(b"kuma-bake-v2\n");
-        h.update(HYPERFRAMES_VERSION.as_bytes());
+        h.update(self.version.as_deref().unwrap_or(HYPERFRAMES_VERSION).as_bytes());
         h.update(hash_dir(req.template_dir)?.as_bytes());
         let vars = req.manifest.resolve_vars(req.vars);
         h.update(serde_json::to_vec(&vars).unwrap_or_default());
@@ -190,10 +196,6 @@ impl Baker {
 
         // 2. Effective frame rate implements speed: frame k must show internal time k·s/fps.
         let eff_fps = effective_fps(req.fps, req.speed.abs()).ok_or(BakeError::Speed(req.speed))?;
-        if is_still {
-            // One frame is enough; hyperframes still needs a positive duration.
-        }
-
         // 3. Render.
         let raw_dir = dir.join("raw");
         let (fmt_arg, out_arg) = match req.format {
@@ -387,149 +389,23 @@ fn gcd(a: u64, b: u64) -> u64 {
     if b == 0 { a } else { gcd(b, a % b) }
 }
 
-/// Insert kuma's variable/time contract into the entry HTML.
+/// Apply the kuma contract to the staged entry file.
 fn inject(entry: &Path, vars: &Map<String, Value>, req: &BakeRequest, internal_duration: f64) -> Result<(), BakeError> {
-    let html = stamp_root_duration(&std::fs::read_to_string(entry)?, internal_duration);
-    let css_vars: String = vars
-        .iter()
-        .map(|(k, v)| {
-            let s = match v {
-                Value::String(s) => s.clone(),
-                other => other.to_string(),
-            };
-            format!("--var-{}: {};", k, s.replace(';', ""))
-        })
-        .collect::<Vec<_>>()
-        .join(" ");
-    let payload = json!({
-        "vars": vars,
-        "fps": { "num": req.fps.num, "den": req.fps.den },
-        "width": req.width,
-        "height": req.height,
-        "duration": internal_duration,
-        "speed": req.speed,
-        "bake": true,
-    });
-    let head_script = format!(
-        "<script id=\"kuma-inject\">window.kuma = {payload};</script>\n<style id=\"kuma-vars\">:root {{ {css_vars} }}</style>\n"
-    );
-    let body_script = format!(
-        "<script id=\"kuma-timing\">(function(){{\
-var r=document.querySelector('[data-composition-id]');if(!r)return;\
-r.setAttribute('data-duration',String({internal_duration}));\
-r.setAttribute('data-width','{w}');r.setAttribute('data-height','{h}');\
-}})();</script>\n",
-        w = req.width,
-        h = req.height,
-    );
-    let mut out = if let Some(i) = html.find("<head>") {
-        let (a, b) = html.split_at(i + "<head>".len());
-        format!("{a}\n{head_script}{b}")
-    } else {
-        format!("{head_script}{html}")
-    };
-    out = if let Some(i) = out.rfind("</body>") {
-        let (a, b) = out.split_at(i);
-        format!("{a}{body_script}{b}")
-    } else {
-        format!("{out}{body_script}")
-    };
+    let html = std::fs::read_to_string(entry)?;
+    let out = Contract {
+        vars,
+        fps: req.fps,
+        width: req.width,
+        height: req.height,
+        duration: internal_duration,
+        speed: req.speed,
+        bake: true,
+        clip: None,
+        head_extra: "",
+    }
+    .apply(&html);
     std::fs::write(entry, out)?;
     Ok(())
-}
-
-/// hyperframes sizes the render from the root composition's `data-duration` **as written in
-/// the file**, before any script runs, and mounts/unmounts every timed child by its own
-/// `data-start`/`data-duration`. So the clip's real length must be stamped into the markup:
-/// the root gets `duration`, and every child whose end coincided with the old root default
-/// (i.e. was meant to last "until the end") is stretched to the new end. Children that end
-/// earlier keep their timing; nested compositions are left alone.
-pub fn stamp_root_duration(html: &str, duration: f64) -> String {
-    let Some(marker) = html.find("data-composition-id") else { return html.to_string() };
-    let Some(root_start) = html[..marker].rfind('<') else { return html.to_string() };
-    let Some(end_rel) = html[marker..].find('>') else { return html.to_string() };
-    let root_end = marker + end_rel;
-    let old_default = attr_num(&html[root_start..root_end], "data-duration");
-
-    let mut out = String::with_capacity(html.len() + 64);
-    let mut pos = 0;
-    let mut first_root = true;
-    while let Some(lt_rel) = html[pos..].find('<') {
-        let lt = pos + lt_rel;
-        let Some(gt_rel) = html[lt..].find('>') else { break };
-        let gt = lt + gt_rel;
-        let tag = &html[lt..gt];
-        out.push_str(&html[pos..lt]);
-        let is_root = first_root && lt == root_start;
-        let stamped = if is_root {
-            first_root = false;
-            set_attr(tag, "data-duration", &fmt_secs(duration))
-        } else if let (Some(d0), Some(child_dur)) = (old_default, attr_num(tag, "data-duration")) {
-            let start = attr_num(tag, "data-start").unwrap_or(0.0);
-            let ends_at_root = (start + child_dur - d0).abs() < 1e-6 && !tag.contains("data-composition-src");
-            if ends_at_root && tag.contains("data-start") || (ends_at_root && start == 0.0) {
-                set_attr(tag, "data-duration", &fmt_secs((duration - start).max(0.0)))
-            } else {
-                tag.to_string()
-            }
-        } else {
-            tag.to_string()
-        };
-        out.push_str(&stamped);
-        pos = gt;
-    }
-    out.push_str(&html[pos..]);
-    out
-}
-
-/// Numeric value of `name="…"` / `name='…'` in an opening tag, if present.
-fn attr_num(tag: &str, name: &str) -> Option<f64> {
-    let (_, v_start, v_end) = attr_span(tag, name)?;
-    tag[v_start..v_end].trim().parse().ok()
-}
-
-/// (attr start, value start, value end) for `name=` inside a tag.
-fn attr_span(tag: &str, name: &str) -> Option<(usize, usize, usize)> {
-    let mut from = 0;
-    while let Some(i) = tag[from..].find(name) {
-        let i = from + i;
-        let before_ok = i == 0 || !tag.as_bytes()[i - 1].is_ascii_alphanumeric() && tag.as_bytes()[i - 1] != b'-';
-        let after = &tag[i + name.len()..];
-        let after_trim = after.trim_start();
-        if before_ok && after_trim.starts_with('=') {
-            let eq = i + name.len() + (after.len() - after_trim.len());
-            let rest = &tag[eq + 1..];
-            let rest_start = eq + 1 + (rest.len() - rest.trim_start().len());
-            return Some(match tag[rest_start..].chars().next() {
-                Some(q @ ('"' | '\'')) => {
-                    let vs = rest_start + 1;
-                    let ve = tag[vs..].find(q).map(|x| vs + x).unwrap_or(tag.len());
-                    (i, vs, ve)
-                }
-                _ => {
-                    let ve = tag[rest_start..].find(char::is_whitespace).map(|x| rest_start + x).unwrap_or(tag.len());
-                    (i, rest_start, ve)
-                }
-            });
-        }
-        from = i + name.len();
-    }
-    None
-}
-
-/// Replace (or append) an attribute value in an opening tag.
-fn set_attr(tag: &str, name: &str, value: &str) -> String {
-    match attr_span(tag, name) {
-        Some((_, vs, ve)) => format!("{}{}{}", &tag[..vs], value, &tag[ve..]),
-        None => format!("{tag} {name}=\"{value}\""),
-    }
-}
-
-/// Seconds as a compact decimal (`32.633`, `4`), never exponent notation.
-pub fn fmt_secs(v: f64) -> String {
-    let s = format!("{v:.4}");
-    let s = s.trim_end_matches('0').trim_end_matches('.');
-    if s.is_empty() { "0".into() } else { s.to_string() }
 }
 
 fn copy_dir(src: &Path, dst: &Path) -> std::io::Result<()> {
@@ -609,6 +485,7 @@ fn find_playwright_headless_shell() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[test]
     fn effective_fps_implements_speed() {
@@ -618,28 +495,6 @@ mod tests {
         assert_eq!(effective_fps(Fps::new(30000, 1001), 1.0).unwrap(), "30000/1001");
         assert_eq!(effective_fps(Fps::new(30, 1), 0.7).unwrap(), "300/7");
         assert!(effective_fps(Fps::new(30, 1), 0.05).is_none());
-    }
-
-    #[test]
-    fn stamps_root_duration_only() {
-        let html = "<html><body><div id=\"root\" data-composition-id=\"main\" data-start=\"0\" data-duration=\"4\" data-width=\"1920\"><div class=\"clip\" data-start=\"0\" data-duration=\"4\"></div></div></body></html>";
-        let out = stamp_root_duration(html, 32.5);
-        assert!(out.contains("data-composition-id=\"main\" data-start=\"0\" data-duration=\"32.5\" data-width=\"1920\""), "{out}");
-        // A child that ended together with the old root default is stretched with it…
-        assert!(out.contains("<div class=\"clip\" data-start=\"0\" data-duration=\"32.5\">"), "child stretched: {out}");
-        // …but one that ended earlier keeps its own timing, and a later-starting one that
-        // ended at the root end is stretched relative to its start.
-        let html2 = "<div data-composition-id=\"main\" data-duration=\"4\"><div data-start=\"1\" data-duration=\"1\"></div><div data-start=\"1\" data-duration=\"3\"></div></div>";
-        let out2 = stamp_root_duration(html2, 10.0);
-        assert!(out2.contains("data-start=\"1\" data-duration=\"1\""), "{out2}");
-        assert!(out2.contains("data-start=\"1\" data-duration=\"9\""), "{out2}");
-        // Single quotes, and a root without the attribute.
-        let out = stamp_root_duration("<div data-composition-id='main' data-duration='5'>", 8.0);
-        assert!(out.contains("data-duration='8'"), "{out}");
-        let out = stamp_root_duration("<div data-composition-id=\"main\">", 2.25);
-        assert_eq!(out, "<div data-composition-id=\"main\" data-duration=\"2.25\">");
-        assert_eq!(fmt_secs(32.633), "32.633");
-        assert_eq!(fmt_secs(4.0), "4");
     }
 
     #[test]
@@ -657,9 +512,8 @@ mod tests {
         let html = std::fs::read_to_string(&entry).unwrap();
         assert!(html.contains("window.kuma = "));
         assert!(html.contains("--var-label: hi;"));
-        assert!(html.contains("setAttribute('data-duration',String(2))"));
         assert!(html.contains("data-composition-id=\"main\" data-duration=\"2\""), "markup stamped: {html}");
         assert!(html.find("kuma-inject").unwrap() < html.find("<title>").unwrap());
-        assert!(html.find("kuma-timing").unwrap() < html.find("</body>").unwrap());
+        assert!(!html.contains("<base"), "bakes must not carry the preview-only <base>");
     }
 }

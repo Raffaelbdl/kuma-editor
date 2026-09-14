@@ -28,6 +28,21 @@ class Store {
     return () => this.listeners.delete(fn);
   }
 
+  /**
+   * Subscribe to a slice of the state: `fn` runs only when one of the picked values
+   * changes (by identity). Use this for anything that rebuilds DOM — the playhead moves
+   * 25× per second during playback and must not re-render panels.
+   */
+  select(pick: (s: State) => unknown[], fn: Listener): () => void {
+    let last: unknown[] | null = null;
+    return this.subscribe((s) => {
+      const now = pick(s);
+      if (last && now.length === last.length && now.every((v, i) => v === last![i])) return;
+      last = now;
+      fn(s);
+    });
+  }
+
   set(partial: Partial<State>) {
     this.state = { ...this.state, ...partial };
     for (const l of this.listeners) l(this.state);

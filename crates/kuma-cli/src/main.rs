@@ -53,7 +53,6 @@ enum Cmd {
     /// Sample composited frames as PNGs.
     Sample {
         t0: f64,
-        #[arg(default_value = None)]
         t1: Option<f64>,
         #[arg(short, long, default_value_t = 1)]
         count: usize,
@@ -121,6 +120,11 @@ fn config(cli: &Cli, bind: SocketAddr) -> anyhow::Result<Config> {
     })
 }
 
+/// Load the project state for one-shot commands (no server).
+fn open(cli: &Cli) -> anyhow::Result<std::sync::Arc<kuma_daemon::AppState>> {
+    Ok(std::sync::Arc::new(kuma_daemon::AppState::load(config(cli, "127.0.0.1:0".parse().unwrap())?)?))
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
@@ -181,16 +185,14 @@ async fn main() -> anyhow::Result<()> {
             println!("mcp config    {}", if mcp.is_file() { mcp.display().to_string() } else { "none — run `kuma mcp-config`".into() });
         }
         Cmd::Render { preset, output, supersample } => {
-            let cfg = config(&cli, "127.0.0.1:0".parse().unwrap())?;
-            let state = std::sync::Arc::new(kuma_daemon::AppState::load(cfg)?);
+            let state = open(&cli)?;
             let req = kuma_daemon::jobs::RenderRequest { preset: preset.clone(), output: output.clone(), range: None, supersample: *supersample };
             let st = state.clone();
             let out = tokio::task::spawn_blocking(move || kuma_daemon::jobs::render(&st, &req, &|p, m| eprintln!("[{p:3}%] {m}"))).await??;
             println!("{}", serde_json::to_string_pretty(&out)?);
         }
         Cmd::Bake { clips, supersample } => {
-            let cfg = config(&cli, "127.0.0.1:0".parse().unwrap())?;
-            let state = std::sync::Arc::new(kuma_daemon::AppState::load(cfg)?);
+            let state = open(&cli)?;
             let project = state.project.read().unwrap().clone();
             let only = if clips.is_empty() { None } else { Some(clips.clone()) };
             let ss = *supersample;
@@ -204,8 +206,7 @@ async fn main() -> anyhow::Result<()> {
             }
         }
         Cmd::Sample { t0, t1, count, rect, width } => {
-            let cfg = config(&cli, "127.0.0.1:0".parse().unwrap())?;
-            let state = std::sync::Arc::new(kuma_daemon::AppState::load(cfg)?);
+            let state = open(&cli)?;
             let rect = match rect {
                 Some(s) => {
                     let v: Vec<u32> = s.split(',').map(|x| x.trim().parse()).collect::<Result<_, _>>()?;
@@ -220,15 +221,13 @@ async fn main() -> anyhow::Result<()> {
             println!("{}", serde_json::to_string_pretty(&samples)?);
         }
         Cmd::Compile => {
-            let cfg = config(&cli, "127.0.0.1:0".parse().unwrap())?;
-            let state = kuma_daemon::AppState::load(cfg)?;
+            let state = open(&cli)?;
             let project = state.project.read().unwrap().clone();
             let path = kuma_daemon::jobs::compile_project(&state, &project, Default::default(), "inspect", kuma_mlt::UnbakedPolicy::Skip, None)?;
             print!("{}", std::fs::read_to_string(path)?);
         }
         Cmd::Validate => {
-            let cfg = config(&cli, "127.0.0.1:0".parse().unwrap())?;
-            let state = kuma_daemon::AppState::load(cfg)?;
+            let state = open(&cli)?;
             let project = state.project.read().unwrap().clone();
             let issues = kuma_core::validate(&project, &state.validation_context());
             println!("{}", serde_json::to_string_pretty(&issues)?);
@@ -243,15 +242,13 @@ async fn main() -> anyhow::Result<()> {
             }
         }
         Cmd::Templates => {
-            let cfg = config(&cli, "127.0.0.1:0".parse().unwrap())?;
-            let state = kuma_daemon::AppState::load(cfg)?;
+            let state = open(&cli)?;
             for t in state.template_infos() {
                 println!("{:16} {:24} vars={}", t.id, t.manifest.name, t.manifest.vars.keys().cloned().collect::<Vec<_>>().join(","));
             }
         }
         Cmd::Thumbs { templates } => {
-            let cfg = config(&cli, "127.0.0.1:0".parse().unwrap())?;
-            let state = kuma_daemon::AppState::load(cfg)?;
+            let state = open(&cli)?;
             let project = state.project.read().unwrap().clone();
             let all = state.templates.read().unwrap().clone();
             for (id, (dir, manifest)) in all.iter().filter(|(id, _)| templates.is_empty() || templates.contains(id)) {
@@ -261,8 +258,7 @@ async fn main() -> anyhow::Result<()> {
             }
         }
         Cmd::AddAsset { path, id } => {
-            let cfg = config(&cli, "127.0.0.1:0".parse().unwrap())?;
-            let state = kuma_daemon::AppState::load(cfg)?;
+            let state = open(&cli)?;
             let abs = kuma_daemon::jobs::resolve_path(&state, path);
             let probe = kuma_overlay::probe(&abs).map_err(|e| anyhow::anyhow!(e))?;
             let root = state.config.project_root();

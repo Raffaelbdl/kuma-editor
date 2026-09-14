@@ -7,7 +7,7 @@ import { addItem } from "./timeline";
 
 export class Library {
   constructor(private host: HTMLElement) {
-    store.subscribe(() => this.render());
+    store.select((s) => [s.project, s.templates], () => this.render());
   }
 
   private render() {

@@ -9,7 +9,9 @@
 //! ProRes 4444 MOV is available for hand-off into other tools.
 
 pub mod bake;
+pub mod inject;
 pub mod media;
 
-pub use bake::{stamp_root_duration, BakeError, BakeRequest, Baker, BakeResult, Format};
+pub use bake::{BakeError, BakeRequest, Baker, BakeResult, Format};
+pub use inject::Contract;
 pub use media::{probe, Probe};

@@ -17,7 +17,6 @@ Dependencies (Debian/Ubuntu): `libmlt++-dev libmlt-dev libsdl2-dev libturbojpeg0
 → load <path.mlt>       replace the timeline (keeps position)
 → seek <frame>          show that frame (pauses)
 → play | pause          playback with audio as the master clock
-→ speed <factor>        playback rate (1.0 default)
 → quit
 
 ← ok <what> | err <message>

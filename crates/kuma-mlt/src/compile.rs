@@ -216,9 +216,13 @@ struct Plan<'a> {
     /// Timeline in/out (inclusive), including any transition extension.
     tl_in: i64,
     tl_out: i64,
-    /// Producer in/out (inclusive).
+    /// Producer in/out (inclusive), including any transition extension.
     p_in: i64,
     p_out: i64,
+    /// Frames added before/after the clip's own range for a dissolve. Effects are
+    /// measured from the clip's own start, so keyframes are offset by `pre`.
+    pre: i64,
+    post: i64,
     producer_id: String,
 }
 
@@ -253,9 +257,9 @@ fn compile_track(ctx: &Ctx, track: &Track, w: &mut XmlWriter) -> Result<Option<C
                 }
             }
         }
+        // Lane 0 is the default; a clip only takes the other lane to overlap the clip it
+        // dissolves from.
         let lane = if is_to.contains_key(clip.id.as_str()) { 1 - prev_lane } else { 0 };
-        // Lane 0 is the default; a clip only goes to lane 1 to overlap its predecessor.
-        let lane = if is_to.contains_key(clip.id.as_str()) { lane } else { 0 };
         prev_lane = lane;
 
         let cf = fps.clip_frames(clip.start, clip.end);
@@ -266,23 +270,14 @@ fn compile_track(ctx: &Ctx, track: &Track, w: &mut XmlWriter) -> Result<Option<C
         let len = tl_out - tl_in + 1;
 
         let (p_in, p_out) = match &clip.src {
-            ClipSource::Asset { source_in, .. } => {
-                let asset = &ctx.project.assets[match &clip.src {
-                    ClipSource::Asset { asset, .. } => asset,
-                    _ => unreachable!(),
-                }];
-                if asset.kind == AssetKind::Image {
-                    (0, len - 1)
-                } else {
-                    let sin = fps.frame(source_in / clip.speed.abs()) - before;
-                    let sin = sin.max(0);
-                    (sin, sin + len - 1)
-                }
+            ClipSource::Asset { asset, source_in } if ctx.project.assets[asset].kind != AssetKind::Image => {
+                let sin = (fps.frame(source_in / clip.speed.abs()) - before).max(0);
+                (sin, sin + len - 1)
             }
             _ => (0, len - 1),
         };
         let producer_id = format!("clip_{}", ident(&clip.id));
-        plans.push(Plan { clip, lane, tl_in, tl_out, p_in, p_out, producer_id });
+        plans.push(Plan { clip, lane, tl_in, tl_out, p_in, p_out, pre: before, post: after, producer_id });
     }
     if plans.is_empty() {
         return Ok(None);
@@ -506,7 +501,7 @@ fn emit_filters(ctx: &Ctx, p: &Plan, w: &mut XmlWriter) {
                     let mut rect = Vec::new();
                     let mut rot = Vec::new();
                     for k in keyframes {
-                        let pos = fps.frame(k.t).clamp(0, len - 1);
+                        let pos = (fps.frame(k.t) + p.pre).clamp(0, len - 1);
                         rect.push(format!(
                             "{pos}={}",
                             rect_str(ctx, k.x.unwrap_or(*x), k.y.unwrap_or(*y), k.scale.unwrap_or(*scale), k.opacity.unwrap_or(*opacity))
@@ -553,16 +548,18 @@ fn emit_filters(ctx: &Ctx, p: &Plan, w: &mut XmlWriter) {
                 w.close("filter");
             }
             Effect::Fade { fade_in, fade_out } => {
-                let fi = fps.length(*fade_in).min(len);
+                let own_in = p.p_in + p.pre;
+                let own_out = p.p_out - p.post;
+                let fi = fps.length(*fade_in).min(own_out - own_in + 1);
                 if *fade_in > 0.0 {
-                    w.open("filter", &[("id", next_id("fadein")), ("in", p.p_in.to_string()), ("out", (p.p_in + fi - 1).to_string())]);
+                    w.open("filter", &[("id", next_id("fadein")), ("in", own_in.to_string()), ("out", (own_in + fi - 1).to_string())]);
                     w.property("mlt_service", "brightness");
                     w.property("alpha", "0=0;-1=1");
                     w.close("filter");
                 }
-                let fo = fps.length(*fade_out).min(len);
+                let fo = fps.length(*fade_out).min(own_out - own_in + 1);
                 if *fade_out > 0.0 {
-                    w.open("filter", &[("id", next_id("fadeout")), ("in", (p.p_out - fo + 1).to_string()), ("out", p.p_out.to_string())]);
+                    w.open("filter", &[("id", next_id("fadeout")), ("in", (own_out - fo + 1).to_string()), ("out", own_out.to_string())]);
                     w.property("mlt_service", "brightness");
                     w.property("alpha", "0=1;-1=0");
                     w.close("filter");
@@ -573,7 +570,7 @@ fn emit_filters(ctx: &Ctx, p: &Plan, w: &mut XmlWriter) {
                 w.property("mlt_service", "volume");
                 let s: Vec<String> = keyframes
                     .iter()
-                    .map(|k| format!("{}={}", fps.frame(k.t).clamp(0, len - 1), num(db(k.gain * clip.volume))))
+                    .map(|k| format!("{}={}", (fps.frame(k.t) + p.pre).clamp(0, len - 1), num(db(k.gain * clip.volume))))
                     .collect();
                 w.property("level", s.join(";"));
                 w.close("filter");

@@ -8,13 +8,15 @@ const HEAD = 120;
 
 export class Timeline {
   private root: HTMLDivElement;
+  private playhead: HTMLDivElement | null = null;
   private drag: null | { kind: "move" | "trim-l" | "trim-r"; clip: Clip; ti: number; startX: number; orig: { start: number; end: number; in: number }; ghost: HTMLDivElement; dt: number; toTrack: number } = null;
 
   constructor(private host: HTMLElement) {
     this.root = document.createElement("div");
     this.root.className = "tl";
     host.appendChild(this.root);
-    store.subscribe(() => this.render());
+    store.select((s) => [s.project, s.zoom, s.selection], () => this.render());
+    store.select((s) => [s.playhead], (s) => this.movePlayhead(s.playhead));
     host.addEventListener("wheel", (e) => {
       if (e.ctrlKey || e.metaKey) {
         e.preventDefault();
@@ -70,10 +72,14 @@ export class Timeline {
       el.title = m.label;
       this.root.appendChild(el);
     }
-    const ph = document.createElement("div");
-    ph.className = "tl-playhead";
-    ph.style.left = `${this.x(s.playhead)}px`;
-    this.root.appendChild(ph);
+    this.playhead = document.createElement("div");
+    this.playhead.className = "tl-playhead";
+    this.root.appendChild(this.playhead);
+    this.movePlayhead(s.playhead);
+  }
+
+  private movePlayhead(t: number) {
+    if (this.playhead) this.playhead.style.left = `${this.x(t)}px`;
   }
 
   private trackEl(p: Project, t: Track, ti: number): HTMLDivElement {

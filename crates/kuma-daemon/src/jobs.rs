@@ -53,7 +53,18 @@ where
 {
     let id = state.jobs.next.fetch_add(1, Ordering::SeqCst) + 1;
     let kind = kind.to_string();
-    state.jobs.table.lock().unwrap().insert(id, JobInfo { id, kind: kind.clone(), status: JobStatus::Running { percent: 0, message: "queued".into() } });
+    {
+        let mut table = state.jobs.table.lock().unwrap();
+        // Keep the table bounded: drop the oldest finished jobs beyond a hundred.
+        if table.len() > 100 {
+            let mut done: Vec<u64> = table.iter().filter(|(_, j)| !matches!(j.status, JobStatus::Running { .. })).map(|(k, _)| *k).collect();
+            done.sort_unstable();
+            for k in done.into_iter().take(table.len() - 100) {
+                table.remove(&k);
+            }
+        }
+        table.insert(id, JobInfo { id, kind: kind.clone(), status: JobStatus::Running { percent: 0, message: "queued".into() } });
+    }
     let st = state.clone();
     let k = kind.clone();
     tokio::task::spawn_blocking(move || {
@@ -230,7 +241,9 @@ pub fn sample_frames(state: &AppState, req: &SampleRequest, progress: &dyn Fn(u8
         let t = if count == 1 { req.t0 } else { req.t0 + (t1 - req.t0) * i as f64 / (count - 1) as f64 };
         let frame = project.fps.frame(t);
         progress((50 + 50 * i / count) as u8, &format!("frame {frame}"));
-        let stamp = format!("{}_{}", project.revision, frame);
+        // The overlays flag is part of the key: the UI's snapshot (no overlays) and the
+        // agent's sample (with overlays) must never share a cached frame.
+        let stamp = format!("{}_{}{}", project.revision, frame, if req.overlays { "o" } else { "" });
         let full = out_dir.join(format!("f{stamp}.png"));
         if !full.is_file() {
             kuma_mlt::melt::snapshot(&mlt, frame, &full, None)?;

@@ -39,7 +39,7 @@ function topbar(preview: Preview) {
   const status = document.createElement("span");
   status.className = "status";
   el.append(name, rev, undo, redo, spacer, presets, render, reload, status);
-  store.subscribe((s) => {
+  store.select((s) => [s.project, s.connected, s.jobs], (s) => {
     name.textContent = s.project?.name || "kuma";
     rev.textContent = s.project ? `r${s.project.revision}${s.connected ? "" : " · offline"}` : "";
     const running = Object.entries(s.jobs).filter(([, j]) => !j.done);

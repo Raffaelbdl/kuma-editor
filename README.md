@@ -97,8 +97,8 @@ kuma add-asset media/screen.mp4
 kuma serve                                               # open http://127.0.0.1:7455 (--bind / KUMA_BIND to change)
 ```
 
-Drag templates and assets onto the timeline, scrub, edit vars in the inspector, press
-**Render**. Output lands in `renders/`.
+Drag bin entries onto the timeline, scrub, edit vars in the inspector, press **Render**.
+Output lands in `renders/`.
 
 ### Claude Code
 
@@ -123,7 +123,7 @@ claude mcp add --scope user    kuma -- kuma mcp --project /abs/path.kuma.json  #
 `kuma mcp` starts the daemon in-process if none is running on the port, so the browser UI
 and the agent always share one state. Tools: `get_project`, `get_schema`, `apply_edits`,
 `undo`, `redo`, `validate_project`, `list_templates`, `template_guide`, `list_presets`,
-`add_asset`, `probe_asset`, **`sample_frames`**, `bake_overlay`, `render`, `job_status`,
+`add_media`, `probe_media`, **`sample_frames`**, `bake_overlay`, `render`, `job_status`,
 `health`. `template_guide` returns the overlay authoring contract
 (`library/overlays/CLAUDE.md`) so the agent can write templates into the library or the
 project.
@@ -143,23 +143,32 @@ kuma validate | thumbs | library | doctor
 ```json
 {
   "fps": { "num": 30000, "den": 1001 }, "width": 1920, "height": 1080,
-  "assets": { "screen": { "path": "media/screen.mp4" } },
+  "bin": {
+    "screen": { "name": "Screen recording", "source": { "path": "media/screen.mp4", "kind": "video" } },
+    "paris":  { "name": "Paris tag", "source": { "template": "location-tag", "vars": { "label": "Paris" } } },
+    "navy":   { "name": "Navy card", "source": { "color": "#102030" } }
+  },
   "tracks": [
     { "id": "v1", "kind": "video", "clips": [
-      { "id": "c1", "start": 0, "end": 12.5, "src": { "asset": "screen", "in": 3.2 },
+      { "id": "c1", "start": 0, "end": 12.5, "bin": "screen", "in": 3.2,
         "effects": [
           { "type": "crop", "left": 0.05, "right": 0.05 },
           { "type": "transform", "keyframes": [ { "t": 0, "scale": 1 }, { "t": 3, "scale": 1.4, "x": -120 } ] } ] } ] },
     { "id": "o1", "kind": "overlay", "clips": [
-      { "id": "o1c1", "start": 2, "end": 8, "src": { "overlay": "location-tag", "vars": { "label": "Paris" } },
+      { "id": "o1c1", "start": 2, "end": 8, "bin": "paris",
         "speed": 0.5, "effects": [ { "type": "blend", "mode": "screen" } ] } ] }
   ]
 }
 ```
 
-Seconds everywhere, `end` exclusive, fps rational, tracks bottom-up. Overlay clips take
-the same effects as video clips. The full schema: `GET /api/schema` or the `get_schema`
-tool.
+**The bin holds everything placeable** — media files, configured overlays and colours —
+each with an id, a name and optional probed metadata. A clip is a *placement*: it says
+which entry, when, how fast and with which effects, and never carries a source of its own.
+So an overlay's text lives on its bin entry and every placement of it follows; a second
+wording is a second entry. Overlay clips take the same effects as video clips.
+
+Seconds everywhere, `end` exclusive, fps rational, tracks bottom-up, `in` meaningful only
+for video and audio entries. The full schema: `GET /api/schema` or the `get_schema` tool.
 
 ## Overlay templates
 

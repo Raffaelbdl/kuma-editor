@@ -45,6 +45,10 @@ Chrome headless shell if hyperframes should not download one.
 
 - Times in the model are seconds; `end` is exclusive; fps is rational. Seconds → frames
   happens once, in `Fps::frame`. Never do frame math anywhere else.
+- The `bin` holds everything placeable (media, configured overlays, colours); a clip is a
+  placement referencing one entry and never carries a source. What is shown lives on the
+  entry, when it is shown lives on the clip. Nothing has shipped yet, so the format has no
+  upgrade path: changing it means bumping `PROJECT_VERSION` and writing one.
 - Every MLT detail (inclusive in/out, `<blank length>`, background track, `qtblend`/`mix`
   transitions, A/B lanes for dissolves) stays in `crates/kuma-mlt/src/compile.rs`.
   `tests/fixtures/reference.mlt` is a golden file: regenerate with

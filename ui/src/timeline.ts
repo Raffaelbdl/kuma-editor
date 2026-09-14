@@ -2,8 +2,8 @@
 
 import { button, el } from "./dom";
 import { store, toast } from "./store";
-import type { Clip, PatchOp, Project, Track, TrackKind } from "./types";
-import { clipKind, freeId, isAsset, isOverlay } from "./types";
+import type { BinItem, Clip, PatchOp, Project, Track, TrackKind } from "./types";
+import { binItem, clipKind, freeId, isFileSource, isOverlaySource, isTimedMedia, itemKind } from "./types";
 
 const HEAD = 120;
 
@@ -123,8 +123,11 @@ export class Timeline {
     box.dataset.id = c.id;
     box.style.left = `${this.x(c.start) - HEAD}px`;
     box.style.width = `${w}px`;
-    const name = isOverlay(c) ? c.src.overlay : isAsset(c) ? c.src.asset : "colour";
-    const sub = isOverlay(c) ? Object.values(c.src.vars ?? {}).find((v) => typeof v === "string") ?? "" : c.speed !== 1 ? `${c.speed}×` : "";
+    const item = binItem(p, c);
+    const name = item ? item.name || c.bin : `? ${c.bin}`;
+    // The template is worth showing only when the entry was not named after it.
+    const template = item && isOverlaySource(item.source) && item.source.template !== name ? item.source.template : "";
+    const sub = c.speed !== 1 ? `${c.speed}×` : template;
     box.title = `${c.id}  ${c.start.toFixed(2)}–${c.end.toFixed(2)}s`;
     const hl = el("div", "handle l");
     const hr = el("div", "handle r");
@@ -153,7 +156,7 @@ export class Timeline {
     const ghost = el.cloneNode(true) as HTMLDivElement;
     ghost.classList.add("ghost");
     el.parentElement!.appendChild(ghost);
-    this.drag = { kind, clip, ti, startX: e.clientX, orig: { start: clip.start, end: clip.end, in: isAsset(clip) ? clip.src.in ?? 0 : 0 }, ghost, toTrack: ti };
+    this.drag = { kind, clip, ti, startX: e.clientX, orig: { start: clip.start, end: clip.end, in: clip.in ?? 0 }, ghost, toTrack: ti };
     const move = (ev: PointerEvent) => this.onDragMove(ev);
     const up = () => { window.removeEventListener("pointermove", move); window.removeEventListener("pointerup", up); this.endDrag(); };
     window.addEventListener("pointermove", move);
@@ -191,7 +194,8 @@ export class Timeline {
       start = Math.min(end - 1 / store.fps, Math.max(0, this.snapT(d.orig.start + dt, d.clip)));
       // Cannot reveal material before the source's first frame (handles scale with speed).
       const speed = Math.abs(d.clip.speed) || 1;
-      if (isAsset(d.clip) && d.orig.in + (start - d.orig.start) * speed < 0) start = store.snap(d.orig.start - d.orig.in / speed);
+      const timed = isTimedMedia(binItem(store.state.project!, d.clip));
+      if (timed && d.orig.in + (start - d.orig.start) * speed < 0) start = store.snap(d.orig.start - d.orig.in / speed);
     } else {
       end = Math.max(start + 1 / store.fps, this.snapT(d.orig.end + dt, d.clip));
     }
@@ -212,8 +216,8 @@ export class Timeline {
     const path = store.clipPath(d.clip.id);
     if (!path) return; // the clip went away mid-drag (undo, agent edit)
     const ops: PatchOp[] = [];
-    if (d.kind === "trim-l" && isAsset(d.clip)) {
-      ops.push({ op: "replace", path: `${path}/src/in`, value: Math.max(0, d.orig.in + (start - d.orig.start) * Math.abs(d.clip.speed)) });
+    if (d.kind === "trim-l" && isTimedMedia(binItem(store.state.project!, d.clip))) {
+      ops.push({ op: "replace", path: `${path}/in`, value: Math.max(0, d.orig.in + (start - d.orig.start) * Math.abs(d.clip.speed)) });
     }
     if (d.toTrack !== d.ti) {
       // Transitions are per track: any that involved this clip go with the cut.
@@ -233,36 +237,60 @@ export class Timeline {
     e.preventDefault();
     const data = e.dataTransfer?.getData("application/x-kuma");
     if (!data) return;
-    const item = JSON.parse(data) as { template?: string; asset?: string };
+    const payload = JSON.parse(data) as { template?: string; bin?: string };
     const rect = this.root.getBoundingClientRect();
     const t = store.snap(this.t(e.clientX - rect.left));
     const row = (e.target as HTMLElement).closest(".tl-track") as HTMLElement | null;
     const ti = row ? Number(row.dataset.ti) : -1;
-    await addItem(item, t, ti);
+    if (payload.bin) await placeBinItem(payload.bin, t, ti);
+    else if (payload.template) await addFromLibrary(payload.template, t, ti);
   }
 }
 
-/** Add a template instance or an asset clip at time `t` on track `ti`, falling back to the
- *  first track of the right kind (created if none exists). If the slot is taken the clip
- *  is appended after the track's last clip instead. */
-export async function addItem(item: { template?: string; asset?: string }, t: number, ti = -1) {
+const TRACK_FOR: Record<string, TrackKind> = { overlay: "overlay", audio: "audio", video: "video", image: "video", color: "video" };
+
+/** Place an existing bin entry at time `t` on track `ti`. */
+export async function placeBinItem(binId: string, t: number, ti = -1) {
   const p = store.state.project!;
-  let clip: Clip;
-  let kind: TrackKind;
-  const base = { speed: 1, volume: 1, muted: false, effects: [], label: "" };
-  if (item.template) {
-    const tpl = store.state.templates.find((x) => x.id === item.template);
-    const d = tpl?.manifest.duration_default ?? 4;
-    clip = { id: store.newId("o"), start: t, end: t + d, src: { overlay: item.template, vars: {} }, ...base };
-    kind = "overlay";
-  } else if (item.asset) {
-    const a = p.assets[item.asset];
-    const d = a?.meta?.duration ?? 5;
-    clip = { id: store.newId("c"), start: t, end: t + d, src: { asset: item.asset, in: 0 }, ...base };
-    kind = a?.kind === "audio" ? "audio" : "video";
-  } else return;
+  const item = p.bin[binId];
+  if (!item) return;
+  const kind = TRACK_FOR[itemKind(item)];
+  const d = defaultDuration(item);
+  const clip: Clip = { id: store.newId(kind === "overlay" ? "o" : "c"), start: t, end: t + d, bin: binId, in: 0, speed: 1, volume: 1, muted: false, effects: [], label: "" };
+  await place(clip, kind, ti, []);
+}
+
+/** Add a library template to the bin and place it, in one patch. */
+export async function addFromLibrary(templateId: string, t: number, ti = -1) {
+  const p = store.state.project!;
+  const tpl = store.state.templates.find((x) => x.id === templateId);
+  const binId = uniqueId(templateId, Object.keys(p.bin));
+  const item: BinItem = { name: tpl?.manifest.name || templateId, source: { template: templateId, vars: {} } };
+  const d = tpl?.manifest.duration_default ?? 4;
+  const clip: Clip = { id: store.newId("o"), start: t, end: t + d, bin: binId, in: 0, speed: 1, volume: 1, muted: false, effects: [], label: "" };
+  await place(clip, "overlay", ti, [{ op: "add", path: `/bin/${binId}`, value: item }]);
+}
+
+function defaultDuration(item: BinItem): number {
+  if (isFileSource(item.source)) return item.meta?.duration ?? 5;
+  return 4;
+}
+
+/** `base`, or `base-2`, `base-3`… if taken. Bin ids allow letters, digits, `_` and `-`. */
+function uniqueId(base: string, taken: Iterable<string>): string {
+  const set = new Set(taken);
+  if (!set.has(base)) return base;
+  let n = 2;
+  while (set.has(`${base}-${n}`)) n++;
+  return `${base}-${n}`;
+}
+
+/** Append `clip` to the first track of `kind` (created if none exists), after `pre` ops.
+ *  If the slot is taken the clip goes after the track's last clip instead. */
+async function place(clip: Clip, kind: TrackKind, ti: number, pre: PatchOp[]) {
+  const p = store.state.project!;
   if (ti < 0 || p.tracks[ti]?.kind !== kind) ti = p.tracks.findIndex((tr) => tr.kind === kind);
-  const ops: PatchOp[] = [];
+  const ops: PatchOp[] = [...pre];
   if (ti < 0) {
     // No track of that kind yet (e.g. a project created by hand): add one, then the clip.
     const { op, index } = newTrackOp(kind);
@@ -270,7 +298,6 @@ export async function addItem(item: { template?: string; asset?: string }, t: nu
     ops.push(op);
     toast(`Added a ${kind} track`, "ok");
   } else {
-    // Avoid overlaps: push to the end of the track if the slot is taken.
     const track = p.tracks[ti];
     if (track.clips.some((c) => clip.start < c.end && clip.end > c.start)) {
       const endT = Math.max(0, ...track.clips.map((c) => c.end));

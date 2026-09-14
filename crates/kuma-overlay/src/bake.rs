@@ -257,14 +257,18 @@ impl Baker {
 
     /// Bake a library thumbnail for a template — a 480px-wide frame about 1 s in, after
     /// most entrance animations have settled — written to `<template>/thumb.png`.
-    pub fn thumbnail(&self, template_dir: &Path, manifest: &TemplateManifest) -> Result<PathBuf, BakeError> {
-        let vars = Map::new();
+    /// Render a still of `template_dir` with `vars` to `out`. Used both for a template's
+    /// own `thumb.png` (manifest defaults) and for a bin entry's thumbnail, which shows
+    /// that entry's actual configuration.
+    pub fn thumbnail(&self, template_dir: &Path, manifest: &TemplateManifest, vars: &Map<String, Value>, out: &Path) -> Result<(), BakeError> {
         // Three frames at 2 fps over 1.5 s: the last one sits at t = 1.0 s.
-        let req = BakeRequest { template_dir, manifest, vars: &vars, fps: Fps::new(2, 1), width: 480, height: 270, duration: 1.5, speed: 1.0 };
+        let req = BakeRequest { template_dir, manifest, vars, fps: Fps::new(2, 1), width: 480, height: 270, duration: 1.5, speed: 1.0 };
         let r = self.bake(&req)?;
-        let out = template_dir.join(THUMB);
-        std::fs::copy(r.dir.join("frames").join(frame_name(r.frames)), &out)?;
-        Ok(out)
+        if let Some(dir) = out.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        std::fs::copy(r.dir.join("frames").join(frame_name(r.frames)), out)?;
+        Ok(())
     }
 }
 

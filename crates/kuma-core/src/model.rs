@@ -8,7 +8,7 @@ use serde_json::{Map, Value};
 
 use crate::time::Fps;
 
-pub type AssetId = String;
+pub type BinId = String;
 pub type ClipId = String;
 pub type TrackId = String;
 
@@ -16,7 +16,8 @@ pub type TrackId = String;
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Project {
-    /// Format version. Always 1 for now.
+    /// Format version. Always 1 for now; bumping it means writing an upgrade step for
+    /// documents already on disk.
     #[serde(default = "default_version")]
     pub version: u32,
     /// Human-readable project name.
@@ -37,9 +38,11 @@ pub struct Project {
     /// mixes at 48 kHz regardless.
     #[serde(default = "default_sample_rate")]
     pub sample_rate: u32,
-    /// Media referenced by clips, keyed by a short stable id.
+    /// Everything this project can place on a track — media files, overlay instances and
+    /// colours — keyed by a short stable id. Clips reference an entry; they never carry a
+    /// source of their own.
     #[serde(default)]
-    pub assets: BTreeMap<AssetId, Asset>,
+    pub bin: BTreeMap<BinId, BinItem>,
     /// Tracks in **bottom-to-top** compositing order: `tracks[0]` is painted first.
     #[serde(default)]
     pub tracks: Vec<Track>,
@@ -71,7 +74,7 @@ impl Default for Project {
             width: 1920,
             height: 1080,
             sample_rate: 48000,
-            assets: BTreeMap::new(),
+            bin: BTreeMap::new(),
             tracks: Vec::new(),
             markers: Vec::new(),
         }
@@ -125,6 +128,15 @@ impl Project {
             .find_map(|t| t.clips.iter().find(|c| c.id == id).map(|c| (t, c)))
     }
 
+    /// The bin entry a clip plays, if it resolves.
+    pub fn item(&self, clip: &Clip) -> Option<&BinItem> {
+        self.bin.get(&clip.bin)
+    }
+
+    /// Lowest free `<prefix><n>` bin id.
+    pub fn free_bin_id(&self, prefix: &str) -> BinId {
+        (1..).map(|n| format!("{prefix}{n}")).find(|id| !self.bin.contains_key(id)).unwrap_or_default()
+    }
 }
 
 impl Track {
@@ -144,26 +156,77 @@ pub fn is_valid_id(s: &str) -> bool {
     matches!(chars.next(), Some(c) if c.is_ascii_alphabetic() || c == '_') && chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
 }
 
-/// A media file on disk.
+/// One entry in the project bin: something that can occupy time on a track. A clip is a
+/// placement of one of these, so everything that describes *what* is shown lives here and
+/// everything that describes *when* lives on the clip.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub struct Asset {
-    /// Path relative to the project directory (or absolute).
-    pub path: String,
+pub struct BinItem {
+    /// Display name in the library browser. Falls back to the id when empty.
     #[serde(default)]
-    pub kind: AssetKind,
-    /// Optional low-resolution proxy used instead of `path` when compiling for preview
-    /// (never for renders or samples).
+    pub name: String,
+    pub source: BinSource,
+    /// Probed metadata for file entries, filled in by `probe_media`. Informational.
     #[serde(default)]
-    pub proxy: Option<String>,
-    /// Probed metadata, filled in by `probe_asset`. Informational.
-    #[serde(default)]
-    pub meta: Option<AssetMeta>,
+    pub meta: Option<MediaMeta>,
+}
+
+/// What a bin entry actually is. Exactly one variant.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(untagged, deny_unknown_fields)]
+pub enum BinSource {
+    /// A media file on disk: video, audio or a still image.
+    File {
+        /// Path relative to the project directory (or absolute).
+        path: String,
+        #[serde(default)]
+        kind: MediaKind,
+        /// Optional low-resolution stand-in used instead of `path` when compiling for
+        /// preview (never for renders or samples).
+        #[serde(default)]
+        proxy: Option<String>,
+    },
+    /// A configured HTML overlay: a template id plus the variables for this instance.
+    /// Two entries of the same template with different vars are two separate items.
+    Overlay {
+        /// Template id, resolved against the template libraries.
+        template: String,
+        /// Variable overrides, validated against the template manifest.
+        #[serde(default)]
+        vars: Map<String, Value>,
+    },
+    /// A solid colour.
+    Color {
+        /// CSS-style colour, e.g. `#000000` or `#ff4f00cc`.
+        color: String,
+    },
+}
+
+impl BinItem {
+    /// True when the source carries its own timeline to seek into, so a clip's `in` is
+    /// meaningful and speed becomes a time warp. Stills, colours and overlays all start
+    /// at their own zero and are generated to fit the clip instead.
+    pub fn is_timed_media(&self) -> bool {
+        matches!(&self.source, BinSource::File { kind, .. } if *kind != MediaKind::Image)
+    }
+
+    pub fn is_overlay(&self) -> bool {
+        matches!(self.source, BinSource::Overlay { .. })
+    }
+
+    /// What the browser shows for this entry.
+    pub fn display_name<'a>(&'a self, id: &'a str) -> &'a str {
+        if self.name.is_empty() {
+            id
+        } else {
+            &self.name
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
-pub enum AssetKind {
+pub enum MediaKind {
     #[default]
     Video,
     Audio,
@@ -173,7 +236,7 @@ pub enum AssetKind {
 /// Informational, written by the probe, and the probe's output evolves: unknown keys are
 /// tolerated so a project file written by another version still loads.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
-pub struct AssetMeta {
+pub struct MediaMeta {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub duration: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -217,10 +280,10 @@ pub struct Track {
     pub transitions: Vec<Transition>,
 }
 
-/// One item on the timeline.
+/// One placement of a bin entry on the timeline.
 ///
 /// Every field of the editing model is always serialized, so a JSON Patch `replace` on
-/// any documented path succeeds (only probed `AssetMeta` and manifest specs skip nulls).
+/// any documented path succeeds (only probed `MediaMeta` and manifest specs skip nulls).
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Clip {
@@ -229,8 +292,12 @@ pub struct Clip {
     pub start: f64,
     /// Timeline end, seconds, **exclusive**.
     pub end: f64,
-    /// What this clip shows.
-    pub src: ClipSource,
+    /// The bin entry this clip plays.
+    pub bin: BinId,
+    /// Offset into the source media, seconds. File entries only: a still, colour or
+    /// overlay is generated to fit the clip and has nothing to offset into.
+    #[serde(default, rename = "in")]
+    pub source_in: f64,
     /// Playback speed. 1.0 = normal, 0.5 = half speed, -1.0 = reverse.
     /// For overlays this is applied at bake time (time-remapped seek); for media via MLT timewarp.
     #[serde(default = "one")]
@@ -257,32 +324,6 @@ impl Clip {
     pub fn duration(&self) -> f64 {
         self.end - self.start
     }
-}
-
-/// Where a clip's pixels/samples come from. Exactly one variant.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-#[serde(untagged, deny_unknown_fields)]
-pub enum ClipSource {
-    /// A media asset.
-    Asset {
-        asset: AssetId,
-        /// Offset into the source media, seconds. Default 0.
-        #[serde(default, rename = "in")]
-        source_in: f64,
-    },
-    /// An HTML overlay template instance.
-    Overlay {
-        /// Template id — a directory name under `overlays/`.
-        overlay: String,
-        /// Variable overrides, validated against the template manifest.
-        #[serde(default)]
-        vars: Map<String, Value>,
-    },
-    /// A solid colour.
-    Color {
-        /// CSS-style colour, e.g. `#000000` or `#ff4f00cc`.
-        color: String,
-    },
 }
 
 /// A keyframed transform sample. Fields not set (`null`) fall back to the effect's
@@ -447,23 +488,25 @@ mod tests {
         let json = r#"{
           "version": 1, "name": "demo",
           "fps": {"num": 30000, "den": 1001}, "width": 1920, "height": 1080,
-          "assets": { "a1": { "path": "media/screen.mp4", "kind": "video" } },
+          "bin": {
+            "screen": { "name": "Screen recording", "source": { "path": "media/screen.mp4", "kind": "video" } },
+            "third":  { "name": "Intro title", "source": { "template": "lower-third", "vars": { "title": "kuma" } } }
+          },
           "tracks": [
             { "id": "v1", "kind": "video", "clips": [
-              { "id": "c1", "start": 0.0, "end": 12.5, "src": { "asset": "a1", "in": 3.2 },
+              { "id": "c1", "start": 0.0, "end": 12.5, "bin": "screen", "in": 3.2,
                 "effects": [
                   { "type": "crop", "left": 0.05, "right": 0.05 },
                   { "type": "transform", "keyframes": [
                     { "t": 0.0, "scale": 1.0 }, { "t": 3.0, "scale": 1.4, "x": -120 } ] } ] } ] },
             { "id": "o1", "kind": "overlay", "clips": [
-              { "id": "o_c1", "start": 2.0, "end": 8.0,
-                "src": { "overlay": "lower-third", "vars": { "title": "kuma" } },
-                "speed": 0.5,
+              { "id": "o_c1", "start": 2.0, "end": 8.0, "bin": "third", "speed": 0.5,
                 "effects": [ { "type": "blend", "mode": "screen" }, { "type": "blur", "radius": 2 } ] } ] }
           ]
         }"#;
         let p: Project = serde_json::from_str(json).expect("parse");
-        assert!(matches!(p.tracks[1].clips[0].src, ClipSource::Overlay { .. }));
+        assert!(p.item(&p.tracks[1].clips[0]).unwrap().is_overlay());
+        assert!(p.item(&p.tracks[0].clips[0]).unwrap().is_timed_media());
         assert_eq!(p.duration(), 12.5);
     }
 
@@ -472,7 +515,7 @@ mod tests {
         let json = r#"{ "tracks": [ { "id": "v1", "clipz": [] } ] }"#;
         assert!(serde_json::from_str::<Project>(json).is_err());
         // Also inside the untagged source enum, where serde would otherwise drop them.
-        let json = r#"{ "tracks": [ { "id": "v1", "clips": [ { "id": "c", "start": 0, "end": 1, "src": { "asset": "a", "offset": 3 } } ] } ] }"#;
+        let json = r#"{ "bin": { "a": { "source": { "path": "x.mp4", "offset": 3 } } } }"#;
         assert!(serde_json::from_str::<Project>(json).is_err());
     }
 

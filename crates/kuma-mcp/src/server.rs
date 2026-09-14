@@ -20,11 +20,16 @@ Tracks composite bottom-up. Edit with `apply_edits` (RFC 6902 JSON Patch) and pa
 you read, so you never overwrite a human edit made meanwhile. Every edit is validated atomically and
 undoable; label your edits with `note`.
 
-Overlays are HTML templates (`list_templates`): a clip on an `overlay` track references a template id
-and `vars`. Templates live in the user's library (`~/.local/share/kuma/overlays/<id>/`) or in the
-project's own `overlays/<id>/`, as a folder with `index.html` + `template.json`; call `template_guide`
-before authoring one. Overlays are live DOM in the editor's preview and are baked to alpha frames at
-export.
+Everything placeable lives in `bin`, keyed by a short id: media files (`{"source": {"path": …}}`),
+configured overlays (`{"source": {"template": …, "vars": {…}}}`) and colours. A clip is a *placement*
+of one entry: it carries `bin`, `start`, `end`, `in`, `speed` and `effects`, never a source of its
+own. So changing an overlay's text edits its bin entry and every placement follows; to vary the text,
+add a second entry. Add media with `add_media` rather than by hand.
+
+Overlay entries reference an HTML template (`list_templates`). Templates live in the user's library
+(`~/.local/share/kuma/overlays/<id>/`) or in the project's own `overlays/<id>/`, as a folder with
+`index.html` + `template.json`; call `template_guide` before authoring one. Overlays are live DOM in
+the editor's preview and are baked to alpha frames at export.
 
 To look at the footage, call `sample_frames` with a time range (and an optional pixel `rect`); it
 returns the composited frames as images plus their PNG paths.
@@ -140,10 +145,10 @@ pub struct Render {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
-pub struct AddAsset {
+pub struct AddMedia {
     /// Media path relative to the project directory (or absolute).
     pub path: String,
-    /// Asset id; defaults to a slug of the file name.
+    /// Bin id; defaults to a slug of the file name.
     #[serde(default)]
     pub id: Option<String>,
     #[serde(default)]
@@ -162,7 +167,7 @@ pub struct JobArg {
 
 #[tool_router]
 impl KumaServer {
-    #[tool(description = "Read the whole project document (tracks, clips, effects, assets) including its current revision.")]
+    #[tool(description = "Read the whole project document (bin, tracks, clips, effects) including its current revision.")]
     async fn get_project(&self) -> Result<CallToolResult, McpError> {
         self.get("/api/project").await
     }
@@ -208,14 +213,14 @@ impl KumaServer {
         self.get("/api/presets").await
     }
 
-    #[tool(description = "Probe a media file with ffprobe: duration, size, fps, audio.")]
-    async fn probe_asset(&self, Parameters(p): Parameters<PathArg>) -> Result<CallToolResult, McpError> {
-        Ok(ok_json(&self.client.get_query("/api/assets/probe", &[("path", &p.path)]).await.map_err(err)?))
+    #[tool(description = "Probe a media file with ffprobe: duration, size, fps, audio. Does not change the project.")]
+    async fn probe_media(&self, Parameters(p): Parameters<PathArg>) -> Result<CallToolResult, McpError> {
+        Ok(ok_json(&self.client.get_query("/api/media/probe", &[("path", &p.path)]).await.map_err(err)?))
     }
 
-    #[tool(description = "Probe a media file and register it as a project asset. Returns the asset id to use in clips.")]
-    async fn add_asset(&self, Parameters(p): Parameters<AddAsset>) -> Result<CallToolResult, McpError> {
-        self.post("/api/assets", &json!({ "path": p.path, "id": p.id, "base_revision": p.base_revision, "origin": "claude: add asset" })).await
+    #[tool(description = "Probe a media file and add it to the project bin. Returns the bin id to reference from a clip.")]
+    async fn add_media(&self, Parameters(p): Parameters<AddMedia>) -> Result<CallToolResult, McpError> {
+        self.post("/api/bin", &json!({ "path": p.path, "id": p.id, "base_revision": p.base_revision, "origin": "claude: add media" })).await
     }
 
     #[tool(description = "Render exact composited frames of the timeline (through the real MLT graph, overlays included) and return them as images. Use a rect to zoom into a region. Frames are also written as PNGs whose paths are returned.")]

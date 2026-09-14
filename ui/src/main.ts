@@ -6,7 +6,7 @@ import { Preview } from "./preview";
 import { fmtTime, store, toast } from "./store";
 import { addTrack, Timeline } from "./timeline";
 import type { Clip, PatchOp, TrackKind } from "./types";
-import { isAsset, shiftEffect, trimEffect } from "./types";
+import { binItem, isTimedMedia, shiftEffect, trimEffect } from "./types";
 
 async function main() {
   await store.init();
@@ -89,7 +89,8 @@ async function splitAtPlayhead() {
   const cut = t - c.start;
   const left: Clip = { ...c, end: t, effects: c.effects.map((e) => trimEffect(e, cut)) };
   const right: Clip = { ...c, id: store.newId(c.id + "_"), start: t, effects: c.effects.map((e) => shiftEffect(e, cut)) };
-  if (isAsset(right)) right.src = { ...right.src, in: (right.src.in ?? 0) + cut * Math.abs(c.speed) };
+  // Both halves keep playing the same bin entry; only the right one moves its in point.
+  if (isTimedMedia(binItem(store.state.project!, c))) right.in = (c.in ?? 0) + cut * Math.abs(c.speed);
   const path = `/tracks/${f.ti}/clips/${f.ci}`;
   const ops: PatchOp[] = [{ op: "replace", path, value: left }, { op: "add", path: `/tracks/${f.ti}/clips/-`, value: right }];
   if (f.track.transitions.some((x) => x.from === c.id)) {

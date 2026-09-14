@@ -35,11 +35,11 @@ impl Issue {
 /// What the validator needs from the outside world.
 #[derive(Debug, Default, Clone)]
 pub struct ValidationContext {
-    /// Project directory; asset paths resolve against it.
+    /// Project directory; bin paths resolve against it.
     pub root: PathBuf,
     /// Loaded overlay templates by id.
     pub templates: BTreeMap<String, (PathBuf, TemplateManifest)>,
-    /// If false, missing asset files are warnings rather than errors (useful for tests).
+    /// If false, missing media files are not checked at all (useful for tests).
     pub check_files: bool,
 }
 
@@ -56,15 +56,36 @@ pub fn validate(p: &Project, ctx: &ValidationContext) -> Vec<Issue> {
         issues.push(Issue::error("/width", "width/height must be positive even numbers"));
     }
 
-    for (id, a) in &p.assets {
-        if ctx.check_files {
-            let path = if std::path::Path::new(&a.path).is_absolute() {
-                PathBuf::from(&a.path)
-            } else {
-                ctx.root.join(&a.path)
-            };
-            if !path.is_file() {
-                issues.push(Issue::error(format!("/assets/{id}/path"), format!("file not found: {}", a.path)));
+    // Bin entries are checked once each, however many clips place them. Overlay vars are
+    // checked here rather than per clip, because the entry is what carries them now.
+    let mut bin_ids = HashSet::new();
+    for (id, item) in &p.bin {
+        let ip = format!("/bin/{id}");
+        check_id(&mut issues, &mut bin_ids, id, format!("{ip}/id"), "bin");
+        match &item.source {
+            BinSource::File { path, .. } => {
+                if ctx.check_files {
+                    let full = if std::path::Path::new(path).is_absolute() { PathBuf::from(path) } else { ctx.root.join(path) };
+                    if !full.is_file() {
+                        issues.push(Issue::error(format!("{ip}/source/path"), format!("file not found: {path}")));
+                    }
+                }
+            }
+            BinSource::Overlay { template, vars } => match ctx.templates.get(template) {
+                None if ctx.templates.is_empty() => {
+                    issues.push(Issue::warn(format!("{ip}/source/template"), format!("template `{template}` not checked (no templates loaded)")));
+                }
+                None => issues.push(Issue::error(format!("{ip}/source/template"), format!("unknown template `{template}`"))),
+                Some((_, m)) => {
+                    for problem in m.check_vars(vars) {
+                        issues.push(Issue::error(format!("{ip}/source/vars"), problem));
+                    }
+                }
+            },
+            BinSource::Color { color } => {
+                if !crate::template::is_css_color(color) {
+                    issues.push(Issue::error(format!("{ip}/source/color"), "colour must be #rgb, #rrggbb or #rrggbbaa"));
+                }
             }
         }
     }
@@ -84,57 +105,36 @@ pub fn validate(p: &Project, ctx: &ValidationContext) -> Vec<Issue> {
             } else if c.duration() * p.fps.as_f64() < 1.0 - 1e-9 {
                 issues.push(Issue::error(format!("{cp}/end"), "clip is shorter than one frame"));
             }
+            let item = p.item(c);
             if c.speed == 0.0 || !c.speed.is_finite() || c.speed.abs() > 20.0 || c.speed.abs() < 0.01 {
                 issues.push(Issue::error(format!("{cp}/speed"), "speed must be in ±[0.01, 20]"));
-            } else if matches!(c.src, ClipSource::Overlay { .. }) && !(1.0..=240.0).contains(&(p.fps.as_f64() / c.speed.abs())) {
+            } else if item.is_some_and(BinItem::is_overlay) && !(1.0..=240.0).contains(&(p.fps.as_f64() / c.speed.abs())) {
                 // The bake renders at fps/|speed|, which hyperframes bounds to 1..240.
                 issues.push(Issue::error(format!("{cp}/speed"), "overlay speed must keep fps/|speed| within 1..240"));
             }
-            match &c.src {
-                ClipSource::Asset { asset, source_in } => {
-                    if t.kind == TrackKind::Overlay {
-                        issues.push(Issue::error(format!("{cp}/src"), "overlay tracks only hold overlay clips"));
+            match item {
+                None => issues.push(Issue::error(format!("{cp}/bin"), format!("unknown bin entry `{}`", c.bin))),
+                Some(item) => {
+                    if item.is_overlay() && t.kind != TrackKind::Overlay {
+                        issues.push(Issue::warn(format!("{cp}/bin"), "overlay clip on a non-overlay track"));
+                    } else if !item.is_overlay() && t.kind == TrackKind::Overlay {
+                        issues.push(Issue::error(format!("{cp}/bin"), "overlay tracks only hold overlay clips"));
                     }
-                    match p.assets.get(asset) {
-                        None => issues.push(Issue::error(format!("{cp}/src/asset"), format!("unknown asset `{asset}`"))),
-                        Some(a) => {
-                            if *source_in < 0.0 {
-                                issues.push(Issue::error(format!("{cp}/src/in"), "in must be >= 0"));
-                            }
-                            if let Some(d) = a.meta.as_ref().and_then(|m| m.duration) {
-                                let need = source_in + c.duration() * c.speed.abs();
-                                if a.kind != AssetKind::Image && need > d + 1e-6 {
-                                    issues.push(Issue::warn(
-                                        format!("{cp}/end"),
-                                        format!("clip reads {need:.2}s of a {d:.2}s asset; tail will be black/silent"),
-                                    ));
-                                }
-                            }
-                        }
+                    if c.source_in < 0.0 {
+                        issues.push(Issue::error(format!("{cp}/in"), "in must be >= 0"));
+                    } else if c.source_in > 0.0 && !item.is_timed_media() {
+                        issues.push(Issue::error(format!("{cp}/in"), "in applies only to video/audio entries; this one is generated to fit the clip"));
                     }
-                }
-                ClipSource::Overlay { overlay, vars } => {
-                    if t.kind != TrackKind::Overlay {
-                        issues.push(Issue::warn(format!("{cp}/src"), "overlay clip on a non-overlay track"));
-                    }
-                    match ctx.templates.get(overlay) {
-                        None => {
-                            if ctx.templates.is_empty() {
-                                issues.push(Issue::warn(format!("{cp}/src/overlay"), format!("template `{overlay}` not checked (no templates loaded)")));
-                            } else {
-                                issues.push(Issue::error(format!("{cp}/src/overlay"), format!("unknown template `{overlay}`")));
+                    if item.is_timed_media() {
+                        if let Some(d) = item.meta.as_ref().and_then(|m| m.duration) {
+                            let need = c.source_in + c.duration() * c.speed.abs();
+                            if need > d + 1e-6 {
+                                issues.push(Issue::warn(
+                                    format!("{cp}/end"),
+                                    format!("clip reads {need:.2}s of a {d:.2}s source; tail will be black/silent"),
+                                ));
                             }
                         }
-                        Some((_, m)) => {
-                            for problem in m.check_vars(vars) {
-                                issues.push(Issue::error(format!("{cp}/src/vars"), problem));
-                            }
-                        }
-                    }
-                }
-                ClipSource::Color { color } => {
-                    if !crate::template::is_css_color(color) {
-                        issues.push(Issue::error(format!("{cp}/src/color"), "colour must be #rgb, #rrggbb or #rrggbbaa"));
                     }
                 }
             }
@@ -237,7 +237,7 @@ pub fn validate(p: &Project, ctx: &ValidationContext) -> Vec<Issue> {
             if x.duration <= 0.0 {
                 issues.push(Issue::error(format!("{xp}/duration"), "duration must be > 0"));
             }
-            if matches!(a.src, ClipSource::Overlay { .. }) || matches!(b.src, ClipSource::Overlay { .. }) {
+            if [a, b].iter().any(|c| p.item(c).is_some_and(BinItem::is_overlay)) {
                 issues.push(Issue::error(xp.clone(), "transitions are not supported on overlay clips (bakes carry no handles)"));
             }
             let half = x.duration / 2.0;
@@ -248,24 +248,22 @@ pub fn validate(p: &Project, ctx: &ValidationContext) -> Vec<Issue> {
                     issues.push(Issue::error(format!("{xp}/duration"), format!("transitions on `{}` are longer than the clip", c.id)));
                 }
             }
-            // Handles are in source time: a 2× clip eats twice the material. Stills need none.
-            if let ClipSource::Asset { asset, source_in } = &b.src {
+            // Handles are in source time: a 2× clip eats twice the material. Stills and
+            // colours are generated to any length and need none.
+            if p.item(b).is_some_and(BinItem::is_timed_media) {
                 let need = half * b.speed.abs();
-                let still = p.assets.get(asset).is_some_and(|a| a.kind == AssetKind::Image);
-                if !still && *source_in < need - 1e-9 {
+                if b.source_in < need - 1e-9 {
                     issues.push(Issue::error(format!("{xp}/duration"), format!("`{}` needs {need:.2}s of handle before its in point", b.id)));
                 }
             }
             // The `from` side needs material after its out point; only checkable with probed metadata.
-            if let ClipSource::Asset { asset, source_in } = &a.src {
-                if let Some(d) = p.assets.get(asset).and_then(|as_| as_.meta.as_ref()).and_then(|m| m.duration) {
-                    let need = source_in + (a.duration() + half) * a.speed.abs();
-                    if need > d + 1e-6 {
-                        issues.push(Issue::warn(
-                            format!("{xp}/duration"),
-                            format!("`{}` has no {:.2}s of handle after its out point; the dissolve tail will be black", a.id, half * a.speed.abs()),
-                        ));
-                    }
+            if let Some(d) = p.item(a).filter(|i| i.is_timed_media()).and_then(|i| i.meta.as_ref()).and_then(|m| m.duration) {
+                let need = a.source_in + (a.duration() + half) * a.speed.abs();
+                if need > d + 1e-6 {
+                    issues.push(Issue::warn(
+                        format!("{xp}/duration"),
+                        format!("`{}` has no {:.2}s of handle after its out point; the dissolve tail will be black", a.id, half * a.speed.abs()),
+                    ));
                 }
             }
             if x.kind == TransitionKind::Wipe {
@@ -325,17 +323,17 @@ mod tests {
     }
 
     #[test]
-    fn overlap_and_missing_asset_are_errors() {
+    fn overlap_and_missing_bin_entry_are_errors() {
         let p = project(json!({
-            "assets": {},
+            "bin": { "black": { "source": { "color": "#000" } } },
             "tracks": [{ "id": "v1", "clips": [
-                { "id": "a", "start": 0, "end": 5, "src": { "asset": "nope" } },
-                { "id": "b", "start": 4, "end": 8, "src": { "color": "#000" } }
+                { "id": "a", "start": 0, "end": 5, "bin": "nope" },
+                { "id": "b", "start": 4, "end": 8, "bin": "black" }
             ]}]
         }));
         let issues = validate(&p, &ValidationContext::default());
         let msgs: Vec<_> = issues.iter().map(|i| i.message.as_str()).collect();
-        assert!(msgs.iter().any(|m| m.contains("unknown asset")), "{msgs:?}");
+        assert!(msgs.iter().any(|m| m.contains("unknown bin entry")), "{msgs:?}");
         assert!(msgs.iter().any(|m| m.contains("overlaps")), "{msgs:?}");
     }
 
@@ -346,16 +344,16 @@ mod tests {
     #[test]
     fn transition_needs_handle_in_source_time() {
         let p = project(json!({
-            "assets": { "x": { "path": "x.mp4" } },
+            "bin": { "x": { "source": { "path": "x.mp4" } } },
             "tracks": [{ "id": "v1", "clips": [
-                { "id": "a", "start": 0, "end": 5, "src": { "asset": "x" } },
-                { "id": "b", "start": 5, "end": 8, "src": { "asset": "x", "in": 0.1 } }
+                { "id": "a", "start": 0, "end": 5, "bin": "x" },
+                { "id": "b", "start": 5, "end": 8, "bin": "x", "in": 0.1 }
             ], "transitions": [ { "from": "a", "to": "b", "duration": 1.0 } ]}]
         }));
         assert!(messages(&p).iter().any(|m| m.contains("handle")));
         // 0.5 s of handle is enough at 1×, not at 2×.
         let mut p2 = p.clone();
-        p2.tracks[0].clips[1].src = ClipSource::Asset { asset: "x".into(), source_in: 0.5 };
+        p2.tracks[0].clips[1].source_in = 0.5;
         assert!(!messages(&p2).iter().any(|m| m.contains("handle")));
         p2.tracks[0].clips[1].speed = 2.0;
         assert!(messages(&p2).iter().any(|m| m.contains("handle")));
@@ -364,11 +362,11 @@ mod tests {
     #[test]
     fn chained_transitions_must_fit_the_middle_clip() {
         let p = project(json!({
-            "assets": { "x": { "path": "x.mp4" } },
+            "bin": { "x": { "source": { "path": "x.mp4" } } },
             "tracks": [{ "id": "v1", "clips": [
-                { "id": "a", "start": 0, "end": 5, "src": { "asset": "x" } },
-                { "id": "b", "start": 5, "end": 6, "src": { "asset": "x", "in": 2 } },
-                { "id": "c", "start": 6, "end": 10, "src": { "asset": "x", "in": 2 } }
+                { "id": "a", "start": 0, "end": 5, "bin": "x" },
+                { "id": "b", "start": 5, "end": 6, "bin": "x", "in": 2 },
+                { "id": "c", "start": 6, "end": 10, "bin": "x", "in": 2 }
             ], "transitions": [ { "from": "a", "to": "b", "duration": 1.5 }, { "from": "b", "to": "c", "duration": 1.5 } ]}]
         }));
         assert!(messages(&p).iter().any(|m| m.contains("longer than the clip")));
@@ -378,13 +376,44 @@ mod tests {
     fn ids_sub_frame_clips_and_colours_are_checked() {
         let p = project(json!({
             "fps": 30,
+            "bin": { "red": { "source": { "color": "#red" } } },
             "tracks": [{ "id": "v 1", "clips": [
-                { "id": "1a", "start": 0, "end": 0.01, "src": { "color": "#red" } }
+                { "id": "1a", "start": 0, "end": 0.01, "bin": "red" }
             ]}]
         }));
         let m = messages(&p);
         assert!(m.iter().any(|m| m.contains("track id")) && m.iter().any(|m| m.contains("clip id")), "{m:?}");
         assert!(m.iter().any(|m| m.contains("shorter than one frame")), "{m:?}");
         assert!(m.iter().any(|m| m.contains("colour")), "{m:?}");
+    }
+
+    #[test]
+    fn in_is_rejected_on_a_generated_entry() {
+        let p = project(json!({
+            "bin": { "black": { "source": { "color": "#000000" } }, "v": { "source": { "path": "x.mp4" } } },
+            "tracks": [{ "id": "v1", "clips": [
+                { "id": "a", "start": 0, "end": 5, "bin": "black", "in": 2 },
+                { "id": "b", "start": 5, "end": 9, "bin": "v", "in": 2 }
+            ]}]
+        }));
+        let m = messages(&p);
+        assert_eq!(m.iter().filter(|m| m.contains("in applies only")).count(), 1, "{m:?}");
+    }
+
+    #[test]
+    fn overlay_vars_are_checked_once_per_entry_not_per_clip() {
+        // Two clips of one entry must not report the same bad var twice.
+        let p = project(json!({
+            "bin": { "tag": { "source": { "template": "location-tag", "vars": { "nope": 1 } } } },
+            "tracks": [{ "id": "o1", "kind": "overlay", "clips": [
+                { "id": "a", "start": 0, "end": 4, "bin": "tag" },
+                { "id": "b", "start": 4, "end": 8, "bin": "tag" }
+            ]}]
+        }));
+        let manifest: TemplateManifest = serde_json::from_value(json!({ "id": "location-tag" })).unwrap();
+        let mut ctx = ValidationContext::default();
+        ctx.templates.insert("location-tag".into(), (PathBuf::new(), manifest));
+        let m: Vec<_> = validate(&p, &ctx).into_iter().map(|i| i.message).collect();
+        assert_eq!(m.iter().filter(|m| m.contains("nope")).count(), 1, "{m:?}");
     }
 }

@@ -68,8 +68,8 @@ enum Cmd {
         #[arg(long)]
         force: bool,
     },
-    /// Register a media file as an asset (probes it with ffprobe).
-    AddAsset {
+    /// Probe a media file and add it to the project bin.
+    AddMedia {
         path: PathBuf,
         #[arg(long)]
         id: Option<String>,
@@ -203,8 +203,10 @@ async fn main() -> anyhow::Result<()> {
         Cmd::Thumbs { templates } => {
             let state = open(&cli)?;
             let all = state.templates.read().unwrap().loaded.clone();
+            let empty = serde_json::Map::new();
             for (id, (dir, manifest)) in all.iter().filter(|(id, _)| templates.is_empty() || templates.contains(id)) {
-                let out = state.baker.thumbnail(dir, manifest).map_err(|e| anyhow::anyhow!("{id}: {e}"))?;
+                let out = dir.join("thumb.png");
+                state.baker.thumbnail(dir, manifest, &empty, &out).map_err(|e| anyhow::anyhow!("{id}: {e}"))?;
                 println!("{id:16} {}", out.display());
             }
         }
@@ -214,20 +216,20 @@ async fn main() -> anyhow::Result<()> {
             let n = install_library(&src, &dst, *force)?;
             println!("installed {n} entries into {}", dst.display());
         }
-        Cmd::AddAsset { path, id } => {
+        Cmd::AddMedia { path, id } => {
             // The daemon owns the project while it runs: route the edit through it rather
             // than writing the file underneath it.
             let path = absolute(path)?;
             let (id, rev) = if let Some(url) = running_daemon(&cli).await {
-                let body = serde_json::json!({ "path": path, "id": id, "origin": "cli: add asset" });
-                let v = kuma_mcp::client::Client::new(&url).post("/api/assets", &body).await?;
+                let body = serde_json::json!({ "path": path, "id": id, "origin": "cli: add media" });
+                let v = kuma_mcp::client::Client::new(&url).post("/api/bin", &body).await?;
                 (v["id"].as_str().unwrap_or_default().to_string(), v["revision"].as_u64().unwrap_or_default())
             } else {
                 let state = open(&cli)?;
-                let (id, rev, _) = kuma_daemon::jobs::add_asset(&state, &path, id.clone(), None, "cli")?;
+                let (id, rev, _) = kuma_daemon::jobs::add_media(&state, &path, id.clone(), None, "cli")?;
                 (id, rev)
             };
-            println!("added asset `{id}` (revision {rev})");
+            println!("added bin entry `{id}` (revision {rev})");
         }
         Cmd::McpConfig { print } => {
             let path = absolute(&cli.project)?;

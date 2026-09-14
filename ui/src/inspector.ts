@@ -3,8 +3,8 @@
 import { api } from "./api";
 import { button, el, options } from "./dom";
 import { store, toast } from "./store";
-import type { Clip, Effect, PatchOp, VarSpec } from "./types";
-import { expandPreset, isAsset, isOverlay } from "./types";
+import type { BinItem, Clip, Effect, PatchOp, VarSpec } from "./types";
+import { binItem, expandPreset, isFileSource, isOverlaySource, isTimedMedia } from "./types";
 
 const presetsPromise = api.effectPresets().catch(() => []);
 
@@ -45,12 +45,13 @@ export class Inspector {
     h.appendChild(el("span", "mono muted", clip.id));
     this.host.appendChild(h);
 
+    const item = binItem(store.state.project!, clip);
     const frame = 1 / store.fps;
     this.host.appendChild(field("Start", numInput(clip.start, (v) => rep("/start", v, "start"), frame)));
     this.host.appendChild(field("End", numInput(clip.end, (v) => rep("/end", v, "end"), frame)));
     this.host.appendChild(field("Speed", numInput(clip.speed, (v) => rep("/speed", v, "speed"), 0.05)));
-    if (isAsset(clip)) {
-      this.host.appendChild(field("Source in", numInput(clip.src.in ?? 0, (v) => rep("/src/in", v, "in"), frame)));
+    if (isTimedMedia(item)) {
+      this.host.appendChild(field("Source in", numInput(clip.in ?? 0, (v) => rep("/in", v, "in"), frame)));
       this.host.appendChild(field("Volume", numInput(clip.volume, (v) => rep("/volume", v, "volume"), 0.05)));
       const m = el("input"); m.type = "checkbox"; m.checked = clip.muted;
       m.onchange = () => rep("/muted", m.checked, "mute");
@@ -58,7 +59,7 @@ export class Inspector {
     }
     this.host.appendChild(field("Label", textInput(clip.label, (v) => rep("/label", v, "label"))));
 
-    if (isOverlay(clip)) this.renderVars(clip, path);
+    if (item) this.renderBinItem(clip.bin, item);
     this.renderEffects(clip, path);
 
     const del = button("Delete clip", () => store.patch([{ op: "remove", path }], `delete ${clip.id}`));
@@ -66,15 +67,31 @@ export class Inspector {
     this.host.appendChild(del);
   }
 
-  private renderVars(clip: Clip & { src: { overlay: string; vars?: Record<string, unknown> } }, path: string) {
-    const tpl = store.state.templates.find((t) => t.id === clip.src.overlay);
-    this.host.appendChild(el("h3", "", `Template · ${tpl?.manifest.name ?? clip.src.overlay}`));
-    if (!tpl) {
-      this.host.appendChild(el("p", "muted", "Unknown template."));
+  /** The bin entry the clip plays. Editing here changes every placement of it. */
+  private renderBinItem(id: string, item: BinItem) {
+    const bp = `/bin/${id}`;
+    const h = el("h3", "", "Bin entry ");
+    h.appendChild(el("span", "mono muted", id));
+    this.host.appendChild(h);
+    this.host.appendChild(field("Name", textInput(item.name, (v) => store.patch([{ op: "replace", path: `${bp}/name`, value: v }], `name ${id}`))));
+
+    if (isFileSource(item.source)) {
+      this.host.appendChild(field("Path", textInput(item.source.path, (v) => store.patch([{ op: "replace", path: `${bp}/source/path`, value: v }], `path ${id}`))));
       return;
     }
-    const vars = clip.src.vars ?? {};
-    const setVar = (k: string, v: unknown) => store.patch([{ op: "add", path: `${path}/src/vars`, value: { ...vars, [k]: v } }], `var ${k}`);
+    if (!isOverlaySource(item.source)) return;
+
+    const source = item.source;
+    const tpl = store.state.templates.find((t) => t.id === source.template);
+    this.host.appendChild(field("Template", el("div", "mono muted", source.template)));
+    if (!tpl) {
+      this.host.appendChild(el("p", "muted", "Unknown template — is its library on the search path?"));
+      return;
+    }
+    const places = store.state.project!.tracks.flatMap((t) => t.clips).filter((c) => c.bin === id).length;
+    if (places > 1) this.host.appendChild(el("p", "muted", `Used by ${places} clips — these values apply to all of them.`));
+    const vars = source.vars ?? {};
+    const setVar = (k: string, v: unknown) => store.patch([{ op: "add", path: `${bp}/source/vars`, value: { ...vars, [k]: v } }], `var ${k}`);
     for (const [k, spec] of Object.entries(tpl.manifest.vars)) {
       const cur = k in vars ? vars[k] : spec.default;
       this.host.appendChild(field(spec.label ?? k, varInput(spec, cur, (v) => setVar(k, v))));

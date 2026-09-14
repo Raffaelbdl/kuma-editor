@@ -84,6 +84,11 @@ h3 { margin: 12px 0 6px; font-size: 11px; letter-spacing: 0.08em; text-transform
 .lib-item .desc { color: var(--fg-2); font-size: 11px; margin-top: 2px; }
 .lib-item img { width: 100%; border-radius: 4px; margin-bottom: 6px; background: repeating-conic-gradient(#333 0 25%, #444 0 50%) 0 0 / 12px 12px; }
 .lib-item .actions { margin-top: 6px; display: flex; gap: 6px; }
+.lib-item .title { display: flex; align-items: center; gap: 6px; justify-content: space-between; }
+.badge-kind { font: 9px var(--mono); text-transform: uppercase; letter-spacing: 0.06em; padding: 1px 5px; border-radius: 3px; background: var(--line); color: var(--fg-2); font-weight: 400; flex: none; }
+.badge-kind.overlay { background: var(--overlay); color: #fff; }
+.badge-kind.video, .badge-kind.image { background: var(--video); color: #fff; }
+.badge-kind.audio { background: var(--audio); color: #fff; }
 .lib-add { display: flex; gap: 6px; margin-top: 6px; }
 
 .field { display: grid; grid-template-columns: 90px 1fr; gap: 6px; align-items: center; margin-bottom: 6px; }

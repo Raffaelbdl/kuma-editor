@@ -139,6 +139,8 @@ preview, then `sample_frames` on its range to check the baked result matches.
    in the project's `overlays/` for a one-off, in the user library
    (`~/.local/share/kuma/overlays/`) for something reusable.
 3. Call `list_templates` so the daemon reloads (it reports manifests that failed to load).
-4. Add a clip: `{ "id": "…", "start": t, "end": t + d, "src": { "overlay": "<id>", "vars": {…} } }`
-   on an overlay track via `apply_edits`.
+4. Add a bin entry and place it, in one `apply_edits`: add
+   `{ "name": "…", "source": { "template": "<id>", "vars": {…} } }` under `/bin/<binId>`,
+   then a clip `{ "id": "…", "start": t, "end": t + d, "bin": "<binId>" }` on an overlay
+   track. Two instances with different vars are two bin entries.
 5. `sample_frames` again on that range to verify.

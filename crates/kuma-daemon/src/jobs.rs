@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use kuma_core::template::Region;
-use kuma_core::{ClipSource, Project};
+use kuma_core::{BinSource, Project};
 use kuma_mlt::{compile, CompileOptions, OverlayBake, RenderJob, UnbakedPolicy};
 use kuma_overlay::BakeRequest;
 use serde::{Deserialize, Serialize};
@@ -73,26 +73,28 @@ where
     id
 }
 
-/// Probe and register an asset (shared by the API and the CLI). The id defaults to a
-/// slug of the file stem; the stored path is project-relative when possible.
-pub fn add_asset(state: &AppState, path: &Path, id: Option<String>, base_revision: Option<u64>, origin: &str) -> anyhow::Result<(String, u64, Vec<kuma_core::Issue>)> {
+/// Probe a media file and add it to the bin (shared by the API and the CLI). The id
+/// defaults to a slug of the file stem; the stored path is project-relative when possible.
+pub fn add_media(state: &AppState, path: &Path, id: Option<String>, base_revision: Option<u64>, origin: &str) -> anyhow::Result<(String, u64, Vec<kuma_core::Issue>)> {
     let abs = resolve_path(state, path);
     if !abs.is_file() {
         anyhow::bail!("file not found: {}", abs.display());
     }
     let probe = kuma_overlay::probe(&abs).map_err(|e| anyhow::anyhow!(e))?;
     let rel = abs.strip_prefix(state.config.project_root()).unwrap_or(&abs);
-    let id = id.unwrap_or_else(|| {
-        let stem = abs.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or("asset".into());
-        stem.chars().map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '_' }).collect()
-    });
+    let stem = abs.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or("media".into());
+    let id = id.unwrap_or_else(|| stem.chars().map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '_' }).collect());
     // JSON Patch `add` would silently replace an existing member, rebinding every clip.
-    if read(&state.project).assets.contains_key(&id) {
-        anyhow::bail!("asset id `{id}` already exists (pass a different id)");
+    if read(&state.project).bin.contains_key(&id) {
+        anyhow::bail!("bin id `{id}` already exists (pass a different id)");
     }
-    let asset = kuma_core::Asset { path: rel.to_string_lossy().into_owned(), kind: probe.kind, proxy: None, meta: Some(probe.meta) };
-    let pointer = format!("/assets/{}", id.replace('~', "~0").replace('/', "~1"));
-    let patch = vec![json_patch::PatchOperation::Add(json_patch::AddOperation { path: pointer.parse()?, value: serde_json::to_value(asset)? })];
+    let item = kuma_core::BinItem {
+        name: stem,
+        source: kuma_core::BinSource::File { path: rel.to_string_lossy().into_owned(), kind: probe.kind, proxy: None },
+        meta: Some(probe.meta),
+    };
+    let pointer = format!("/bin/{}", id.replace('~', "~0").replace('/', "~1"));
+    let patch = vec![json_patch::PatchOperation::Add(json_patch::AddOperation { path: pointer.parse()?, value: serde_json::to_value(item)? })];
     let (rev, warnings) = state.apply_patch(&patch, base_revision, origin)?;
     Ok((id, rev, warnings))
 }
@@ -104,13 +106,13 @@ pub fn bake_all(state: &AppState, project: &Project, only: Option<&[String]>, pr
         .tracks
         .iter()
         .flat_map(|t| t.clips.iter())
-        .filter(|c| matches!(c.src, ClipSource::Overlay { .. }))
+        .filter(|c| project.item(c).is_some_and(kuma_core::BinItem::is_overlay))
         .filter(|c| only.map(|o| o.iter().any(|id| id == &c.id)).unwrap_or(true))
         .collect();
     let mut out = HashMap::new();
     let n = clips.len().max(1);
     for (i, clip) in clips.iter().enumerate() {
-        let ClipSource::Overlay { overlay, vars } = &clip.src else { continue };
+        let Some(BinSource::Overlay { template: overlay, vars }) = project.item(clip).map(|i| &i.source) else { continue };
         let (dir, manifest) = templates.get(overlay).ok_or_else(|| anyhow::anyhow!("unknown template `{overlay}` for clip `{}`", clip.id))?;
         progress(((i * 100) / n) as u8, &format!("baking {} ({overlay})", clip.id));
         let req = BakeRequest { template_dir: dir, manifest, vars, fps: project.fps, width: project.width, height: project.height, duration: clip.duration(), speed: clip.speed };
@@ -220,7 +222,7 @@ pub fn sample_frames(state: &AppState, req: &SampleRequest, progress: &dyn Fn(u8
             .tracks
             .iter()
             .flat_map(|t| t.clips.iter())
-            .filter(|c| matches!(c.src, ClipSource::Overlay { .. }) && c.end > req.t0 && c.start <= t1)
+            .filter(|c| project.item(c).is_some_and(kuma_core::BinItem::is_overlay) && c.end > req.t0 && c.start <= t1)
             .map(|c| c.id.clone())
             .collect();
         bake_all(state, &project, Some(&ids), &|p, m| progress(p / 2, m))?

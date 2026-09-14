@@ -192,10 +192,10 @@ struct Ctx<'a> {
 }
 
 impl Ctx<'_> {
-    /// The validator rejects unknown asset ids, but a project loaded from disk is only
+    /// The validator rejects unknown bin ids, but a project loaded from disk is only
     /// validated on edit, so never index the map.
-    fn asset(&self, id: &str) -> Result<&Asset, CompileError> {
-        self.project.assets.get(id).ok_or_else(|| CompileError::Internal(format!("unknown asset `{id}`")))
+    fn item(&self, clip: &Clip) -> Result<&BinItem, CompileError> {
+        self.project.item(clip).ok_or_else(|| CompileError::Internal(format!("clip `{}`: unknown bin entry `{}`", clip.id, clip.bin)))
     }
 }
 
@@ -260,12 +260,10 @@ fn compile_track(ctx: &Ctx, track: &Track, w: &mut XmlWriter) -> Result<Option<C
     let mut prev_lane = 0usize;
     for (_, clip) in track.sorted_clips() {
         // Overlays without a bake are skipped (they are live DOM in preview).
-        if let ClipSource::Overlay { .. } = clip.src {
-            if !ctx.opts.bakes.contains_key(&clip.id) {
-                match ctx.opts.unbaked {
-                    UnbakedPolicy::Skip => continue,
-                    UnbakedPolicy::Error => return Err(CompileError::Unbaked(clip.id.clone())),
-                }
+        if ctx.item(clip)?.is_overlay() && !ctx.opts.bakes.contains_key(&clip.id) {
+            match ctx.opts.unbaked {
+                UnbakedPolicy::Skip => continue,
+                UnbakedPolicy::Error => return Err(CompileError::Unbaked(clip.id.clone())),
             }
         }
         let e = ext.get(clip.id.as_str()).copied().unwrap_or_default();
@@ -279,17 +277,17 @@ fn compile_track(ctx: &Ctx, track: &Track, w: &mut XmlWriter) -> Result<Option<C
         let tl_out = cf.out + e.after;
         let len = tl_out - tl_in + 1;
 
-        let (p_in, p_out) = match &clip.src {
-            ClipSource::Asset { asset, source_in } if ctx.asset(asset)?.kind != AssetKind::Image => {
-                // Producer time is warped by the speed; the handle is already in source
-                // time, so it is subtracted after the warp.
-                let sin = fps.frame(source_in / clip.speed.abs()) - e.before;
-                if sin < 0 {
-                    return Err(CompileError::Internal(format!("clip `{}` has no handle before its in point", clip.id)));
-                }
-                (sin, sin + len - 1)
+        // Stills, colours and overlays are generated to fit and start at their own zero.
+        let (p_in, p_out) = if ctx.item(clip)?.is_timed_media() {
+            // Producer time is warped by the speed; the handle is already in source time,
+            // so it is subtracted after the warp.
+            let sin = fps.frame(clip.source_in / clip.speed.abs()) - e.before;
+            if sin < 0 {
+                return Err(CompileError::Internal(format!("clip `{}` has no handle before its in point", clip.id)));
             }
-            _ => (0, len - 1),
+            (sin, sin + len - 1)
+        } else {
+            (0, len - 1)
         };
         let producer_id = format!("clip_{}", clip.id);
         plans.push(Plan { clip, lane, tl_in, tl_out, p_in, p_out, pre: e.before, post: e.after, producer_id });
@@ -303,9 +301,7 @@ fn compile_track(ctx: &Ctx, track: &Track, w: &mut XmlWriter) -> Result<Option<C
     let mut has_audio = false;
     for p in &plans {
         emit_clip_producer(ctx, p, w)?;
-        if let ClipSource::Asset { asset, .. } = &p.clip.src {
-            has_audio |= ctx.asset(asset)?.kind != AssetKind::Image && !p.clip.muted;
-        }
+        has_audio |= ctx.item(p.clip)?.is_timed_media() && !p.clip.muted;
         for e in &p.clip.effects {
             if let Effect::Blend { mode } = e {
                 if *mode != BlendMode::Normal {
@@ -405,18 +401,18 @@ fn emit_clip_producer(ctx: &Ctx, p: &Plan, w: &mut XmlWriter) -> Result<(), Comp
     // `in` on the producer too would clamp its playtime and freeze the clip on one frame.
     let base = [("id", p.producer_id.clone()), ("in", "0".into()), ("out", p.p_out.to_string())];
 
-    match &clip.src {
-        ClipSource::Asset { asset, .. } => {
-            let a = ctx.asset(asset)?;
+    match &ctx.item(clip)?.source {
+        BinSource::File { path: media, kind, proxy } => {
             // Proxies stand in for the media only in a scaled (preview) compile.
-            let source = a.proxy.as_deref().filter(|_| ctx.opts.size.is_some()).unwrap_or(&a.path);
+            let source = proxy.as_deref().filter(|_| ctx.opts.size.is_some()).unwrap_or(media);
             let path = resource_path(&ctx.opts.root, source);
             let warped = (clip.speed - 1.0).abs() > 1e-9;
+            let still = *kind == MediaKind::Image;
             // Plain media goes through a `chain` (MLT 7 avformat with link filters);
             // stills and time-warped media are classic producers.
-            let tag = if a.kind == AssetKind::Image || warped { "producer" } else { "chain" };
+            let tag = if still || warped { "producer" } else { "chain" };
             w.open(tag, &base);
-            if a.kind == AssetKind::Image {
+            if still {
                 w.property("mlt_service", "pixbuf");
                 w.property("resource", &path);
                 w.property("length", len.to_string());
@@ -435,7 +431,7 @@ fn emit_clip_producer(ctx: &Ctx, p: &Plan, w: &mut XmlWriter) -> Result<(), Comp
             emit_filters(ctx, p, w);
             w.close(tag);
         }
-        ClipSource::Color { color } => {
+        BinSource::Color { color } => {
             w.open("producer", &base);
             w.property("mlt_service", "color");
             w.property("resource", mlt_color(color));
@@ -444,7 +440,7 @@ fn emit_clip_producer(ctx: &Ctx, p: &Plan, w: &mut XmlWriter) -> Result<(), Comp
             emit_filters(ctx, p, w);
             w.close("producer");
         }
-        ClipSource::Overlay { .. } => {
+        BinSource::Overlay { .. } => {
             let bake = ctx.opts.bakes.get(&clip.id).ok_or_else(|| CompileError::Unbaked(clip.id.clone()))?;
             w.open("producer", &base);
             if bake.is_still {
@@ -673,10 +669,10 @@ mod tests {
     #[test]
     fn transitions_split_into_two_lanes() {
         let p: Project = serde_json::from_value(json!({
-            "fps": 30, "assets": { "x": { "path": "x.mp4" } },
+            "fps": 30, "bin": { "x": { "source": { "path": "x.mp4" } } },
             "tracks": [{ "id": "v1", "clips": [
-                { "id": "a", "start": 0, "end": 5, "src": { "asset": "x" } },
-                { "id": "b", "start": 5, "end": 8, "src": { "asset": "x", "in": 2 } }
+                { "id": "a", "start": 0, "end": 5, "bin": "x" },
+                { "id": "b", "start": 5, "end": 8, "bin": "x", "in": 2 }
             ], "transitions": [ { "from": "a", "to": "b", "duration": 1.0 } ]}]
         }))
         .unwrap();

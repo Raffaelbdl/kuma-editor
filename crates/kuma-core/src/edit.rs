@@ -81,12 +81,12 @@ mod tests {
     #[test]
     fn patch_bumps_revision_and_validates() {
         let p: Project = serde_json::from_value(json!({
-            "assets": { "a": { "path": "a.mp4" } },
+            "bin": { "a": { "source": { "path": "a.mp4" } } },
             "tracks": [{ "id": "v1", "clips": [] }]
         }))
         .unwrap();
         let patch: json_patch::Patch = serde_json::from_value(json!([
-            { "op": "add", "path": "/tracks/0/clips/-", "value": { "id": "c1", "start": 0, "end": 2, "src": { "asset": "a" } } }
+            { "op": "add", "path": "/tracks/0/clips/-", "value": { "id": "c1", "start": 0, "end": 2, "bin": "a" } }
         ]))
         .unwrap();
         let out = apply_patch(&p, Some(0), &patch.0, &ValidationContext::default()).unwrap();

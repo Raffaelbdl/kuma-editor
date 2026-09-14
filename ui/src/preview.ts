@@ -11,7 +11,7 @@
 import { api } from "./api";
 import { store, toast } from "./store";
 import type { Clip, Project } from "./types";
-import { isOverlay, transformAt } from "./types";
+import { binItem, isOverlayClip, transformAt } from "./types";
 
 interface OverlayView {
   clipId: string;
@@ -239,7 +239,7 @@ export class Preview {
     const wanted = new Map<string, Clip>();
     for (const t of p.tracks) {
       if (t.hidden) continue;
-      for (const c of t.clips) if (isOverlay(c)) wanted.set(c.id, c);
+      for (const c of t.clips) if (isOverlayClip(p, c)) wanted.set(c.id, c);
     }
     for (const [id, v] of this.views) {
       const c = wanted.get(id);
@@ -295,12 +295,14 @@ export class Preview {
 
 /** Everything the preview compile depends on; overlay tracks are live DOM instead. */
 function engineKey(p: Project): string {
-  return JSON.stringify([p.fps, p.width, p.height, p.sample_rate, p.assets, p.tracks.filter((t) => t.kind !== "overlay")]);
+  const bin = Object.fromEntries(Object.entries(p.bin).filter(([, i]) => !("template" in i.source)));
+  return JSON.stringify([p.fps, p.width, p.height, p.sample_rate, bin, p.tracks.filter((t) => t.kind !== "overlay")]);
 }
 
-/** Everything the overlay document is a function of: its injected `window.kuma`. */
+/** Everything the overlay document is a function of: its injected `window.kuma`. The bin
+ *  entry carries the template and its vars; the clip decides how long it runs. */
 function contentKey(p: Project, c: Clip): string {
-  return JSON.stringify([c.src, c.speed, c.end - c.start, p.width, p.height, p.fps]);
+  return JSON.stringify([binItem(p, c)?.source, c.speed, c.end - c.start, p.width, p.height, p.fps]);
 }
 
 /**

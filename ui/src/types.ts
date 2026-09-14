@@ -3,10 +3,20 @@
 
 export interface Fps { num: number; den: number }
 
-export interface AssetMeta {
+export type MediaKind = "video" | "audio" | "image";
+
+export interface MediaMeta {
   duration?: number; width?: number; height?: number; fps?: Fps; has_audio: boolean;
 }
-export interface Asset { path: string; kind: "video" | "audio" | "image"; proxy?: string | null; meta?: AssetMeta | null }
+
+/** What a bin entry is. Exactly one shape. */
+export type BinSource =
+  | { path: string; kind: MediaKind; proxy?: string | null }
+  | { template: string; vars?: Record<string, unknown> }
+  | { color: string };
+
+/** One entry in the project bin: media, a configured overlay, or a colour. */
+export interface BinItem { name: string; source: BinSource; meta?: MediaMeta | null }
 
 export type TrackKind = "video" | "audio" | "overlay";
 
@@ -14,11 +24,6 @@ export interface Track {
   id: string; kind: TrackKind; name: string; muted: boolean; hidden: boolean;
   clips: Clip[]; transitions: Transition[];
 }
-
-export type ClipSource =
-  | { asset: string; in?: number }
-  | { overlay: string; vars?: Record<string, unknown> }
-  | { color: string };
 
 export interface TransformKeyframe { t: number; x?: number; y?: number; scale?: number; rotation?: number; opacity?: number }
 
@@ -32,8 +37,9 @@ export type Effect =
   | { type: "volume"; keyframes: { t: number; gain: number }[] }
   | { type: "mlt"; service: string; properties?: Record<string, string> };
 
+/** A placement of a bin entry: when it plays, not what it is. */
 export interface Clip {
-  id: string; start: number; end: number; src: ClipSource;
+  id: string; start: number; end: number; bin: string; in?: number;
   speed: number; volume: number; muted: boolean; effects: Effect[]; label: string;
 }
 
@@ -41,7 +47,7 @@ export interface Transition { from: string; to: string; kind: "dissolve" | "wipe
 
 export interface Project {
   version: number; name: string; revision: number; fps: Fps; width: number; height: number; sample_rate: number;
-  assets: Record<string, Asset>; tracks: Track[]; markers: { t: number; label: string; color?: string | null }[];
+  bin: Record<string, BinItem>; tracks: Track[]; markers: { t: number; label: string; color?: string | null }[];
 }
 
 export interface VarSpec {
@@ -120,15 +126,31 @@ export type DaemonEvent =
   | ({ type: "job" } & Job);
 
 export const fpsValue = (f: Fps) => f.num / f.den;
-export const isOverlay = (c: Clip): c is Clip & { src: { overlay: string; vars?: Record<string, unknown> } } => "overlay" in c.src;
-export const isAsset = (c: Clip): c is Clip & { src: { asset: string; in?: number } } => "asset" in c.src;
 
-/** What a clip is for display and track placement. */
+export const isOverlaySource = (s: BinSource): s is { template: string; vars?: Record<string, unknown> } => "template" in s;
+export const isFileSource = (s: BinSource): s is { path: string; kind: MediaKind; proxy?: string | null } => "path" in s;
+
+/** What a bin entry is, for badges and track placement. */
+export type ItemKind = "overlay" | "video" | "audio" | "image" | "color";
+export function itemKind(item: BinItem): ItemKind {
+  if (isOverlaySource(item.source)) return "overlay";
+  return isFileSource(item.source) ? item.source.kind : "color";
+}
+
+/** The entry a clip plays, if it resolves. */
+export const binItem = (p: Project, c: Clip): BinItem | undefined => p.bin[c.bin];
+export const isOverlayClip = (p: Project, c: Clip): boolean => !!binItem(p, c) && itemKind(binItem(p, c)!) === "overlay";
+/** True when `in` and a time warp mean something: video and audio only. */
+export const isTimedMedia = (item: BinItem | undefined): boolean => !!item && (itemKind(item) === "video" || itemKind(item) === "audio");
+
+/** The track lane a clip is drawn in. */
 export type ClipKind = "overlay" | "video" | "audio" | "color";
 export function clipKind(p: Project, c: Clip, track?: Track): ClipKind {
-  if (isOverlay(c)) return "overlay";
-  if (isAsset(c)) return p.assets[c.src.asset]?.kind === "audio" || track?.kind === "audio" ? "audio" : "video";
-  return "color";
+  const item = binItem(p, c);
+  if (!item) return "color";
+  const k = itemKind(item);
+  if (k === "overlay" || k === "color" || k === "audio") return k;
+  return track?.kind === "audio" ? "audio" : "video";
 }
 
 /** Lowest free `${prefix}${n}` (n ≥ 1) given the ids already in use. */

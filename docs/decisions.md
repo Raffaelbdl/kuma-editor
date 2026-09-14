@@ -265,7 +265,13 @@ Lower priority than nested sequences above.
   project file, so a house lower third styled once has to be rebuilt in the next project.
   The fix is small because a saved configuration *is* a bin entry with the project
   removed, `{ name, source: { template, vars } }`, so putting it on the library search
-  path next to effect presets makes adding one a copy rather than new machinery. Forking
+  path next to effect presets makes adding one a copy rather than new machinery. Copying
+  is the point, not a shortcut: vars are project-owned editing decisions, so they must
+  stay a revision-checked, undoable patch rather than a path to a file the daemon does
+  not own and other projects also read. Templates are live-referenced by id instead
+  because the author owns markup while the editor owns values; a shared *theme* whose
+  changes do propagate is a separate feature, and merging it into saved configurations
+  would re-render finished projects. Forking
   the template and baking the values into its defaults works today but forks markup for
   no reason and stops improvements reaching the copy. Same shape as the media search path
   below: the library wants to hold more kinds of thing than templates, and the two should

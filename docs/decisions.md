@@ -260,6 +260,16 @@ annoying, because the validator and the agent both read metadata today.
 
 Lower priority than nested sequences above.
 
+- **A configured overlay cannot be shared between projects.** The template travels in the
+  library and its manifest defaults with it, but an entry's var overrides live in the
+  project file, so a house lower third styled once has to be rebuilt in the next project.
+  The fix is small because a saved configuration *is* a bin entry with the project
+  removed, `{ name, source: { template, vars } }`, so putting it on the library search
+  path next to effect presets makes adding one a copy rather than new machinery. Forking
+  the template and baking the values into its defaults works today but forks markup for
+  no reason and stops improvements reaching the copy. Same shape as the media search path
+  below: the library wants to hold more kinds of thing than templates, and the two should
+  be one mechanism.
 - Folders and search in the browser, now that the bin is the thing they organise.
 - A re-probe or reload action on a bin entry.
 - `kuma add-media` resolves a relative path against the shell's directory rather than the

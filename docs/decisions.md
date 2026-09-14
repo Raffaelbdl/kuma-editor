@@ -294,6 +294,32 @@ Lower priority than nested sequences above.
   overlaps the transform's opacity, so leave it; `blend` is a discrete mode, not
   interpolatable, and is already emitted as discrete switches with a test to that effect.
 
+- **Bin-level effects** — agreed, lower priority than the keyframe work above. Effects
+  that live on the entry and apply to every placement, the way Kdenlive's clip effects do.
+  The motivating case is one music file used at several points that should share a gain and
+  be changed once.
+
+  It fits the split the bin already draws. An entry effect says "this source always sounds
+  or looks like this": a gain, a camera correction, a LUT. A clip effect says "this
+  placement does this": a fade at this cut, a zoom here. Same shape as the decision on
+  overlay vars, where editing the entry moves every placement.
+
+  Shape: `effects` on `BinItem`, emitted before the clip's own on the same producer, since
+  entry effects are source correction and should sit underneath. Composition is already
+  established on the audio side, where a clip's volume and a keyframed volume effect
+  already multiply.
+
+  Two things to settle first. The duplicate-kind check runs per clip today, so an entry
+  volume plus a clip volume would stack rather than shadow, and stacking volume filters
+  multiplies the gain — decide whether that is intended, as it is in Kdenlive, or rejected.
+  More importantly, **a keyframed entry effect has no unambiguous clock**: clip effects
+  keyframe against clip-relative time, but an entry placed twice at different lengths has
+  no single answer. Either restrict entry effects to static parameters, or define their
+  keyframes as source-relative, which only means anything for video and audio entries.
+
+  If only the audio case matters, the cheap version is a gain field on file entries and no
+  general mechanism.
+
 - **Defect: blur is horizontal only.** The compiler sets `av.sigma` and not `av.sigmaV`,
   and MLT does not mirror one into the other, so a blurred clip keeps perfectly sharp
   horizontal edges. Confirmed by rendering colour bars with and without the vertical

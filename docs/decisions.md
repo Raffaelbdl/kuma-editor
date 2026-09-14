@@ -260,6 +260,45 @@ annoying, because the validator and the agent both read metadata today.
 
 Lower priority than nested sequences above.
 
+- **Every numeric effect parameter keyframable, through one shared type** — agreed, not
+  built. Today only `transform` and `volume` take keyframes, so a "go blurry" ramp needs
+  the `mlt` escape hatch. The shape agreed: a parameter is either a number or a list of
+  keyed values, as an untagged enum, so the JSON stays backward compatible and a bare
+  number keeps meaning exactly what it means now. `Fps` already uses that trick to accept
+  several spellings.
+
+  ```json
+  { "type": "blur", "radius": 4 }
+  { "type": "blur", "radius": [ { "t": 0, "v": 0 }, { "t": 2.0, "v": 20 } ] }
+  ```
+
+  Keyframes are **not exposed by default** in the inspector: a parameter stays a plain
+  number field until asked to animate, so the panel does not grow an editor per field.
+  One shared type rather than a `keyframes` vector per effect variant, because the latter
+  is seven shapes, seven validator paths and seven inspector rows for one idea.
+
+  Times stay in seconds and values stay numbers. An MLT animation string never enters the
+  model; the `mlt` effect already passes raw properties through for anyone who wants one,
+  and that is the right place for it.
+
+  *Verified before agreeing:* the animation string form does work through MLT's avfilter
+  wrapper, tested by rendering a sigma ramp over sixty frames and looking at the frames.
+  Most of the machinery is also already there — the compiler writes animation strings in
+  three places, the seconds-to-filter-frame helper already accounts for the dissolve
+  handle offset, `check_keyframes` is shared rather than transform-specific, and the UI
+  has a generic interpolation helper the live preview can reuse.
+
+  Per effect: blur is confirmed; `color` is the same avfilter wrapper with four parameters
+  and should be checked rather than assumed; `crop` is an MLT-native filter and rect
+  animation is already proven on `qtblend`; `fade` is internally an animation already and
+  overlaps the transform's opacity, so leave it; `blend` is a discrete mode, not
+  interpolatable, and is already emitted as discrete switches with a test to that effect.
+
+- **Defect: blur is horizontal only.** The compiler sets `av.sigma` and not `av.sigmaV`,
+  and MLT does not mirror one into the other, so a blurred clip keeps perfectly sharp
+  horizontal edges. Confirmed by rendering colour bars with and without the vertical
+  sigma. One line in `emit_filters`; not yet fixed.
+
 - **A configured overlay cannot be shared between projects.** The template travels in the
   library and its manifest defaults with it, but an entry's var overrides live in the
   project file, so a house lower third styled once has to be rebuilt in the next project.

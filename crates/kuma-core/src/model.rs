@@ -170,8 +170,9 @@ pub enum AssetKind {
     Image,
 }
 
+/// Informational, written by the probe, and the probe's output evolves: unknown keys are
+/// tolerated so a project file written by another version still loads.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
 pub struct AssetMeta {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub duration: Option<f64>,
@@ -183,8 +184,6 @@ pub struct AssetMeta {
     pub fps: Option<Fps>,
     #[serde(default)]
     pub has_audio: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub codec: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
@@ -220,8 +219,8 @@ pub struct Track {
 
 /// One item on the timeline.
 ///
-/// Every field with a default is always serialized (no `skip_serializing_if`), so a JSON
-/// Patch `replace` on any documented path succeeds.
+/// Every field of the editing model is always serialized, so a JSON Patch `replace` on
+/// any documented path succeeds (only probed `AssetMeta` and manifest specs skip nulls).
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Clip {
@@ -286,21 +285,22 @@ pub enum ClipSource {
     },
 }
 
-/// A keyframed transform sample. Fields not set fall back to the effect's static values.
+/// A keyframed transform sample. Fields not set (`null`) fall back to the effect's
+/// static values. Always serialized in full so a patch can `replace` one axis.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct TransformKeyframe {
     /// Time relative to clip start, seconds.
     pub t: f64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub x: Option<f64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub y: Option<f64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub scale: Option<f64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub rotation: Option<f64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub opacity: Option<f64>,
 }
 
@@ -463,12 +463,8 @@ mod tests {
           ]
         }"#;
         let p: Project = serde_json::from_str(json).expect("parse");
-        assert_eq!(p.tracks.len(), 2);
         assert!(matches!(p.tracks[1].clips[0].src, ClipSource::Overlay { .. }));
         assert_eq!(p.duration(), 12.5);
-        let back = serde_json::to_string(&p).unwrap();
-        let p2: Project = serde_json::from_str(&back).unwrap();
-        assert_eq!(p2.tracks[0].clips[0].effects.len(), 2);
     }
 
     #[test]

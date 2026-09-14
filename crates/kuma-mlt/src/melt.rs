@@ -53,8 +53,7 @@ fn melt_command() -> Command {
     cmd
 }
 
-/// Build the command line. Public so callers can log it.
-pub fn command(job: &RenderJob) -> Command {
+fn command(job: &RenderJob) -> Command {
     let mut args: Vec<String> = Vec::new();
     args.push("-silent".into());
     args.push("-progress".into());
@@ -128,15 +127,15 @@ fn parse_progress(line: &str) -> Option<RenderProgress> {
 
 /// Extract a single frame (as PNG) at a timeline frame index, for previews and MCP
 /// sampling. Uses the avformat consumer with an image2 muxer.
-pub fn snapshot(mlt_file: &Path, frame: i64, out_png: &Path, width: Option<u32>) -> Result<(), MeltError> {
+pub fn snapshot(mlt_file: &Path, frame: i64, out_png: &Path) -> Result<(), MeltError> {
     if !melt_available() {
         return Err(MeltError::NotFound);
     }
     if let Some(parent) = out_png.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let mut args: Vec<String> = vec![
-        "-silent".into(),
+    let args = [
+        "-silent".to_string(),
         mlt_file.to_string_lossy().into_owned(),
         format!("in={frame}"),
         format!("out={frame}"),
@@ -146,10 +145,6 @@ pub fn snapshot(mlt_file: &Path, frame: i64, out_png: &Path, width: Option<u32>)
         "vcodec=png".into(),
         "an=1".into(),
     ];
-    if let Some(w) = width {
-        args.push(format!("width={w}"));
-        args.push("height=0".into());
-    }
     let out = melt_command().args(&args).output()?;
     if !out.status.success() || !out_png.is_file() {
         return Err(MeltError::Failed {

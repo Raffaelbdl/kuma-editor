@@ -13,10 +13,9 @@ use crate::validate::{has_errors, validate, Issue, ValidationContext};
 pub enum EditError {
     #[error("revision mismatch: project is at {current}, edit was based on {base}")]
     RevisionMismatch { current: u64, base: u64 },
+    /// The patch could not be applied or the result is not a project document.
     #[error("patch failed: {0}")]
     Patch(String),
-    #[error("resulting document is not a valid project: {0}")]
-    Shape(String),
     #[error("validation failed")]
     Invalid(Vec<Issue>),
 }
@@ -37,28 +36,27 @@ pub fn apply_patch(
     patch: &[json_patch::PatchOperation],
     ctx: &ValidationContext,
 ) -> Result<EditOutcome, EditError> {
-    if let Some(base) = base_revision {
-        if base != current.revision {
-            return Err(EditError::RevisionMismatch { current: current.revision, base });
-        }
-    }
-    let mut doc: Value = serde_json::to_value(current).map_err(|e| EditError::Shape(e.to_string()))?;
+    check_base(current, base_revision)?;
+    let mut doc: Value = serde_json::to_value(current).map_err(|e| EditError::Patch(e.to_string()))?;
     json_patch::patch(&mut doc, patch).map_err(|e| EditError::Patch(e.to_string()))?;
     finish(current, doc, ctx)
 }
 
-/// Replace the whole document (used by `set_project` and by undo/redo).
+fn check_base(current: &Project, base_revision: Option<u64>) -> Result<(), EditError> {
+    match base_revision {
+        Some(base) if base != current.revision => Err(EditError::RevisionMismatch { current: current.revision, base }),
+        _ => Ok(()),
+    }
+}
+
+/// Replace the whole document (undo/redo).
 pub fn replace(
     current: &Project,
     base_revision: Option<u64>,
     doc: Value,
     ctx: &ValidationContext,
 ) -> Result<EditOutcome, EditError> {
-    if let Some(base) = base_revision {
-        if base != current.revision {
-            return Err(EditError::RevisionMismatch { current: current.revision, base });
-        }
-    }
+    check_base(current, base_revision)?;
     finish(current, doc, ctx)
 }
 
@@ -67,7 +65,7 @@ fn finish(current: &Project, mut doc: Value, ctx: &ValidationContext) -> Result<
     if let Some(obj) = doc.as_object_mut() {
         obj.insert("revision".into(), Value::from(current.revision + 1));
     }
-    let project: Project = serde_json::from_value(doc).map_err(|e| EditError::Shape(e.to_string()))?;
+    let project: Project = serde_json::from_value(doc).map_err(|e| EditError::Patch(format!("result is not a valid project: {e}")))?;
     let issues = validate(&project, ctx);
     if has_errors(&issues) {
         return Err(EditError::Invalid(issues));

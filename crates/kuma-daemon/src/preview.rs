@@ -3,11 +3,12 @@
 //!
 //! The sidecar speaks a tiny line protocol on stdin/stdout:
 //!   → `load <path.mlt>` | `seek <frame>` | `play` | `pause` | `quit`
-//!   ← `ok …` | `err …` | `pos <frame>` | `frame <frame> <len>` followed by `<len>` JPEG bytes
+//!   ← `ok …` | `err …` | `frame <frame> <len>` followed by `<len>` JPEG bytes
 //!
-//! Frames and `ok end` are fanned out to every preview socket; `pos` lines are ignored.
-//!
-//! Until the engine is built, `snapshot` (single frame via melt) is the fallback the UI uses.
+//! Frames, `ok end` and the engine's exit are fanned out to every preview socket. A
+//! socket is bound to one engine process: when it exits every socket closes and the UI
+//! reconnects, which starts a fresh engine. Until the engine is built, `snapshot`
+//! (single frame via melt) is the fallback the UI uses.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -18,7 +19,7 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, Command};
 use tokio::sync::{broadcast, Mutex as AsyncMutex};
 
-use crate::state::AppState;
+use crate::state::{lock, read, AppState};
 
 /// A frame from the engine: JPEG bytes at a timeline frame index.
 #[derive(Debug, Clone)]
@@ -33,6 +34,8 @@ pub enum EngineEvent {
     Frame(PreviewFrame),
     /// Playback ran off the end of the timeline and the engine paused itself.
     End,
+    /// The engine process is gone; reconnect to get a new one.
+    Exited,
 }
 
 pub struct PreviewHandle {
@@ -62,21 +65,21 @@ const MAX_FRAME_BYTES: usize = 64 << 20;
 
 impl PreviewHandle {
     pub fn get(&self) -> Option<Arc<Engine>> {
-        self.inner.lock().unwrap().clone()
+        lock(&self.inner).clone()
     }
 
     pub fn engine_path(state: &AppState) -> PathBuf {
-        state.config.preview_engine.clone().unwrap_or_else(|| state.config.repo_root.join("engine/build/kuma-preview"))
+        state.config.repo_root.join("engine/build/kuma-preview")
     }
 
-    /// Start (or reuse) the engine process.
+    /// The running engine, started on demand.
     pub async fn ensure(&self, state: &Arc<AppState>) -> anyhow::Result<Arc<Engine>> {
         let _guard = self.starting.lock().await;
         if let Some(e) = self.get() {
             return Ok(e);
         }
         let started = self.start(state).await;
-        *self.last_error.lock().unwrap() = started.as_ref().err().map(|e| format!("{e:#}"));
+        *lock(&self.last_error) = started.as_ref().err().map(|e| format!("{e:#}"));
         started
     }
 
@@ -88,12 +91,12 @@ impl PreviewHandle {
                 bin.display()
             );
         }
-        if std::env::var_os("DISPLAY").is_none() && std::env::var_os("WAYLAND_DISPLAY").is_none() && !has_bin("xvfb-run") {
-            anyhow::bail!("no DISPLAY and xvfb-run is not installed; MLT's Qt module needs a display (install `xvfb`)");
-        }
         // MLT's Qt module (qtblend, qtcrop) refuses to load without an X display, so run
         // the engine under Xvfb when headless — same trick as the melt render path.
         let headless = std::env::var_os("DISPLAY").is_none() && std::env::var_os("WAYLAND_DISPLAY").is_none();
+        if headless && !has_bin("xvfb-run") {
+            anyhow::bail!("no DISPLAY and xvfb-run is not installed; MLT's Qt module needs a display (install `xvfb`)");
+        }
         let mut cmd = if headless {
             let mut c = Command::new("xvfb-run");
             c.arg("-a").arg(&bin);
@@ -108,12 +111,11 @@ impl PreviewHandle {
         let stdout = child.stdout.take().unwrap();
         let (events, _) = broadcast::channel(8);
         let engine = Arc::new(Engine { stdin: AsyncMutex::new(stdin), events: events.clone(), _child: child });
-        *self.inner.lock().unwrap() = Some(engine.clone());
+        *lock(&self.inner) = Some(engine.clone());
 
-        // Reader task: parse the line protocol and fan out frames. It holds only a weak
-        // handle so the engine quits (stdin EOF) once every connection drops it.
+        // Reader task: parse the line protocol and fan out frames.
         let st = state.clone();
-        let weak = Arc::downgrade(&engine);
+        let mine = Arc::downgrade(&engine);
         tokio::spawn(async move {
             let mut rd = BufReader::new(stdout);
             let mut line = String::new();
@@ -152,10 +154,11 @@ impl PreviewHandle {
                 "preview engine exited before becoming ready — run it by hand (engine/build/kuma-preview) and check the daemon log for missing libraries or display errors"
             };
             tracing::warn!("{msg}");
-            *st.preview.last_error.lock().unwrap() = Some(msg.to_string());
+            *lock(&st.preview.last_error) = Some(msg.to_string());
+            let _ = events.send(EngineEvent::Exited);
             // Only forget *this* engine; a replacement may already be running.
-            let mut inner = st.preview.inner.lock().unwrap();
-            if inner.as_ref().map(|e| weak.ptr_eq(&Arc::downgrade(e))).unwrap_or(false) {
+            let mut inner = lock(&st.preview.inner);
+            if inner.as_ref().is_some_and(|e| mine.ptr_eq(&Arc::downgrade(e))) {
                 *inner = None;
             }
         });
@@ -184,15 +187,13 @@ pub fn has_bin(name: &str) -> bool {
 pub async fn reload(state: &Arc<AppState>) -> anyhow::Result<PathBuf> {
     let st = state.clone();
     let path = tokio::task::spawn_blocking(move || {
-        let project = st.project.read().unwrap().clone();
-        let scale = (*st.preview.scale.lock().unwrap()).clamp(0.25, 1.0);
+        let project = read(&st.project).clone();
+        let scale = (*lock(&st.preview.scale)).clamp(0.25, 1.0);
         let even = |v: f64| ((v.round() as u32).max(2)) & !1;
         let (w, h) = (even(project.width as f64 * scale), even(project.height as f64 * scale));
         crate::jobs::compile_project(&st, &project, HashMap::new(), "preview", UnbakedPolicy::Skip, Some((w, h)))
     })
     .await??;
-    if let Ok(engine) = state.preview.ensure(state).await {
-        engine.send(&format!("load {}", path.display())).await?;
-    }
+    state.preview.ensure(state).await?.send(&format!("load {}", path.display())).await?;
     Ok(path)
 }

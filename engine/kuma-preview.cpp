@@ -4,7 +4,7 @@
 // thread) and are applied between frames. Audio paces playback: the SDL callback drains
 // a ring buffer and the pull loop decodes the next frame only while the ring holds less
 // than a few frames of sound, so video runs at real time and leads audio by at most
-// that much. Without an audio device a wall clock stands in.
+// that much. Without an audio device SDL's dummy driver paces the callback instead.
 
 #include <Mlt.h>
 #include <SDL.h>
@@ -30,11 +30,23 @@ namespace {
 
 class AudioOut {
 public:
-    int rate = 48000;
-    int channels = 2;
+    static constexpr int rate = 48000;
+    static constexpr int channels = 2;
 
+    // Opens the default device; without one (CI) SDL's dummy driver still paces
+    // callbacks in real time, so playback is always audio-paced.
     bool open() {
-        if (SDL_InitSubSystem(SDL_INIT_AUDIO) != 0) return false;
+        if (SDL_InitSubSystem(SDL_INIT_AUDIO) != 0 || !open_device()) {
+            SDL_QuitSubSystem(SDL_INIT_AUDIO);
+            SDL_setenv("SDL_AUDIODRIVER", "dummy", 1);
+            if (SDL_InitSubSystem(SDL_INIT_AUDIO) != 0 || !open_device()) return false;
+        }
+        SDL_PauseAudioDevice(dev_, 0);
+        return true;
+    }
+
+private:
+    bool open_device() {
         SDL_AudioSpec want{}, have{};
         want.freq = rate;
         want.format = AUDIO_S16SYS;
@@ -42,14 +54,11 @@ public:
         want.samples = 1024;
         want.callback = &AudioOut::cb;
         want.userdata = this;
-        dev_ = SDL_OpenAudioDevice(nullptr, 0, &want, &have, 0);
-        if (dev_ == 0) return false;
-        rate = have.freq;
-        channels = have.channels;
-        SDL_PauseAudioDevice(dev_, 0);
-        return true;
+        dev_ = SDL_OpenAudioDevice(nullptr, 0, &want, &have, 0); // allowed_changes = 0: have == want
+        return dev_ != 0;
     }
 
+public:
     // Samples (per channel) waiting to be played.
     long long queued() {
         std::lock_guard<std::mutex> l(m_);
@@ -93,25 +102,6 @@ private:
     std::atomic<bool> running_{false};
 };
 
-// Fallback when there is no audio device: a wall clock expressed in samples.
-class WallClock {
-public:
-    void start() { t0_ = std::chrono::steady_clock::now(); base_ = 0; running_ = true; }
-    void stop() { base_ = consumed(); running_ = false; }
-    void reset() { base_ = 0; t0_ = std::chrono::steady_clock::now(); }
-    long long consumed() const {
-        if (!running_) return base_;
-        auto dt = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0_).count();
-        return base_ + (long long)(dt * rate);
-    }
-    int rate = 48000;
-
-private:
-    std::chrono::steady_clock::time_point t0_;
-    long long base_ = 0;
-    bool running_ = false;
-};
-
 // ----------------------------------------------------------------- engine ----------
 
 struct Command {
@@ -136,11 +126,11 @@ public:
 
     void run() {
         Mlt::Factory::init();
-        audio_ok_ = audio_.open();
-        if (!audio_ok_) {
-            std::fprintf(stderr, "kuma-preview: no audio device (%s); using wall clock\n", SDL_GetError());
+        if (!audio_.open()) {
+            std::fprintf(stderr, "kuma-preview: cannot open an audio device: %s\n", SDL_GetError());
+            return;
         }
-        emit("ok ready audio=" + std::string(audio_ok_ ? "sdl" : "wallclock"));
+        emit("ok ready");
 
         while (!quit_) {
             // Apply pending commands.
@@ -160,23 +150,15 @@ public:
 
             // Playback: decode ahead while the audio ring holds less than ~3 frames, so
             // the picture never leads the sound by more than that.
-            long long ahead = audio_ok_ ? audio_.queued() : 0;
+            long long ahead = audio_.queued();
             long long target = (long long)(3.0 * rate_ / fps_);
-            if (audio_ok_ && ahead > target) {
+            if (ahead > target) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(5));
                 continue;
             }
-            if (!audio_ok_) {
-                // Wall clock: only advance when the clock has reached the next frame.
-                long long due = (long long)((double)(pos_ - play_start_frame_) * rate_ / fps_);
-                if (clock_.consumed() < due) {
-                    std::this_thread::sleep_for(std::chrono::milliseconds(2));
-                    continue;
-                }
-            }
             if (pos_ >= length_) {
                 // Let the queued sound of the last frames play out before stopping.
-                if (audio_ok_ && audio_.queued() > 0) {
+                if (audio_.queued() > 0) {
                     std::this_thread::sleep_for(std::chrono::milliseconds(5));
                     continue;
                 }
@@ -186,7 +168,7 @@ public:
             }
             // < 1 frame buffered: skip the JPEG to catch up — except right after play(),
             // when the ring is empty by construction and the picture must still update.
-            bool late = audio_ok_ && pos_ > play_start_frame_ + 3 && ahead < target / 3;
+            bool late = pos_ > play_start_frame_ + 3 && ahead < target / 3;
             pull(pos_, /*with_audio=*/true, /*emit_image=*/!late || (pos_ % 3 == 0));
             pos_++;
         }
@@ -214,7 +196,6 @@ private:
             play();
         } else if (c.op == "pause") {
             pause();
-            emit("pos " + std::to_string(pos_));
         } else {
             emit("err unknown command " + c.op);
         }
@@ -247,12 +228,9 @@ private:
     void play() {
         if (playing_) return;
         audio_.reset();
-        clock_.reset();
-        clock_.rate = rate_;
         play_start_frame_ = pos_;
         playing_ = true;
         audio_.set_running(true);
-        clock_.start();
         emit("ok play");
     }
 
@@ -260,7 +238,6 @@ private:
         if (!playing_) return;
         playing_ = false;
         audio_.set_running(false);
-        clock_.stop();
         audio_.reset();
     }
 
@@ -279,36 +256,27 @@ private:
             mlt_image_format fmt = mlt_image_rgb;
             int w = width_, h = height_;
             uint8_t *img = frame->get_image(fmt, w, h);
-            if (img && w > 0 && h > 0) {
-                unsigned char *out = nullptr;
-                unsigned long size = 0;
-                // 4:4:4 keeps text and thin overlay strokes crisp; localhost bandwidth is not a concern.
-                if (tjCompress2(jpeg_, img, w, 0, h, TJPF_RGB, &out, &size, TJSAMP_444, 88, TJFLAG_FASTDCT) == 0) {
-                    std::string header = "frame " + std::to_string(frame_index) + " " + std::to_string(size) + "\n";
-                    std::fwrite(header.data(), 1, header.size(), stdout);
-                    std::fwrite(out, 1, size, stdout);
-                    std::fflush(stdout);
-                    tjFree(out);
-                }
+            unsigned char *out = nullptr;
+            unsigned long size = 0;
+            // 4:4:4 keeps text and thin overlay strokes crisp; localhost bandwidth is not a concern.
+            if (img && w > 0 && h > 0 && fmt == mlt_image_rgb &&
+                tjCompress2(jpeg_, img, w, 0, h, TJPF_RGB, &out, &size, TJSAMP_444, 88, TJFLAG_FASTDCT) == 0) {
+                std::string header = "frame " + std::to_string(frame_index) + " " + std::to_string(size) + "\n";
+                std::fwrite(header.data(), 1, header.size(), stdout);
+                std::fwrite(out, 1, size, stdout);
+                std::fflush(stdout);
+            } else {
+                emit("err no image at " + std::to_string(frame_index));
             }
-        } else {
-            emit("pos " + std::to_string(frame_index));
+            tjFree(out);
         }
 
-        if (with_audio && audio_ok_) {
+        if (with_audio) {
             mlt_audio_format afmt = mlt_audio_s16;
             int freq = rate_, channels = audio_.channels;
             int samples = mlt_audio_calculate_frame_samples(fps_, freq, frame_index);
             int16_t *pcm = static_cast<int16_t *>(frame->get_audio(afmt, freq, channels, samples));
-            if (pcm && samples > 0) {
-                if (channels == audio_.channels && freq == rate_) {
-                    audio_.push(pcm, samples);
-                } else {
-                    // Unexpected layout: feed silence to keep the clock honest.
-                    std::vector<int16_t> silence((size_t)samples * audio_.channels, 0);
-                    audio_.push(silence.data(), samples);
-                }
-            }
+            if (pcm && samples > 0 && channels == audio_.channels && freq == rate_) audio_.push(pcm, samples);
         }
     }
 
@@ -323,8 +291,6 @@ private:
     std::unique_ptr<Mlt::Producer> producer_;
     tjhandle jpeg_ = nullptr;
     AudioOut audio_;
-    WallClock clock_;
-    bool audio_ok_ = false;
 
     std::mutex qm_;
     std::condition_variable qcv_;
@@ -342,9 +308,7 @@ private:
 
 } // namespace
 
-int main(int argc, char **argv) {
-    (void)argc;
-    (void)argv;
+int main() {
     setvbuf(stdout, nullptr, _IOFBF, 1 << 20);
     Engine engine;
     std::thread reader([&] {

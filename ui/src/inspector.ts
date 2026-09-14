@@ -34,7 +34,7 @@ export class Inspector {
     this.host.innerHTML = "";
     if (!f) {
       this.host.innerHTML = `<h3>Inspector</h3><p class="muted">Select a clip. Drop templates or assets from the library onto the timeline.</p>
-        <h3>Shortcuts</h3><p class="muted"><kbd>Space</kbd> play/pause · <kbd>←</kbd><kbd>→</kbd> frame step · <kbd>Del</kbd> delete · <kbd>Ctrl+Z</kbd>/<kbd>Ctrl+Y</kbd> undo/redo · <kbd>Ctrl+wheel</kbd> zoom · <kbd>S</kbd> split at playhead</p>`;
+        <h3>Shortcuts</h3><p class="muted"><kbd>Space</kbd> play/pause · <kbd>←</kbd><kbd>→</kbd> frame step · <kbd>Del</kbd> delete · <kbd>Ctrl+Z</kbd>/<kbd>Ctrl+Shift+Z</kbd> undo/redo · <kbd>Ctrl+wheel</kbd> zoom · <kbd>S</kbd> split at playhead</p>`;
       return;
     }
     const { clip, ti, ci } = f;
@@ -133,7 +133,8 @@ export class Inspector {
       }
       params.appendChild(button("Apply", async () => {
         try {
-          const ops: PatchOp[] = expandPreset(p, values).map((e) => ({ op: "add", path: `${path}/effects/-`, value: e }));
+          const { width, height } = store.state.project!;
+          const ops: PatchOp[] = expandPreset(p, { width, height, ...values }).map((e) => ({ op: "add", path: `${path}/effects/-`, value: e }));
           if (await store.patch(ops, `preset ${p.id}`)) { preset.value = ""; params.innerHTML = ""; }
         } catch (e) {
           toast((e as Error).message, "err");

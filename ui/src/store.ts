@@ -1,5 +1,5 @@
 import { api, subscribeEvents } from "./api";
-import type { Clip, DaemonEvent, PatchOp, Project, TemplateInfo, Track } from "./types";
+import type { Clip, DaemonEvent, Job, PatchOp, Project, TemplateInfo, Track } from "./types";
 import { fpsValue, freeId } from "./types";
 
 export interface State {
@@ -11,7 +11,7 @@ export interface State {
   /** pixels per second */
   zoom: number;
   connected: boolean;
-  jobs: Record<number, { kind: string; percent: number; message: string; done?: boolean; ok?: boolean; result?: unknown }>;
+  jobs: Record<number, Job>;
 }
 
 type Listener = (s: State) => void;
@@ -61,11 +61,10 @@ class Store {
     if (e.type === "project_changed") {
       if (!this.state.project || e.revision !== this.state.project.revision) await this.refresh();
       toast(`${e.origin} → r${e.revision}`, "ok", 1200);
-    } else if (e.type === "job_progress") {
-      this.set({ jobs: { ...this.state.jobs, [e.id]: { kind: e.kind, percent: e.percent, message: e.message } } });
-    } else if (e.type === "job_done") {
-      this.set({ jobs: { ...this.state.jobs, [e.id]: { kind: e.kind, percent: 100, message: e.message, done: true, ok: e.ok, result: e.result } } });
-      toast(e.ok ? `${e.kind} done` : `${e.kind} failed: ${e.message}`, e.ok ? "ok" : "err", e.ok ? 4000 : 12000);
+    } else if (e.type === "job") {
+      const { type: _, ...job } = e;
+      this.set({ jobs: { ...this.state.jobs, [e.id]: job } });
+      if (e.done) toast(e.ok ? `${e.kind} done` : `${e.kind} failed: ${e.message}`, e.ok ? "ok" : "err", e.ok ? 4000 : 12000);
     }
   }
 

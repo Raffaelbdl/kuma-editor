@@ -1,5 +1,5 @@
-//! Long-running work: overlay bakes, final renders, frame sampling. Each job runs on a
-//! blocking thread and reports through the event bus.
+//! Work: overlay bakes, renders, frame sampling, asset registration. Long-running work
+//! runs as a job on a blocking thread and reports through the event bus.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -9,40 +9,34 @@ use std::sync::{Arc, Mutex};
 use kuma_core::template::Region;
 use kuma_core::{ClipSource, Project};
 use kuma_mlt::{compile, CompileOptions, OverlayBake, RenderJob, UnbakedPolicy};
-use kuma_overlay::{BakeRequest, Format};
+use kuma_overlay::BakeRequest;
 use serde::{Deserialize, Serialize};
 
-use crate::state::{AppState, Event};
+use crate::state::{lock, read, AppState, Event};
 
+/// A background job as clients see it: progress while running, then `done` with either
+/// a `result` or an `error`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum JobStatus {
-    Running { percent: u8, message: String },
-    Done { result: serde_json::Value },
-    Failed { error: String },
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct JobInfo {
+pub struct Job {
     pub id: u64,
     pub kind: String,
-    pub status: JobStatus,
+    pub percent: u8,
+    pub message: String,
+    pub done: bool,
+    pub ok: bool,
+    #[serde(default)]
+    pub result: serde_json::Value,
 }
 
 #[derive(Default)]
 pub struct Jobs {
     next: AtomicU64,
-    pub table: Mutex<HashMap<u64, JobInfo>>,
+    table: Mutex<HashMap<u64, Job>>,
 }
 
 impl Jobs {
-    pub fn get(&self, id: u64) -> Option<JobInfo> {
-        self.table.lock().unwrap().get(&id).cloned()
-    }
-    pub fn list(&self) -> Vec<JobInfo> {
-        let mut v: Vec<_> = self.table.lock().unwrap().values().cloned().collect();
-        v.sort_by_key(|j| j.id);
-        v
+    pub fn get(&self, id: u64) -> Option<Job> {
+        lock(&self.table).get(&id).cloned()
     }
 }
 
@@ -52,34 +46,29 @@ where
     F: FnOnce(&dyn Fn(u8, &str)) -> anyhow::Result<serde_json::Value> + Send + 'static,
 {
     let id = state.jobs.next.fetch_add(1, Ordering::SeqCst) + 1;
-    let kind = kind.to_string();
+    let job = Job { id, kind: kind.to_string(), percent: 0, message: "queued".into(), done: false, ok: false, result: serde_json::Value::Null };
     {
-        let mut table = state.jobs.table.lock().unwrap();
+        let mut table = lock(&state.jobs.table);
         // Keep the table bounded: drop the oldest finished jobs beyond a hundred.
         if table.len() >= 100 {
-            let mut done: Vec<u64> = table.iter().filter(|(_, j)| !matches!(j.status, JobStatus::Running { .. })).map(|(k, _)| *k).collect();
+            let mut done: Vec<u64> = table.iter().filter(|(_, j)| j.done).map(|(k, _)| *k).collect();
             done.sort_unstable();
             for k in done.into_iter().take(table.len() + 1 - 100) {
                 table.remove(&k);
             }
         }
-        table.insert(id, JobInfo { id, kind: kind.clone(), status: JobStatus::Running { percent: 0, message: "queued".into() } });
+        table.insert(id, job.clone());
     }
     tokio::task::spawn_blocking(move || {
-        let set = |status: JobStatus| state.jobs.table.lock().unwrap().insert(id, JobInfo { id, kind: kind.clone(), status });
-        let progress = |percent: u8, message: &str| {
-            set(JobStatus::Running { percent, message: message.to_string() });
-            let _ = state.events.send(Event::JobProgress { id, kind: kind.clone(), percent, message: message.to_string() });
+        let publish = |job: Job| {
+            lock(&state.jobs.table).insert(id, job.clone());
+            let _ = state.events.send(Event::Job(job));
         };
-        let (status, ok, message, result) = match f(&progress) {
-            Ok(result) => (JobStatus::Done { result: result.clone() }, true, "done".to_string(), result),
-            Err(e) => {
-                let msg = format!("{e:#}");
-                (JobStatus::Failed { error: msg.clone() }, false, msg, serde_json::Value::Null)
-            }
-        };
-        set(status);
-        let _ = state.events.send(Event::JobDone { id, kind: kind.clone(), ok, message, result });
+        let progress = |percent: u8, message: &str| publish(Job { percent, message: message.to_string(), ..job.clone() });
+        publish(match f(&progress) {
+            Ok(result) => Job { percent: 100, message: "done".into(), done: true, ok: true, result, ..job.clone() },
+            Err(e) => Job { message: format!("{e:#}"), done: true, ok: false, ..job.clone() },
+        });
     });
     id
 }
@@ -97,6 +86,10 @@ pub fn add_asset(state: &AppState, path: &Path, id: Option<String>, base_revisio
         let stem = abs.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or("asset".into());
         stem.chars().map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '_' }).collect()
     });
+    // JSON Patch `add` would silently replace an existing member, rebinding every clip.
+    if read(&state.project).assets.contains_key(&id) {
+        anyhow::bail!("asset id `{id}` already exists (pass a different id)");
+    }
     let asset = kuma_core::Asset { path: rel.to_string_lossy().into_owned(), kind: probe.kind, proxy: None, meta: Some(probe.meta) };
     let pointer = format!("/assets/{}", id.replace('~', "~0").replace('/', "~1"));
     let patch = vec![json_patch::PatchOperation::Add(json_patch::AddOperation { path: pointer.parse()?, value: serde_json::to_value(asset)? })];
@@ -105,15 +98,8 @@ pub fn add_asset(state: &AppState, path: &Path, id: Option<String>, base_revisio
 }
 
 /// Bake every overlay clip in the project (cached). Returns bakes keyed by clip id.
-pub fn bake_all(
-    state: &AppState,
-    project: &Project,
-    only: Option<&[String]>,
-    format: Format,
-    supersample: u32,
-    progress: &dyn Fn(u8, &str),
-) -> anyhow::Result<HashMap<String, OverlayBake>> {
-    let templates = state.templates.read().unwrap().clone();
+pub fn bake_all(state: &AppState, project: &Project, only: Option<&[String]>, progress: &dyn Fn(u8, &str)) -> anyhow::Result<HashMap<String, OverlayBake>> {
+    let templates = read(&state.templates).loaded.clone();
     let clips: Vec<_> = project
         .tracks
         .iter()
@@ -127,18 +113,7 @@ pub fn bake_all(
         let ClipSource::Overlay { overlay, vars } = &clip.src else { continue };
         let (dir, manifest) = templates.get(overlay).ok_or_else(|| anyhow::anyhow!("unknown template `{overlay}` for clip `{}`", clip.id))?;
         progress(((i * 100) / n) as u8, &format!("baking {} ({overlay})", clip.id));
-        let req = BakeRequest {
-            template_dir: dir,
-            manifest,
-            vars,
-            fps: project.fps,
-            width: project.width,
-            height: project.height,
-            duration: clip.duration(),
-            speed: clip.speed,
-            format,
-            supersample,
-        };
+        let req = BakeRequest { template_dir: dir, manifest, vars, fps: project.fps, width: project.width, height: project.height, duration: clip.duration(), speed: clip.speed };
         let r = state.baker.bake(&req).map_err(|e| anyhow::anyhow!("bake `{}`: {e}", clip.id))?;
         out.insert(clip.id.clone(), r.overlay_bake());
     }
@@ -175,20 +150,15 @@ pub struct RenderRequest {
     pub output: Option<PathBuf>,
     /// Seconds; whole timeline when absent.
     pub range: Option<(f64, f64)>,
-    #[serde(default = "one")]
-    pub supersample: u32,
 }
 fn default_preset() -> String {
     "youtube-1080p".into()
 }
-fn one() -> u32 {
-    1
-}
 
 pub fn render(state: &AppState, req: &RenderRequest, progress: &dyn Fn(u8, &str)) -> anyhow::Result<serde_json::Value> {
-    let project = state.project.read().unwrap().clone();
+    let project = read(&state.project).clone();
     let preset = kuma_mlt::presets::find(&req.preset).ok_or_else(|| anyhow::anyhow!("unknown preset `{}`", req.preset))?;
-    let bakes = bake_all(state, &project, None, Format::PngSequence, req.supersample, &|p, m| progress(p / 2, m))?;
+    let bakes = bake_all(state, &project, None, &|p, m| progress(p / 2, m))?;
     let mlt = compile_project(state, &project, bakes, "render", UnbakedPolicy::Error, None)?;
     let output = req.output.clone().unwrap_or_else(|| {
         let name = if project.name.is_empty() { "kuma" } else { project.name.as_str() };
@@ -237,9 +207,11 @@ pub struct Sample {
     pub path: PathBuf,
 }
 
-/// Render exact frames of the composite through MLT, optionally cropped.
+/// Render exact frames of the composite through MLT, optionally cropped. Frames are
+/// cached per revision, frame and bake set; every cached file is written atomically so
+/// two concurrent samples of the same frame never read a half-written PNG.
 pub fn sample_frames(state: &AppState, req: &SampleRequest, progress: &dyn Fn(u8, &str)) -> anyhow::Result<Vec<Sample>> {
-    let project = state.project.read().unwrap().clone();
+    let project = read(&state.project).clone();
     let t1 = req.t1.unwrap_or(req.t0);
     let count = req.count.clamp(1, 32);
     let bakes = if req.overlays {
@@ -251,11 +223,10 @@ pub fn sample_frames(state: &AppState, req: &SampleRequest, progress: &dyn Fn(u8
             .filter(|c| matches!(c.src, ClipSource::Overlay { .. }) && c.end > req.t0 && c.start <= t1)
             .map(|c| c.id.clone())
             .collect();
-        bake_all(state, &project, Some(&ids), Format::PngSequence, 1, &|p, m| progress(p / 2, m))?
+        bake_all(state, &project, Some(&ids), &|p, m| progress(p / 2, m))?
     } else {
         HashMap::new()
     };
-    // Samples run concurrently (agent + UI snapshots), so each gets its own XML file.
     let out_dir = state.config.cache_dir().join("samples");
     std::fs::create_dir_all(&out_dir)?;
     // Overlay templates can change without a project revision (the agent edits the HTML),
@@ -264,19 +235,24 @@ pub fn sample_frames(state: &AppState, req: &SampleRequest, progress: &dyn Fn(u8
     let xml = compile_xml(state, &project, bakes, UnbakedPolicy::Skip, None)?;
     let mlt_file = tempfile::Builder::new().prefix("sample-").suffix(".mlt").tempfile_in(state.config.cache_dir())?;
     std::fs::write(mlt_file.path(), xml)?;
-    let mlt = mlt_file.path();
+    // Produce `target` through `f(tmp)` and publish it with a rename.
+    let atomic = |target: &Path, f: &dyn Fn(&Path) -> anyhow::Result<()>| -> anyhow::Result<()> {
+        if target.is_file() {
+            return Ok(());
+        }
+        let tmp = tempfile::Builder::new().suffix(".png").tempfile_in(&out_dir)?;
+        f(tmp.path())?;
+        tmp.persist(target)?;
+        Ok(())
+    };
     let mut samples = Vec::new();
     for i in 0..count {
         let t = if count == 1 { req.t0 } else { req.t0 + (t1 - req.t0) * i as f64 / (count - 1) as f64 };
         let frame = project.fps.frame(t);
         progress((50 + 50 * i / count) as u8, &format!("frame {frame}"));
-        // The UI's snapshot (no overlays) and the agent's sample (with overlays, whose
-        // bakes are hashed in) must never share a cached frame.
         let stamp = format!("{}_{}{}", project.revision, frame, if req.overlays { format!("o{bake_stamp}") } else { String::new() });
         let full = out_dir.join(format!("f{stamp}.png"));
-        if !full.is_file() {
-            kuma_mlt::melt::snapshot(mlt, frame, &full, None)?;
-        }
+        atomic(&full, &|tmp| Ok(kuma_mlt::melt::snapshot(mlt_file.path(), frame, tmp)?))?;
         let path = if req.rect.is_some() || req.width.is_some() {
             let mut vf = Vec::new();
             if let Some(r) = req.rect {
@@ -285,12 +261,10 @@ pub fn sample_frames(state: &AppState, req: &SampleRequest, progress: &dyn Fn(u8
             if let Some(w) = req.width {
                 vf.push(format!("scale={w}:-2"));
             }
-            let name = format!("f{stamp}_{}.png", hash_str(&vf.join(",")));
-            let p = out_dir.join(name);
-            if !p.is_file() {
-                kuma_overlay::media::ffmpeg(&["-i".into(), full.to_string_lossy().into_owned(), "-vf".into(), vf.join(","), p.to_string_lossy().into_owned()])
-                    .map_err(|e| anyhow::anyhow!(e))?;
-            }
+            let p = out_dir.join(format!("f{stamp}_{}.png", hash_str(&vf.join(","))));
+            atomic(&p, &|tmp| {
+                kuma_overlay::media::ffmpeg(&["-i".into(), full.to_string_lossy().into_owned(), "-vf".into(), vf.join(","), tmp.to_string_lossy().into_owned()]).map_err(|e| anyhow::anyhow!(e))
+            })?;
             p
         } else {
             full

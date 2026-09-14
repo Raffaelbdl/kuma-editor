@@ -85,11 +85,6 @@ impl Fps {
         (secs * self.num as f64 / self.den as f64).round() as i64
     }
 
-    /// Frame index → seconds (exact for the rational).
-    pub fn secs(&self, frame: i64) -> f64 {
-        frame as f64 * self.den as f64 / self.num as f64
-    }
-
     /// Frame span for a `[start, end)` range in seconds, as MLT expects it:
     /// `in` inclusive, `out` inclusive, `len = out - in + 1`. Never shorter than 1 frame.
     pub fn clip_frames(&self, start: f64, end: f64) -> ClipFrames {
@@ -107,16 +102,6 @@ impl Fps {
 impl Default for Fps {
     fn default() -> Self {
         Fps::new(30, 1)
-    }
-}
-
-impl std::fmt::Display for Fps {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if self.den == 1 {
-            write!(f, "{}", self.num)
-        } else {
-            write!(f, "{}/{}", self.num, self.den)
-        }
     }
 }
 
@@ -177,8 +162,6 @@ mod tests {
         // 10 minutes at 29.97 is 17982.017 frames → 17982; an integer 29.97 would give 17982
         // here too but drift by a frame every ~33 s in accumulated clip math.
         assert_eq!(fps.frame(600.0), 17982);
-        // Round-tripping lands within one frame period of the original time.
-        assert!((fps.secs(fps.frame(600.0)) - 600.0).abs() < 1.0 / fps.as_f64());
         // Accumulating 1000 one-second clips must equal one 1000-second clip.
         let per_clip: i64 = (0..1000).map(|i| fps.clip_frames(i as f64, i as f64 + 1.0).len()).sum();
         assert_eq!(per_clip, fps.clip_frames(0.0, 1000.0).len());

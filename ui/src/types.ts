@@ -4,7 +4,7 @@
 export interface Fps { num: number; den: number }
 
 export interface AssetMeta {
-  duration?: number; width?: number; height?: number; fps?: Fps; has_audio: boolean; codec?: string;
+  duration?: number; width?: number; height?: number; fps?: Fps; has_audio: boolean;
 }
 export interface Asset { path: string; kind: "video" | "audio" | "image"; proxy?: string | null; meta?: AssetMeta | null }
 
@@ -45,14 +45,14 @@ export interface Project {
 }
 
 export interface VarSpec {
-  type: "string" | "text" | "number" | "color" | "boolean" | "enum" | "asset" | "point";
+  type: "string" | "text" | "number" | "color" | "boolean" | "enum" | "point";
   label?: string; description?: string; default: unknown; min?: number; max?: number; step?: number; options?: string[];
 }
 export interface TemplateManifest {
-  id: string; name: string; description: string; duration_default: number; entry: string; static: boolean;
-  region?: { x: number; y: number; w: number; h: number }; vars: Record<string, VarSpec>; tags: string[];
+  id: string; name: string; description: string; duration_default: number; static: boolean;
+  vars: Record<string, VarSpec>; tags: string[];
 }
-export interface TemplateInfo { id: string; dir: string; manifest: TemplateManifest; has_thumb: boolean }
+export interface TemplateInfo { id: string; manifest: TemplateManifest; has_thumb: boolean }
 
 export interface Preset { id: string; description: string; extension: string }
 
@@ -65,13 +65,14 @@ export interface EffectPreset {
 
 /**
  * Expand `$expr` placeholders (param names, numbers, + - * / and parentheses) with the
- * given values (defaults for the rest). Inside an `mlt` effect's `properties` the result
- * is a string, as the model requires. A tiny recursive-descent evaluator, so param
- * names like `in` are fine and nothing reaches `eval`.
+ * given values (defaults for the rest). `values` may carry extra names such as the
+ * project `width`/`height`, which presets use for centring. Inside an `mlt` effect's
+ * `properties` the result is a string, as the model requires. A tiny recursive-descent
+ * evaluator, so param names like `in` are fine and nothing reaches `eval`.
  */
 export function expandPreset(preset: EffectPreset, values: Record<string, number>): Effect[] {
-  const vars: Record<string, number> = {};
-  for (const [n, spec] of Object.entries(preset.params)) vars[n] = values[n] ?? Number(spec.default);
+  const vars: Record<string, number> = { ...values };
+  for (const [n, spec] of Object.entries(preset.params)) vars[n] ??= Number(spec.default);
   const walk = (v: unknown, asString: boolean): unknown => {
     if (typeof v === "string" && v.startsWith("$")) { const n = evalArith(v.slice(1), vars); return asString ? String(n) : n; }
     if (Array.isArray(v)) return v.map((x) => walk(x, asString));
@@ -112,10 +113,11 @@ export type PatchOp =
   | { op: "remove"; path: string }
   | { op: "move"; from: string; path: string };
 
+export interface Job { id: number; kind: string; percent: number; message: string; done: boolean; ok: boolean; result: unknown }
+
 export type DaemonEvent =
   | { type: "project_changed"; revision: number; origin: string }
-  | { type: "job_progress"; id: number; kind: string; percent: number; message: string }
-  | { type: "job_done"; id: number; kind: string; ok: boolean; message: string; result: unknown };
+  | ({ type: "job" } & Job);
 
 export const fpsValue = (f: Fps) => f.num / f.den;
 export const isOverlay = (c: Clip): c is Clip & { src: { overlay: string; vars?: Record<string, unknown> } } => "overlay" in c.src;
@@ -163,8 +165,8 @@ export function transformAt(e: Extract<Effect, { type: "transform" }>, local: nu
 export function shiftEffect(e: Effect, cut: number): Effect {
   if (e.type === "fade") return { ...e, in: 0 };
   if (e.type === "transform" && e.keyframes?.length) {
-    const at = transformAt(e, cut);
-    return { ...e, keyframes: [{ t: 0, ...at }, ...e.keyframes.filter((k) => k.t > cut).map((k) => ({ ...k, t: k.t - cut }))] };
+    // `transformAt` may hand back a keyframe object carrying its own `t`: set ours last.
+    return { ...e, keyframes: [{ ...transformAt(e, cut), t: 0 }, ...e.keyframes.filter((k) => k.t > cut).map((k) => ({ ...k, t: k.t - cut }))] };
   }
   if (e.type === "volume") {
     const at = keyframeAt(e.keyframes, cut, (a, b, u) => ({ t: cut, gain: a.gain + (b.gain - a.gain) * u }))?.gain ?? 1;
@@ -177,7 +179,7 @@ export function shiftEffect(e: Effect, cut: number): Effect {
 export function trimEffect(e: Effect, cut: number): Effect {
   if (e.type === "fade") return { ...e, out: 0 };
   if (e.type === "transform" && e.keyframes?.some((k) => k.t > cut)) {
-    return { ...e, keyframes: [...e.keyframes.filter((k) => k.t <= cut), { t: cut, ...transformAt(e, cut) }] };
+    return { ...e, keyframes: [...e.keyframes.filter((k) => k.t <= cut), { ...transformAt(e, cut), t: cut }] };
   }
   if (e.type === "volume" && e.keyframes.some((k) => k.t > cut)) {
     const at = keyframeAt(e.keyframes, cut, (a, b, u) => ({ t: cut, gain: a.gain + (b.gain - a.gain) * u }))!;

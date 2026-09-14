@@ -138,8 +138,15 @@ pub fn validate(p: &Project, ctx: &ValidationContext) -> Vec<Issue> {
                     }
                 }
             }
+            // A second effect of these kinds would stack (two volume filters square the
+            // gain) or silently shadow the first (blend); only `mlt` may repeat.
+            let mut kinds = HashSet::new();
             for (ei, e) in c.effects.iter().enumerate() {
                 let ep = format!("{cp}/effects/{ei}");
+                let kind = serde_json::to_value(e).ok().and_then(|v| v["type"].as_str().map(String::from)).unwrap_or_default();
+                if kind != "mlt" && !kinds.insert(kind.clone()) {
+                    issues.push(Issue::error(ep.clone(), format!("duplicate `{kind}` effect on this clip")));
+                }
                 match e {
                     Effect::Crop { left, right, top, bottom, radius } => {
                         if left + right >= 1.0 || top + bottom >= 1.0 {
@@ -157,15 +164,8 @@ pub fn validate(p: &Project, ctx: &ValidationContext) -> Vec<Issue> {
                         if !good_scale(*scale) {
                             issues.push(Issue::error(format!("{ep}/scale"), "scale must be > 0"));
                         }
-                        let mut last = f64::NEG_INFINITY;
+                        check_keyframes(&mut issues, &ep, c, keyframes.iter().map(|k| k.t));
                         for (ki, k) in keyframes.iter().enumerate() {
-                            if k.t < last {
-                                issues.push(Issue::error(format!("{ep}/keyframes/{ki}/t"), "keyframes must be sorted by t"));
-                            }
-                            last = k.t;
-                            if k.t > c.duration() + 1e-9 {
-                                issues.push(Issue::warn(format!("{ep}/keyframes/{ki}/t"), "keyframe beyond clip end"));
-                            }
                             if k.scale.is_some_and(|s| !good_scale(s)) {
                                 issues.push(Issue::error(format!("{ep}/keyframes/{ki}/scale"), "scale must be > 0"));
                             }
@@ -185,6 +185,7 @@ pub fn validate(p: &Project, ctx: &ValidationContext) -> Vec<Issue> {
                         if keyframes.is_empty() {
                             issues.push(Issue::error(ep.clone(), "volume needs at least one keyframe"));
                         }
+                        check_keyframes(&mut issues, &ep, c, keyframes.iter().map(|k| k.t));
                     }
                     Effect::Mlt { service, .. } => {
                         if service.trim().is_empty() {
@@ -247,10 +248,11 @@ pub fn validate(p: &Project, ctx: &ValidationContext) -> Vec<Issue> {
                     issues.push(Issue::error(format!("{xp}/duration"), format!("transitions on `{}` are longer than the clip", c.id)));
                 }
             }
-            // Handles are in source time: a 2× clip eats twice the material.
-            if let ClipSource::Asset { source_in, .. } = &b.src {
+            // Handles are in source time: a 2× clip eats twice the material. Stills need none.
+            if let ClipSource::Asset { asset, source_in } = &b.src {
                 let need = half * b.speed.abs();
-                if *source_in < need - 1e-9 {
+                let still = p.assets.get(asset).is_some_and(|a| a.kind == AssetKind::Image);
+                if !still && *source_in < need - 1e-9 {
                     issues.push(Issue::error(format!("{xp}/duration"), format!("`{}` needs {need:.2}s of handle before its in point", b.id)));
                 }
             }
@@ -285,6 +287,20 @@ pub fn validate(p: &Project, ctx: &ValidationContext) -> Vec<Issue> {
     }
 
     issues
+}
+
+/// Keyframe times must be non-negative and sorted; beyond the clip end they are pointless.
+fn check_keyframes(issues: &mut Vec<Issue>, ep: &str, c: &Clip, times: impl Iterator<Item = f64>) {
+    let mut last = f64::NEG_INFINITY;
+    for (ki, t) in times.enumerate() {
+        if t < 0.0 || t < last {
+            issues.push(Issue::error(format!("{ep}/keyframes/{ki}/t"), "keyframes must be >= 0 and sorted by t"));
+        }
+        last = t;
+        if t > c.duration() + 1e-9 {
+            issues.push(Issue::warn(format!("{ep}/keyframes/{ki}/t"), "keyframe beyond clip end"));
+        }
+    }
 }
 
 fn check_id<'a>(issues: &mut Vec<Issue>, seen: &mut HashSet<&'a str>, id: &'a str, path: String, what: &str) {

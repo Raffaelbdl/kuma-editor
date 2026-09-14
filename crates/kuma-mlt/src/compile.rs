@@ -18,7 +18,6 @@
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 
-use kuma_core::template::Region;
 use kuma_core::*;
 
 use crate::lumas;
@@ -29,8 +28,6 @@ use crate::xml::{num, XmlWriter};
 pub struct OverlayBake {
     /// File path, or an image-sequence pattern (`…/frame_%06d.png`).
     pub resource: PathBuf,
-    /// Where the bake sits in the composition; `None` means full frame.
-    pub region: Option<Region>,
     /// True for a single-image bake (static template).
     pub is_still: bool,
 }
@@ -76,12 +73,9 @@ pub enum CompileError {
     Invalid(Vec<Issue>),
     #[error("overlay clip `{0}` has no bake")]
     Unbaked(ClipId),
-    #[error("luma: {0}")]
-    Luma(String),
-    #[error("empty timeline")]
-    Empty,
-    /// A frame plan the validator should have rejected; a bug, not a user error.
-    #[error("internal: {0}")]
+    /// Anything else: an empty timeline, a missing luma, or a frame plan the validator
+    /// should have rejected.
+    #[error("{0}")]
     Internal(String),
 }
 
@@ -93,7 +87,7 @@ pub fn compile(project: &Project, opts: &CompileOptions) -> Result<String, Compi
     }
     let duration = project.duration();
     if duration <= 0.0 {
-        return Err(CompileError::Empty);
+        return Err(CompileError::Internal("empty timeline".into()));
     }
     let fps = project.fps;
     let total = fps.length(duration);
@@ -115,7 +109,7 @@ pub fn compile(project: &Project, opts: &CompileOptions) -> Result<String, Compi
     w.empty(
         "profile",
         &[
-            ("description", format!("kuma {}x{} {}", pw, ph, fps)),
+            ("description", format!("kuma {pw}x{ph} {}/{}", fps.num, fps.den)),
             ("width", pw.to_string()),
             ("height", ph.to_string()),
             ("progressive", "1".into()),
@@ -376,7 +370,7 @@ fn compile_track(ctx: &Ctx, track: &Track, w: &mut XmlWriter) -> Result<Option<C
             w.property("progressive", "1");
             if x.kind == TransitionKind::Wipe {
                 let name = x.luma.as_deref().unwrap_or("wipe_left");
-                let path = lumas::resolve(name, &ctx.opts.root, &ctx.opts.cache_dir).map_err(|e| CompileError::Luma(e.to_string()))?;
+                let path = lumas::resolve(name, &ctx.opts.root, &ctx.opts.cache_dir).map_err(|e| CompileError::Internal(format!("luma: {e}")))?;
                 w.property("resource", path.to_string_lossy());
                 w.property("softness", num(x.softness));
             }
@@ -407,7 +401,9 @@ fn compile_track(ctx: &Ctx, track: &Track, w: &mut XmlWriter) -> Result<Option<C
 fn emit_clip_producer(ctx: &Ctx, p: &Plan, w: &mut XmlWriter) -> Result<(), CompileError> {
     let clip = p.clip;
     let len = p.p_out - p.p_in + 1;
-    let base = [("id", p.producer_id.clone()), ("in", p.p_in.to_string()), ("out", p.p_out.to_string())];
+    // The producer spans 0..=p_out; the playlist entry cuts it to p_in..=p_out. Putting
+    // `in` on the producer too would clamp its playtime and freeze the clip on one frame.
+    let base = [("id", p.producer_id.clone()), ("in", "0".into()), ("out", p.p_out.to_string())];
 
     match &clip.src {
         ClipSource::Asset { asset, .. } => {
@@ -460,23 +456,6 @@ fn emit_clip_producer(ctx: &Ctx, p: &Plan, w: &mut XmlWriter) -> Result<(), Comp
             w.property("resource", bake.resource.to_string_lossy());
             w.property("length", len.to_string());
             w.property("mlt_image_format", "rgba");
-            if let Some(r) = bake.region {
-                // Place the region-sized bake at its offset within the frame.
-                w.open("filter", &[("id", format!("{}_place", p.producer_id))]);
-                w.property("mlt_service", "qtblend");
-                w.property(
-                    "rect",
-                    format!(
-                        "{} {} {} {} 1",
-                        num(r.x as f64 * ctx.scale),
-                        num(r.y as f64 * ctx.scale),
-                        num(r.w as f64 * ctx.scale),
-                        num(r.h as f64 * ctx.scale)
-                    ),
-                );
-                w.property("distort", "1");
-                w.close("filter");
-            }
             emit_filters(ctx, p, w);
             w.close("producer");
         }

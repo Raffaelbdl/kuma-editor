@@ -5,7 +5,7 @@ use std::path::PathBuf;
 
 use kuma_core::template::TemplateManifest;
 use kuma_core::Fps;
-use kuma_overlay::{BakeRequest, Baker, Format};
+use kuma_overlay::{BakeRequest, Baker};
 use serde_json::{json, Map};
 
 fn repo_root() -> PathBuf {
@@ -26,7 +26,7 @@ fn rgba_at(png: &std::path::Path, x: u32, y: u32) -> [u8; 4] {
 fn bakes_location_tag_with_alpha_and_caches() {
     let root = repo_root();
     let tmp = tempfile::tempdir().unwrap();
-    let baker = Baker::discover(&root, tmp.path().join("cache"));
+    let baker = Baker::discover(&root, root.join("library/overlays/_vendor"), tmp.path().join("cache"));
     if baker.available().is_err() {
         eprintln!("hyperframes unavailable; skipping bake test");
         return;
@@ -35,7 +35,7 @@ fn bakes_location_tag_with_alpha_and_caches() {
         eprintln!("no headless browser found; skipping bake test");
         return;
     }
-    let dir = root.join("overlays/location-tag");
+    let dir = root.join("library/overlays/location-tag");
     let manifest = TemplateManifest::load(&dir).unwrap();
     let mut vars = Map::new();
     vars.insert("label".into(), json!("Tokyo"));
@@ -43,7 +43,7 @@ fn bakes_location_tag_with_alpha_and_caches() {
 
     let req = BakeRequest {
         template_dir: &dir, manifest: &manifest, vars: &vars, fps: Fps::new(30, 1), width: 1920, height: 1080,
-        duration: 2.0, speed: 1.0, format: Format::PngSequence, supersample: 1,
+        duration: 2.0, speed: 1.0,
     };
     let r = baker.bake(&req).expect("bake");
     assert!(!r.cached);
@@ -84,12 +84,12 @@ fn bakes_location_tag_with_alpha_and_caches() {
     // The template anchors its out-animation to the real end (7.55–8 s): t=7.75 differs from t=4.0.
     assert_ne!(f(32), f(17), "out-animation must happen at the clip's real end, not the default's");
 
-    // A static template bakes a single still frame regardless of the clip duration.
-    let wm_dir = root.join("overlays/watermark");
+    // A static template bakes a single still frame regardless of the clip duration or speed.
+    let wm_dir = root.join("library/overlays/watermark");
     let wm = TemplateManifest::load(&wm_dir).unwrap();
     let novars = Map::new();
     let still = baker
-        .bake(&BakeRequest { template_dir: &wm_dir, manifest: &wm, vars: &novars, fps: Fps::new(30, 1), width: 1920, height: 1080, duration: 10.0, speed: 1.0, format: Format::PngSequence, supersample: 1 })
+        .bake(&BakeRequest { template_dir: &wm_dir, manifest: &wm, vars: &novars, fps: Fps::new(30, 1), width: 1920, height: 1080, duration: 10.0, speed: 2.0 })
         .expect("static bake");
     assert!(still.is_still);
     assert_eq!(still.frames, 1);

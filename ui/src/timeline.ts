@@ -10,7 +10,7 @@ const HEAD = 120;
 export class Timeline {
   private root: HTMLDivElement;
   private playhead: HTMLDivElement | null = null;
-  private drag: null | { kind: "move" | "trim-l" | "trim-r"; clip: Clip; ti: number; startX: number; orig: { start: number; end: number; in: number }; ghost: HTMLDivElement; dt: number; toTrack: number } = null;
+  private drag: null | { kind: "move" | "trim-l" | "trim-r"; clip: Clip; ti: number; startX: number; orig: { start: number; end: number; in: number }; ghost: HTMLDivElement; toTrack: number } = null;
 
   constructor(private host: HTMLElement) {
     this.root = el("div", "tl");
@@ -39,6 +39,9 @@ export class Timeline {
     const s = store.state;
     const p = s.project;
     if (!p) return;
+    // A re-render (agent edit, undo) replaces the ghost's parent: drop the drag rather
+    // than commit against a clip that may have moved.
+    this.drag = null;
     const width = Math.max(this.host.clientWidth, this.x(store.duration + 10));
     this.root.style.width = `${width}px`;
     this.root.innerHTML = "";
@@ -115,10 +118,11 @@ export class Timeline {
   }
 
   private clipEl(p: Project, t: Track, ti: number, c: Clip): HTMLDivElement {
-    const box = el("div", `clip ${clipKind(p, c, t)}${store.state.selection === c.id ? " selected" : ""}`);
+    const w = Math.max(4, (c.end - c.start) * store.state.zoom);
+    const box = el("div", `clip ${clipKind(p, c, t)}${store.state.selection === c.id ? " selected" : ""}${w < 24 ? " tiny" : ""}`);
     box.dataset.id = c.id;
     box.style.left = `${this.x(c.start) - HEAD}px`;
-    box.style.width = `${Math.max(4, (c.end - c.start) * store.state.zoom)}px`;
+    box.style.width = `${w}px`;
     const name = isOverlay(c) ? c.src.overlay : isAsset(c) ? c.src.asset : "colour";
     const sub = isOverlay(c) ? Object.values(c.src.vars ?? {}).find((v) => typeof v === "string") ?? "" : c.speed !== 1 ? `${c.speed}×` : "";
     box.title = `${c.id}  ${c.start.toFixed(2)}–${c.end.toFixed(2)}s`;
@@ -149,7 +153,7 @@ export class Timeline {
     const ghost = el.cloneNode(true) as HTMLDivElement;
     ghost.classList.add("ghost");
     el.parentElement!.appendChild(ghost);
-    this.drag = { kind, clip, ti, startX: e.clientX, orig: { start: clip.start, end: clip.end, in: isAsset(clip) ? clip.src.in ?? 0 : 0 }, ghost, dt: 0, toTrack: ti };
+    this.drag = { kind, clip, ti, startX: e.clientX, orig: { start: clip.start, end: clip.end, in: isAsset(clip) ? clip.src.in ?? 0 : 0 }, ghost, toTrack: ti };
     const move = (ev: PointerEvent) => this.onDragMove(ev);
     const up = () => { window.removeEventListener("pointermove", move); window.removeEventListener("pointerup", up); this.endDrag(); };
     window.addEventListener("pointermove", move);
@@ -191,7 +195,6 @@ export class Timeline {
     } else {
       end = Math.max(start + 1 / store.fps, this.snapT(d.orig.end + dt, d.clip));
     }
-    d.dt = start - d.orig.start;
     d.ghost.style.left = `${this.x(start) - HEAD}px`;
     d.ghost.style.width = `${Math.max(4, (end - start) * store.state.zoom)}px`;
     d.ghost.dataset.start = String(start);

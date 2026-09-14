@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use serde_json::{json, Value};
+use serde_json::Value;
 
 #[derive(Clone)]
 pub struct Client {
@@ -60,24 +60,19 @@ impl Client {
         Self::check(self.http.post(self.url(path)).json(body).send().await?).await
     }
 
-    pub async fn put(&self, path: &str, body: &Value) -> anyhow::Result<Value> {
-        Self::check(self.http.put(self.url(path)).json(body).send().await?).await
-    }
-
-    /// Poll a job until it finishes (or `timeout` elapses).
+    /// Poll a job until it finishes (or `timeout` elapses, returning it still running).
     pub async fn wait_job(&self, id: u64, timeout: Duration) -> anyhow::Result<Value> {
         let start = std::time::Instant::now();
         loop {
             let j = self.get(&format!("/api/jobs/{id}")).await?;
-            let status = &j["status"];
-            if status.get("done").is_some() {
-                return Ok(json!({ "job": id, "status": "done", "result": status["done"]["result"] }));
-            }
-            if status.get("failed").is_some() {
-                anyhow::bail!("job {id} failed: {}", status["failed"]["error"].as_str().unwrap_or("?"));
+            if j["done"].as_bool() == Some(true) {
+                if j["ok"].as_bool() == Some(true) {
+                    return Ok(j);
+                }
+                anyhow::bail!("job {id} failed: {}", j["message"].as_str().unwrap_or("?"));
             }
             if start.elapsed() > timeout {
-                return Ok(json!({ "job": id, "status": "running", "progress": status["running"] }));
+                return Ok(j);
             }
             tokio::time::sleep(Duration::from_millis(500)).await;
         }

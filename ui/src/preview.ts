@@ -1,16 +1,16 @@
 // Preview stage: engine frames on a canvas, overlay clips as live iframes on top.
 //
 // Same HTML, two consumers: here the overlay is DOM driven by `seek(t)` from the playhead;
-// at export it is baked by hyperframes. MLT-side effects on overlays (transform, blend,
-// blur, colour, crop, fade) are approximated with CSS so edits show immediately; the
-// render is the reference.
+// at export it is baked by hyperframes. MLT-side effects on overlays (transform, blur,
+// colour, crop, fade) are approximated with CSS so edits show immediately; the render is
+// the reference. Blend modes are not approximated: they only show in the render.
 //
 // This class subscribes to every state change on purpose: overlays must follow the
 // playhead frame by frame. It does no DOM rebuilding on that path.
 
 import { api } from "./api";
 import { store, toast } from "./store";
-import type { Clip } from "./types";
+import type { Clip, Project } from "./types";
 import { isOverlay, transformAt } from "./types";
 
 interface OverlayView {
@@ -30,10 +30,12 @@ export class Preview {
   private badge: HTMLDivElement;
   private views = new Map<string, OverlayView>();
   private ws: WebSocket | null = null;
+  /** True between the daemon's `ready` and the socket closing: the engine takes seeks. */
   private wsOk = false;
   private snapshotTimer = 0;
   private lastSentSeek = -1;
   private lastRevision = -1;
+  private engineKey = "";
   /** Why the engine is unavailable, as reported by the daemon (empty when it runs). */
   private engineError = "";
   /** Timeline time of the last frame the engine sent while playing. */
@@ -64,28 +66,9 @@ export class Preview {
     const proto = location.protocol === "https:" ? "wss" : "ws";
     const ws = new WebSocket(`${proto}://${location.host}/api/preview/ws`);
     ws.binaryType = "arraybuffer";
-    ws.onopen = () => { this.wsOk = true; this.lastFrame = -1; this.badge.textContent = "engine"; this.sendSeek(store.state.playhead, true); };
     ws.onmessage = async (m) => {
       if (typeof m.data === "string") {
-        try {
-          const j = JSON.parse(m.data);
-          if (j.error) {
-            const msg = String(j.error);
-            // Report a given failure once; the daemon repeats it on every reconnect.
-            if (msg !== this.engineError) toast(`Preview engine unavailable: ${msg}`, "err", 12000);
-            this.engineError = msg;
-            this.badge.textContent = "snapshot (no engine)";
-            this.badge.title = msg;
-            this.wsOk = false;
-          } else if (j.ready) {
-            this.engineError = "";
-            this.badge.textContent = `engine · ${Math.round((j.scale ?? 0.5) * 100)}%`;
-            this.badge.title = "";
-          } else if (j.end) {
-            // The engine paused itself at the end of the timeline.
-            if (store.state.playing) store.set({ playing: false });
-          }
-        } catch { /* ignore */ }
+        try { this.onStatus(JSON.parse(m.data)); } catch { /* ignore */ }
         return;
       }
       const buf = m.data as ArrayBuffer;
@@ -111,6 +94,28 @@ export class Preview {
     };
     ws.onerror = () => ws.close();
     this.ws = ws;
+  }
+
+  /** Daemon status lines: `unavailable` (no engine, socket closes), `ready`, `error`
+   *  (a compile failure; the engine keeps its last timeline), `end`. */
+  private onStatus(j: { unavailable?: string; ready?: boolean; scale?: number; error?: string; end?: boolean }) {
+    if (j.unavailable) {
+      // Report a given failure once; the daemon repeats it on every reconnect.
+      if (j.unavailable !== this.engineError) toast(`Preview engine unavailable: ${j.unavailable}`, "err", 12000);
+      this.engineError = j.unavailable;
+      this.badge.title = j.unavailable;
+    } else if (j.ready) {
+      this.engineError = "";
+      this.wsOk = true;
+      this.lastFrame = -1;
+      this.badge.textContent = `engine · ${Math.round((j.scale ?? 0.5) * 100)}%`;
+      this.badge.title = "";
+      this.sendSeek(store.state.playhead, true);
+    } else if (j.error) {
+      toast(`Preview: ${j.error}`, "err", 8000);
+    } else if (j.end && store.state.playing) {
+      store.set({ playing: false }); // the engine paused itself at the end of the timeline
+    }
   }
 
   private send(cmd: string) {
@@ -167,7 +172,7 @@ export class Preview {
   }
 
   /** Called after edits so the engine reloads the compiled timeline. */
-  async reload() {
+  reload() {
     if (!this.wsOk) return;
     this.send("reload");
     // The engine keeps playing through a reload; only a paused preview needs a fresh frame.
@@ -203,7 +208,13 @@ export class Preview {
     if (edited) {
       this.lastRevision = revision;
       this.syncOverlays();
-      if (this.wsOk) this.reload();
+      // Overlays are live DOM here, never part of the preview compile: an overlay-only
+      // edit (vars, a nudge) must not make the engine reload the whole timeline.
+      const key = engineKey(p);
+      if (key !== this.engineKey) {
+        this.engineKey = key;
+        this.reload();
+      }
     }
     if (playing && this.wsOk) {
       // The engine drives the playhead; a jump that did not come from it is a user seek.
@@ -232,7 +243,7 @@ export class Preview {
     }
     for (const [id, v] of this.views) {
       const c = wanted.get(id);
-      if (!c || contentKey(c) !== v.key) { v.wrap.remove(); this.views.delete(id); }
+      if (!c || contentKey(p, c) !== v.key) { v.wrap.remove(); this.views.delete(id); }
     }
     for (const [id, c] of wanted) {
       if (this.views.has(id)) continue;
@@ -249,7 +260,7 @@ export class Preview {
       this.layer.appendChild(wrap);
       // `?rev=` only defeats the browser cache on (re)creation; a view survives revisions
       // whose content key is unchanged, so a stale rev in the URL is expected.
-      const view: OverlayView = { clipId: id, key: contentKey(c), wrap, iframe, ready: false, lastT: -1 };
+      const view: OverlayView = { clipId: id, key: contentKey(p, c), wrap, iframe, ready: false, lastT: -1 };
       iframe.addEventListener("load", () => {
         // The hyperframes runtime (injected by the daemon) pauses CSS/WAAPI animations and
         // registers GSAP timelines; from here on the page is a pure function of `seek(t)`.
@@ -277,35 +288,42 @@ export class Preview {
         v.lastT = t;
         seekFrame(v, t);
       }
-      applyEffects(v.wrap, v.iframe, c, playhead - c.start, p.width, p.height);
+      applyEffects(v.iframe, c, playhead - c.start, p.width, p.height);
     }
   }
 }
 
-function contentKey(c: Clip): string {
-  return JSON.stringify([c.src, c.speed, c.end - c.start]);
+/** Everything the preview compile depends on; overlay tracks are live DOM instead. */
+function engineKey(p: Project): string {
+  return JSON.stringify([p.fps, p.width, p.height, p.sample_rate, p.assets, p.tracks.filter((t) => t.kind !== "overlay")]);
+}
+
+/** Everything the overlay document is a function of: its injected `window.kuma`. */
+function contentKey(p: Project, c: Clip): string {
+  return JSON.stringify([c.src, c.speed, c.end - c.start, p.width, p.height, p.fps]);
 }
 
 /**
- * Seek the overlay document to `t` seconds: every registered GSAP timeline plus every
- * Web Animation (CSS keyframes/transitions). This is the same contract hyperframes bakes
- * against, so preview and export agree.
+ * Seek the overlay document to `t` seconds. The hyperframes runtime's player scrubs
+ * every registered GSAP timeline plus Web Animations (CSS keyframes/transitions) exactly
+ * as the bake does; until it is up, drive those directly.
  */
 function seekFrame(v: OverlayView, t: number) {
-  const win = v.iframe.contentWindow as (Window & { __timelines?: Record<string, { pause?: () => void; time?: (t: number) => void; seek?: (t: number) => void }> }) | null;
+  type Timeline = { pause?: () => void; time?: (t: number) => void; seek?: (t: number) => void };
+  const win = v.iframe.contentWindow as (Window & { __player?: { renderSeek?: (t: number) => void }; __timelines?: Record<string, Timeline> }) | null;
   if (!win) return;
   try {
+    if (win.__player?.renderSeek) { win.__player.renderSeek(t); return; }
     for (const tl of Object.values(win.__timelines ?? {})) { tl.pause?.(); if (tl.time) tl.time(t); else tl.seek?.(t); }
     for (const a of win.document.getAnimations()) { a.pause(); a.currentTime = t * 1000; }
   } catch { /* cross-origin or not ready */ }
 }
 
-/** Approximate MLT-side effects with CSS on the overlay wrapper (see the header comment). */
-function applyEffects(wrap: HTMLDivElement, iframe: HTMLIFrameElement, c: Clip, local: number, W: number, H: number) {
+/** Approximate MLT-side effects with CSS on the overlay iframe (see the header comment). */
+function applyEffects(iframe: HTMLIFrameElement, c: Clip, local: number, W: number, H: number) {
   let transform = "";
   let opacity = 1;
   let filter = "";
-  let blend = "normal";
   let clip = "";
   for (const e of c.effects) {
     if (e.type === "transform") {
@@ -313,7 +331,6 @@ function applyEffects(wrap: HTMLDivElement, iframe: HTMLIFrameElement, c: Clip, 
       transform += ` translate(${t.x}px, ${t.y}px) scale(${t.scale}) rotate(${t.rotation}deg)`;
       opacity *= t.opacity;
     } else if (e.type === "blur") filter += ` blur(${e.radius}px)`;
-    else if (e.type === "blend") blend = ({ color_dodge: "color-dodge", color_burn: "color-burn", hard_light: "hard-light", soft_light: "soft-light" } as Record<string, string>)[e.mode] ?? e.mode;
     else if (e.type === "color") filter += ` brightness(${1 + (e.brightness ?? 0)}) contrast(${e.contrast ?? 1}) saturate(${e.saturation ?? 1})`;
     else if (e.type === "crop") clip = `inset(${(e.top ?? 0) * 100}% ${(e.right ?? 0) * 100}% ${(e.bottom ?? 0) * 100}% ${(e.left ?? 0) * 100}% round ${(e.radius ?? 0) * Math.min(W, H) * 0.5}px)`;
     else if (e.type === "fade") {
@@ -327,5 +344,4 @@ function applyEffects(wrap: HTMLDivElement, iframe: HTMLIFrameElement, c: Clip, 
   iframe.style.opacity = String(opacity);
   iframe.style.filter = filter;
   iframe.style.clipPath = clip;
-  wrap.style.mixBlendMode = blend;
 }

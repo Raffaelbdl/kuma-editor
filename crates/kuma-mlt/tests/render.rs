@@ -46,7 +46,7 @@ fn renders_reference_project_with_melt() {
     let mut opts = CompileOptions::new(&root);
     opts.bakes.insert(
         "o_c1".into(),
-        OverlayBake { resource: root.join("bake/frame_%06d.png"), region: None, is_still: false },
+        OverlayBake { resource: root.join("bake/frame_%06d.png"), is_still: false },
     );
     let xml = compile(&p, &opts).unwrap();
     let mlt_file = root.join("project.mlt");
@@ -82,11 +82,11 @@ fn renders_reference_project_with_melt() {
             .stdout
     };
     let with = root.join("f105.png");
-    snapshot(&mlt_file, 105, &with, None).expect("snapshot");
+    snapshot(&mlt_file, 105, &with).expect("snapshot");
     let bare_mlt = root.join("bare.mlt");
     std::fs::write(&bare_mlt, compile(&p, &CompileOptions::new(&root)).unwrap()).unwrap();
     let without = root.join("f105-bare.png");
-    snapshot(&bare_mlt, 105, &without, None).expect("snapshot without overlay");
+    snapshot(&bare_mlt, 105, &without).expect("snapshot without overlay");
     if let Some(out) = std::env::var_os("KUMA_TEST_OUT") {
         let _ = std::fs::create_dir_all(&out);
         for f in ["f105.png", "f105-bare.png", "project.mlt"] {
@@ -104,4 +104,11 @@ fn renders_reference_project_with_melt() {
         assert!((inside.0[i] as i32 - e).abs() <= 8, "channel {i}: expected ≈{e}, got {:?} over {:?}", inside.0, inside.1);
     }
     assert_eq!(outside.0, outside.1, "overlay must not change pixels outside its box");
+
+    // A trimmed clip must move: two frames of `c1` (source in = 3 s, a moving test
+    // pattern) must differ. (`in` on the producer element used to freeze the cut.)
+    let (a, b) = (root.join("f120.png"), root.join("f150.png"));
+    snapshot(&bare_mlt, 120, &a).unwrap();
+    snapshot(&bare_mlt, 150, &b).unwrap();
+    assert_ne!(std::fs::read(&a).unwrap(), std::fs::read(&b).unwrap(), "trimmed clip renders as a still");
 }

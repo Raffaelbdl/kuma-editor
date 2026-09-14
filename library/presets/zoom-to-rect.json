@@ -12,8 +12,8 @@
   "effects": [
     { "type": "transform", "keyframes": [
       { "t": 0, "scale": 1.0, "x": 0, "y": 0 },
-      { "t": "$in", "scale": "$zoom", "x": "$(960 - cx) * zoom", "y": "$(540 - cy) * zoom" },
-      { "t": "$in + hold", "scale": "$zoom", "x": "$(960 - cx) * zoom", "y": "$(540 - cy) * zoom" },
+      { "t": "$in", "scale": "$zoom", "x": "$(width / 2 - cx) * zoom", "y": "$(height / 2 - cy) * zoom" },
+      { "t": "$in + hold", "scale": "$zoom", "x": "$(width / 2 - cx) * zoom", "y": "$(height / 2 - cy) * zoom" },
       { "t": "$in + hold + in", "scale": 1.0, "x": 0, "y": 0 }
     ] }
   ]

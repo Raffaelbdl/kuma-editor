@@ -68,54 +68,101 @@ impl Contract<'_> {
         // The script goes first so the template's own scripts see `window.kuma`; the vars
         // go last so they win over any `:root { --var-… }` fallback in the template's CSS.
         let style = format!("<style id=\"kuma-vars\">:root {{ {css_vars} }}</style>\n");
-        let html = match html.find("<head>") {
-            Some(i) => {
-                let (a, b) = html.split_at(i + "<head>".len());
-                format!("{a}\n{head}{b}")
-            }
-            None => format!("{head}{html}"),
-        };
+        // Insert after the opening `<head …>` (else `<html …>`, else the doctype) so the
+        // document never drops into quirks mode, and the style before `</head>`.
+        let open_end = |name: &str| tags(&html).find(|t| t.name.eq_ignore_ascii_case(name)).map(|t| t.end);
+        let at = open_end("head").or_else(|| open_end("html")).or_else(|| open_end("!doctype")).unwrap_or(0);
+        let html = format!("{}\n{head}{}", &html[..at], &html[at..]);
         match html.find("</head>") {
             Some(i) => format!("{}{style}{}", &html[..i], &html[i..]),
-            None => format!("{style}{html}"),
+            None => format!("{html}{style}"),
         }
     }
 }
 
-/// Rewrite the root composition's timing/size attributes, and stretch every child whose
-/// end coincided with the old root default (i.e. was meant to last "until the end") to the
-/// new end. Children that end earlier keep their timing; nested compositions are untouched.
-pub fn stamp_root(html: &str, duration: f64, width: u32, height: u32) -> String {
-    let Some(marker) = html.find("data-composition-id") else { return html.to_string() };
-    let Some(root_start) = html[..marker].rfind('<') else { return html.to_string() };
-    let Some(end_rel) = html[marker..].find('>') else { return html.to_string() };
-    let old_default = attr_num(&html[root_start..marker + end_rel], "data-duration");
+/// An opening tag (or comment/doctype) in the markup: its name and byte span.
+struct Tag<'a> {
+    name: &'a str,
+    text: &'a str,
+    start: usize,
+    end: usize,
+}
 
+/// Every `<…>` in document order, skipping text and the contents of `<script>`,
+/// `<style>` and comments so a selector or string mentioning `data-composition-id`
+/// cannot be mistaken for the root.
+fn tags(html: &str) -> impl Iterator<Item = Tag<'_>> {
+    let mut pos = 0;
+    std::iter::from_fn(move || {
+        let lt = pos + html[pos..].find('<')?;
+        let rest = &html[lt..];
+        let (end, skip_to) = if let Some(r) = rest.strip_prefix("<!--") {
+            let e = lt + 4 + r.find("-->").map(|i| i + 3).unwrap_or(r.len());
+            (e, e)
+        } else {
+            let gt = lt + rest.find('>').map(|i| i + 1).unwrap_or(rest.len());
+            let name_end = rest[1..].find(|c: char| c.is_whitespace() || c == '>' || c == '/').map(|i| i + 1).unwrap_or(rest.len().min(gt - lt));
+            let name = &rest[1..name_end];
+            // Raw-text elements: jump past the closing tag.
+            let lower = name.to_ascii_lowercase();
+            let skip = if lower == "script" || lower == "style" {
+                let close = format!("</{lower}");
+                html[gt..].to_ascii_lowercase().find(&close).map(|i| gt + i).unwrap_or(html.len())
+            } else {
+                gt
+            };
+            (gt, skip)
+        };
+        let tag = Tag { name: html[lt + 1..end].split(|c: char| c.is_whitespace() || c == '>' || c == '/').next().unwrap_or(""), text: &html[lt..end], start: lt, end };
+        pos = skip_to;
+        Some(tag)
+    })
+}
+
+/// Rewrite the root composition's timing/size attributes, and stretch every direct child
+/// whose end coincided with the old root default (i.e. was meant to last "until the end")
+/// to the new end. Children that end earlier keep their timing; nested compositions and
+/// everything inside them are untouched.
+pub fn stamp_root(html: &str, duration: f64, width: u32, height: u32) -> String {
+    let Some(root) = tags(html).find(|t| !t.name.starts_with('!') && attr_value_span(t.text, "data-composition-id").is_some()) else {
+        return html.to_string();
+    };
+    let old_default = attr_num(root.text, "data-duration");
+    let root_start = root.start;
+    let is_composition = |text: &str| attr_value_span(text, "data-composition-id").is_some() || text.contains("data-composition-src");
     let mut out = String::with_capacity(html.len() + 64);
     let mut pos = 0;
-    while let Some(lt_rel) = html[pos..].find('<') {
-        let lt = pos + lt_rel;
-        let Some(gt_rel) = html[lt..].find('>') else { break };
-        let gt = lt + gt_rel;
-        let tag = &html[lt..gt];
-        out.push_str(&html[pos..lt]);
-        let stamped = if lt == root_start {
-            let t = set_attr(tag, "data-duration", &fmt_secs(duration));
-            let t = set_attr(&t, "data-width", &width.to_string());
-            set_attr(&t, "data-height", &height.to_string())
-        } else if let (Some(d0), Some(child_dur)) = (old_default, attr_num(tag, "data-duration")) {
-            let start = attr_num(tag, "data-start").unwrap_or(0.0);
-            let ends_at_root = (start + child_dur - d0).abs() < 1e-6 && !tag.contains("data-composition-src");
-            if ends_at_root {
-                set_attr(tag, "data-duration", &fmt_secs((duration - start).max(0.0)))
-            } else {
-                tag.to_string()
+    let mut nested = 0usize; // element depth inside a nested composition, which is opaque
+    for t in tags(html) {
+        out.push_str(&html[pos..t.start]);
+        pos = t.end;
+        let text = t.text;
+        let is_close = text.starts_with("</");
+        let is_void = text.ends_with("/>") || t.name.starts_with('!') || matches!(t.name.to_ascii_lowercase().as_str(), "br" | "img" | "input" | "meta" | "link" | "hr" | "source");
+        let mut stamped = text.to_string();
+        if nested > 0 {
+            if is_close {
+                nested -= 1;
+            } else if !is_void {
+                nested += 1;
             }
-        } else {
-            tag.to_string()
-        };
+        } else if t.start == root_start {
+            stamped = set_attr(text, "data-duration", &fmt_secs(duration));
+            stamped = set_attr(&stamped, "data-width", &width.to_string());
+            stamped = set_attr(&stamped, "data-height", &height.to_string());
+        } else if !is_close && is_composition(text) {
+            if !is_void {
+                nested = 1;
+            }
+        } else if !is_close {
+            if let (Some(d0), Some(child_dur)) = (old_default, attr_num(text, "data-duration")) {
+                let start = attr_num(text, "data-start").unwrap_or(0.0);
+                if (start + child_dur - d0).abs() < 1e-6 {
+                    stamped = set_attr(text, "data-duration", &fmt_secs((duration - start).max(0.0)));
+                }
+            }
+        }
         out.push_str(&stamped);
-        pos = gt;
     }
     out.push_str(&html[pos..]);
     out
@@ -159,11 +206,15 @@ fn attr_value_span(tag: &str, name: &str) -> Option<(usize, usize)> {
     None
 }
 
-/// Replace (or append) an attribute value in an opening tag.
+/// Replace (or append) an attribute value in an opening tag (with or without its `>`).
 fn set_attr(tag: &str, name: &str, value: &str) -> String {
     match attr_value_span(tag, name) {
         Some((vs, ve)) => format!("{}{}{}", &tag[..vs], value, &tag[ve..]),
-        None => format!("{tag} {name}=\"{value}\""),
+        None => {
+            let close = if tag.ends_with("/>") { 2 } else if tag.ends_with('>') { 1 } else { 0 };
+            let body = tag[..tag.len() - close].trim_end();
+            format!("{body} {name}=\"{value}\"{}", &tag[tag.len() - close..])
+        }
     }
 }
 
@@ -207,6 +258,30 @@ mod tests {
         assert!(html.contains("--var-label: hi;"));
         assert!(html.contains("--var-at-x: 0.5; --var-at-y: 0.25;"), "{html}");
         assert!(html.contains("data-composition-id=\"main\" data-duration=\"2\""), "{html}");
+    }
+
+    #[test]
+    fn root_is_found_by_tag_not_by_text_and_nested_compositions_are_opaque() {
+        let html = "<!doctype html><html><head><style>[data-composition-id]{x:1}</style><script>const S=\"data-composition-id\";</script></head><body><!-- <div data-composition-id=\"m\" data-duration=\"9\"> -->\
+<div title=\"a < b\" data-composition-id=\"main\" data-duration=\"4\"><div class=\"clip\" data-start=\"0\" data-duration=\"4\"></div>\
+<div data-composition-id=\"sub\" data-start=\"0\" data-duration=\"4\"><div data-start=\"0\" data-duration=\"4\"></div></div><div data-start=\"1\" data-duration=\"3\"></div></div></body></html>";
+        let out = stamp_root(html, 8.0, 1080, 1920);
+        assert!(out.contains("<style>[data-composition-id]{x:1}</style>"), "{out}");
+        assert!(out.contains("<!-- <div data-composition-id=\"m\" data-duration=\"9\"> -->"), "{out}");
+        assert!(out.contains("data-composition-id=\"main\" data-duration=\"8\" data-width=\"1080\" data-height=\"1920\""), "{out}");
+        assert!(out.contains("<div class=\"clip\" data-start=\"0\" data-duration=\"8\">"), "{out}");
+        assert!(out.contains("<div data-composition-id=\"sub\" data-start=\"0\" data-duration=\"4\"><div data-start=\"0\" data-duration=\"4\"></div></div>"), "nested untouched: {out}");
+        assert!(out.contains("<div data-start=\"1\" data-duration=\"7\">"), "{out}");
+    }
+
+    #[test]
+    fn injection_lands_inside_head_or_after_the_doctype() {
+        let c = Contract { vars: &Map::new(), fps: Fps::new(30, 1), width: 1920, height: 1080, duration: 2.0, speed: 1.0, bake: true, clip: None, head_extra: "" };
+        let a = c.apply("<!DOCTYPE html><html lang=\"en\"><head lang=\"en\"><title>x</title></head><body></body></html>");
+        assert!(a.find("<head lang=\"en\">").unwrap() < a.find("kuma-inject").unwrap() && a.find("kuma-inject").unwrap() < a.find("<title>").unwrap(), "{a}");
+        let b = c.apply("<!DOCTYPE html><div data-composition-id=\"main\"></div>");
+        assert!(b.starts_with("<!DOCTYPE html>"), "{b}");
+        assert!(b.find("kuma-inject").unwrap() < b.find("data-composition-id").unwrap(), "{b}");
     }
 
     #[test]

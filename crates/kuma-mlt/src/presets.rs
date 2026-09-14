@@ -45,12 +45,6 @@ pub const PRESETS: &[ExportPreset] = &[
         properties: youtube_h264!("17"),
     },
     ExportPreset {
-        id: "youtube-shorts",
-        description: "Same encode as youtube-1080p; use with a 1080×1920 project",
-        extension: "mp4",
-        properties: youtube_h264!("18"),
-    },
-    ExportPreset {
         id: "draft",
         description: "Fast H.264 draft (ultrafast, CRF 26) for quick checks",
         extension: "mp4",

@@ -6,12 +6,6 @@ pub struct XmlWriter {
     depth: usize,
 }
 
-impl Default for XmlWriter {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl XmlWriter {
     pub fn new() -> Self {
         XmlWriter { buf: String::from("<?xml version=\"1.0\" encoding=\"utf-8\"?>\n"), depth: 0 }

@@ -6,7 +6,6 @@
   --fg: #e6e7eb;
   --fg-2: #9aa0ad;
   --accent: #ff4f00;
-  --accent-2: #ff9a5a;
   --video: #3b6ea5;
   --overlay: #b0532a;
   --audio: #3f8a5c;
@@ -20,7 +19,6 @@ button, input, select, textarea { font: inherit; color: inherit; }
 button { background: var(--bg-3); border: 1px solid var(--line); border-radius: 6px; padding: 4px 10px; cursor: pointer; }
 button:hover { border-color: var(--fg-2); }
 button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
-button:disabled { opacity: 0.5; cursor: default; }
 input, select, textarea { background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; width: 100%; }
 input[type="color"] { padding: 0; height: 26px; }
 input[type="checkbox"] { width: auto; }
@@ -72,6 +70,7 @@ h3 { margin: 12px 0 6px; font-size: 11px; letter-spacing: 0.08em; text-transform
 .clip.selected { outline: 2px solid var(--sel); outline-offset: -1px; }
 .clip .handle { position: absolute; top: 0; bottom: 0; width: 7px; cursor: ew-resize; }
 .clip .handle.l { left: 0; } .clip .handle.r { right: 0; }
+.clip.tiny .handle { display: none; } /* too narrow to grab the body otherwise */
 .clip .sub { color: rgba(255,255,255,0.7); font-size: 10px; }
 .clip.ghost { opacity: 0.6; pointer-events: none; }
 .tl-playhead { position: absolute; top: 0; bottom: 0; width: 0; border-left: 2px solid var(--accent); z-index: 4; pointer-events: none; }

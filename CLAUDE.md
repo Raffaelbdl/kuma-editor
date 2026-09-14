@@ -3,7 +3,7 @@
 Hybrid video editor: the video half is MLT (the engine under Kdenlive/Shotcut), the
 overlay half is HTML/CSS/TS baked with alpha by hyperframes, both driven from one JSON
 project file and exposed to agents over MCP. Read `README.md` for the architecture and
-`overlays/CLAUDE.md` before authoring an overlay template.
+`library/overlays/CLAUDE.md` before authoring an overlay template.
 
 ## Layout
 
@@ -13,12 +13,17 @@ crates/kuma-mlt       JSON → MLT XML compiler (the only place MLT's rules live
 crates/kuma-overlay   hyperframes bake driver, content-hash cache, ffprobe helpers
 crates/kuma-daemon    HTTP/WS API, undo, jobs, overlay live-preview routes, preview engine transport
 crates/kuma-mcp       rmcp stdio MCP server proxying the daemon
-crates/kuma-cli       `kuma` binary: serve | mcp | render | bake | sample | …
-engine/               C++ libmlt++ preview engine (JPEG over stdout, SDL2 audio clock)
+crates/kuma-cli       `kuma` binary: serve | mcp | render | bake | sample | library | …
+engine/               C++ libmlt++ preview engine (JPEG over stdout, SDL2-paced audio)
 ui/                   Vite + TypeScript editor (no framework)
-overlays/             overlay templates (folder = template) + `_vendor/gsap.min.js`
-presets/effects/      effect presets (typed params + `$expr` substitution)
+library/overlays/     starter overlay templates (folder = template) + `_vendor/{gsap.min.js,kuma.js,kuma.css}`
+library/presets/      starter effect presets (typed params + `$expr` substitution)
 ```
+
+Templates and presets are user assets, not code: at runtime kuma reads
+`$XDG_DATA_HOME/kuma` (default `~/.local/share/kuma`), every directory in `KUMA_LIBRARY`,
+then the project's own `overlays/` and `presets/`; later wins. `library/` is only the
+starter set that `kuma library` installs. Tests point `KUMA_LIBRARY` (or the baker) at it.
 
 ## Commands
 
@@ -26,7 +31,8 @@ presets/effects/      effect presets (typed params + `$expr` substitution)
 cargo build && cargo test                 # Rust; render/bake tests skip without melt/ffmpeg/hyperframes
 cmake -S engine -B engine/build && cmake --build engine/build -j
 npm install && (cd ui && npm install && npm run build)
-kuma serve -p myvideo.kuma.json           # http://127.0.0.1:7455
+kuma library                              # install library/ into ~/.local/share/kuma once
+kuma serve -p myvideo.kuma.json           # http://127.0.0.1:7455 (--bind / KUMA_BIND)
 kuma mcp -p myvideo.kuma.json             # stdio MCP; starts the daemon in-process if none is running
 ```
 

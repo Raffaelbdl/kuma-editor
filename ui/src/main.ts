@@ -115,9 +115,6 @@ function shortcuts(preview: Preview) {
     } else if (mod && e.key.toLowerCase() === "z") {
       e.preventDefault();
       await (e.shiftKey ? store.redo() : store.undo());
-    } else if (mod && e.key.toLowerCase() === "y") {
-      e.preventDefault();
-      await store.redo();
     }
   });
 }

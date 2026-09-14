@@ -3,10 +3,10 @@
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, RwLock};
+use std::sync::{Mutex, PoisonError, RwLock};
 
 use kuma_core::edit::{self, EditError};
-use kuma_core::template::TemplateManifest;
+use kuma_core::template::{TemplateError, TemplateManifest};
 use kuma_core::{Issue, Project, ValidationContext};
 use kuma_overlay::Baker;
 use serde::{Deserialize, Serialize};
@@ -16,13 +16,12 @@ use tokio::sync::broadcast;
 pub struct Config {
     /// Project file (`*.kuma.json`). Its directory is the project root.
     pub project_file: PathBuf,
-    /// Repository root: `overlays/` library and `node_modules/hyperframes`.
+    /// Repository root: `node_modules/hyperframes`, `ui/dist`, `engine/build`.
     pub repo_root: PathBuf,
-    /// Optional built UI directory to serve at `/`.
-    pub ui_dir: Option<PathBuf>,
+    /// Asset libraries (each holds `overlays/` and `presets/`), lowest precedence first;
+    /// the project's own `overlays/` and `presets/` are always searched last (and win).
+    pub library_dirs: Vec<PathBuf>,
     pub bind: SocketAddr,
-    /// Path to the C++ preview engine binary, if built.
-    pub preview_engine: Option<PathBuf>,
 }
 
 impl Config {
@@ -32,6 +31,29 @@ impl Config {
     pub fn cache_dir(&self) -> PathBuf {
         self.project_root().join(".kuma")
     }
+    /// Every library's `overlays/` plus the project's own, lowest precedence first.
+    pub fn all_template_dirs(&self) -> Vec<PathBuf> {
+        self.library_dirs.iter().map(|d| d.join("overlays")).chain([self.project_root().join("overlays")]).collect()
+    }
+    /// Every library's `presets/` plus the project's own, lowest precedence first.
+    pub fn all_preset_dirs(&self) -> Vec<PathBuf> {
+        self.library_dirs.iter().map(|d| d.join("presets")).chain([self.project_root().join("presets")]).collect()
+    }
+}
+
+/// The user's asset library: `$XDG_DATA_HOME/kuma` (`~/.local/share/kuma`), holding
+/// `overlays/` and `presets/`. `KUMA_LIBRARY` (a `:`-separated list) adds more, in
+/// increasing precedence.
+pub fn default_library_dirs() -> Vec<PathBuf> {
+    let data = std::env::var_os("XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")))
+        .unwrap_or_else(|| PathBuf::from("."));
+    let mut dirs = vec![data.join("kuma")];
+    if let Some(extra) = std::env::var_os("KUMA_LIBRARY") {
+        dirs.extend(std::env::split_paths(&extra));
+    }
+    dirs
 }
 
 /// Events pushed to WebSocket subscribers.
@@ -40,13 +62,18 @@ impl Config {
 pub enum Event {
     /// The project changed; clients should refetch.
     ProjectChanged { revision: u64, origin: String },
-    JobProgress { id: u64, kind: String, percent: u8, message: String },
-    JobDone { id: u64, kind: String, ok: bool, message: String, result: serde_json::Value },
+    Job(crate::jobs::Job),
 }
 
 pub struct UndoStack {
     pub past: Vec<(Project, String)>,
     pub future: Vec<(Project, String)>,
+}
+
+pub struct Templates {
+    pub loaded: BTreeMap<String, (PathBuf, TemplateManifest)>,
+    /// Manifests that failed to load, so the UI and the agent see why a template is missing.
+    pub errors: Vec<TemplateError>,
 }
 
 pub struct AppState {
@@ -56,7 +83,7 @@ pub struct AppState {
     /// edits against the same base revision cannot both succeed.
     edit: Mutex<()>,
     pub undo: Mutex<UndoStack>,
-    pub templates: RwLock<BTreeMap<String, (PathBuf, TemplateManifest)>>,
+    pub templates: RwLock<Templates>,
     pub baker: Baker,
     pub events: broadcast::Sender<Event>,
     pub jobs: crate::jobs::Jobs,
@@ -66,9 +93,20 @@ pub struct AppState {
 #[derive(Debug, Serialize)]
 pub struct TemplateInfo {
     pub id: String,
-    pub dir: PathBuf,
     pub manifest: TemplateManifest,
     pub has_thumb: bool,
+}
+
+/// Locks guard data that is only ever swapped whole, so a panic while holding one leaves
+/// nothing half-updated: keep serving instead of bricking the daemon.
+pub fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(PoisonError::into_inner)
+}
+pub fn read<T>(l: &RwLock<T>) -> std::sync::RwLockReadGuard<'_, T> {
+    l.read().unwrap_or_else(PoisonError::into_inner)
+}
+pub fn write<T>(l: &RwLock<T>) -> std::sync::RwLockWriteGuard<'_, T> {
+    l.write().unwrap_or_else(PoisonError::into_inner)
 }
 
 impl AppState {
@@ -80,10 +118,12 @@ impl AppState {
             Project::new_default(Project::name_from_path(&config.project_file), 1920, 1080, kuma_core::Fps::default())
         };
         std::fs::create_dir_all(config.cache_dir())?;
-        let baker = Baker::discover(&config.repo_root, config.cache_dir().join("bakes"));
+        // The shared `_vendor/` is the highest-precedence library that has one.
+        let vendor_dir = config.all_template_dirs().iter().rev().map(|d| d.join("_vendor")).find(|d| d.is_dir()).unwrap_or_else(|| config.library_dirs[0].join("overlays/_vendor"));
+        let baker = Baker::discover(&config.repo_root, vendor_dir, config.cache_dir().join("bakes"));
         let (events, _) = broadcast::channel(256);
         let st = AppState {
-            templates: RwLock::new(BTreeMap::new()),
+            templates: RwLock::new(Templates { loaded: BTreeMap::new(), errors: Vec::new() }),
             project: RwLock::new(project),
             edit: Mutex::new(()),
             undo: Mutex::new(UndoStack { past: Vec::new(), future: Vec::new() }),
@@ -100,34 +140,35 @@ impl AppState {
         Ok(st)
     }
 
-    /// Project-local `overlays/` wins over the library.
+    /// Later directories win on an id clash (the project's own `overlays/` is last).
     pub fn reload_templates(&self) {
-        let mut all = TemplateManifest::load_all(&self.config.repo_root.join("overlays"));
-        for (k, v) in TemplateManifest::load_all(&self.config.project_root().join("overlays")) {
-            all.insert(k, v);
+        let mut all = BTreeMap::new();
+        let mut errors = Vec::new();
+        for dir in self.config.all_template_dirs() {
+            let (loaded, errs) = TemplateManifest::load_all(&dir);
+            all.extend(loaded);
+            errors.extend(errs);
         }
-        *self.templates.write().unwrap() = all;
+        for e in &errors {
+            tracing::warn!("template skipped: {e}");
+        }
+        *write(&self.templates) = Templates { loaded: all, errors };
     }
 
     pub fn template_infos(&self) -> Vec<TemplateInfo> {
-        self.templates
-            .read()
-            .unwrap()
+        read(&self.templates)
+            .loaded
             .iter()
-            .map(|(id, (dir, m))| TemplateInfo { id: id.clone(), dir: dir.clone(), manifest: m.clone(), has_thumb: dir.join("thumb.png").is_file() })
+            .map(|(id, (dir, m))| TemplateInfo { id: id.clone(), manifest: m.clone(), has_thumb: dir.join("thumb.png").is_file() })
             .collect()
     }
 
     pub fn validation_context(&self) -> ValidationContext {
-        ValidationContext {
-            root: self.config.project_root(),
-            templates: self.templates.read().unwrap().clone(),
-            check_files: true,
-        }
+        ValidationContext { root: self.config.project_root(), templates: read(&self.templates).loaded.clone(), check_files: true }
     }
 
     pub fn save(&self) -> anyhow::Result<()> {
-        let p = self.project.read().unwrap().clone();
+        let p = read(&self.project).clone();
         self.write_file(&p)
     }
 
@@ -143,26 +184,22 @@ impl AppState {
     fn commit(&self, next: Project, origin: &str) -> anyhow::Result<Project> {
         self.write_file(&next)?;
         let rev = next.revision;
-        let prev = std::mem::replace(&mut *self.project.write().unwrap(), next);
+        let prev = std::mem::replace(&mut *write(&self.project), next);
         let _ = self.events.send(Event::ProjectChanged { revision: rev, origin: origin.to_string() });
         Ok(prev)
-    }
-
-    /// The edit guard. A panic inside a mutation must not poison editing for good: the
-    /// guard protects only ordering, so a poisoned lock is safe to reuse.
-    fn edit_guard(&self) -> std::sync::MutexGuard<'_, ()> {
-        self.edit.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     fn edit<F>(&self, origin: &str, f: F) -> Result<(u64, Vec<Issue>), EditError>
     where
         F: FnOnce(&Project) -> Result<edit::EditOutcome, EditError>,
     {
-        let _guard = self.edit_guard();
-        let out = f(&self.project.read().unwrap())?;
+        let _guard = lock(&self.edit);
+        // Validate on a copy: no user-facing code runs while the project lock is held.
+        let current = read(&self.project).clone();
+        let out = f(&current)?;
         let rev = out.project.revision;
         let prev = self.commit(out.project, origin).map_err(|e| EditError::Patch(e.to_string()))?;
-        let mut u = self.undo.lock().unwrap();
+        let mut u = lock(&self.undo);
         u.past.push((prev, origin.to_string()));
         if u.past.len() > 200 {
             u.past.remove(0);
@@ -173,10 +210,6 @@ impl AppState {
 
     pub fn apply_patch(&self, patch: &[json_patch::PatchOperation], base: Option<u64>, origin: &str) -> Result<(u64, Vec<Issue>), EditError> {
         self.edit(origin, |p| edit::apply_patch(p, base, patch, &self.validation_context()))
-    }
-
-    pub fn replace_project(&self, doc: serde_json::Value, base: Option<u64>, origin: &str) -> Result<(u64, Vec<Issue>), EditError> {
-        self.edit(origin, |p| edit::replace(p, base, doc, &self.validation_context()))
     }
 
     /// Undo/redo swap whole snapshots; the revision keeps increasing so clients never
@@ -190,11 +223,11 @@ impl AppState {
     }
 
     fn swap(&self, redo: bool) -> anyhow::Result<Option<u64>> {
-        let _guard = self.edit_guard();
-        let mut u = self.undo.lock().unwrap();
+        let _guard = lock(&self.edit);
+        let mut u = lock(&self.undo);
         let Some((mut restored, origin)) = (if redo { u.future.pop() } else { u.past.pop() }) else { return Ok(None) };
         let keep = restored.clone();
-        restored.revision = self.project.read().unwrap().revision + 1;
+        restored.revision = read(&self.project).revision + 1;
         let rev = restored.revision;
         let label = format!("{}:{origin}", if redo { "redo" } else { "undo" });
         match self.commit(restored, &label) {
@@ -208,10 +241,5 @@ impl AppState {
                 Err(e)
             }
         }
-    }
-
-    pub fn history(&self) -> (Vec<String>, Vec<String>) {
-        let u = self.undo.lock().unwrap();
-        (u.past.iter().map(|(_, o)| o.clone()).collect(), u.future.iter().map(|(_, o)| o.clone()).collect())
     }
 }

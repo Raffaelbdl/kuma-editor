@@ -1,19 +1,27 @@
 # Authoring kuma overlay templates
 
-An overlay template is a folder under `overlays/` (the library) or `<project>/overlays/`
-(project-local, wins on id clash):
+Templates are assets shared across projects, not code. kuma reads them from every
+library's `overlays/` and from the project's own `overlays/`, later wins on an id clash:
+
+1. `$XDG_DATA_HOME/kuma/overlays` (default `~/.local/share/kuma/overlays`; `kuma library`
+   installs the starter set there),
+2. each directory in `KUMA_LIBRARY` (`:`-separated), as `<dir>/overlays`,
+3. `<project dir>/overlays` — the place for one-off templates written for that video.
+
+`GET /api/health` (the `health` tool) lists `template_dirs` and `template_errors`.
 
 ```
 overlays/<id>/
-  template.json   manifest: id, name, description, duration_default, entry, vars, static, region
-  index.html      the composition (or whatever `entry` names, inside this folder)
+  template.json   manifest: id, name, description, duration_default, static, vars, tags
+  index.html      the composition (always this name)
   fonts/…         any fonts, referenced with relative @font-face paths
   thumb.png       generated (`kuma thumbs`); never part of a bake, do not hand-edit
 ```
 
 `_vendor/` holds shared files, referenced as `_vendor/<file>` from the template. A
-template's own `_vendor/` wins, then the one next to the templates, then the library's;
-the bake stages and the daemon serves exactly the same folder.
+template's own `_vendor/` wins, then the one next to it, then the shared one from the
+highest-precedence library that has it; the bake stages and the daemon serves exactly the
+same folder.
 
 - `_vendor/kuma.js` — `kumaTemplate(defaults)` applies the vars, returns `{ vars, width,
   height, duration, text(id, value), timeline() }` and works standalone.
@@ -83,7 +91,6 @@ Transitions (dissolve/wipe) are refused on overlay clips: bakes carry no handle 
   "description": "…",
   "duration_default": 4.0,
   "static": false,                  // true → bakes a single still frame
-  "region": { "x": 0, "y": 0, "w": 1920, "h": 1080 },   // optional: crop the bake to this
   "vars": {
     "label":  { "type": "string", "default": "Paris", "label": "Place" },
     "accent": { "type": "color",  "default": "#ff4f00" },
@@ -91,19 +98,17 @@ Transitions (dissolve/wipe) are refused on overlay clips: bakes carry no handle 
     "style":  { "type": "enum",   "options": ["pin", "chip"], "default": "pin" },
     "anchor": { "type": "point",  "default": { "x": 0.68, "y": 0.28 } },
     "on":     { "type": "boolean", "default": true },
-    "note":   { "type": "text",   "default": "multi-line" },
-    "logo":   { "type": "asset",  "default": "" }
+    "note":   { "type": "text",   "default": "multi-line" }
   },
-  "sfx": [ { "path": "whoosh.mp3", "at": 0.1, "gain": 0.8 } ],   // parsed, not yet placed on a track
   "tags": ["label"]
 }
 ```
 
 Var types → UI controls: `string` input, `text` textarea, `number` slider (min/max/step),
-`color` picker, `boolean` checkbox, `enum` select, `point` x/y (fraction of frame),
-`asset` path. The manifest is checked on load (defaults must fit their specs, enums need
-options, `entry` stays in the folder, `duration_default` > 0); clip `vars` are validated
-against it and unknown keys are rejected.
+`color` picker, `boolean` checkbox, `enum` select, `point` x/y (fraction of frame). The
+manifest is checked on load (`id` equals the folder, defaults fit their specs, enums have
+options, `duration_default` > 0); clip `vars` are validated against it and unknown keys
+are rejected. Bakes are always the full frame; a still (`static`) is one PNG.
 
 ## Timing responsibilities
 
@@ -118,19 +123,22 @@ the baked producer and approximated with CSS in the live preview.
 ## Testing a template
 
 ```
-kuma templates                       # lists it (id, name, vars)
-kuma thumbs                          # bakes thumb.png for the library panel
-npx hyperframes preview overlays/<id>   # hyperframes' own studio, if you want a scrubber
+kuma thumbs                              # bakes thumb.png for the library panel
+npx hyperframes preview <dir>/overlays/<id>   # hyperframes' own studio, if you want a scrubber
 ```
 
+`list_templates` (or `GET /api/templates`) rescans every library and lists what loaded.
 Add an instance to a project (`apply_edits` or drag it on the timeline), scrub the
 preview, then `sample_frames` on its range to check the baked result matches.
 
 ## Adding a template as an agent
 
-1. `sample_frames` on the target range to see what the overlay must sit over.
-2. Create `overlays/<id>/template.json` and `index.html` following this contract.
-3. Call `POST /api/templates` (or the `list_templates` tool) so the daemon reloads.
+1. `template_guide` returns this file; `sample_frames` on the target range shows what the
+   overlay must sit over.
+2. Create `<dir>/overlays/<id>/template.json` and `index.html` following this contract —
+   in the project's `overlays/` for a one-off, in the user library
+   (`~/.local/share/kuma/overlays/`) for something reusable.
+3. Call `list_templates` so the daemon reloads (it reports manifests that failed to load).
 4. Add a clip: `{ "id": "…", "start": t, "end": t + d, "src": { "overlay": "<id>", "vars": {…} } }`
    on an overlay track via `apply_edits`.
 5. `sample_frames` again on that range to verify.

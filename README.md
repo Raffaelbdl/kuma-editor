@@ -69,7 +69,7 @@ cmake -S engine -B engine/build && cmake --build engine/build -j
 cargo install --path crates/kuma-cli
 ```
 
-`kuma` needs the checkout for `overlays/`, `node_modules/hyperframes` and
+`kuma` needs the checkout for `node_modules/hyperframes`, `ui/dist` and
 `engine/build/kuma-preview`. It finds it by walking up from the current directory or from
 the executable's location, so from `target/release/` nothing is needed; if you installed
 it into `~/.cargo/bin`, tell it where the repository is once:
@@ -78,13 +78,23 @@ it into `~/.cargo/bin`, tell it where the repository is once:
 export KUMA_REPO=/path/to/kuma-editor        # or pass --repo <path> on each call
 ```
 
+Overlay templates and effect presets are **assets shared across projects**, not part of
+the codebase: they live in a user library at `~/.local/share/kuma/{overlays,presets}`
+(`$XDG_DATA_HOME/kuma`), plus any directories in `KUMA_LIBRARY` (a `:`-separated path
+list) and a project's own `overlays/` and `presets/` folders. Later entries win on an id
+clash. The repository ships a starter set under `library/`; install it once:
+
+```
+kuma library                                 # copies library/{overlays,presets} → ~/.local/share/kuma (--force to overwrite)
+```
+
 A project is a directory with `<name>.kuma.json` and your media:
 
 ```
 mkdir myvideo && cd myvideo
 kuma init --project myvideo.kuma.json --fps 30          # or 29.97, 30000/1001, --width 1080 --height 1920
 kuma add-asset media/screen.mp4
-kuma serve                                               # open http://127.0.0.1:7455
+kuma serve                                               # open http://127.0.0.1:7455 (--bind / KUMA_BIND to change)
 ```
 
 Drag templates and assets onto the timeline, scrub, edit vars in the inspector, press
@@ -112,10 +122,11 @@ claude mcp add --scope user    kuma -- kuma mcp --project /abs/path.kuma.json  #
 
 `kuma mcp` starts the daemon in-process if none is running on the port, so the browser UI
 and the agent always share one state. Tools: `get_project`, `get_schema`, `apply_edits`,
-`set_project`, `undo`, `redo`, `validate_project`, `list_templates`, `list_presets`,
+`undo`, `redo`, `validate_project`, `list_templates`, `template_guide`, `list_presets`,
 `add_asset`, `probe_asset`, **`sample_frames`**, `bake_overlay`, `render`, `job_status`,
-`health`. The server's instructions and `overlays/CLAUDE.md` tell the agent how to author
-overlays.
+`health`. `template_guide` returns the overlay authoring contract
+(`library/overlays/CLAUDE.md`) so the agent can write templates into the library or the
+project.
 
 ### CLI
 
@@ -124,7 +135,7 @@ kuma render --preset youtube-1080p         # bakes overlays, compiles, renders w
 kuma sample 12.0 14.0 --count 4 --rect 400,300,800,400
 kuma bake                                  # bake all overlay clips (cached by content)
 kuma compile > timeline.mlt                # inspect the MLT graph (or open it in Kdenlive)
-kuma validate | schema | presets | templates | thumbs
+kuma validate | thumbs | library | doctor
 ```
 
 ## The project file
@@ -147,18 +158,21 @@ kuma validate | schema | presets | templates | thumbs
 ```
 
 Seconds everywhere, `end` exclusive, fps rational, tracks bottom-up. Overlay clips take
-the same effects as video clips. The full schema: `kuma schema`.
+the same effects as video clips. The full schema: `GET /api/schema` or the `get_schema`
+tool.
 
 ## Overlay templates
 
-`overlays/<id>/index.html` + `template.json`. The manifest's typed vars become the
-properties panel, so templates are editable without an agent; the agent can author new
-ones because they are plain folders. Starter set: `location-tag`, `lower-third`,
+A template is a folder `<library>/overlays/<id>/` with `index.html` + `template.json`. The
+manifest's typed vars become the properties panel, so templates are editable without an
+agent; the agent can author new ones because they are plain folders. Starter set
+(`library/overlays/`, installed by `kuma library`): `location-tag`, `lower-third`,
 `callout-arrow`, `label-pin`, `section-title`, `countdown`, `watermark` (static).
-Contract: `overlays/CLAUDE.md`.
+Contract: `library/overlays/CLAUDE.md`.
 
-Effect presets live in `presets/effects/*.json` (Ken Burns, zoom to region, fade, vignette,
-picture-in-picture, dim) and expand to ordinary effects.
+Effect presets are `<library>/presets/*.json` (Ken Burns, zoom to region, vignette,
+picture-in-picture, dim) and expand to ordinary effects; `$expr` values may use the
+project's `width`/`height`.
 
 ## What works (verified in this repo's tests and smoke runs)
 
@@ -185,7 +199,7 @@ picture-in-picture, dim) and expand to ordinary effects.
   running one serves another project, and never routes loopback requests through
   `http_proxy`. Then `/mcp` → reconnect in Claude Code.
 - **"Preview engine unavailable: …"** — the toast carries the daemon's reason; `GET /api/health`
-  shows `preview_engine_path` and `preview_error`. The engine is a separate build step:
+  shows `preview_engine` and `preview_error`. The engine is a separate build step:
   `cmake -S engine -B engine/build && cmake --build engine/build -j` (needs `libmlt++-dev
   libsdl2-dev libturbojpeg0-dev`). Without it the preview falls back to single-frame
   snapshots (scrubbing works, playback does not).
@@ -194,8 +208,11 @@ picture-in-picture, dim) and expand to ordinary effects.
   stage's device-pixel width.
 - **No display** (SSH, CI) — MLT's Qt module needs X11; install `xvfb` and kuma wraps
   `melt`/the engine in `xvfb-run` automatically.
+- **A template is missing from the library panel** — `GET /api/health` lists
+  `template_dirs` (where kuma looked) and `template_errors` (manifests that failed to load
+  and why). No library at all: run `kuma library`.
 - **Bakes fail with "timelines did not become ready"** — a template without a GSAP timeline
-  needs `data-no-timeline` on its composition root (see `overlays/CLAUDE.md`).
+  needs `data-no-timeline` on its composition root (see `library/overlays/CLAUDE.md`).
 
 ## Known limitations
 
@@ -208,7 +225,7 @@ picture-in-picture, dim) and expand to ordinary effects.
 - No proxies/preview chunk cache yet — heavy timelines will scrub below real time.
 - `.mlt` output opens in Kdenlive as a clip/timeline import; Kdenlive's own project
   scaffolding (`main_bin`, `kdenlive:` properties) is not emitted.
-- Overlay SFX (`sfx` in manifests) are parsed but not yet placed on an audio track.
+- Overlays bake at full frame size; there is no per-template bake region yet.
 - Transitions are refused on overlay clips: bakes carry no handle frames yet.
 - Clip and track ids must match `[A-Za-z_][A-Za-z0-9_-]*` (they double as XML ids and URL segments).
 

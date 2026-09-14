@@ -13,7 +13,7 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-pub use state::{AppState, Config};
+pub use state::{default_library_dirs, AppState, Config};
 
 /// Start serving. Resolves when the listener is bound; the server runs in the background.
 pub async fn serve(config: Config) -> anyhow::Result<(Arc<AppState>, SocketAddr)> {
@@ -32,27 +32,16 @@ pub async fn serve(config: Config) -> anyhow::Result<(Arc<AppState>, SocketAddr)
     Ok((state, addr))
 }
 
-/// Locate the repository root (for `overlays/` and `node_modules`) from the executable
-/// or the current directory.
+/// The repository root (for `node_modules/hyperframes`, `ui/dist`, `engine/build`):
+/// `KUMA_REPO`, else the nearest ancestor of the executable or the cwd that holds
+/// `node_modules/hyperframes`.
 pub fn find_repo_root() -> Option<PathBuf> {
-    if let Some(p) = std::env::var_os("KUMA_REPO") {
-        return Some(PathBuf::from(p));
+    if let Some(p) = std::env::var_os("KUMA_REPO").map(PathBuf::from).filter(|p| p.is_dir()) {
+        return Some(p);
     }
-    let mut candidates = Vec::new();
-    if let Ok(cwd) = std::env::current_dir() {
-        candidates.push(cwd);
-    }
-    if let Ok(exe) = std::env::current_exe() {
-        candidates.push(exe);
-    }
-    for start in candidates {
-        let mut p = Some(start.as_path());
-        while let Some(d) = p {
-            if d.join("overlays").is_dir() && d.join("Cargo.toml").is_file() {
-                return Some(d.to_path_buf());
-            }
-            p = d.parent();
-        }
-    }
-    None
+    let is_repo = |d: &std::path::Path| d.join("node_modules/hyperframes").is_dir();
+    [std::env::current_exe().ok(), std::env::current_dir().ok()]
+        .into_iter()
+        .flatten()
+        .find_map(|start| start.ancestors().find(|d| is_repo(d)).map(|d| d.to_path_buf()))
 }

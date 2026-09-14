@@ -1,18 +1,20 @@
-// The template side of the kuma contract (see overlays/CLAUDE.md). Load it after
+// The template side of the kuma contract (see CLAUDE.md next to the templates). Load it after
 // gsap.min.js and call `kumaTemplate(defaults)` once.
 //
 // Works standalone too (no window.kuma): vars fall back to `defaults` and the duration to
-// the root's data-duration. Every var becomes an inline `--var-<name>` custom property on
-// <html> (points as `--var-<name>-x` / `-y`), which beats any :root rule in the template's
-// own CSS.
+// the root's data-duration. Standalone, every var becomes an inline `--var-<name>` custom
+// property on <html> (points as `--var-<name>-x` / `-y`) so the CSS sees the defaults;
+// under kuma the daemon has already injected the real values as a <style> in <head>.
 (function () {
   const k = window.kuma || {};
   const root = document.documentElement;
   window.kumaTemplate = function (defaults) {
     const vars = Object.assign({}, defaults, k.vars || {});
-    for (const [name, v] of Object.entries(vars)) {
-      if (v && typeof v === "object") for (const [s, x] of Object.entries(v)) root.style.setProperty(`--var-${name}-${s}`, String(x));
-      else root.style.setProperty(`--var-${name}`, String(v));
+    if (!window.kuma) {
+      for (const [name, v] of Object.entries(vars)) {
+        if (v && typeof v === "object") for (const [s, x] of Object.entries(v)) root.style.setProperty(`--var-${name}-${s}`, String(x));
+        else root.style.setProperty(`--var-${name}`, String(v));
+      }
     }
     const comp = document.querySelector("[data-composition-id]");
     return {

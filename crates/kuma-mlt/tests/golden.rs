@@ -11,7 +11,7 @@ fn reference_project() -> Project {
 }
 
 fn bake(path: &str, is_still: bool) -> OverlayBake {
-    OverlayBake { resource: PathBuf::from(path), region: None, is_still }
+    OverlayBake { resource: PathBuf::from(path), is_still }
 }
 
 #[test]

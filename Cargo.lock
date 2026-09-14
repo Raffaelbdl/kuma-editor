@@ -849,12 +849,10 @@ dependencies = [
 name = "kuma-core"
 version = "0.1.0"
 dependencies = [
- "hex",
  "json-patch",
  "schemars",
  "serde",
  "serde_json",
- "sha2",
  "thiserror",
 ]
 

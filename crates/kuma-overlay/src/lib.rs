@@ -5,13 +5,12 @@
 //! runs hyperframes with a single worker, because multi-worker frame assignment was shown
 //! to change subpixel rasterisation of GSAP-driven transforms between runs.
 //!
-//! Output is a PNG sequence by default (lossless, straight alpha, read natively by MLT);
-//! ProRes 4444 MOV is available for hand-off into other tools.
+//! Output is an RGBA PNG sequence (lossless, straight alpha, read natively by MLT).
 
 pub mod bake;
 pub mod inject;
 pub mod media;
 
-pub use bake::{BakeError, BakeRequest, Baker, BakeResult, Format};
+pub use bake::{BakeError, BakeRequest, Baker, BakeResult};
 pub use inject::Contract;
 pub use media::{probe, Probe};

@@ -21,9 +21,10 @@ you read, so you never overwrite a human edit made meanwhile. Every edit is vali
 undoable; label your edits with `note`.
 
 Overlays are HTML templates (`list_templates`): a clip on an `overlay` track references a template id
-and `vars`. New templates are folders under `overlays/<id>/` with `index.html` + `template.json`; read
-`overlays/CLAUDE.md` in the repository before authoring one. Overlays are live DOM in the editor's
-preview and are baked to alpha frames at export.
+and `vars`. Templates live in the user's library (`~/.local/share/kuma/overlays/<id>/`) or in the
+project's own `overlays/<id>/`, as a folder with `index.html` + `template.json`; call `template_guide`
+before authoring one. Overlays are live DOM in the editor's preview and are baked to alpha frames at
+export.
 
 To look at the footage, call `sample_frames` with a time range (and an optional pixel `rect`); it
 returns the composited frames as images plus their PNG paths.
@@ -87,16 +88,6 @@ pub struct ApplyEdits {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
-pub struct SetProject {
-    /// The whole project document.
-    pub project: Value,
-    #[serde(default)]
-    pub base_revision: Option<u64>,
-    #[serde(default)]
-    pub note: Option<String>,
-}
-
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct SampleFrames {
     /// Start time, seconds.
     pub t0: f64,
@@ -130,9 +121,6 @@ pub struct BakeOverlay {
     /// Clip ids to bake; all overlay clips when omitted.
     #[serde(default)]
     pub clips: Option<Vec<String>>,
-    /// 2 renders at double DPR and downscales for crisper edges.
-    #[serde(default)]
-    pub supersample: Option<u32>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -146,8 +134,6 @@ pub struct Render {
     /// Optional `[start, end]` seconds to render only part of the timeline.
     #[serde(default)]
     pub range: Option<(f64, f64)>,
-    #[serde(default)]
-    pub supersample: Option<u32>,
     /// Seconds to wait for completion before returning the job id (default 900).
     #[serde(default)]
     pub wait_seconds: Option<u64>,
@@ -192,13 +178,6 @@ impl KumaServer {
         self.post("/api/project/patch", &json!({ "patch": p.patch, "base_revision": p.base_revision, "origin": origin })).await
     }
 
-    #[tool(description = "Replace the whole project document. Prefer apply_edits for incremental changes.")]
-    async fn set_project(&self, Parameters(p): Parameters<SetProject>) -> Result<CallToolResult, McpError> {
-        let origin = format!("claude: {}", p.note.unwrap_or_else(|| "replace project".into()));
-        let body = json!({ "project": p.project, "base_revision": p.base_revision, "origin": origin });
-        Ok(ok_json(&self.client.put("/api/project", &body).await.map_err(err)?))
-    }
-
     #[tool(description = "Undo the last edit (yours or the user's). Returns the new revision; fails when there is nothing to undo.")]
     async fn undo(&self) -> Result<CallToolResult, McpError> {
         self.step_history("/api/project/undo").await
@@ -214,17 +193,22 @@ impl KumaServer {
         self.get("/api/project/validate").await
     }
 
-    #[tool(description = "Rescan `overlays/` and list the templates with their manifests (typed vars, defaults, default duration). A template folder you just wrote appears here without a restart.")]
+    #[tool(description = "Rescan the template libraries and list the templates with their manifests (typed vars, defaults, default duration). A template folder you just wrote appears here without a restart; manifests that failed to load are listed by `health`.")]
     async fn list_templates(&self) -> Result<CallToolResult, McpError> {
         self.post("/api/templates", &json!({})).await
     }
 
-    #[tool(description = "List export presets (YouTube 1080p/4K/Shorts, draft, VP9, ProRes).")]
+    #[tool(description = "The overlay template authoring contract (root attributes, kuma.js helper, vars, seekable animation rules, manifest format). Read it before writing a template.")]
+    async fn template_guide(&self) -> Result<CallToolResult, McpError> {
+        Ok(CallToolResult::success(vec![ContentBlock::text(include_str!("../../../library/overlays/CLAUDE.md"))]))
+    }
+
+    #[tool(description = "List export presets (YouTube 1080p/4K, draft, VP9, ProRes). A 9:16 project renders vertical with the same presets.")]
     async fn list_presets(&self) -> Result<CallToolResult, McpError> {
         self.get("/api/presets").await
     }
 
-    #[tool(description = "Probe a media file with ffprobe: duration, size, fps, audio, codec.")]
+    #[tool(description = "Probe a media file with ffprobe: duration, size, fps, audio.")]
     async fn probe_asset(&self, Parameters(p): Parameters<PathArg>) -> Result<CallToolResult, McpError> {
         Ok(ok_json(&self.client.get_query("/api/assets/probe", &[("path", &p.path)]).await.map_err(err)?))
     }
@@ -264,24 +248,24 @@ impl KumaServer {
 
     #[tool(description = "Bake overlay clips to alpha frame sequences now (normally done automatically at render). Cached by content; returns the bake resources.")]
     async fn bake_overlay(&self, Parameters(p): Parameters<BakeOverlay>) -> Result<CallToolResult, McpError> {
-        self.job("/api/bake", &json!({ "clips": p.clips, "supersample": p.supersample.unwrap_or(1) }), Duration::from_secs(1800)).await
+        self.job("/api/bake", &json!({ "clips": p.clips }), Duration::from_secs(1800)).await
     }
 
     #[tool(description = "Render the timeline to a video file with an export preset. Waits up to wait_seconds; if still running, returns the job id to poll with job_status.")]
     async fn render(&self, Parameters(p): Parameters<Render>) -> Result<CallToolResult, McpError> {
         let body = json!({
             "preset": p.preset.unwrap_or_else(|| "youtube-1080p".into()),
-            "output": p.output, "range": p.range, "supersample": p.supersample.unwrap_or(1),
+            "output": p.output, "range": p.range,
         });
         self.job("/api/render", &body, Duration::from_secs(p.wait_seconds.unwrap_or(900))).await
     }
 
-    #[tool(description = "Status of a background job (render/bake).")]
+    #[tool(description = "Status of a background job (render/bake): percent, message, done, ok, result.")]
     async fn job_status(&self, Parameters(p): Parameters<JobArg>) -> Result<CallToolResult, McpError> {
         self.get(&format!("/api/jobs/{}", p.id)).await
     }
 
-    #[tool(description = "Daemon health: tool availability (melt, ffprobe, hyperframes, browser, preview engine) and project path.")]
+    #[tool(description = "Daemon health: project path and revision, hyperframes/browser/preview-engine availability, template library dirs and any manifest that failed to load.")]
     async fn health(&self) -> Result<CallToolResult, McpError> {
         let mut h = self.client.get("/api/health").await.map_err(err)?;
         if let Some(obj) = h.as_object_mut() {

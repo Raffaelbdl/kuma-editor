@@ -17,8 +17,11 @@ pub fn resolve(name: &str, root: &Path, cache_dir: &Path) -> std::io::Result<Pat
     if LUMAS.contains(&name) {
         let out = cache_dir.join(format!("{name}.pgm"));
         if !out.is_file() {
+            // A preview compile and a render may generate the same luma at once.
             std::fs::create_dir_all(cache_dir)?;
-            std::fs::write(&out, generate(name, 512, 288))?;
+            let tmp = cache_dir.join(format!("{name}.pgm.tmp{}", std::process::id()));
+            std::fs::write(&tmp, generate(name, 512, 288))?;
+            std::fs::rename(&tmp, &out)?;
         }
         return Ok(out);
     }

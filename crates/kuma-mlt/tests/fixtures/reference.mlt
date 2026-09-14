@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <mlt LC_NUMERIC="C" version="7.22.0" root="/proj" producer="main_tractor">
-  <profile description="kuma 1920x1080 30" width="1920" height="1080" progressive="1" sample_aspect_num="1" sample_aspect_den="1" display_aspect_num="1920" display_aspect_den="1080" frame_rate_num="30" frame_rate_den="1" colorspace="709"/>
+  <profile description="kuma 1920x1080 30/1" width="1920" height="1080" progressive="1" sample_aspect_num="1" sample_aspect_den="1" display_aspect_num="1920" display_aspect_den="1080" frame_rate_num="30" frame_rate_den="1" colorspace="709"/>
   <producer id="black" in="0" out="449">
     <property name="mlt_service">color</property>
     <property name="resource">black</property>
@@ -10,7 +10,7 @@
   <playlist id="background">
     <entry producer="black" in="0" out="449"/>
   </playlist>
-  <chain id="clip_c1" in="90" out="404">
+  <chain id="clip_c1" in="0" out="404">
     <property name="mlt_service">avformat-novalidate</property>
     <property name="resource">/proj/media/screen.mp4</property>
     <filter id="clip_c1_crop1" in="90" out="404">
@@ -32,7 +32,7 @@
       <property name="alpha">0=1;-1=0</property>
     </filter>
   </chain>
-  <producer id="clip_c2" in="45" out="179">
+  <producer id="clip_c2" in="0" out="179">
     <property name="mlt_service">timewarp</property>
     <property name="resource">0.5:/proj/media/cam.mp4</property>
     <property name="warp_pitch">1</property>

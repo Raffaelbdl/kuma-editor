@@ -18,8 +18,6 @@ struct FfStream {
     #[serde(default)]
     disposition: Disposition,
     #[serde(default)]
-    codec_name: Option<String>,
-    #[serde(default)]
     width: Option<u32>,
     #[serde(default)]
     height: Option<u32>,
@@ -92,22 +90,8 @@ pub fn probe(path: &Path) -> Result<Probe, String> {
         height: video.and_then(|v| v.height),
         fps: if kind == AssetKind::Image { None } else { fps },
         has_audio: audio,
-        codec: video.and_then(|v| v.codec_name.clone()),
     };
     Ok(Probe { meta, kind })
-}
-
-/// Pixel format of the first video stream — used to assert alpha survived an encode.
-pub fn pix_fmt(path: &Path) -> Result<String, String> {
-    let out = Command::new("ffprobe")
-        .args(["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=pix_fmt", "-of", "csv=p=0"])
-        .arg(path)
-        .output()
-        .map_err(|e| e.to_string())?;
-    if !out.status.success() {
-        return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
-    }
-    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
 /// Run ffmpeg with `-v error -y` and the given args.
@@ -117,32 +101,4 @@ pub fn ffmpeg(args: &[String]) -> Result<(), String> {
         return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
     }
     Ok(())
-}
-
-/// Generate a low-resolution H.264 proxy for smooth scrubbing.
-pub fn make_proxy(src: &Path, dst: &Path, height: u32) -> Result<(), String> {
-    if let Some(p) = dst.parent() {
-        std::fs::create_dir_all(p).map_err(|e| e.to_string())?;
-    }
-    ffmpeg(&[
-        "-i".into(),
-        src.to_string_lossy().into_owned(),
-        "-vf".into(),
-        format!("scale=-2:{height}"),
-        "-c:v".into(),
-        "libx264".into(),
-        "-preset".into(),
-        "veryfast".into(),
-        "-crf".into(),
-        "23".into(),
-        "-g".into(),
-        "15".into(),
-        "-pix_fmt".into(),
-        "yuv420p".into(),
-        "-c:a".into(),
-        "aac".into(),
-        "-b:a".into(),
-        "128k".into(),
-        dst.to_string_lossy().into_owned(),
-    ])
 }

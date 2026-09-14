@@ -25,7 +25,7 @@ export const api = {
   reloadTemplates: () => json<TemplateInfo[]>("/api/templates", { method: "POST", body: "{}" }),
   addAsset: (path: string, base_revision: number) =>
     json<{ id: string; revision: number }>("/api/assets", { method: "POST", body: JSON.stringify({ path, base_revision, origin: "ui: add asset" }) }),
-  render: (preset: string, supersample = 1) => json<{ job: number }>("/api/render", { method: "POST", body: JSON.stringify({ preset, supersample }) }),
+  render: (preset: string) => json<{ job: number }>("/api/render", { method: "POST", body: JSON.stringify({ preset }) }),
   previewReload: (scale?: number) => json<{ mlt: string; scale: number }>("/api/preview/reload", { method: "POST", body: JSON.stringify(scale === undefined ? {} : { scale }) }),
   snapshotUrl: (t: number, width = 960) => `/api/snapshot?t=${t.toFixed(3)}&width=${width}&_=${Date.now()}`,
 };

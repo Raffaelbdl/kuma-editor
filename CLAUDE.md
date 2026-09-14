@@ -5,6 +5,10 @@ overlay half is HTML/CSS/TS baked with alpha by hyperframes, both driven from on
 project file and exposed to agents over MCP. Read `README.md` for the architecture and
 `library/overlays/CLAUDE.md` before authoring an overlay template.
 
+**Picking this up? Read `docs/decisions.md` first.** It records why the model looks the
+way it does, including what was tried and rejected, and it opens with the agreed next
+step: **nested sequences**, not started, ahead of everything in its "still open" list.
+
 ## Layout
 
 ```

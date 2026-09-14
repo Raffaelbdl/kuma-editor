@@ -11,6 +11,66 @@ then replaced; **deferred** is agreed direction, not yet built. Where a decision
 
 ---
 
+## Next step: nested sequences
+
+**Not started.** This is the priority for whoever picks the project up, ahead of the
+folders and search work that the bin refactor was meant to unblock.
+
+**What.** A sequence is a timeline that can be placed on another timeline, so parts of a
+video are edited separately and juxtaposed in the final render. It is the feature the
+project's owner uses heavily in Kdenlive, and kuma has no equivalent: `tracks` sits at
+project level, so there is exactly one timeline.
+
+**Shape.** A sequence is a bin entry, which is how Kdenlive does it — its file format
+documentation describes `main_bin` as listing clips *and* timeline sequences as entries.
+That makes it a fourth source variant rather than a new concept:
+
+```rust
+pub enum BinSource {
+    File { path, kind, proxy },
+    Overlay { template, vars },
+    Color { color },
+    Sequence { tracks: Vec<Track>, markers: Vec<Marker> },   // new
+}
+```
+
+`Project.tracks` moves into a bin entry and the project keeps a pointer to whichever entry
+is the master. Everything a clip already does then applies to a sequence unchanged —
+naming, thumbnails, trim, effects, transitions — because a clip is a placement and does
+not care what it places. This is the payoff of the bin refactor and the reason to do this
+now rather than before it.
+
+**Already in place.** MLT nests natively: a sequence is a tractor and a tractor is a
+producer. The compiler does this in miniature today, emitting a tractor for a track with a
+dissolve and then referencing it as that track's producer, so the emit-and-reference
+machinery exists and is covered by the golden test.
+
+**Spike this first.** Speed on a sequence clip. Trimming into a nested tractor should be
+fine, but the `timewarp` producer takes a resource path and it is unconfirmed that it
+accepts a tractor. If it does not, a sped-up sequence needs a different mechanism and that
+shapes the model, so settle it with `melt` before writing any Rust.
+
+**The three parts that are real work, not plumbing.**
+
+1. *Cycle detection*, and it has to land with the model rather than after. A sequence that
+   contains itself transitively makes the compiler recurse forever. It is a graph walk in
+   the validator.
+2. *Topological compile order*. Inner sequences must be emitted as tractors before the
+   outer ones reference them. The compiler currently emits producers and then one tractor,
+   so this is the part that changes most.
+3. *Preview scope*. The engine loads one compiled file, so editing a sub-sequence means
+   previewing that sub-sequence. The daemon needs a notion of the current sequence, which
+   is session state rather than project state, and it touches the preview transport, the
+   compile path and the UI together.
+
+Also remember `bake_all` walks `project.tracks` and will need to walk every sequence.
+
+**Scale.** Larger than the bin refactor, mostly because of the compiler and the preview
+scope. The stopgap that needs no code is to render each part and add the output to the bin
+as media, which costs live editing of the parts and a re-encode.
+
+---
+
 ## Project model
 
 **One bin holds everything placeable** — adopted.
@@ -197,6 +257,8 @@ impossible and the revision is never touched. Held back until flag-and-reload pr
 annoying, because the validator and the agent both read metadata today.
 
 ## Still open
+
+Lower priority than nested sequences above.
 
 - Folders and search in the browser, now that the bin is the thing they organise.
 - A re-probe or reload action on a bin entry.

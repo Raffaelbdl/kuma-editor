@@ -3,22 +3,16 @@
 
 use std::path::{Path, PathBuf};
 
-pub const BUILTIN: &[&str] = &[
-    "wipe_left",
-    "wipe_right",
-    "wipe_up",
-    "wipe_down",
-    "iris",
-    "diagonal",
-];
+use kuma_core::LUMAS;
 
-/// Resolve a luma name or path to a file, generating built-ins under `cache_dir`.
-pub fn resolve(name: &str, cache_dir: &Path) -> std::io::Result<PathBuf> {
-    let p = Path::new(name);
+/// Resolve a luma name or project-relative path to a file, generating built-ins under
+/// `cache_dir`.
+pub fn resolve(name: &str, root: &Path, cache_dir: &Path) -> std::io::Result<PathBuf> {
+    let p = root.join(name);
     if p.is_file() {
-        return Ok(p.to_path_buf());
+        return Ok(p);
     }
-    if BUILTIN.contains(&name) {
+    if LUMAS.contains(&name) {
         let out = cache_dir.join(format!("{name}.pgm"));
         if !out.is_file() {
             std::fs::create_dir_all(cache_dir)?;

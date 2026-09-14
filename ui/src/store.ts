@@ -11,16 +11,16 @@ export interface State {
   /** pixels per second */
   zoom: number;
   connected: boolean;
-  engine: boolean;
   jobs: Record<number, { kind: string; percent: number; message: string; done?: boolean; ok?: boolean; result?: unknown }>;
 }
 
 type Listener = (s: State) => void;
 
 class Store {
-  state: State = { project: null, templates: [], selection: null, playhead: 0, playing: false, zoom: 60, connected: false, engine: false, jobs: {} };
+  state: State = { project: null, templates: [], selection: null, playhead: 0, playing: false, zoom: 60, connected: false, jobs: {} };
   private listeners = new Set<Listener>();
-  private refreshing = false;
+  private refreshing: Promise<void> | null = null;
+  private refreshAgain = false;
 
   subscribe(fn: Listener): () => void {
     this.listeners.add(fn);
@@ -49,8 +49,8 @@ class Store {
   }
 
   async init() {
-    const [project, templates, health] = await Promise.all([api.project(), api.templates(), api.health().catch(() => ({}))]);
-    this.set({ project, templates, engine: Boolean((health as Record<string, unknown>).preview_engine) });
+    const [project, templates] = await Promise.all([api.project(), api.templates()]);
+    this.set({ project, templates });
     subscribeEvents((e) => this.onEvent(e), (connected) => this.set({ connected }));
   }
 
@@ -66,17 +66,33 @@ class Store {
     }
   }
 
-  async refresh() {
-    if (this.refreshing) return;
-    this.refreshing = true;
-    try {
-      const project = await api.project();
-      const selection = project.tracks.some((t) => t.clips.some((c) => c.id === this.state.selection)) ? this.state.selection : null;
-      this.set({ project, selection });
-    } finally {
-      this.refreshing = false;
+  /**
+   * Refetch the project. A refresh requested while one is in flight runs once more after
+   * it, so a burst of revisions (an agent applying several patches) never leaves the UI
+   * on a stale one.
+   */
+  refresh(): Promise<void> {
+    if (this.refreshing) {
+      this.refreshAgain = true;
+      return this.refreshing;
     }
+    this.refreshing = (async () => {
+      try {
+        do {
+          this.refreshAgain = false;
+          const project = await api.project();
+          const selection = project.tracks.some((t) => t.clips.some((c) => c.id === this.state.selection)) ? this.state.selection : null;
+          this.set({ project, selection });
+        } while (this.refreshAgain);
+      } finally {
+        this.refreshing = null;
+      }
+    })();
+    return this.refreshing;
   }
+
+  async undo() { await api.undo(); await this.refresh(); }
+  async redo() { await api.redo(); await this.refresh(); }
 
   /** Send a patch against the current revision. On a 409, refetch and report. */
   async patch(ops: PatchOp[], note: string): Promise<boolean> {

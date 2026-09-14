@@ -25,7 +25,7 @@ pub enum FpsRepr {
 impl From<FpsRepr> for Fps {
     fn from(r: FpsRepr) -> Self {
         match r {
-            FpsRepr::Rational { num, den } => Fps { num, den: den.max(1) },
+            FpsRepr::Rational { num, den } => Fps::new(num, den.max(1)),
             FpsRepr::Number(n) => Fps::from_f64(n),
         }
     }
@@ -52,8 +52,10 @@ impl JsonSchema for Fps {
 }
 
 impl Fps {
+    /// Always stored reduced, so `Eq`/`Hash`/`Display` agree for equal rates.
     pub const fn new(num: u32, den: u32) -> Self {
-        Fps { num, den }
+        let g = gcd(num, den);
+        if g == 0 { Fps { num, den } } else { Fps { num: num / g, den: den / g } }
     }
 
     /// Map a float to a rational, snapping the NTSC family to their exact 1001 forms.
@@ -70,11 +72,8 @@ impl Fps {
                 return Fps { num, den: 1001 };
             }
         }
-        if (n - n.round()).abs() < 1e-9 {
-            return Fps { num: n.round() as u32, den: 1 };
-        }
-        // Generic fallback: 3 decimal places.
-        Fps { num: (n * 1000.0).round() as u32, den: 1000 }
+        // Generic fallback: 3 decimal places, reduced.
+        Fps::new((n * 1000.0).round() as u32, 1000)
     }
 
     pub fn as_f64(&self) -> f64 {
@@ -132,9 +131,10 @@ impl ClipFrames {
     pub fn len(&self) -> i64 {
         self.out - self.in_ + 1
     }
-    pub fn is_empty(&self) -> bool {
-        self.len() <= 0
-    }
+}
+
+const fn gcd(a: u32, b: u32) -> u32 {
+    if b == 0 { a } else { gcd(b, a % b) }
 }
 
 #[cfg(test)]
@@ -146,6 +146,8 @@ mod tests {
         assert_eq!(Fps::from_f64(29.97), Fps::new(30000, 1001));
         assert_eq!(Fps::from_f64(23.976), Fps::new(24000, 1001));
         assert_eq!(Fps::from_f64(30.0), Fps::new(30, 1));
+        assert_eq!(Fps::from_f64(25.5), Fps { num: 51, den: 2 });
+        assert_eq!(Fps::new(60000, 2002), Fps::new(30000, 1001));
     }
 
     #[test]

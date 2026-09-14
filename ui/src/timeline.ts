@@ -1,7 +1,8 @@
 // Timeline: tracks, clips (move/trim), transitions, playhead, zoom.
 
+import { button, el } from "./dom";
 import { store, toast } from "./store";
-import type { Clip, PatchOp, Project, Track } from "./types";
+import type { Clip, PatchOp, Project, Track, TrackKind } from "./types";
 import { isAsset, isOverlay } from "./types";
 
 const HEAD = 120;
@@ -12,10 +13,13 @@ export class Timeline {
   private drag: null | { kind: "move" | "trim-l" | "trim-r"; clip: Clip; ti: number; startX: number; orig: { start: number; end: number; in: number }; ghost: HTMLDivElement; dt: number; toTrack: number } = null;
 
   constructor(private host: HTMLElement) {
-    this.root = document.createElement("div");
-    this.root.className = "tl";
+    this.root = el("div", "tl");
     host.appendChild(this.root);
-    store.select((s) => [s.project, s.zoom, s.selection], () => this.render());
+    // Only the project and the zoom rebuild the DOM; selection and playhead are cheap updates.
+    store.select((s) => [s.project, s.zoom], () => this.render());
+    store.select((s) => [s.selection], (s) => {
+      for (const c of this.root.querySelectorAll<HTMLElement>(".clip")) c.classList.toggle("selected", c.dataset.id === s.selection);
+    });
     store.select((s) => [s.playhead], (s) => this.movePlayhead(s.playhead));
     host.addEventListener("wheel", (e) => {
       if (e.ctrlKey || e.metaKey) {
@@ -40,14 +44,11 @@ export class Timeline {
     this.root.innerHTML = "";
 
     // Ruler
-    const ruler = document.createElement("div");
-    ruler.className = "tl-ruler";
+    const ruler = el("div", "tl-ruler");
     const step = niceStep(s.zoom);
     for (let t = 0; t <= store.duration + 10; t += step) {
-      const tick = document.createElement("div");
-      tick.className = "tick";
+      const tick = el("div", "tick", t % 1 === 0 ? `${t}s` : `${t.toFixed(1)}`);
       tick.style.left = `${this.x(t)}px`;
-      tick.textContent = t % 1 === 0 ? `${t}s` : `${t.toFixed(1)}`;
       ruler.appendChild(tick);
     }
     ruler.addEventListener("pointerdown", (e) => this.scrub(e));
@@ -57,23 +58,19 @@ export class Timeline {
     const tracks = [...p.tracks].map((t, i) => ({ t, i })).reverse();
     for (const { t, i } of tracks) this.root.appendChild(this.trackEl(p, t, i));
     if (!p.tracks.length) {
-      const hint = document.createElement("div");
-      hint.className = "muted";
+      const hint = el("div", "muted", "No tracks yet — use “Add at playhead” in the library; the right track is created for you.");
       hint.style.padding = "16px";
-      hint.textContent = "No tracks yet — use “Add at playhead” in the library; the right track is created for you.";
       this.root.appendChild(hint);
     }
 
     // Markers and playhead
     for (const m of p.markers) {
-      const el = document.createElement("div");
-      el.className = "tl-marker";
-      el.style.left = `${this.x(m.t)}px`;
-      el.title = m.label;
-      this.root.appendChild(el);
+      const mk = el("div", "tl-marker");
+      mk.style.left = `${this.x(m.t)}px`;
+      mk.title = m.label;
+      this.root.appendChild(mk);
     }
-    this.playhead = document.createElement("div");
-    this.playhead.className = "tl-playhead";
+    this.playhead = el("div", "tl-playhead");
     this.root.appendChild(this.playhead);
     this.movePlayhead(s.playhead);
   }
@@ -83,73 +80,58 @@ export class Timeline {
   }
 
   private trackEl(p: Project, t: Track, ti: number): HTMLDivElement {
-    const row = document.createElement("div");
-    row.className = `tl-track ${t.kind}`;
+    const row = el("div", `tl-track ${t.kind}`);
     row.dataset.ti = String(ti);
-    const head = document.createElement("div");
-    head.className = "tl-head";
-    head.innerHTML = `<div><div class="kind">${t.kind}</div><div>${t.name || t.id}</div></div>`;
-    const toggles = document.createElement("div");
-    toggles.className = "toggles";
-    const mk = (label: string, on: boolean, field: "muted" | "hidden") => {
-      const b = document.createElement("button");
-      b.textContent = label;
+    const head = el("div", "tl-head");
+    const label = el("div");
+    label.append(el("div", "kind", t.kind), el("div", "", t.name || t.id));
+    const toggles = el("div", "toggles");
+    const toggle = (text: string, on: boolean, field: "muted" | "hidden") => {
+      const b = button(text, () => store.patch([{ op: "replace", path: `/tracks/${ti}/${field}`, value: !on }], `${field} ${t.id}`), field === "muted" ? "Mute" : "Hide");
       b.className = on ? "on" : "";
-      b.title = field === "muted" ? "Mute" : "Hide";
-      b.onclick = () => store.patch([{ op: "replace", path: `/tracks/${ti}/${field}`, value: !on }], `${field} ${t.id}`);
       return b;
     };
-    if (t.kind !== "overlay") toggles.appendChild(mk("M", t.muted, "muted"));
-    if (t.kind !== "audio") toggles.appendChild(mk("H", t.hidden, "hidden"));
-    if (!t.clips.length) {
-      const rm = document.createElement("button");
-      rm.textContent = "×";
-      rm.title = "Remove this empty track";
-      rm.onclick = () => store.patch([{ op: "remove", path: `/tracks/${ti}` }], `remove track ${t.id}`);
-      toggles.appendChild(rm);
-    }
-    head.appendChild(toggles);
+    if (t.kind !== "overlay") toggles.appendChild(toggle("M", t.muted, "muted"));
+    if (t.kind !== "audio") toggles.appendChild(toggle("H", t.hidden, "hidden"));
+    if (!t.clips.length) toggles.appendChild(button("×", () => store.patch([{ op: "remove", path: `/tracks/${ti}` }], `remove track ${t.id}`), "Remove this empty track"));
+    head.append(label, toggles);
     row.appendChild(head);
 
-    const lane = document.createElement("div");
-    lane.className = "tl-lane";
+    const lane = el("div", "tl-lane");
     lane.addEventListener("pointerdown", (e) => { if (e.target === lane) { store.set({ selection: null }); this.scrub(e); } });
     for (const c of t.clips) lane.appendChild(this.clipEl(p, t, ti, c));
     for (const x of t.transitions) {
-      const a = t.clips.find((c) => c.id === x.from);
       const b = t.clips.find((c) => c.id === x.to);
-      if (!a || !b) continue;
-      const el = document.createElement("div");
-      el.className = "tl-xfade";
-      el.style.left = `${this.x(b.start - x.duration / 2) - HEAD}px`;
-      el.style.width = `${x.duration * store.state.zoom}px`;
-      el.title = `${x.kind} ${x.duration}s`;
-      lane.appendChild(el);
+      if (!b || !t.clips.some((c) => c.id === x.from)) continue;
+      const xf = el("div", "tl-xfade");
+      xf.style.left = `${this.x(b.start - x.duration / 2) - HEAD}px`;
+      xf.style.width = `${x.duration * store.state.zoom}px`;
+      xf.title = `${x.kind} ${x.duration}s`;
+      lane.appendChild(xf);
     }
     row.appendChild(lane);
     return row;
   }
 
   private clipEl(p: Project, t: Track, ti: number, c: Clip): HTMLDivElement {
-    const el = document.createElement("div");
     const kind = isOverlay(c) ? "overlay" : "asset" in c.src ? (p.assets[c.src.asset]?.kind === "audio" || t.kind === "audio" ? "audio" : "video") : "color";
-    el.className = `clip ${kind}${store.state.selection === c.id ? " selected" : ""}`;
-    el.style.left = `${this.x(c.start) - HEAD}px`;
-    el.style.width = `${Math.max(4, (c.end - c.start) * store.state.zoom)}px`;
+    const box = el("div", `clip ${kind}${store.state.selection === c.id ? " selected" : ""}`);
+    box.dataset.id = c.id;
+    box.style.left = `${this.x(c.start) - HEAD}px`;
+    box.style.width = `${Math.max(4, (c.end - c.start) * store.state.zoom)}px`;
     const name = isOverlay(c) ? c.src.overlay : isAsset(c) ? c.src.asset : "colour";
     const sub = isOverlay(c) ? Object.values(c.src.vars ?? {}).find((v) => typeof v === "string") ?? "" : c.speed !== 1 ? `${c.speed}×` : "";
-    el.innerHTML = `<div>${c.label || name}</div><div class="sub">${sub}</div>`;
-    el.title = `${c.id}  ${c.start.toFixed(2)}–${c.end.toFixed(2)}s`;
-    const hl = document.createElement("div"); hl.className = "handle l";
-    const hr = document.createElement("div"); hr.className = "handle r";
-    el.append(hl, hr);
-    el.addEventListener("pointerdown", (e) => {
+    box.title = `${c.id}  ${c.start.toFixed(2)}–${c.end.toFixed(2)}s`;
+    const hl = el("div", "handle l");
+    const hr = el("div", "handle r");
+    box.append(el("div", "", c.label || name), el("div", "sub", String(sub)), hl, hr);
+    box.addEventListener("pointerdown", (e) => {
       e.stopPropagation();
-      store.set({ selection: c.id });
       const kind = e.target === hl ? "trim-l" : e.target === hr ? "trim-r" : "move";
-      this.beginDrag(e, kind, c, ti, el);
+      this.beginDrag(e, kind, c, ti, box);
+      store.set({ selection: c.id });
     });
-    return el;
+    return box;
   }
 
   private scrub(e: PointerEvent) {
@@ -200,7 +182,9 @@ export class Timeline {
       if (d.toTrack !== d.ti) row!.querySelector(".tl-lane")!.appendChild(d.ghost);
     } else if (d.kind === "trim-l") {
       start = Math.min(end - 1 / store.fps, Math.max(0, this.snapT(d.orig.start + dt, d.clip)));
-      if (isAsset(d.clip) && d.orig.in + (start - d.orig.start) < 0) start = d.orig.start - d.orig.in;
+      // Cannot reveal material before the source's first frame (handles scale with speed).
+      const speed = Math.abs(d.clip.speed) || 1;
+      if (isAsset(d.clip) && d.orig.in + (start - d.orig.start) * speed < 0) start = store.snap(d.orig.start - d.orig.in / speed);
     } else {
       end = Math.max(start + 1 / store.fps, this.snapT(d.orig.end + dt, d.clip));
     }
@@ -225,6 +209,11 @@ export class Timeline {
       ops.push({ op: "replace", path: `${path}/src/in`, value: Math.max(0, d.orig.in + (start - d.orig.start) * Math.abs(d.clip.speed)) });
     }
     if (d.toTrack !== d.ti) {
+      // Transitions are per track: any that involved this clip go with the cut.
+      const xs = store.state.project!.tracks[d.ti].transitions;
+      if (xs.some((x) => x.from === d.clip.id || x.to === d.clip.id)) {
+        ops.push({ op: "replace", path: `/tracks/${d.ti}/transitions`, value: xs.filter((x) => x.from !== d.clip.id && x.to !== d.clip.id) });
+      }
       const moved = { ...d.clip, start, end };
       ops.push({ op: "remove", path }, { op: "add", path: `/tracks/${d.toTrack}/clips/-`, value: moved });
     } else {
@@ -250,16 +239,17 @@ export class Timeline {
 export async function addItem(item: { template?: string; asset?: string }, t: number, ti = -1) {
   const p = store.state.project!;
   let clip: Clip;
-  let kind: Track["kind"];
+  let kind: TrackKind;
+  const base = { speed: 1, volume: 1, muted: false, effects: [], label: "" };
   if (item.template) {
     const tpl = store.state.templates.find((x) => x.id === item.template);
     const d = tpl?.manifest.duration_default ?? 4;
-    clip = { id: store.newId("o"), start: t, end: t + d, src: { overlay: item.template, vars: {} }, speed: 1, volume: 1, muted: false, effects: [] };
+    clip = { id: store.newId("o"), start: t, end: t + d, src: { overlay: item.template, vars: {} }, ...base };
     kind = "overlay";
   } else if (item.asset) {
     const a = p.assets[item.asset];
     const d = a?.meta?.duration ?? 5;
-    clip = { id: store.newId("c"), start: t, end: t + d, src: { asset: item.asset, in: 0 }, speed: 1, volume: 1, muted: false, effects: [] };
+    clip = { id: store.newId("c"), start: t, end: t + d, src: { asset: item.asset, in: 0 }, ...base };
     kind = a?.kind === "audio" ? "audio" : "video";
   } else return;
   if (ti < 0 || p.tracks[ti]?.kind !== kind) ti = p.tracks.findIndex((tr) => tr.kind === kind);
@@ -284,9 +274,10 @@ export async function addItem(item: { template?: string; asset?: string }, t: nu
   if (ok) store.set({ selection: clip.id });
 }
 
-/** Build the patch op that inserts a new empty track of `kind` at a sensible position:
- *  audio at the bottom, video above audio, overlays on top. */
-function newTrackOp(kind: Track["kind"]): { op: PatchOp; index: number } {
+/** Build the patch op that inserts a new empty track of `kind`. Tracks composite in array
+ *  order, so a video track goes below the first overlay track and everything else on top
+ *  (audio order does not matter). */
+function newTrackOp(kind: TrackKind): { op: PatchOp; index: number } {
   const p = store.state.project!;
   const ids = new Set(p.tracks.map((t) => t.id));
   let n = 1;
@@ -294,14 +285,13 @@ function newTrackOp(kind: Track["kind"]): { op: PatchOp; index: number } {
   const count = p.tracks.filter((t) => t.kind === kind).length;
   const name = `${kind[0].toUpperCase()}${kind.slice(1)}${count ? ` ${count + 1}` : ""}`;
   const track: Track = { id: `${kind[0]}${n}`, kind, name, muted: false, hidden: false, clips: [], transitions: [] };
-  const audio = p.tracks.filter((t) => t.kind === "audio").length;
-  const video = p.tracks.filter((t) => t.kind === "video").length;
-  const index = kind === "audio" ? audio : kind === "video" ? audio + video : p.tracks.length;
+  const firstOverlay = p.tracks.findIndex((t) => t.kind === "overlay");
+  const index = kind === "video" && firstOverlay >= 0 ? firstOverlay : p.tracks.length;
   return { op: { op: "add", path: `/tracks/${index}`, value: track }, index };
 }
 
 /** Add an empty track from the UI. */
-export async function addTrack(kind: Track["kind"]) {
+export async function addTrack(kind: TrackKind) {
   const { op } = newTrackOp(kind);
   await store.patch([op], `add ${kind} track`);
 }

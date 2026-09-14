@@ -46,7 +46,6 @@ h3 { margin: 12px 0 6px; font-size: 11px; letter-spacing: 0.08em; text-transform
 .stage .ov { position: absolute; left: 0; top: 0; transform-origin: 0 0; }
 .stage .ov iframe { border: 0; background: transparent; display: block; }
 .stage .badge { position: absolute; right: 8px; top: 8px; font: 11px var(--mono); color: var(--fg-2); background: rgba(0,0,0,0.5); padding: 2px 6px; border-radius: 4px; }
-.stage .safe { position: absolute; inset: 0; pointer-events: none; border: 1px dashed rgba(255,255,255,0.15); }
 
 #bottom { display: grid; grid-template-rows: 32px 1fr; border-top: 1px solid var(--line); background: var(--bg-2); min-height: 0; }
 #transport { display: flex; align-items: center; gap: 8px; padding: 0 10px; border-bottom: 1px solid var(--line); }
@@ -94,12 +93,9 @@ h3 { margin: 12px 0 6px; font-size: 11px; letter-spacing: 0.08em; text-transform
 .effect { border: 1px solid var(--line); border-radius: 6px; padding: 6px; margin-bottom: 6px; background: var(--bg-3); }
 .effect .head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; font-weight: 600; }
 .effect .head button { padding: 0 6px; font-size: 11px; }
-.kv { font-family: var(--mono); font-size: 11px; color: var(--fg-2); }
 
 #toasts { position: fixed; right: 12px; bottom: 312px; display: flex; flex-direction: column; gap: 6px; z-index: 10; }
 .toast { background: var(--bg-3); border: 1px solid var(--line); border-left: 3px solid var(--accent); padding: 8px 10px; border-radius: 6px; max-width: 360px; font-size: 12px; }
 .toast.err { border-left-color: #e5484d; }
 .toast.ok { border-left-color: var(--audio); }
-.progress { height: 4px; background: var(--line); border-radius: 2px; overflow: hidden; width: 160px; }
-.progress > div { height: 100%; background: var(--accent); }
 kbd { font: 10px var(--mono); border: 1px solid var(--line); border-radius: 3px; padding: 0 4px; color: var(--fg-2); }

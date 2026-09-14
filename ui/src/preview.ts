@@ -1,8 +1,12 @@
 // Preview stage: engine frames on a canvas, overlay clips as live iframes on top.
 //
 // Same HTML, two consumers: here the overlay is DOM driven by `seek(t)` from the playhead;
-// at export it is baked by hyperframes. The transform/blend/blur/crop effects are
-// approximated with CSS so edits show immediately.
+// at export it is baked by hyperframes. MLT-side effects on overlays (transform, blend,
+// blur, colour, crop, fade) are approximated with CSS so edits show immediately; the
+// render is the reference.
+//
+// This class subscribes to every state change on purpose: overlays must follow the
+// playhead frame by frame. It does no DOM rebuilding on that path.
 
 import { api } from "./api";
 import { store, toast } from "./store";
@@ -30,8 +34,11 @@ export class Preview {
   private snapshotTimer = 0;
   private lastSentSeek = -1;
   private lastRevision = -1;
-  /** Why the engine is unavailable, as reported by the daemon. */
+  /** Why the engine is unavailable, as reported by the daemon (empty when it runs). */
   private engineError = "";
+  /** Timeline time of the last frame the engine sent while playing. */
+  private engineT = -1;
+  private lastFrame = -1;
 
   constructor(private host: HTMLElement) {
     this.stage = document.createElement("div");
@@ -55,17 +62,19 @@ export class Preview {
     const proto = location.protocol === "https:" ? "wss" : "ws";
     const ws = new WebSocket(`${proto}://${location.host}/api/preview/ws`);
     ws.binaryType = "arraybuffer";
-    ws.onopen = () => { this.wsOk = true; this.badge.textContent = "engine"; this.sendSeek(store.state.playhead, true); };
+    ws.onopen = () => { this.wsOk = true; this.lastFrame = -1; this.badge.textContent = "engine"; this.sendSeek(store.state.playhead, true); };
     ws.onmessage = async (m) => {
       if (typeof m.data === "string") {
         try {
           const j = JSON.parse(m.data);
           if (j.error) {
-            this.engineError = String(j.error);
+            const msg = String(j.error);
+            // Report a given failure once; the daemon repeats it on every reconnect.
+            if (msg !== this.engineError) toast(`Preview engine unavailable: ${msg}`, "err", 12000);
+            this.engineError = msg;
             this.badge.textContent = "snapshot (no engine)";
-            this.badge.title = this.engineError;
+            this.badge.title = msg;
             this.wsOk = false;
-            toast(`Preview engine unavailable: ${this.engineError}`, "err", 12000);
           } else if (j.ready) {
             this.engineError = "";
             this.badge.textContent = `engine · ${Math.round((j.scale ?? 0.5) * 100)}%`;
@@ -77,10 +86,22 @@ export class Preview {
       const buf = m.data as ArrayBuffer;
       const frame = Number(new DataView(buf).getBigInt64(0, true));
       const bmp = await createImageBitmap(new Blob([buf.slice(8)], { type: "image/jpeg" }));
+      // Decoding is async: a big frame can finish after the next one. Never step back.
+      if (store.state.playing && frame < this.lastFrame) { bmp.close(); return; }
+      this.lastFrame = frame;
       this.draw(bmp);
-      if (store.state.playing) store.set({ playhead: frame / store.fps });
+      if (store.state.playing) {
+        this.engineT = frame / store.fps;
+        store.set({ playhead: this.engineT });
+      }
     };
-    ws.onclose = () => { this.wsOk = false; this.badge.textContent = "snapshot (no engine)"; setTimeout(() => this.connect(), 3000); };
+    ws.onclose = () => {
+      this.wsOk = false;
+      this.badge.textContent = "snapshot (no engine)";
+      if (store.state.playing) store.set({ playing: false });
+      // A missing engine will not appear by itself: back off instead of respawning it every 3 s.
+      setTimeout(() => this.connect(), this.engineError ? 30000 : 3000);
+    };
     ws.onerror = () => ws.close();
     this.ws = ws;
   }
@@ -90,10 +111,10 @@ export class Preview {
   }
 
   private sendSeek(t: number, force = false) {
-    if (!this.wsOk) { this.scheduleSnapshot(t); return; }
     if (!force && Math.abs(t - this.lastSentSeek) < 1e-6) return;
     this.lastSentSeek = t;
-    this.send(`seek ${t.toFixed(4)}`);
+    if (this.wsOk) this.send(`seek ${t.toFixed(4)}`);
+    else this.scheduleSnapshot(t);
   }
 
   private scheduleSnapshot(t: number) {
@@ -111,9 +132,16 @@ export class Preview {
     }, 250);
   }
 
-  play() {
-    if (this.wsOk) { this.send("play"); return; }
-    toast(`Cannot play: ${this.engineError || "preview engine not connected"}`, "err", 12000);
+  /** Start playback; false (with a toast) when there is no engine to play on. */
+  play(): boolean {
+    if (!this.wsOk) {
+      toast(`Cannot play: ${this.engineError || "preview engine not connected"}`, "err", 12000);
+      return false;
+    }
+    this.lastFrame = -1;
+    this.engineT = store.state.playhead;
+    this.send("play");
+    return true;
   }
   pause() { this.send("pause"); }
 
@@ -158,11 +186,20 @@ export class Preview {
     if (!p) return;
     if (revision !== this.lastRevision) {
       this.lastRevision = revision;
-      this.layout();
       this.syncOverlays();
       if (this.wsOk) this.reload();
     }
-    if (!playing || !this.wsOk) this.sendSeek(playhead);
+    if (playing && this.wsOk) {
+      // The engine drives the playhead; a jump that did not come from it is a user seek.
+      if (Math.abs(playhead - this.engineT) > 1.5 / store.fps) {
+        this.engineT = playhead;
+        this.lastFrame = -1;
+        this.send(`seek ${playhead.toFixed(4)}`);
+        this.send("play");
+      }
+    } else {
+      this.sendSeek(playhead);
+    }
     this.updateOverlays(playhead);
   }
 
@@ -259,7 +296,7 @@ function lerpTransform(e: Extract<Effect, { type: "transform" }>, local: number)
   return fill(kfs[kfs.length - 1]);
 }
 
-/** Approximate MLT-side effects with CSS on the overlay wrapper (exact for transform). */
+/** Approximate MLT-side effects with CSS on the overlay wrapper (see the header comment). */
 function applyEffects(wrap: HTMLDivElement, iframe: HTMLIFrameElement, c: Clip, local: number, W: number, H: number) {
   let transform = "";
   let opacity = 1;

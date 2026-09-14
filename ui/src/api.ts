@@ -13,14 +13,11 @@ async function json<T>(url: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
-  health: () => json<Record<string, unknown>>("/api/health"),
   project: () => json<Project>("/api/project"),
   patch: (patch: PatchOp[], base_revision: number, origin = "ui") =>
     json<{ revision: number; warnings: Issue[] }>("/api/project/patch", { method: "POST", body: JSON.stringify({ patch, base_revision, origin }) }),
   undo: () => json<{ revision: number | null }>("/api/project/undo", { method: "POST", body: "{}" }),
   redo: () => json<{ revision: number | null }>("/api/project/redo", { method: "POST", body: "{}" }),
-  history: () => json<{ undo: string[]; redo: string[] }>("/api/project/history"),
-  validate: () => json<{ issues: Issue[]; duration: number }>("/api/project/validate"),
   templates: () => json<TemplateInfo[]>("/api/templates"),
   presets: () => json<Preset[]>("/api/presets"),
   effectPresets: () => json<EffectPreset[]>("/api/presets/effects"),
@@ -29,7 +26,6 @@ export const api = {
   addAsset: (path: string, base_revision: number) =>
     json<{ id: string; revision: number }>("/api/assets", { method: "POST", body: JSON.stringify({ path, base_revision, origin: "ui: add asset" }) }),
   render: (preset: string, supersample = 1) => json<{ job: number }>("/api/render", { method: "POST", body: JSON.stringify({ preset, supersample }) }),
-  bake: (clips?: string[]) => json<{ job: number }>("/api/bake", { method: "POST", body: JSON.stringify({ clips }) }),
   previewReload: (scale?: number) => json<{ mlt: string; scale: number }>("/api/preview/reload", { method: "POST", body: JSON.stringify(scale === undefined ? {} : { scale }) }),
   snapshotUrl: (t: number, width = 960) => `/api/snapshot?t=${t.toFixed(3)}&width=${width}&_=${Date.now()}`,
 };

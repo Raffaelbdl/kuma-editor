@@ -75,13 +75,6 @@ fn finish(current: &Project, mut doc: Value, ctx: &ValidationContext) -> Result<
     Ok(EditOutcome { project, warnings: issues })
 }
 
-/// Compute the patch that turns `a` into `b` (used to describe undo entries).
-pub fn diff(a: &Project, b: &Project) -> json_patch::Patch {
-    let va = serde_json::to_value(a).unwrap_or(Value::Null);
-    let vb = serde_json::to_value(b).unwrap_or(Value::Null);
-    json_patch::diff(&va, &vb)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

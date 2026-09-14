@@ -1,10 +1,11 @@
 import { api } from "./api";
+import { button, el, options } from "./dom";
 import { Inspector } from "./inspector";
 import { Library } from "./library";
 import { Preview } from "./preview";
 import { fmtTime, store, toast } from "./store";
 import { addTrack, Timeline } from "./timeline";
-import type { PatchOp, Preset } from "./types";
+import type { Clip, Effect, PatchOp, TrackKind } from "./types";
 import { isAsset } from "./types";
 
 async function main() {
@@ -19,64 +20,50 @@ async function main() {
 }
 
 function topbar(preview: Preview) {
-  const el = document.getElementById("topbar")!;
-  const name = document.createElement("span");
-  name.className = "name";
-  const rev = document.createElement("span");
-  rev.className = "muted mono";
-  const undo = button("Undo", async () => { await api.undo(); await store.refresh(); });
-  const redo = button("Redo", async () => { await api.redo(); await store.refresh(); });
-  const presets = document.createElement("select");
+  const host = document.getElementById("topbar")!;
+  const name = el("span", "name");
+  const rev = el("span", "muted mono");
+  const presets = el("select");
   presets.style.width = "auto";
-  api.presets().then((ps: Preset[]) => { for (const p of ps) { const o = document.createElement("option"); o.value = p.id; o.textContent = p.id; o.title = p.description; presets.appendChild(o); } });
+  api.presets().then((ps) => options(presets, ps.map((p) => ({ value: p.id, title: p.description }))));
   const render = button("Render", async () => {
     try { const r = await api.render(presets.value); toast(`Render job #${r.job} started`, "ok"); } catch (e) { toast((e as Error).message, "err"); }
   });
   render.className = "primary";
-  const reload = button("Reload preview", () => preview.reload());
-  const spacer = document.createElement("span");
-  spacer.className = "spacer";
-  const status = document.createElement("span");
-  status.className = "status";
-  el.append(name, rev, undo, redo, spacer, presets, render, reload, status);
+  const status = el("span", "status");
+  host.append(name, rev, button("Undo", () => store.undo()), button("Redo", () => store.redo()), el("span", "spacer"), presets, render, button("Reload preview", () => preview.reload()), status);
   store.select((s) => [s.project, s.connected, s.jobs], (s) => {
     name.textContent = s.project?.name || "kuma";
     rev.textContent = s.project ? `r${s.project.revision}${s.connected ? "" : " · offline"}` : "";
     const running = Object.entries(s.jobs).filter(([, j]) => !j.done);
-    status.innerHTML = running.length
-      ? running.map(([id, j]) => `${j.kind} #${id} ${j.percent}% ${j.message}`).join(" · ")
-      : Object.values(s.jobs).slice(-1).map((j) => (j.ok && j.result && typeof j.result === "object" && "output" in (j.result as object)) ? `wrote ${(j.result as { output: string }).output}` : "").join("");
+    const last = Object.values(s.jobs).at(-1);
+    const output = last?.ok && last.result && typeof last.result === "object" && "output" in last.result ? String((last.result as { output: unknown }).output) : "";
+    status.textContent = running.length ? running.map(([id, j]) => `${j.kind} #${id} ${j.percent}% ${j.message}`).join(" · ") : output && `wrote ${output}`;
   });
 }
 
 function transport(preview: Preview) {
-  const el = document.getElementById("transport")!;
+  const host = document.getElementById("transport")!;
   const play = button("▶", () => togglePlay(preview));
-  const toStart = button("⏮", () => store.seek(0));
-  const time = document.createElement("span");
-  time.className = "time";
-  const zoomLabel = document.createElement("span");
-  zoomLabel.className = "muted";
-  zoomLabel.textContent = "zoom";
-  const zoom = document.createElement("input");
+  const time = el("span", "time");
+  const zoom = el("input");
   zoom.type = "range"; zoom.min = "8"; zoom.max = "600"; zoom.step = "1";
   zoom.oninput = () => store.set({ zoom: Number(zoom.value) });
-  const split = button("Split (S)", () => splitAtPlayhead());
-  const addTrackSel = document.createElement("select");
+  const addTrackSel = el("select");
   addTrackSel.style.width = "auto";
   addTrackSel.title = "Add a track";
-  addTrackSel.innerHTML = `<option value="">+ track…</option><option value="video">video</option><option value="overlay">overlay</option><option value="audio">audio</option>`;
+  options(addTrackSel, ["video", "overlay", "audio"].map((value) => ({ value })), undefined, "+ track…");
   addTrackSel.onchange = async () => {
-    const kind = addTrackSel.value as "video" | "overlay" | "audio" | "";
+    const kind = addTrackSel.value as TrackKind | "";
     addTrackSel.value = "";
     if (kind) await addTrack(kind);
   };
-  const quality = document.createElement("select");
+  const quality = el("select");
   quality.style.width = "auto";
   quality.title = "Preview resolution (fraction of the project size)";
-  quality.innerHTML = `<option value="0.5">preview ½</option><option value="0.75">preview ¾</option><option value="1">preview full</option>`;
+  options(quality, [{ value: "0.5", label: "preview ½" }, { value: "0.75", label: "preview ¾" }, { value: "1", label: "preview full" }]);
   quality.onchange = () => preview.setScale(Number(quality.value));
-  el.append(toStart, play, time, split, addTrackSel, quality, zoomLabel, zoom);
+  host.append(button("⏮", () => store.seek(0)), play, time, button("Split (S)", () => splitAtPlayhead()), addTrackSel, quality, el("span", "muted", "zoom"), zoom);
   store.subscribe((s) => {
     play.textContent = s.playing ? "⏸" : "▶";
     time.textContent = `${fmtTime(s.playhead, store.fps)} / ${fmtTime(store.duration, store.fps)}`;
@@ -86,53 +73,62 @@ function transport(preview: Preview) {
 
 function togglePlay(preview: Preview) {
   if (store.state.playing) { preview.pause(); store.set({ playing: false }); }
-  else { preview.play(); store.set({ playing: true }); }
+  else if (preview.play()) store.set({ playing: true });
 }
 
+/**
+ * Split the selected clip at the playhead. Time-relative effects follow the cut: the
+ * left half keeps its fade-in, the right half its fade-out, and keyframes are re-based
+ * on the new start. A transition leaving the clip now leaves its right half.
+ */
 async function splitAtPlayhead() {
   const f = store.findClip(store.state.selection);
   const t = store.state.playhead;
   if (!f || t <= f.clip.start || t >= f.clip.end) { toast("Select a clip under the playhead to split", ""); return; }
   const c = f.clip;
-  const left = { ...c, end: t };
-  const right = { ...c, id: store.newId(c.id + "_"), start: t };
-  if (isAsset(right)) right.src = { ...right.src, in: ((c.src as { in?: number }).in ?? 0) + (t - c.start) * Math.abs(c.speed) };
+  const cut = t - c.start;
+  const left: Clip = { ...c, end: t, effects: c.effects.map((e) => (e.type === "fade" ? { ...e, out: 0 } : e)) };
+  const right: Clip = { ...c, id: store.newId(c.id + "_"), start: t, effects: c.effects.map((e) => shiftEffect(e, cut)) };
+  if (isAsset(right)) right.src = { ...right.src, in: (right.src.in ?? 0) + cut * Math.abs(c.speed) };
   const path = `/tracks/${f.ti}/clips/${f.ci}`;
   const ops: PatchOp[] = [{ op: "replace", path, value: left }, { op: "add", path: `/tracks/${f.ti}/clips/-`, value: right }];
+  if (f.track.transitions.some((x) => x.from === c.id)) {
+    ops.push({ op: "replace", path: `/tracks/${f.ti}/transitions`, value: f.track.transitions.map((x) => (x.from === c.id ? { ...x, from: right.id } : x)) });
+  }
   await store.patch(ops, `split ${c.id}`);
+}
+
+/** An effect as seen from a clip that starts `cut` seconds later. */
+function shiftEffect(e: Effect, cut: number): Effect {
+  if (e.type === "fade") return { ...e, in: 0 };
+  if (e.type === "transform" && e.keyframes?.length) return { ...e, keyframes: e.keyframes.map((k) => ({ ...k, t: k.t - cut })).filter((k) => k.t >= 0) };
+  if (e.type === "volume") return { ...e, keyframes: e.keyframes.map((k) => ({ ...k, t: k.t - cut })).filter((k) => k.t >= 0) };
+  return e;
 }
 
 function shortcuts(preview: Preview) {
   window.addEventListener("keydown", async (e) => {
     const tag = (e.target as HTMLElement).tagName;
     if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+    const mod = e.ctrlKey || e.metaKey;
     const frame = 1 / store.fps;
     if (e.code === "Space") { e.preventDefault(); togglePlay(preview); }
     else if (e.key === "ArrowLeft") store.seek(store.state.playhead - (e.shiftKey ? 1 : frame));
     else if (e.key === "ArrowRight") store.seek(store.state.playhead + (e.shiftKey ? 1 : frame));
     else if (e.key === "Home") store.seek(0);
     else if (e.key === "End") store.seek(store.duration);
-    else if (e.key === "s" || e.key === "S") splitAtPlayhead();
+    else if (e.key.toLowerCase() === "s" && !mod && !e.altKey) splitAtPlayhead();
     else if ((e.key === "Delete" || e.key === "Backspace") && store.state.selection) {
       const path = store.clipPath(store.state.selection);
       if (path) await store.patch([{ op: "remove", path }], `delete ${store.state.selection}`);
-    } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") {
+    } else if (mod && e.key.toLowerCase() === "z") {
       e.preventDefault();
-      await (e.shiftKey ? api.redo() : api.undo());
-      await store.refresh();
-    } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "y") {
+      await (e.shiftKey ? store.redo() : store.undo());
+    } else if (mod && e.key.toLowerCase() === "y") {
       e.preventDefault();
-      await api.redo();
-      await store.refresh();
+      await store.redo();
     }
   });
-}
-
-function button(label: string, onClick: () => void): HTMLButtonElement {
-  const b = document.createElement("button");
-  b.textContent = label;
-  b.onclick = onClick;
-  return b;
 }
 
 main().catch((e) => { console.error(e); toast(`Failed to start: ${e.message}`, "err", 10000); });

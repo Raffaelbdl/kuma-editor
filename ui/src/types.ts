@@ -6,7 +6,7 @@ export interface Fps { num: number; den: number }
 export interface AssetMeta {
   duration?: number; width?: number; height?: number; fps?: Fps; has_audio: boolean; codec?: string;
 }
-export interface Asset { path: string; kind: "video" | "audio" | "image"; proxy?: string; meta?: AssetMeta }
+export interface Asset { path: string; kind: "video" | "audio" | "image"; proxy?: string | null; meta?: AssetMeta | null }
 
 export type TrackKind = "video" | "audio" | "overlay";
 
@@ -34,14 +34,14 @@ export type Effect =
 
 export interface Clip {
   id: string; start: number; end: number; src: ClipSource;
-  speed: number; volume: number; muted: boolean; effects: Effect[]; label?: string;
+  speed: number; volume: number; muted: boolean; effects: Effect[]; label: string;
 }
 
-export interface Transition { from: string; to: string; kind: "dissolve" | "wipe"; duration: number; luma?: string; softness?: number }
+export interface Transition { from: string; to: string; kind: "dissolve" | "wipe"; duration: number; luma?: string | null; softness?: number }
 
 export interface Project {
   version: number; name: string; revision: number; fps: Fps; width: number; height: number; sample_rate: number;
-  assets: Record<string, Asset>; tracks: Track[]; markers: { t: number; label: string; color?: string }[];
+  assets: Record<string, Asset>; tracks: Track[]; markers: { t: number; label: string; color?: string | null }[];
 }
 
 export interface VarSpec {
@@ -63,12 +63,16 @@ export interface EffectPreset {
   effects: unknown[];
 }
 
-/** Expand `$expr` placeholders (param names, + - * / parentheses) with the given values. */
+/** Expand `$expr` placeholders (param names, numbers, + - * / parentheses) with the given values. */
 export function expandPreset(preset: EffectPreset, values: Record<string, number>): Effect[] {
   const names = Object.keys(preset.params);
+  const bad = names.find((n) => !/^[A-Za-z_]\w*$/.test(n));
+  if (bad) throw new Error(`preset param \`${bad}\` is not an identifier`);
   const args = names.map((n) => values[n] ?? Number(preset.params[n].default));
   const evalExpr = (expr: string): number => {
-    if (!/^[\w\s+\-*/().]*$/.test(expr)) throw new Error(`bad expression: ${expr}`);
+    // Only arithmetic over the declared params reaches `Function`; no `.`, so no member access.
+    const unknown = (expr.match(/[A-Za-z_]\w*/g) ?? []).find((id) => !names.includes(id));
+    if (unknown || !/^[\w\s+\-*/().]*$/.test(expr)) throw new Error(`bad expression: ${expr}`);
     // eslint-disable-next-line no-new-func
     return Number(new Function(...names, `return (${expr});`)(...args));
   };

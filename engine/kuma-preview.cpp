@@ -1,9 +1,10 @@
 // kuma-preview: pull frames from an MLT timeline, stream JPEGs, play audio.
 //
-// Single pull thread owns the MLT producer. Commands arrive on stdin (reader thread) and
-// are applied between frames. Audio drives the clock: the SDL callback drains a ring
-// buffer and the pull loop only decodes ahead while the ring has room, which paces video
-// to real time without a separate timer.
+// Single pull thread owns the MLT producer and stdout. Commands arrive on stdin (reader
+// thread) and are applied between frames. Audio paces playback: the SDL callback drains
+// a ring buffer and the pull loop decodes the next frame only while the ring holds less
+// than a few frames of sound, so video runs at real time and leads audio by at most
+// that much. Without an audio device a wall clock stands in.
 
 #include <Mlt.h>
 #include <SDL.h>
@@ -49,8 +50,7 @@ public:
         return true;
     }
 
-    // Samples (per channel) consumed since the last reset — the master clock.
-    long long consumed() const { return consumed_.load(); }
+    // Samples (per channel) waiting to be played.
     long long queued() {
         std::lock_guard<std::mutex> l(m_);
         return (long long)ring_.size() / channels;
@@ -63,7 +63,6 @@ public:
     void reset() {
         std::lock_guard<std::mutex> l(m_);
         ring_.clear();
-        consumed_ = 0;
     }
     void set_running(bool on) { running_ = on; }
     void close() {
@@ -86,13 +85,11 @@ private:
             ring_.erase(ring_.begin(), ring_.begin() + (long)have);
         }
         if (have < want) std::memset(out + have, 0, (want - have) * sizeof(int16_t));
-        if (running_) consumed_ += (long long)(want / channels); // wall-clock paced by the device
     }
 
     SDL_AudioDeviceID dev_ = 0;
     std::mutex m_;
     std::vector<int16_t> ring_;
-    std::atomic<long long> consumed_{0};
     std::atomic<bool> running_{false};
 };
 
@@ -161,9 +158,11 @@ public:
             if (quit_) break;
             if (!playing_ || !producer_) continue;
 
-            // Playback: decode ahead while the audio ring has less than ~200 ms queued.
+            // Playback: decode ahead while the audio ring holds less than ~3 frames, so
+            // the picture never leads the sound by more than that.
             long long ahead = audio_ok_ ? audio_.queued() : 0;
-            if (audio_ok_ && ahead > rate_ / 5) {
+            long long target = (long long)(3.0 * rate_ / fps_);
+            if (audio_ok_ && ahead > target) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(5));
                 continue;
             }
@@ -176,11 +175,16 @@ public:
                 }
             }
             if (pos_ >= length_) {
+                // Let the queued sound of the last frames play out before stopping.
+                if (audio_ok_ && audio_.queued() > 0) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+                    continue;
+                }
                 pause();
                 emit("ok end");
                 continue;
             }
-            bool late = audio_ok_ && ahead < rate_ / 20; // < 50 ms buffered: skip JPEG to catch up
+            bool late = audio_ok_ && ahead < target / 3; // < 1 frame buffered: skip JPEG to catch up
             pull(pos_, /*with_audio=*/true, /*emit_image=*/!late || (pos_ % 3 == 0));
             pos_++;
         }
@@ -215,15 +219,15 @@ private:
     }
 
     void load(const std::string &path) {
-        bool was_playing = playing_;
-        pause();
+        // Validate first: a bad file leaves the current timeline (and playback) untouched.
         auto profile = std::make_unique<Mlt::Profile>();
         auto prod = std::make_unique<Mlt::Producer>(*profile, "xml", path.c_str());
         if (!prod->is_valid()) {
             emit("err cannot load " + path);
             return;
         }
-        prod->set("consumer.progressive", 1);
+        bool was_playing = playing_;
+        pause();
         producer_ = std::move(prod);
         profile_ = std::move(profile);
         fps_ = profile_->fps();
@@ -279,7 +283,6 @@ private:
                 // 4:4:4 keeps text and thin overlay strokes crisp; localhost bandwidth is not a concern.
                 if (tjCompress2(jpeg_, img, w, 0, h, TJPF_RGB, &out, &size, TJSAMP_444, 88, TJFLAG_FASTDCT) == 0) {
                     std::string header = "frame " + std::to_string(frame_index) + " " + std::to_string(size) + "\n";
-                    std::lock_guard<std::mutex> l(out_m_);
                     std::fwrite(header.data(), 1, header.size(), stdout);
                     std::fwrite(out, 1, size, stdout);
                     std::fflush(stdout);
@@ -307,8 +310,8 @@ private:
         }
     }
 
+    // stdout is written only from the engine thread, so no lock is needed.
     void emit(const std::string &line) {
-        std::lock_guard<std::mutex> l(out_m_);
         std::fwrite(line.data(), 1, line.size(), stdout);
         std::fputc('\n', stdout);
         std::fflush(stdout);
@@ -320,7 +323,6 @@ private:
     AudioOut audio_;
     WallClock clock_;
     bool audio_ok_ = false;
-    std::mutex out_m_;
 
     std::mutex qm_;
     std::condition_variable qcv_;

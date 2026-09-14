@@ -35,11 +35,14 @@ impl Client {
         format!("{}{}", self.base, path)
     }
 
+    /// Errors keep whatever the daemon said: its JSON `error` (plus validation `issues`),
+    /// or the plain-text body axum emits for malformed requests.
     async fn check(r: reqwest::Response) -> anyhow::Result<Value> {
         let status = r.status();
-        let body: Value = r.json().await.unwrap_or(Value::Null);
+        let text = r.text().await.unwrap_or_default();
+        let body: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
         if !status.is_success() {
-            let msg = body.get("error").and_then(Value::as_str).unwrap_or("request failed");
+            let msg = body.get("error").and_then(Value::as_str).unwrap_or(if text.is_empty() { "request failed" } else { text.trim() });
             anyhow::bail!("{status}: {msg}{}", body.get("issues").map(|i| format!(" {i}")).unwrap_or_default());
         }
         Ok(body)
@@ -47,6 +50,10 @@ impl Client {
 
     pub async fn get(&self, path: &str) -> anyhow::Result<Value> {
         Self::check(self.http.get(self.url(path)).send().await?).await
+    }
+
+    pub async fn get_query(&self, path: &str, query: &[(&str, &str)]) -> anyhow::Result<Value> {
+        Self::check(self.http.get(self.url(path)).query(query).send().await?).await
     }
 
     pub async fn post(&self, path: &str, body: &Value) -> anyhow::Result<Value> {

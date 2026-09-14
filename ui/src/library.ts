@@ -2,6 +2,7 @@
 // at the playhead.
 
 import { api } from "./api";
+import { button, el } from "./dom";
 import { store, toast } from "./store";
 import { addItem } from "./timeline";
 
@@ -16,64 +17,36 @@ export class Library {
     this.host.innerHTML = "";
     if (!p) return;
 
-    const h = document.createElement("h3");
-    h.textContent = "Templates";
-    const tools = document.createElement("span");
+    const h = el("h3", "", "Templates");
+    const tools = el("span");
     tools.style.float = "right";
-    const thumbs = document.createElement("button");
-    thumbs.textContent = "thumbs";
-    thumbs.title = "Generate thumbnails for all templates";
-    thumbs.onclick = async () => { const r = await api.thumbs(); toast(`Thumbnail job #${r.job}`, "ok"); };
-    const reload = document.createElement("button");
-    reload.textContent = "⟳";
-    reload.title = "Reload templates from disk";
-    reload.onclick = async () => { store.set({ templates: await api.reloadTemplates() }); };
-    tools.append(thumbs, reload);
+    tools.append(
+      button("thumbs", async () => { const r = await api.thumbs(); toast(`Thumbnail job #${r.job}`, "ok"); }, "Generate thumbnails for all templates"),
+      button("⟳", async () => { store.set({ templates: await api.reloadTemplates() }); }, "Reload templates from disk"),
+    );
     h.appendChild(tools);
     this.host.appendChild(h);
     for (const t of s.templates) {
-      const el = document.createElement("div");
-      el.className = "lib-item";
-      el.draggable = true;
-      el.innerHTML = `${t.has_thumb ? `<img src="/overlays/${t.id}/thumb.png" alt="">` : ""}<div class="title">${t.manifest.name || t.id}</div><div class="desc">${t.manifest.description}</div>
-        <div class="desc mono">${Object.keys(t.manifest.vars).join(" · ")}</div>`;
-      el.ondragstart = (e) => e.dataTransfer?.setData("application/x-kuma", JSON.stringify({ template: t.id }));
-      const actions = document.createElement("div");
-      actions.className = "actions";
-      const add = document.createElement("button");
-      add.textContent = "Add at playhead";
-      add.onclick = () => addItem({ template: t.id }, s.playhead);
-      actions.appendChild(add);
-      el.appendChild(actions);
-      this.host.appendChild(el);
+      const item = libItem(t.manifest.name || t.id, [t.manifest.description, Object.keys(t.manifest.vars).join(" · ")], { template: t.id });
+      if (t.has_thumb) {
+        const img = el("img");
+        img.src = `/overlays/${encodeURIComponent(t.id)}/thumb.png`;
+        img.alt = "";
+        item.prepend(img);
+      }
+      this.host.appendChild(item);
     }
 
-    const h2 = document.createElement("h3");
-    h2.textContent = "Assets";
-    this.host.appendChild(h2);
+    this.host.appendChild(el("h3", "", "Assets"));
     for (const [id, a] of Object.entries(p.assets)) {
-      const el = document.createElement("div");
-      el.className = "lib-item";
-      el.draggable = true;
       const m = a.meta;
-      el.innerHTML = `<div class="title">${id}</div><div class="desc mono">${a.path}</div><div class="desc">${a.kind}${m?.duration ? ` · ${m.duration.toFixed(1)}s` : ""}${m?.width ? ` · ${m.width}×${m.height}` : ""}${m?.has_audio ? " · audio" : ""}</div>`;
-      el.ondragstart = (e) => e.dataTransfer?.setData("application/x-kuma", JSON.stringify({ asset: id }));
-      const actions = document.createElement("div");
-      actions.className = "actions";
-      const add = document.createElement("button");
-      add.textContent = "Add at playhead";
-      add.onclick = () => addItem({ asset: id }, s.playhead);
-      actions.appendChild(add);
-      el.appendChild(actions);
-      this.host.appendChild(el);
+      const facts = [a.kind, m?.duration ? `${m.duration.toFixed(1)}s` : "", m?.width ? `${m.width}×${m.height}` : "", m?.has_audio ? "audio" : ""].filter(Boolean).join(" · ");
+      this.host.appendChild(libItem(id, [a.path, facts], { asset: id }));
     }
-    const addRow = document.createElement("div");
-    addRow.className = "lib-add";
-    const input = document.createElement("input");
+    const addRow = el("div", "lib-add");
+    const input = el("input");
     input.placeholder = "media/clip.mp4";
-    const btn = document.createElement("button");
-    btn.textContent = "Add";
-    btn.onclick = async () => {
+    const btn = button("Add", async () => {
       if (!input.value) return;
       try {
         const r = await api.addAsset(input.value, p.revision);
@@ -83,8 +56,21 @@ export class Library {
       } catch (e) {
         toast((e as Error).message, "err");
       }
-    };
+    });
     addRow.append(input, btn);
     this.host.appendChild(addRow);
   }
+}
+
+/** One draggable library entry. Reads the playhead at click time, not at render time. */
+function libItem(title: string, lines: string[], payload: { template?: string; asset?: string }): HTMLDivElement {
+  const item = el("div", "lib-item");
+  item.draggable = true;
+  item.appendChild(el("div", "title", title));
+  for (const [i, line] of lines.entries()) if (line) item.appendChild(el("div", i === 1 && payload.template ? "desc mono" : "desc", line));
+  item.ondragstart = (e) => e.dataTransfer?.setData("application/x-kuma", JSON.stringify(payload));
+  const actions = el("div", "actions");
+  actions.appendChild(button("Add at playhead", () => addItem(payload, store.state.playhead)));
+  item.appendChild(actions);
+  return item;
 }

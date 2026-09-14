@@ -56,39 +56,52 @@ where
     {
         let mut table = state.jobs.table.lock().unwrap();
         // Keep the table bounded: drop the oldest finished jobs beyond a hundred.
-        if table.len() > 100 {
+        if table.len() >= 100 {
             let mut done: Vec<u64> = table.iter().filter(|(_, j)| !matches!(j.status, JobStatus::Running { .. })).map(|(k, _)| *k).collect();
             done.sort_unstable();
-            for k in done.into_iter().take(table.len() - 100) {
+            for k in done.into_iter().take(table.len() + 1 - 100) {
                 table.remove(&k);
             }
         }
         table.insert(id, JobInfo { id, kind: kind.clone(), status: JobStatus::Running { percent: 0, message: "queued".into() } });
     }
-    let st = state.clone();
-    let k = kind.clone();
     tokio::task::spawn_blocking(move || {
+        let set = |status: JobStatus| state.jobs.table.lock().unwrap().insert(id, JobInfo { id, kind: kind.clone(), status });
         let progress = |percent: u8, message: &str| {
-            if let Some(j) = st.jobs.table.lock().unwrap().get_mut(&id) {
-                j.status = JobStatus::Running { percent, message: message.to_string() };
-            }
-            let _ = st.events.send(Event::JobProgress { id, kind: k.clone(), percent, message: message.to_string() });
+            set(JobStatus::Running { percent, message: message.to_string() });
+            let _ = state.events.send(Event::JobProgress { id, kind: kind.clone(), percent, message: message.to_string() });
         };
-        let outcome = f(&progress);
-        let mut table = st.jobs.table.lock().unwrap();
-        match outcome {
-            Ok(result) => {
-                table.insert(id, JobInfo { id, kind: k.clone(), status: JobStatus::Done { result: result.clone() } });
-                let _ = st.events.send(Event::JobDone { id, kind: k.clone(), ok: true, message: "done".into(), result });
-            }
+        let (status, ok, message, result) = match f(&progress) {
+            Ok(result) => (JobStatus::Done { result: result.clone() }, true, "done".to_string(), result),
             Err(e) => {
                 let msg = format!("{e:#}");
-                table.insert(id, JobInfo { id, kind: k.clone(), status: JobStatus::Failed { error: msg.clone() } });
-                let _ = st.events.send(Event::JobDone { id, kind: k.clone(), ok: false, message: msg, result: serde_json::Value::Null });
+                (JobStatus::Failed { error: msg.clone() }, false, msg, serde_json::Value::Null)
             }
-        }
+        };
+        set(status);
+        let _ = state.events.send(Event::JobDone { id, kind: kind.clone(), ok, message, result });
     });
     id
+}
+
+/// Probe and register an asset (shared by the API and the CLI). The id defaults to a
+/// slug of the file stem; the stored path is project-relative when possible.
+pub fn add_asset(state: &AppState, path: &Path, id: Option<String>, base_revision: Option<u64>, origin: &str) -> anyhow::Result<(String, u64, Vec<kuma_core::Issue>)> {
+    let abs = resolve_path(state, path);
+    if !abs.is_file() {
+        anyhow::bail!("file not found: {}", abs.display());
+    }
+    let probe = kuma_overlay::probe(&abs).map_err(|e| anyhow::anyhow!(e))?;
+    let rel = abs.strip_prefix(state.config.project_root()).unwrap_or(&abs);
+    let id = id.unwrap_or_else(|| {
+        let stem = abs.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or("asset".into());
+        stem.chars().map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '_' }).collect()
+    });
+    let asset = kuma_core::Asset { path: rel.to_string_lossy().into_owned(), kind: probe.kind, proxy: None, meta: Some(probe.meta) };
+    let pointer = format!("/assets/{}", id.replace('~', "~0").replace('/', "~1"));
+    let patch = vec![json_patch::PatchOperation::Add(json_patch::AddOperation { path: pointer.parse()?, value: serde_json::to_value(asset)? })];
+    let (rev, warnings) = state.apply_patch(&patch, base_revision, origin)?;
+    Ok((id, rev, warnings))
 }
 
 /// Bake every overlay clip in the project (cached). Returns bakes keyed by clip id.
@@ -132,15 +145,20 @@ pub fn bake_all(
     Ok(out)
 }
 
-/// Compile the current project to `.kuma/<name>.mlt`, baking overlays unless `bakes` is given.
-pub fn compile_project(state: &AppState, project: &Project, bakes: HashMap<String, OverlayBake>, name: &str, unbaked: UnbakedPolicy, size: Option<(u32, u32)>) -> anyhow::Result<PathBuf> {
-    let root = state.config.project_root();
-    let mut opts = CompileOptions::new(&root);
+/// Compile a project to MLT XML with the given bakes.
+pub fn compile_xml(state: &AppState, project: &Project, bakes: HashMap<String, OverlayBake>, unbaked: UnbakedPolicy, size: Option<(u32, u32)>) -> anyhow::Result<String> {
+    let mut opts = CompileOptions::new(state.config.project_root());
     opts.cache_dir = state.config.cache_dir().join("cache");
     opts.bakes = bakes;
     opts.unbaked = unbaked;
     opts.size = size;
-    let xml = compile(project, &opts)?;
+    Ok(compile(project, &opts)?)
+}
+
+/// Compile to `.kuma/<name>.mlt`. Names are per purpose (`render`, `preview`), so two
+/// concurrent compiles with the same name would race; use a temp file for those.
+pub fn compile_project(state: &AppState, project: &Project, bakes: HashMap<String, OverlayBake>, name: &str, unbaked: UnbakedPolicy, size: Option<(u32, u32)>) -> anyhow::Result<PathBuf> {
+    let xml = compile_xml(state, project, bakes, unbaked, size)?;
     let path = state.config.cache_dir().join(format!("{name}.mlt"));
     std::fs::create_dir_all(path.parent().unwrap())?;
     std::fs::write(&path, xml)?;
@@ -233,9 +251,13 @@ pub fn sample_frames(state: &AppState, req: &SampleRequest, progress: &dyn Fn(u8
     } else {
         HashMap::new()
     };
-    let mlt = compile_project(state, &project, bakes, "sample", UnbakedPolicy::Skip, None)?;
+    // Samples run concurrently (agent + UI snapshots), so each gets its own XML file.
     let out_dir = state.config.cache_dir().join("samples");
     std::fs::create_dir_all(&out_dir)?;
+    let xml = compile_xml(state, &project, bakes, UnbakedPolicy::Skip, None)?;
+    let mlt_file = tempfile::Builder::new().prefix("sample-").suffix(".mlt").tempfile_in(state.config.cache_dir())?;
+    std::fs::write(mlt_file.path(), xml)?;
+    let mlt = mlt_file.path();
     let mut samples = Vec::new();
     for i in 0..count {
         let t = if count == 1 { req.t0 } else { req.t0 + (t1 - req.t0) * i as f64 / (count - 1) as f64 };
@@ -246,7 +268,7 @@ pub fn sample_frames(state: &AppState, req: &SampleRequest, progress: &dyn Fn(u8
         let stamp = format!("{}_{}{}", project.revision, frame, if req.overlays { "o" } else { "" });
         let full = out_dir.join(format!("f{stamp}.png"));
         if !full.is_file() {
-            kuma_mlt::melt::snapshot(&mlt, frame, &full, None)?;
+            kuma_mlt::melt::snapshot(mlt, frame, &full, None)?;
         }
         let path = if req.rect.is_some() || req.width.is_some() {
             let mut vf = Vec::new();

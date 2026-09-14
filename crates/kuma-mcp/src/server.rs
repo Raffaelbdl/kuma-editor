@@ -40,6 +40,30 @@ impl KumaServer {
     pub fn new(client: Client, note: Option<String>) -> Self {
         Self { client, note, tool_router: Self::tool_router() }
     }
+
+    async fn get(&self, path: &str) -> Result<CallToolResult, McpError> {
+        Ok(ok_json(&self.client.get(path).await.map_err(err)?))
+    }
+
+    async fn post(&self, path: &str, body: &Value) -> Result<CallToolResult, McpError> {
+        Ok(ok_json(&self.client.post(path, body).await.map_err(err)?))
+    }
+
+    /// Start a background job and wait for it (up to `timeout`).
+    async fn job(&self, path: &str, body: &Value, timeout: Duration) -> Result<CallToolResult, McpError> {
+        let v = self.client.post(path, body).await.map_err(err)?;
+        let id = v["job"].as_u64().ok_or_else(|| err(anyhow::anyhow!("daemon did not return a job id: {v}")))?;
+        Ok(ok_json(&self.client.wait_job(id, timeout).await.map_err(err)?))
+    }
+
+    /// Undo/redo: the daemon answers `{"revision": null}` when there is nothing to do.
+    async fn step_history(&self, path: &str) -> Result<CallToolResult, McpError> {
+        let v = self.client.post(path, &json!({})).await.map_err(err)?;
+        if v["revision"].is_null() {
+            return Err(McpError::invalid_request(format!("nothing to {}", path.rsplit('/').next().unwrap_or("undo")), None));
+        }
+        Ok(ok_json(&v))
+    }
 }
 
 fn ok_json(v: &Value) -> CallToolResult {
@@ -154,19 +178,18 @@ pub struct JobArg {
 impl KumaServer {
     #[tool(description = "Read the whole project document (tracks, clips, effects, assets) including its current revision.")]
     async fn get_project(&self) -> Result<CallToolResult, McpError> {
-        Ok(ok_json(&self.client.get("/api/project").await.map_err(err)?))
+        self.get("/api/project").await
     }
 
     #[tool(description = "JSON Schema for project files and overlay template manifests. Validate your edits against it.")]
     async fn get_schema(&self) -> Result<CallToolResult, McpError> {
-        Ok(ok_json(&self.client.get("/api/schema").await.map_err(err)?))
+        self.get("/api/schema").await
     }
 
     #[tool(description = "Apply a JSON Patch to the project. Atomic: rejected entirely if the result is invalid or the base_revision is stale. Returns the new revision and any warnings.")]
     async fn apply_edits(&self, Parameters(p): Parameters<ApplyEdits>) -> Result<CallToolResult, McpError> {
         let origin = format!("claude: {}", p.note.unwrap_or_else(|| "edit".into()));
-        let body = json!({ "patch": p.patch, "base_revision": p.base_revision, "origin": origin });
-        Ok(ok_json(&self.client.post("/api/project/patch", &body).await.map_err(err)?))
+        self.post("/api/project/patch", &json!({ "patch": p.patch, "base_revision": p.base_revision, "origin": origin })).await
     }
 
     #[tool(description = "Replace the whole project document. Prefer apply_edits for incremental changes.")]
@@ -176,40 +199,39 @@ impl KumaServer {
         Ok(ok_json(&self.client.put("/api/project", &body).await.map_err(err)?))
     }
 
-    #[tool(description = "Undo the last edit (yours or the user's). Returns the new revision.")]
+    #[tool(description = "Undo the last edit (yours or the user's). Returns the new revision; fails when there is nothing to undo.")]
     async fn undo(&self) -> Result<CallToolResult, McpError> {
-        Ok(ok_json(&self.client.post("/api/project/undo", &json!({})).await.map_err(err)?))
+        self.step_history("/api/project/undo").await
     }
 
-    #[tool(description = "Redo the last undone edit.")]
+    #[tool(description = "Redo the last undone edit. Returns the new revision; fails when there is nothing to redo.")]
     async fn redo(&self) -> Result<CallToolResult, McpError> {
-        Ok(ok_json(&self.client.post("/api/project/redo", &json!({})).await.map_err(err)?))
+        self.step_history("/api/project/redo").await
     }
 
     #[tool(description = "Validate the project and list issues (errors and warnings) with JSON pointers.")]
     async fn validate_project(&self) -> Result<CallToolResult, McpError> {
-        Ok(ok_json(&self.client.get("/api/project/validate").await.map_err(err)?))
+        self.get("/api/project/validate").await
     }
 
-    #[tool(description = "List overlay templates with their manifests (typed vars, defaults, default duration).")]
+    #[tool(description = "Rescan `overlays/` and list the templates with their manifests (typed vars, defaults, default duration). A template folder you just wrote appears here without a restart.")]
     async fn list_templates(&self) -> Result<CallToolResult, McpError> {
-        Ok(ok_json(&self.client.post("/api/templates", &json!({})).await.map_err(err)?))
+        self.post("/api/templates", &json!({})).await
     }
 
     #[tool(description = "List export presets (YouTube 1080p/4K/Shorts, draft, VP9, ProRes).")]
     async fn list_presets(&self) -> Result<CallToolResult, McpError> {
-        Ok(ok_json(&self.client.get("/api/presets").await.map_err(err)?))
+        self.get("/api/presets").await
     }
 
     #[tool(description = "Probe a media file with ffprobe: duration, size, fps, audio, codec.")]
     async fn probe_asset(&self, Parameters(p): Parameters<PathArg>) -> Result<CallToolResult, McpError> {
-        Ok(ok_json(&self.client.get(&format!("/api/assets/probe?path={}", urlencode(&p.path))).await.map_err(err)?))
+        Ok(ok_json(&self.client.get_query("/api/assets/probe", &[("path", &p.path)]).await.map_err(err)?))
     }
 
     #[tool(description = "Probe a media file and register it as a project asset. Returns the asset id to use in clips.")]
     async fn add_asset(&self, Parameters(p): Parameters<AddAsset>) -> Result<CallToolResult, McpError> {
-        let body = json!({ "path": p.path, "id": p.id, "base_revision": p.base_revision, "origin": "claude: add asset" });
-        Ok(ok_json(&self.client.post("/api/assets", &body).await.map_err(err)?))
+        self.post("/api/assets", &json!({ "path": p.path, "id": p.id, "base_revision": p.base_revision, "origin": "claude: add asset" })).await
     }
 
     #[tool(description = "Render exact composited frames of the timeline (through the real MLT graph, overlays included) and return them as images. Use a rect to zoom into a region. Frames are also written as PNGs whose paths are returned.")]
@@ -226,12 +248,15 @@ impl KumaServer {
         let listing: Vec<Value> = samples.iter().map(|s| json!({ "t": s["t"], "frame": s["frame"], "path": s["path"] })).collect();
         content.push(ContentBlock::text(serde_json::to_string_pretty(&json!({ "samples": listing })).unwrap()));
         for s in &samples {
-            if let Some(path) = s["path"].as_str() {
-                if let Ok(bytes) = std::fs::read(path) {
-                    let b64 = base64::engine::general_purpose::STANDARD.encode(bytes);
-                    content.push(ContentBlock::text(format!("t={:.3}s", s["t"].as_f64().unwrap_or(0.0))));
-                    content.push(ContentBlock::image(b64, "image/png"));
+            let path = s["path"].as_str().unwrap_or_default();
+            let label = format!("t={:.3}s", s["t"].as_f64().unwrap_or(0.0));
+            // The PNGs live on the daemon's disk; say so when this process cannot see them.
+            match std::fs::read(path) {
+                Ok(bytes) => {
+                    content.push(ContentBlock::text(label));
+                    content.push(ContentBlock::image(base64::engine::general_purpose::STANDARD.encode(bytes), "image/png"));
                 }
+                Err(e) => content.push(ContentBlock::text(format!("{label}: cannot read {path}: {e}"))),
             }
         }
         Ok(CallToolResult::success(content))
@@ -239,9 +264,7 @@ impl KumaServer {
 
     #[tool(description = "Bake overlay clips to alpha frame sequences now (normally done automatically at render). Cached by content; returns the bake resources.")]
     async fn bake_overlay(&self, Parameters(p): Parameters<BakeOverlay>) -> Result<CallToolResult, McpError> {
-        let v = self.client.post("/api/bake", &json!({ "clips": p.clips, "supersample": p.supersample.unwrap_or(1) })).await.map_err(err)?;
-        let id = v["job"].as_u64().unwrap_or(0);
-        Ok(ok_json(&self.client.wait_job(id, Duration::from_secs(1800)).await.map_err(err)?))
+        self.job("/api/bake", &json!({ "clips": p.clips, "supersample": p.supersample.unwrap_or(1) }), Duration::from_secs(1800)).await
     }
 
     #[tool(description = "Render the timeline to a video file with an export preset. Waits up to wait_seconds; if still running, returns the job id to poll with job_status.")]
@@ -250,14 +273,12 @@ impl KumaServer {
             "preset": p.preset.unwrap_or_else(|| "youtube-1080p".into()),
             "output": p.output, "range": p.range, "supersample": p.supersample.unwrap_or(1),
         });
-        let v = self.client.post("/api/render", &body).await.map_err(err)?;
-        let id = v["job"].as_u64().unwrap_or(0);
-        Ok(ok_json(&self.client.wait_job(id, Duration::from_secs(p.wait_seconds.unwrap_or(900))).await.map_err(err)?))
+        self.job("/api/render", &body, Duration::from_secs(p.wait_seconds.unwrap_or(900))).await
     }
 
     #[tool(description = "Status of a background job (render/bake).")]
     async fn job_status(&self, Parameters(p): Parameters<JobArg>) -> Result<CallToolResult, McpError> {
-        Ok(ok_json(&self.client.get(&format!("/api/jobs/{}", p.id)).await.map_err(err)?))
+        self.get(&format!("/api/jobs/{}", p.id)).await
     }
 
     #[tool(description = "Daemon health: tool availability (melt, ffprobe, hyperframes, browser, preview engine) and project path.")]
@@ -284,15 +305,4 @@ impl ServerHandler for KumaServer {
         };
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build()).with_instructions(instructions)
     }
-}
-
-fn urlencode(s: &str) -> String {
-    let mut out = String::new();
-    for b in s.bytes() {
-        match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' | b'/' => out.push(b as char),
-            _ => out.push_str(&format!("%{b:02X}")),
-        }
-    }
-    out
 }

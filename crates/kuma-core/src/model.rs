@@ -104,6 +104,11 @@ impl Project {
         }
     }
 
+    /// Project name implied by a `<name>.kuma.json` path.
+    pub fn name_from_path(path: &std::path::Path) -> String {
+        path.file_stem().map(|s| s.to_string_lossy().trim_end_matches(".kuma").to_string()).unwrap_or_default()
+    }
+
     /// Timeline duration in seconds: the latest clip end across all tracks.
     pub fn duration(&self) -> f64 {
         self.tracks
@@ -119,22 +124,23 @@ impl Project {
             .find_map(|t| t.clips.iter().find(|c| c.id == id).map(|c| (t, c)))
     }
 
-    pub fn find_clip_mut(&mut self, id: &str) -> Option<&mut Clip> {
-        self.tracks
-            .iter_mut()
-            .find_map(|t| t.clips.iter_mut().find(|c| c.id == id))
-    }
+}
 
-    pub fn track(&self, id: &str) -> Option<&Track> {
-        self.tracks.iter().find(|t| t.id == id)
-    }
-
-    /// Clips sorted by start time on a track — the order the compiler walks.
-    pub fn sorted_clips<'a>(&self, track: &'a Track) -> Vec<&'a Clip> {
-        let mut v: Vec<&Clip> = track.clips.iter().collect();
-        v.sort_by(|a, b| a.start.partial_cmp(&b.start).unwrap_or(std::cmp::Ordering::Equal));
+impl Track {
+    /// Clips with their index in `clips`, sorted by start time — the order the
+    /// validator and the compiler walk.
+    pub fn sorted_clips(&self) -> Vec<(usize, &Clip)> {
+        let mut v: Vec<(usize, &Clip)> = self.clips.iter().enumerate().collect();
+        v.sort_by(|a, b| a.1.start.partial_cmp(&b.1.start).unwrap_or(std::cmp::Ordering::Equal));
         v
     }
+}
+
+/// Track and clip ids double as XML ids and URL segments: a letter or underscore,
+/// then letters, digits, `_` or `-`.
+pub fn is_valid_id(s: &str) -> bool {
+    let mut chars = s.chars();
+    matches!(chars.next(), Some(c) if c.is_ascii_alphabetic() || c == '_') && chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
 }
 
 /// A media file on disk.
@@ -146,10 +152,10 @@ pub struct Asset {
     #[serde(default)]
     pub kind: AssetKind,
     /// Optional low-resolution proxy used for preview instead of `path`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub proxy: Option<String>,
     /// Probed metadata, filled in by `probe_asset`. Informational.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub meta: Option<AssetMeta>,
 }
 
@@ -211,6 +217,9 @@ pub struct Track {
 }
 
 /// One item on the timeline.
+///
+/// Every field with a default is always serialized (no `skip_serializing_if`), so a JSON
+/// Patch `replace` on any documented path succeeds.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Clip {
@@ -235,7 +244,7 @@ pub struct Clip {
     #[serde(default)]
     pub effects: Vec<Effect>,
     /// Free-form label shown in the UI.
-    #[serde(default, skip_serializing_if = "String::is_empty")]
+    #[serde(default)]
     pub label: String,
 }
 
@@ -251,7 +260,7 @@ impl Clip {
 
 /// Where a clip's pixels/samples come from. Exactly one variant.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-#[serde(untagged)]
+#[serde(untagged, deny_unknown_fields)]
 pub enum ClipSource {
     /// A media asset.
     Asset {
@@ -330,7 +339,7 @@ pub enum Effect {
         #[serde(default = "one")]
         opacity: f64,
         /// Optional keyframes; when present they override the static values over time.
-        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        #[serde(default)]
         keyframes: Vec<TransformKeyframe>,
     },
     /// Crop as fractions of the frame (0..1) from each edge, with optional rounded corners.
@@ -386,9 +395,10 @@ pub struct VolumeKeyframe {
     pub gain: f64,
 }
 
-/// A transition between two adjacent clips on the same track. The cut point is the
-/// boundary between them; the transition spans `duration` seconds centred on it, so the
-/// `to` clip must have `duration/2` of source handle before its `in` point.
+/// A transition between two adjacent media clips on the same track. The cut point is the
+/// boundary between them; the transition spans `duration` seconds centred on it, so both
+/// clips are extended by `duration/2` **in source time** (scaled by their speed): the `to`
+/// clip needs that much handle before its `in` point, the `from` clip after its out point.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Transition {
@@ -397,8 +407,8 @@ pub struct Transition {
     #[serde(default)]
     pub kind: TransitionKind,
     pub duration: f64,
-    /// Wipe pattern: a luma image name (e.g. `wipe_left`) or a path. Only for `wipe`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Wipe pattern: one of [`LUMAS`] or a PGM/PNG path relative to the project. Only for `wipe`.
+    #[serde(default)]
     pub luma: Option<String>,
     /// Softness of the wipe edge, 0..1.
     #[serde(default)]
@@ -413,13 +423,16 @@ pub enum TransitionKind {
     Wipe,
 }
 
+/// Built-in wipe patterns (generated by the compiler; no luma files needed).
+pub const LUMAS: &[&str] = &["wipe_left", "wipe_right", "wipe_up", "wipe_down", "iris", "diagonal"];
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Marker {
     pub t: f64,
     #[serde(default)]
     pub label: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub color: Option<String>,
 }
 
@@ -460,5 +473,14 @@ mod tests {
     fn unknown_fields_are_rejected() {
         let json = r#"{ "tracks": [ { "id": "v1", "clipz": [] } ] }"#;
         assert!(serde_json::from_str::<Project>(json).is_err());
+        // Also inside the untagged source enum, where serde would otherwise drop them.
+        let json = r#"{ "tracks": [ { "id": "v1", "clips": [ { "id": "c", "start": 0, "end": 1, "src": { "asset": "a", "offset": 3 } } ] } ] }"#;
+        assert!(serde_json::from_str::<Project>(json).is_err());
+    }
+
+    #[test]
+    fn ids_are_xml_and_url_safe() {
+        assert!(is_valid_id("c1") && is_valid_id("_x-2") && is_valid_id("o_paris"));
+        assert!(!is_valid_id("") && !is_valid_id("1c") && !is_valid_id("a b") && !is_valid_id("a/b"));
     }
 }

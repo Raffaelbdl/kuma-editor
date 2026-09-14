@@ -3,7 +3,7 @@
 //!
 //! The sidecar speaks a tiny line protocol on stdin/stdout:
 //!   → `load <path.mlt>` | `seek <frame>` | `play` | `pause` | `quit`
-//!   ← `ok …` | `err …` | `pos <frame>` | `frame <frame> <len>` followed by `<len>` JPEG bytes
+//!   ← `ok …` | `err …` | `frame <frame> <len>` followed by `<len>` JPEG bytes
 //!
 //! Until the engine is built, `snapshot` (single frame via melt) is the fallback the UI uses.
 
@@ -27,6 +27,8 @@ pub struct PreviewFrame {
 
 pub struct PreviewHandle {
     inner: Mutex<Option<Arc<Engine>>>,
+    /// Serializes `ensure` so two first connections cannot both spawn an engine.
+    starting: AsyncMutex<()>,
     /// Why the engine is not running, for the UI and `/api/health`.
     pub last_error: Mutex<Option<String>>,
     /// Preview resolution as a fraction of the project size (0.25..=1.0).
@@ -35,16 +37,18 @@ pub struct PreviewHandle {
 
 impl Default for PreviewHandle {
     fn default() -> Self {
-        PreviewHandle { inner: Mutex::new(None), last_error: Mutex::new(None), scale: Mutex::new(0.5) }
+        PreviewHandle { inner: Mutex::new(None), starting: AsyncMutex::new(()), last_error: Mutex::new(None), scale: Mutex::new(0.5) }
     }
 }
 
 pub struct Engine {
     stdin: AsyncMutex<ChildStdin>,
     pub frames: broadcast::Sender<PreviewFrame>,
-    pub positions: broadcast::Sender<i64>,
-    _child: AsyncMutex<Child>,
+    _child: Child,
 }
+
+/// Largest JPEG the reader will accept from the engine; anything bigger is a protocol error.
+const MAX_FRAME_BYTES: usize = 64 << 20;
 
 impl PreviewHandle {
     pub fn get(&self) -> Option<Arc<Engine>> {
@@ -57,19 +61,13 @@ impl PreviewHandle {
 
     /// Start (or reuse) the engine process.
     pub async fn ensure(&self, state: &Arc<AppState>) -> anyhow::Result<Arc<Engine>> {
+        let _guard = self.starting.lock().await;
         if let Some(e) = self.get() {
             return Ok(e);
         }
-        match self.start(state).await {
-            Ok(e) => {
-                *self.last_error.lock().unwrap() = None;
-                Ok(e)
-            }
-            Err(e) => {
-                *self.last_error.lock().unwrap() = Some(format!("{e:#}"));
-                Err(e)
-            }
-        }
+        let started = self.start(state).await;
+        *self.last_error.lock().unwrap() = started.as_ref().err().map(|e| format!("{e:#}"));
+        started
     }
 
     async fn start(&self, state: &Arc<AppState>) -> anyhow::Result<Arc<Engine>> {
@@ -99,12 +97,13 @@ impl PreviewHandle {
         let stdin = child.stdin.take().unwrap();
         let stdout = child.stdout.take().unwrap();
         let (frames, _) = broadcast::channel(8);
-        let (positions, _) = broadcast::channel(64);
-        let engine = Arc::new(Engine { stdin: AsyncMutex::new(stdin), frames: frames.clone(), positions: positions.clone(), _child: AsyncMutex::new(child) });
+        let engine = Arc::new(Engine { stdin: AsyncMutex::new(stdin), frames: frames.clone(), _child: child });
         *self.inner.lock().unwrap() = Some(engine.clone());
 
-        // Reader task: parse the line protocol and fan out frames.
+        // Reader task: parse the line protocol and fan out frames. It holds only a weak
+        // handle so the engine quits (stdin EOF) once every connection drops it.
         let st = state.clone();
+        let weak = Arc::downgrade(&engine);
         tokio::spawn(async move {
             let mut rd = BufReader::new(stdout);
             let mut line = String::new();
@@ -120,16 +119,15 @@ impl PreviewHandle {
                     let mut it = rest.split_whitespace();
                     let (Some(f), Some(n)) = (it.next(), it.next()) else { continue };
                     let (Ok(f), Ok(n)) = (f.parse::<i64>(), n.parse::<usize>()) else { continue };
+                    if n > MAX_FRAME_BYTES {
+                        tracing::warn!("preview engine: bogus frame length {n}");
+                        break;
+                    }
                     let mut buf = vec![0u8; n];
                     if rd.read_exact(&mut buf).await.is_err() {
                         break;
                     }
                     let _ = frames.send(PreviewFrame { frame: f, jpeg: Arc::new(buf) });
-                    let _ = positions.send(f);
-                } else if let Some(rest) = l.strip_prefix("pos ") {
-                    if let Ok(f) = rest.trim().parse::<i64>() {
-                        let _ = positions.send(f);
-                    }
                 } else if let Some(e) = l.strip_prefix("err ") {
                     tracing::warn!("preview engine: {e}");
                 } else if l.starts_with("ok ready") {
@@ -137,19 +135,19 @@ impl PreviewHandle {
                 }
             }
             let msg = if ready {
-                "preview engine exited; it will be restarted on the next preview connection".to_string()
+                "preview engine exited; it will be restarted on the next preview connection"
             } else {
-                "preview engine exited before becoming ready — run it by hand (engine/build/kuma-preview) and check the daemon log for missing libraries or display errors".to_string()
+                "preview engine exited before becoming ready — run it by hand (engine/build/kuma-preview) and check the daemon log for missing libraries or display errors"
             };
             tracing::warn!("{msg}");
-            *st.preview.last_error.lock().unwrap() = Some(msg);
-            *st.preview.inner.lock().unwrap() = None;
+            *st.preview.last_error.lock().unwrap() = Some(msg.to_string());
+            // Only forget *this* engine; a replacement may already be running.
+            let mut inner = st.preview.inner.lock().unwrap();
+            if inner.as_ref().map(|e| weak.ptr_eq(&Arc::downgrade(e))).unwrap_or(false) {
+                *inner = None;
+            }
         });
         Ok(engine)
-    }
-
-    pub fn stop(&self) {
-        *self.inner.lock().unwrap() = None;
     }
 }
 
@@ -163,7 +161,7 @@ impl Engine {
     }
 }
 
-fn has_bin(name: &str) -> bool {
+pub fn has_bin(name: &str) -> bool {
     std::env::var_os("PATH")
         .map(|p| std::env::split_paths(&p).any(|d| d.join(name).is_file()))
         .unwrap_or(false)
@@ -172,11 +170,15 @@ fn has_bin(name: &str) -> bool {
 /// Compile the current project for preview (at the preview scale, unbaked overlays
 /// skipped — they are live DOM in the UI) and (re)load it into the engine.
 pub async fn reload(state: &Arc<AppState>) -> anyhow::Result<PathBuf> {
-    let project = state.project.read().unwrap().clone();
-    let scale = (*state.preview.scale.lock().unwrap()).clamp(0.25, 1.0);
-    let even = |v: f64| ((v.round() as u32).max(2)) & !1;
-    let (w, h) = (even(project.width as f64 * scale), even(project.height as f64 * scale));
-    let path = crate::jobs::compile_project(state, &project, HashMap::new(), "preview", UnbakedPolicy::Skip, Some((w, h)))?;
+    let st = state.clone();
+    let path = tokio::task::spawn_blocking(move || {
+        let project = st.project.read().unwrap().clone();
+        let scale = (*st.preview.scale.lock().unwrap()).clamp(0.25, 1.0);
+        let even = |v: f64| ((v.round() as u32).max(2)) & !1;
+        let (w, h) = (even(project.width as f64 * scale), even(project.height as f64 * scale));
+        crate::jobs::compile_project(&st, &project, HashMap::new(), "preview", UnbakedPolicy::Skip, Some((w, h)))
+    })
+    .await??;
     if let Ok(engine) = state.preview.ensure(state).await {
         engine.send(&format!("load {}", path.display())).await?;
     }

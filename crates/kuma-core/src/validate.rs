@@ -73,19 +73,16 @@ pub fn validate(p: &Project, ctx: &ValidationContext) -> Vec<Issue> {
     let mut clip_ids = HashSet::new();
     for (ti, t) in p.tracks.iter().enumerate() {
         let tp = format!("/tracks/{ti}");
-        if !track_ids.insert(t.id.as_str()) {
-            issues.push(Issue::error(format!("{tp}/id"), format!("duplicate track id `{}`", t.id)));
-        }
-        let mut clips: Vec<(usize, &Clip)> = t.clips.iter().enumerate().collect();
-        clips.sort_by(|a, b| a.1.start.partial_cmp(&b.1.start).unwrap_or(std::cmp::Ordering::Equal));
+        check_id(&mut issues, &mut track_ids, &t.id, format!("{tp}/id"), "track");
+        let clips = t.sorted_clips();
 
         for (ci, c) in &clips {
             let cp = format!("{tp}/clips/{ci}");
-            if !clip_ids.insert(c.id.as_str()) {
-                issues.push(Issue::error(format!("{cp}/id"), format!("duplicate clip id `{}`", c.id)));
-            }
+            check_id(&mut issues, &mut clip_ids, &c.id, format!("{cp}/id"), "clip");
             if !(c.start >= 0.0 && c.end > c.start) {
                 issues.push(Issue::error(format!("{cp}/end"), "clip must have start >= 0 and end > start"));
+            } else if p.fps.frame(c.end) - p.fps.frame(c.start) < 1 {
+                issues.push(Issue::error(format!("{cp}/end"), "clip is shorter than one frame"));
             }
             if c.speed == 0.0 || !c.speed.is_finite() || c.speed.abs() > 20.0 || c.speed.abs() < 0.01 {
                 issues.push(Issue::error(format!("{cp}/speed"), "speed must be in ±[0.01, 20]"));
@@ -133,8 +130,8 @@ pub fn validate(p: &Project, ctx: &ValidationContext) -> Vec<Issue> {
                     }
                 }
                 ClipSource::Color { color } => {
-                    if !color.starts_with('#') {
-                        issues.push(Issue::error(format!("{cp}/src/color"), "colour must be #rrggbb or #rrggbbaa"));
+                    if !crate::template::is_css_color(color) {
+                        issues.push(Issue::error(format!("{cp}/src/color"), "colour must be #rgb, #rrggbb or #rrggbbaa"));
                     }
                 }
             }
@@ -201,53 +198,86 @@ pub fn validate(p: &Project, ctx: &ValidationContext) -> Vec<Issue> {
             }
         }
 
-        // Transitions must join adjacent clips and have handles.
+        // Transitions must join adjacent media clips and have handles. A clip may be the
+        // `to` of one transition and the `from` of the next; the two halves must fit.
+        let mut handles: BTreeMap<&str, f64> = BTreeMap::new();
+        let mut pairs = HashSet::new();
         for (xi, x) in t.transitions.iter().enumerate() {
             let xp = format!("{tp}/transitions/{xi}");
+            if !pairs.insert((x.from.as_str(), x.to.as_str())) {
+                issues.push(Issue::error(xp.clone(), "duplicate transition"));
+            }
             let from = clips.iter().position(|(_, c)| c.id == x.from);
             let to = clips.iter().position(|(_, c)| c.id == x.to);
-            match (from, to) {
-                (Some(f), Some(tt)) if tt == f + 1 => {
-                    let (_, a) = clips[f];
-                    let (_, b) = clips[tt];
-                    if (b.start - a.end).abs() > 1e-6 {
-                        issues.push(Issue::error(xp.clone(), "transition clips must be butt-joined (no gap)"));
-                    }
-                    if x.duration <= 0.0 {
-                        issues.push(Issue::error(format!("{xp}/duration"), "duration must be > 0"));
-                    }
-                    let half = x.duration / 2.0;
-                    if let ClipSource::Asset { source_in, .. } = &b.src {
-                        if *source_in < half - 1e-9 {
-                            issues.push(Issue::error(
-                                format!("{xp}/duration"),
-                                format!("`{}` needs {half:.2}s of handle before its in point", b.id),
-                            ));
-                        }
-                    }
-                    // The `from` side needs material after its out point; only checkable with probed metadata.
-                    if let ClipSource::Asset { asset, source_in } = &a.src {
-                        if let Some(d) = p.assets.get(asset).and_then(|as_| as_.meta.as_ref()).and_then(|m| m.duration) {
-                            let need = source_in + (a.duration() + half) * a.speed.abs();
-                            if need > d + 1e-6 {
-                                issues.push(Issue::warn(
-                                    format!("{xp}/duration"),
-                                    format!("`{}` has no {half:.2}s of handle after its out point; the dissolve tail will be black", a.id),
-                                ));
-                            }
-                        }
-                    }
-                    if half > a.duration() || half > b.duration() {
-                        issues.push(Issue::error(format!("{xp}/duration"), "transition longer than the clips it joins"));
+            let (a, b) = match (from, to) {
+                (Some(f), Some(tt)) if tt == f + 1 => (clips[f].1, clips[tt].1),
+                (Some(_), Some(_)) => {
+                    issues.push(Issue::error(xp, "transition clips must be adjacent, from → to"));
+                    continue;
+                }
+                _ => {
+                    issues.push(Issue::error(xp, "transition references an unknown clip"));
+                    continue;
+                }
+            };
+            if (b.start - a.end).abs() > 1e-6 {
+                issues.push(Issue::error(xp.clone(), "transition clips must be butt-joined (no gap)"));
+            }
+            if x.duration <= 0.0 {
+                issues.push(Issue::error(format!("{xp}/duration"), "duration must be > 0"));
+            }
+            if matches!(a.src, ClipSource::Overlay { .. }) || matches!(b.src, ClipSource::Overlay { .. }) {
+                issues.push(Issue::error(xp.clone(), "transitions are not supported on overlay clips (bakes carry no handles)"));
+            }
+            let half = x.duration / 2.0;
+            for c in [a, b] {
+                let h = handles.entry(c.id.as_str()).or_default();
+                *h += half;
+                if *h > c.duration() + 1e-9 {
+                    issues.push(Issue::error(format!("{xp}/duration"), format!("transitions on `{}` are longer than the clip", c.id)));
+                }
+            }
+            // Handles are in source time: a 2× clip eats twice the material.
+            if let ClipSource::Asset { source_in, .. } = &b.src {
+                let need = half * b.speed.abs();
+                if *source_in < need - 1e-9 {
+                    issues.push(Issue::error(format!("{xp}/duration"), format!("`{}` needs {need:.2}s of handle before its in point", b.id)));
+                }
+            }
+            // The `from` side needs material after its out point; only checkable with probed metadata.
+            if let ClipSource::Asset { asset, source_in } = &a.src {
+                if let Some(d) = p.assets.get(asset).and_then(|as_| as_.meta.as_ref()).and_then(|m| m.duration) {
+                    let need = source_in + (a.duration() + half) * a.speed.abs();
+                    if need > d + 1e-6 {
+                        issues.push(Issue::warn(
+                            format!("{xp}/duration"),
+                            format!("`{}` has no {:.2}s of handle after its out point; the dissolve tail will be black", a.id, half * a.speed.abs()),
+                        ));
                     }
                 }
-                (Some(_), Some(_)) => issues.push(Issue::error(xp, "transition clips must be adjacent, from → to")),
-                _ => issues.push(Issue::error(xp, "transition references an unknown clip")),
+            }
+            if x.kind == TransitionKind::Wipe {
+                if !(0.0..=1.0).contains(&x.softness) {
+                    issues.push(Issue::error(format!("{xp}/softness"), "softness must be 0..1"));
+                }
+                if let Some(l) = &x.luma {
+                    if !LUMAS.contains(&l.as_str()) && ctx.check_files && !ctx.root.join(l).is_file() {
+                        issues.push(Issue::error(format!("{xp}/luma"), format!("unknown luma `{l}`: use one of {LUMAS:?} or a file under the project")));
+                    }
+                }
             }
         }
     }
 
     issues
+}
+
+fn check_id<'a>(issues: &mut Vec<Issue>, seen: &mut HashSet<&'a str>, id: &'a str, path: String, what: &str) {
+    if !is_valid_id(id) {
+        issues.push(Issue::error(path, format!("{what} id `{id}` must match [A-Za-z_][A-Za-z0-9_-]*")));
+    } else if !seen.insert(id) {
+        issues.push(Issue::error(path, format!("duplicate {what} id `{id}`")));
+    }
 }
 
 pub fn has_errors(issues: &[Issue]) -> bool {
@@ -278,8 +308,12 @@ mod tests {
         assert!(msgs.iter().any(|m| m.contains("overlaps")), "{msgs:?}");
     }
 
+    fn messages(p: &Project) -> Vec<String> {
+        validate(p, &ValidationContext::default()).into_iter().map(|i| i.message).collect()
+    }
+
     #[test]
-    fn transition_needs_handle() {
+    fn transition_needs_handle_in_source_time() {
         let p = project(json!({
             "assets": { "x": { "path": "x.mp4" } },
             "tracks": [{ "id": "v1", "clips": [
@@ -287,7 +321,39 @@ mod tests {
                 { "id": "b", "start": 5, "end": 8, "src": { "asset": "x", "in": 0.1 } }
             ], "transitions": [ { "from": "a", "to": "b", "duration": 1.0 } ]}]
         }));
-        let issues = validate(&p, &ValidationContext::default());
-        assert!(issues.iter().any(|i| i.message.contains("handle")), "{issues:?}");
+        assert!(messages(&p).iter().any(|m| m.contains("handle")));
+        // 0.5 s of handle is enough at 1×, not at 2×.
+        let mut p2 = p.clone();
+        p2.tracks[0].clips[1].src = ClipSource::Asset { asset: "x".into(), source_in: 0.5 };
+        assert!(!messages(&p2).iter().any(|m| m.contains("handle")));
+        p2.tracks[0].clips[1].speed = 2.0;
+        assert!(messages(&p2).iter().any(|m| m.contains("handle")));
+    }
+
+    #[test]
+    fn chained_transitions_must_fit_the_middle_clip() {
+        let p = project(json!({
+            "assets": { "x": { "path": "x.mp4" } },
+            "tracks": [{ "id": "v1", "clips": [
+                { "id": "a", "start": 0, "end": 5, "src": { "asset": "x" } },
+                { "id": "b", "start": 5, "end": 6, "src": { "asset": "x", "in": 2 } },
+                { "id": "c", "start": 6, "end": 10, "src": { "asset": "x", "in": 2 } }
+            ], "transitions": [ { "from": "a", "to": "b", "duration": 1.5 }, { "from": "b", "to": "c", "duration": 1.5 } ]}]
+        }));
+        assert!(messages(&p).iter().any(|m| m.contains("longer than the clip")));
+    }
+
+    #[test]
+    fn ids_sub_frame_clips_and_colours_are_checked() {
+        let p = project(json!({
+            "fps": 30,
+            "tracks": [{ "id": "v 1", "clips": [
+                { "id": "1a", "start": 0, "end": 0.01, "src": { "color": "#red" } }
+            ]}]
+        }));
+        let m = messages(&p);
+        assert!(m.iter().any(|m| m.contains("track id")) && m.iter().any(|m| m.contains("clip id")), "{m:?}");
+        assert!(m.iter().any(|m| m.contains("shorter than one frame")), "{m:?}");
+        assert!(m.iter().any(|m| m.contains("colour")), "{m:?}");
     }
 }

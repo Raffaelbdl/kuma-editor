@@ -18,9 +18,8 @@ fn rgba_at(png: &std::path::Path, x: u32, y: u32) -> [u8; 4] {
         .arg(png)
         .args(["-vf", &format!("crop=1:1:{x}:{y}"), "-pix_fmt", "rgba", "-f", "rawvideo", "-"])
         .output()
-        .unwrap()
-        .stdout;
-    [out[0], out[1], out[2], out[3]]
+        .expect("ffmpeg on PATH");
+    <[u8; 4]>::try_from(out.stdout.as_slice()).unwrap_or_else(|_| panic!("ffmpeg gave {} bytes for {}: {}", out.stdout.len(), png.display(), String::from_utf8_lossy(&out.stderr)))
 }
 
 #[test]

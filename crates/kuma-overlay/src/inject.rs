@@ -32,6 +32,7 @@ pub struct Contract<'a> {
 impl Contract<'_> {
     pub fn apply(&self, html: &str) -> String {
         let html = stamp_root(html, self.duration, self.width, self.height);
+        // Values are user text: keep them from closing the declaration or the block.
         let css_vars: String = self
             .vars
             .iter()
@@ -40,10 +41,11 @@ impl Contract<'_> {
                     Value::String(s) => s.clone(),
                     other => other.to_string(),
                 };
-                format!("--var-{}: {};", k, s.replace(';', ""))
+                format!("--var-{}: {};", k, s.replace([';', '{', '}', '<', '>', '\n'], " "))
             })
             .collect::<Vec<_>>()
             .join(" ");
+        // `</script>` inside a string var must not end the inline script.
         let payload = json!({
             "vars": self.vars,
             "fps": { "num": self.fps.num, "den": self.fps.den },
@@ -53,7 +55,9 @@ impl Contract<'_> {
             "speed": self.speed,
             "bake": self.bake,
             "clip": self.clip,
-        });
+        })
+        .to_string()
+        .replace("</", "<\\/");
         let head = format!(
             "{}<script id=\"kuma-inject\">window.kuma = {payload};</script>\n<style id=\"kuma-vars\">:root {{ {css_vars} }}</style>\n",
             self.head_extra
@@ -188,5 +192,19 @@ mod tests {
         assert!(html.contains("window.kuma = {"));
         assert!(html.contains("--var-label: hi;"));
         assert!(html.contains("data-composition-id=\"main\" data-duration=\"2\""), "{html}");
+    }
+
+    #[test]
+    fn user_text_cannot_break_out_of_script_or_style() {
+        let mut vars = Map::new();
+        vars.insert("label".into(), json!("</script><script>alert(1)</script>"));
+        vars.insert("sub".into(), json!("x; } body { display:none"));
+        let c = Contract { vars: &vars, fps: Fps::new(30, 1), width: 1920, height: 1080, duration: 2.0, speed: 1.0, bake: false, clip: Some("c1"), head_extra: "" };
+        let html = c.apply("<html><head></head><body><div data-composition-id=\"main\"></div></body></html>");
+        assert!(!html.contains("</script><script>alert"), "{html}");
+        assert!(html.contains("<\\/script>"), "{html}");
+        let style = &html[html.find("<style id=\"kuma-vars\">").unwrap() + 22..];
+        let style = &style[..style.find("</style>").unwrap()];
+        assert!(!style.contains('<') && style.contains("--var-sub: x    body   display:none;"), "{style}");
     }
 }

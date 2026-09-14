@@ -1,20 +1,25 @@
 // Properties panel: clip fields, template vars (from the manifest), effects.
 
 import { api } from "./api";
+import { button, el, options } from "./dom";
 import { store, toast } from "./store";
 import type { Clip, Effect, PatchOp, VarSpec } from "./types";
 import { expandPreset, isAsset, isOverlay } from "./types";
 
 const presetsPromise = api.effectPresets().catch(() => []);
 
-const EFFECT_DEFAULTS: Record<string, Effect> = {
-  transform: { type: "transform", x: 0, y: 0, scale: 1, rotation: 0, opacity: 1 },
-  crop: { type: "crop", left: 0, right: 0, top: 0, bottom: 0, radius: 0 },
-  blend: { type: "blend", mode: "screen" },
-  blur: { type: "blur", radius: 4 },
-  color: { type: "color", brightness: 0, contrast: 1, saturation: 1, gamma: 1 },
-  fade: { type: "fade", in: 0.5, out: 0.5 },
-  mlt: { type: "mlt", service: "frei0r.vignette", properties: {} },
+/** Per effect kind: the value to add, and its numeric fields with their input steps.
+ *  Non-numeric fields (blend mode, keyframes, mlt service/properties) are special-cased
+ *  in `renderEffects`. Adding an effect kind means one row here plus the Rust model. */
+const EFFECTS: Record<Effect["type"], { add: Effect; num: [string, number][] }> = {
+  transform: { add: { type: "transform", x: 0, y: 0, scale: 1, rotation: 0, opacity: 1, keyframes: [] }, num: [["x", 1], ["y", 1], ["scale", 0.05], ["rotation", 1], ["opacity", 0.05]] },
+  crop: { add: { type: "crop", left: 0, right: 0, top: 0, bottom: 0, radius: 0 }, num: [["left", 0.01], ["right", 0.01], ["top", 0.01], ["bottom", 0.01], ["radius", 0.01]] },
+  blend: { add: { type: "blend", mode: "screen" }, num: [] },
+  blur: { add: { type: "blur", radius: 4 }, num: [["radius", 0.5]] },
+  color: { add: { type: "color", brightness: 0, contrast: 1, saturation: 1, gamma: 1 }, num: [["brightness", 0.05], ["contrast", 0.05], ["saturation", 0.05], ["gamma", 0.05]] },
+  fade: { add: { type: "fade", in: 0.5, out: 0.5 }, num: [["in", 0.1], ["out", 0.1]] },
+  volume: { add: { type: "volume", keyframes: [{ t: 0, gain: 1 }] }, num: [] },
+  mlt: { add: { type: "mlt", service: "frei0r.vignette", properties: {} }, num: [] },
 };
 const BLEND_MODES = ["normal", "multiply", "screen", "overlay", "darken", "lighten", "color_dodge", "color_burn", "hard_light", "soft_light", "difference", "exclusion"];
 
@@ -35,46 +40,40 @@ export class Inspector {
     const path = `/tracks/${ti}/clips/${ci}`;
     const rep = (sub: string, value: unknown, note: string) => store.patch([{ op: "replace", path: `${path}${sub}`, value }], note);
 
-    const h = document.createElement("div");
-    h.innerHTML = `<h3>Clip <span class="mono muted">${clip.id}</span></h3>`;
+    const h = el("h3", "", "Clip ");
+    h.appendChild(el("span", "mono muted", clip.id));
     this.host.appendChild(h);
 
-    this.host.appendChild(field("Start", numInput(clip.start, (v) => rep("/start", v, "start"), 1 / store.fps)));
-    this.host.appendChild(field("End", numInput(clip.end, (v) => rep("/end", v, "end"), 1 / store.fps)));
+    const frame = 1 / store.fps;
+    this.host.appendChild(field("Start", numInput(clip.start, (v) => rep("/start", v, "start"), frame)));
+    this.host.appendChild(field("End", numInput(clip.end, (v) => rep("/end", v, "end"), frame)));
     this.host.appendChild(field("Speed", numInput(clip.speed, (v) => rep("/speed", v, "speed"), 0.05)));
     if (isAsset(clip)) {
-      this.host.appendChild(field("Source in", numInput(clip.src.in ?? 0, (v) => rep("/src/in", v, "in"), 1 / store.fps)));
+      this.host.appendChild(field("Source in", numInput(clip.src.in ?? 0, (v) => rep("/src/in", v, "in"), frame)));
       this.host.appendChild(field("Volume", numInput(clip.volume, (v) => rep("/volume", v, "volume"), 0.05)));
-      const m = document.createElement("input"); m.type = "checkbox"; m.checked = clip.muted;
+      const m = el("input"); m.type = "checkbox"; m.checked = clip.muted;
       m.onchange = () => rep("/muted", m.checked, "mute");
       this.host.appendChild(field("Muted", m));
     }
-    this.host.appendChild(field("Label", textInput(clip.label ?? "", (v) => rep("/label", v, "label"))));
+    this.host.appendChild(field("Label", textInput(clip.label, (v) => rep("/label", v, "label"))));
 
     if (isOverlay(clip)) this.renderVars(clip, path);
     this.renderEffects(clip, path);
 
-    const del = document.createElement("button");
-    del.textContent = "Delete clip";
+    const del = button("Delete clip", () => store.patch([{ op: "remove", path }], `delete ${clip.id}`));
     del.style.marginTop = "12px";
-    del.onclick = () => store.patch([{ op: "remove", path }], `delete ${clip.id}`);
     this.host.appendChild(del);
   }
 
   private renderVars(clip: Clip & { src: { overlay: string; vars?: Record<string, unknown> } }, path: string) {
     const tpl = store.state.templates.find((t) => t.id === clip.src.overlay);
-    const h = document.createElement("h3");
-    h.textContent = `Template · ${tpl?.manifest.name ?? clip.src.overlay}`;
-    this.host.appendChild(h);
+    this.host.appendChild(el("h3", "", `Template · ${tpl?.manifest.name ?? clip.src.overlay}`));
     if (!tpl) {
-      this.host.innerHTML += `<p class="muted">Unknown template.</p>`;
+      this.host.appendChild(el("p", "muted", "Unknown template."));
       return;
     }
     const vars = clip.src.vars ?? {};
-    const setVar = (k: string, v: unknown) => {
-      const next = { ...vars, [k]: v };
-      return store.patch([{ op: clip.src.vars ? "replace" : "add", path: `${path}/src/vars`, value: next }], `var ${k}`);
-    };
+    const setVar = (k: string, v: unknown) => store.patch([{ op: "add", path: `${path}/src/vars`, value: { ...vars, [k]: v } }], `var ${k}`);
     for (const [k, spec] of Object.entries(tpl.manifest.vars)) {
       const cur = k in vars ? vars[k] : spec.default;
       this.host.appendChild(field(spec.label ?? k, varInput(spec, cur, (v) => setVar(k, v))));
@@ -82,71 +81,48 @@ export class Inspector {
   }
 
   private renderEffects(clip: Clip, path: string) {
-    const h = document.createElement("h3");
-    h.textContent = "Effects";
-    this.host.appendChild(h);
+    this.host.appendChild(el("h3", "", "Effects"));
     clip.effects.forEach((e, ei) => {
-      const box = document.createElement("div");
-      box.className = "effect";
-      const head = document.createElement("div");
-      head.className = "head";
-      head.innerHTML = `<span>${e.type}</span>`;
-      const rm = document.createElement("button");
-      rm.textContent = "×";
-      rm.onclick = () => store.patch([{ op: "remove", path: `${path}/effects/${ei}` }], `remove ${e.type}`);
-      head.appendChild(rm);
+      const box = el("div", "effect");
+      const head = el("div", "head");
+      head.append(el("span", "", e.type), button("×", () => store.patch([{ op: "remove", path: `${path}/effects/${ei}` }], `remove ${e.type}`)));
       box.appendChild(head);
-      const set = (key: string, v: unknown) => {
-        const next = { ...e, [key]: v } as Effect;
-        return store.patch([{ op: "replace", path: `${path}/effects/${ei}`, value: next }], `${e.type}.${key}`);
-      };
-      const num = (key: string, val: number, step = 1) => box.appendChild(field(key, numInput(val, (v) => set(key, v), step)));
-      switch (e.type) {
-        case "transform":
-          num("x", e.x ?? 0); num("y", e.y ?? 0); num("scale", e.scale ?? 1, 0.05); num("rotation", e.rotation ?? 0); num("opacity", e.opacity ?? 1, 0.05);
-          box.appendChild(field("keyframes", jsonInput(e.keyframes ?? [], (v) => set("keyframes", v))));
-          break;
-        case "crop":
-          num("left", e.left ?? 0, 0.01); num("right", e.right ?? 0, 0.01); num("top", e.top ?? 0, 0.01); num("bottom", e.bottom ?? 0, 0.01); num("radius", e.radius ?? 0, 0.01);
-          break;
-        case "blend": {
-          const sel = document.createElement("select");
-          for (const m of BLEND_MODES) { const o = document.createElement("option"); o.value = m; o.textContent = m; o.selected = m === e.mode; sel.appendChild(o); }
-          sel.onchange = () => set("mode", sel.value);
-          box.appendChild(field("mode", sel));
-          break;
-        }
-        case "blur": num("radius", e.radius, 0.5); break;
-        case "color": num("brightness", e.brightness ?? 0, 0.05); num("contrast", e.contrast ?? 1, 0.05); num("saturation", e.saturation ?? 1, 0.05); num("gamma", e.gamma ?? 1, 0.05); break;
-        case "fade": num("in", e.in ?? 0, 0.1); num("out", e.out ?? 0, 0.1); break;
-        case "volume": box.appendChild(field("keyframes", jsonInput(e.keyframes, (v) => set("keyframes", v)))); break;
-        case "mlt":
-          box.appendChild(field("service", textInput(e.service, (v) => set("service", v))));
-          box.appendChild(field("properties", jsonInput(e.properties ?? {}, (v) => set("properties", v))));
-          break;
+      const set = (key: string, v: unknown) => store.patch([{ op: "replace", path: `${path}/effects/${ei}`, value: { ...e, [key]: v } }], `${e.type}.${key}`);
+      const rec = e as unknown as Record<string, unknown>;
+      for (const [key, step] of EFFECTS[e.type].num) {
+        const fallback = (EFFECTS[e.type].add as unknown as Record<string, number>)[key];
+        box.appendChild(field(key, numInput(Number(rec[key] ?? fallback), (v) => set(key, v), step)));
+      }
+      if (e.type === "blend") {
+        const sel = el("select");
+        options(sel, BLEND_MODES.map((value) => ({ value })), e.mode);
+        sel.onchange = () => set("mode", sel.value);
+        box.appendChild(field("mode", sel));
+      }
+      if (e.type === "transform" || e.type === "volume") box.appendChild(field("keyframes", jsonInput(e.keyframes ?? [], (v) => set("keyframes", v))));
+      if (e.type === "mlt") {
+        box.appendChild(field("service", textInput(e.service, (v) => set("service", v))));
+        box.appendChild(field("properties", jsonInput(e.properties ?? {}, (v) => set("properties", v))));
       }
       this.host.appendChild(box);
     });
-    const add = document.createElement("select");
-    add.innerHTML = `<option value="">+ add effect…</option>` + Object.keys(EFFECT_DEFAULTS).map((k) => `<option value="${k}">${k}</option>`).join("");
+    const add = el("select");
+    options(add, Object.keys(EFFECTS).map((value) => ({ value })), undefined, "+ add effect…");
     add.onchange = () => {
-      if (!add.value) return;
-      const ops: PatchOp[] = [{ op: "add", path: `${path}/effects/-`, value: EFFECT_DEFAULTS[add.value] }];
-      store.patch(ops, `add ${add.value}`);
+      const kind = add.value as Effect["type"] | "";
+      if (kind) store.patch([{ op: "add", path: `${path}/effects/-`, value: EFFECTS[kind].add }], `add ${kind}`);
     };
     this.host.appendChild(add);
 
     // Presets expand to ordinary effects (with their default params); tweak them after.
-    const preset = document.createElement("select");
+    const preset = el("select");
     preset.style.marginTop = "6px";
-    preset.innerHTML = `<option value="">+ apply preset…</option>`;
-    presetsPromise.then((ps) => { for (const p of ps) { const o = document.createElement("option"); o.value = p.id; o.textContent = p.name; o.title = p.description; preset.appendChild(o); } });
+    presetsPromise.then((ps) => options(preset, ps.map((p) => ({ value: p.id, label: p.name, title: p.description })), undefined, "+ apply preset…"));
     preset.onchange = async () => {
       const p = (await presetsPromise).find((x) => x.id === preset.value);
       if (!p) return;
       try {
-        const effects = expandPreset(p, {});
-        const ops: PatchOp[] = effects.map((e) => ({ op: "add", path: `${path}/effects/-`, value: e }));
+        const ops: PatchOp[] = expandPreset(p, {}).map((e) => ({ op: "add", path: `${path}/effects/-`, value: e }));
         await store.patch(ops, `preset ${p.id}`);
       } catch (e) {
         toast((e as Error).message, "err");
@@ -159,16 +135,13 @@ export class Inspector {
 // ---- inputs --------------------------------------------------------------------
 
 function field(label: string, input: HTMLElement): HTMLDivElement {
-  const el = document.createElement("div");
-  el.className = "field";
-  const l = document.createElement("label");
-  l.textContent = label;
-  el.append(l, input);
-  return el;
+  const row = el("div", "field");
+  row.append(el("label", "", label), input);
+  return row;
 }
 
 function numInput(value: number, onChange: (v: number) => void, step = 1): HTMLInputElement {
-  const i = document.createElement("input");
+  const i = el("input");
   i.type = "number";
   i.step = String(step);
   i.value = String(Number(value.toFixed(4)));
@@ -177,7 +150,7 @@ function numInput(value: number, onChange: (v: number) => void, step = 1): HTMLI
 }
 
 function textInput(value: string, onChange: (v: string) => void): HTMLInputElement {
-  const i = document.createElement("input");
+  const i = el("input");
   i.type = "text";
   i.value = value;
   i.onchange = () => onChange(i.value);
@@ -185,7 +158,7 @@ function textInput(value: string, onChange: (v: string) => void): HTMLInputEleme
 }
 
 function jsonInput(value: unknown, onChange: (v: unknown) => void): HTMLTextAreaElement {
-  const t = document.createElement("textarea");
+  const t = el("textarea");
   t.value = JSON.stringify(value, null, 1);
   t.onchange = () => { try { onChange(JSON.parse(t.value)); t.style.borderColor = ""; } catch { t.style.borderColor = "#e5484d"; } };
   return t;
@@ -194,9 +167,8 @@ function jsonInput(value: unknown, onChange: (v: unknown) => void): HTMLTextArea
 function varInput(spec: VarSpec, cur: unknown, onChange: (v: unknown) => void): HTMLElement {
   switch (spec.type) {
     case "number": {
-      const wrap = document.createElement("div");
-      wrap.className = "row";
-      const r = document.createElement("input");
+      const wrap = el("div", "row");
+      const r = el("input");
       r.type = "range";
       r.min = String(spec.min ?? 0); r.max = String(spec.max ?? 1); r.step = String(spec.step ?? 0.01);
       r.value = String(cur);
@@ -208,36 +180,33 @@ function varInput(spec: VarSpec, cur: unknown, onChange: (v: unknown) => void): 
       return wrap;
     }
     case "color": {
-      const c = document.createElement("input");
+      const c = el("input");
       c.type = "color";
       c.value = String(cur).slice(0, 7);
       c.onchange = () => onChange(c.value);
       return c;
     }
     case "boolean": {
-      const b = document.createElement("input");
+      const b = el("input");
       b.type = "checkbox";
       b.checked = Boolean(cur);
       b.onchange = () => onChange(b.checked);
       return b;
     }
     case "enum": {
-      const s = document.createElement("select");
-      for (const o of spec.options ?? []) { const opt = document.createElement("option"); opt.value = o; opt.textContent = o; opt.selected = o === cur; s.appendChild(opt); }
+      const s = el("select");
+      options(s, (spec.options ?? []).map((value) => ({ value })), String(cur));
       s.onchange = () => onChange(s.value);
       return s;
     }
     case "point": {
       const p = (cur ?? { x: 0.5, y: 0.5 }) as { x: number; y: number };
-      const wrap = document.createElement("div");
-      wrap.className = "row";
-      const x = numInput(p.x, (v) => onChange({ x: v, y: p.y }), 0.01);
-      const y = numInput(p.y, (v) => onChange({ x: p.x, y: v }), 0.01);
-      wrap.append(x, y);
+      const wrap = el("div", "row");
+      wrap.append(numInput(p.x, (v) => onChange({ x: v, y: p.y }), 0.01), numInput(p.y, (v) => onChange({ x: p.x, y: v }), 0.01));
       return wrap;
     }
     case "text": {
-      const t = document.createElement("textarea");
+      const t = el("textarea");
       t.value = String(cur ?? "");
       t.onchange = () => onChange(t.value);
       return t;

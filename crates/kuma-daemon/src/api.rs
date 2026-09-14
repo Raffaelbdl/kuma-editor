@@ -66,6 +66,18 @@ pub fn router(state: Arc<AppState>) -> Router {
 
 struct ApiError(StatusCode, Value);
 
+impl ApiError {
+    fn new(status: StatusCode, msg: impl std::fmt::Display) -> Self {
+        ApiError(status, json!({ "error": msg.to_string() }))
+    }
+    fn bad_request(msg: impl std::fmt::Display) -> Self {
+        Self::new(StatusCode::BAD_REQUEST, msg)
+    }
+    fn not_found(msg: impl std::fmt::Display) -> Self {
+        Self::new(StatusCode::NOT_FOUND, msg)
+    }
+}
+
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         (self.0, Json(self.1)).into_response()
@@ -74,7 +86,7 @@ impl IntoResponse for ApiError {
 
 impl From<anyhow::Error> for ApiError {
     fn from(e: anyhow::Error) -> Self {
-        ApiError(StatusCode::INTERNAL_SERVER_ERROR, json!({ "error": format!("{e:#}") }))
+        Self::new(StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}"))
     }
 }
 
@@ -85,12 +97,25 @@ impl From<EditError> for ApiError {
                 ApiError(StatusCode::CONFLICT, json!({ "error": e.to_string(), "current_revision": current, "base_revision": base }))
             }
             EditError::Invalid(issues) => ApiError(StatusCode::UNPROCESSABLE_ENTITY, json!({ "error": "validation failed", "issues": issues })),
-            other => ApiError(StatusCode::BAD_REQUEST, json!({ "error": other.to_string() })),
+            other => Self::bad_request(other),
         }
     }
 }
 
 type ApiResult = Result<Json<Value>, ApiError>;
+
+/// Run CPU/subprocess work off the async runtime.
+async fn blocking<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> Result<T, ApiError> {
+    tokio::task::spawn_blocking(f).await.map_err(|e| anyhow::anyhow!(e).into())
+}
+
+/// `base/rest` for a client-supplied relative path, or `None` when it is absolute or
+/// climbs out of `base`.
+fn safe_join(base: &std::path::Path, rest: &str) -> Option<PathBuf> {
+    use std::path::Component;
+    let rel = std::path::Path::new(rest);
+    rel.components().all(|c| matches!(c, Component::Normal(_))).then(|| base.join(rel))
+}
 
 // ---------- basics ----------
 
@@ -102,7 +127,7 @@ async fn health(State(st): S) -> Json<Value> {
         "revision": p.revision,
         "melt": kuma_mlt::melt::melt_available(),
         "ffprobe": kuma_overlay::media::ffprobe_available(),
-        "hyperframes": st.baker.available().ok(),
+        "hyperframes": st.baker.version,
         "browser": st.baker.browser,
         "preview_engine": crate::preview::PreviewHandle::engine_path(&st).is_file(),
         "preview_engine_path": crate::preview::PreviewHandle::engine_path(&st),
@@ -238,11 +263,8 @@ struct PathQuery {
 
 async fn probe_asset(State(st): S, Query(q): Query<PathQuery>) -> ApiResult {
     let p = jobs::resolve_path(&st, &q.path);
-    let probe = tokio::task::spawn_blocking(move || kuma_overlay::probe(&p)).await.map_err(|e| anyhow::anyhow!(e))?;
-    match probe {
-        Ok(pr) => Ok(Json(json!({ "kind": pr.kind, "meta": pr.meta }))),
-        Err(e) => Err(ApiError(StatusCode::BAD_REQUEST, json!({ "error": e }))),
-    }
+    let pr = blocking(move || kuma_overlay::probe(&p)).await?.map_err(ApiError::bad_request)?;
+    Ok(Json(json!({ "kind": pr.kind, "meta": pr.meta })))
 }
 
 #[derive(Deserialize)]
@@ -258,22 +280,7 @@ struct AddAsset {
 
 /// Probe and register an asset. The id defaults to the file stem.
 async fn add_asset(State(st): S, Json(req): Json<AddAsset>) -> ApiResult {
-    let abs = jobs::resolve_path(&st, &req.path);
-    if !abs.is_file() {
-        return Err(ApiError(StatusCode::BAD_REQUEST, json!({ "error": format!("file not found: {}", abs.display()) })));
-    }
-    let p2 = abs.clone();
-    let probe = tokio::task::spawn_blocking(move || kuma_overlay::probe(&p2)).await.map_err(|e| anyhow::anyhow!(e))?;
-    let probe = probe.map_err(|e| ApiError(StatusCode::BAD_REQUEST, json!({ "error": e })))?;
-    let root = st.config.project_root();
-    let rel = abs.strip_prefix(&root).map(|p| p.to_path_buf()).unwrap_or(abs.clone());
-    let id = req.id.clone().unwrap_or_else(|| {
-        let stem = abs.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or("asset".into());
-        stem.chars().map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '_' }).collect()
-    });
-    let asset = kuma_core::Asset { path: rel.to_string_lossy().into_owned(), kind: probe.kind, proxy: None, meta: Some(probe.meta) };
-    let patch: json_patch::Patch = serde_json::from_value(json!([{ "op": "add", "path": format!("/assets/{}", id.replace('~', "~0").replace('/', "~1")), "value": asset }])).unwrap();
-    let (rev, warnings) = st.apply_patch(&patch.0, req.base_revision, &req.origin)?;
+    let (id, rev, warnings) = blocking(move || jobs::add_asset(&st, &req.path, req.id, req.base_revision, &req.origin)).await??;
     Ok(Json(json!({ "id": id, "revision": rev, "warnings": warnings })))
 }
 
@@ -309,15 +316,13 @@ async fn bake(State(st): S, Json(req): Json<BakeReq>) -> Json<Value> {
 
 /// Synchronous: sampling is what the agent waits on.
 async fn sample(State(st): S, Json(req): Json<SampleRequest>) -> ApiResult {
-    let s2 = st.clone();
-    let samples = tokio::task::spawn_blocking(move || jobs::sample_frames(&s2, &req, &|_, _| {})).await.map_err(|e| anyhow::anyhow!(e))??;
+    let samples = blocking(move || jobs::sample_frames(&st, &req, &|_, _| {})).await??;
     Ok(Json(json!({ "samples": samples })))
 }
 
 async fn compile_xml(State(st): S) -> Result<Response, ApiError> {
     let project = st.project.read().unwrap().clone();
-    let path = jobs::compile_project(&st, &project, Default::default(), "inspect", UnbakedPolicy::Skip, None)?;
-    let xml = std::fs::read_to_string(path).map_err(|e| anyhow::anyhow!(e))?;
+    let xml = jobs::compile_xml(&st, &project, Default::default(), UnbakedPolicy::Skip, None)?;
     Ok(([(header::CONTENT_TYPE, "application/xml")], xml).into_response())
 }
 
@@ -330,9 +335,8 @@ struct SnapshotQuery {
 
 /// One composited frame as PNG (melt), the pre-engine preview fallback.
 async fn snapshot(State(st): S, Query(q): Query<SnapshotQuery>) -> Result<Response, ApiError> {
-    let s2 = st.clone();
     let req = SampleRequest { t0: q.t, t1: None, count: 1, rect: None, width: q.width.or(Some(960)), overlays: false };
-    let samples = tokio::task::spawn_blocking(move || jobs::sample_frames(&s2, &req, &|_, _| {})).await.map_err(|e| anyhow::anyhow!(e))??;
+    let samples = blocking(move || jobs::sample_frames(&st, &req, &|_, _| {})).await??;
     let bytes = std::fs::read(&samples[0].path).map_err(|e| anyhow::anyhow!(e))?;
     Ok(([(header::CONTENT_TYPE, "image/png"), (header::CACHE_CONTROL, "no-store")], bytes).into_response())
 }
@@ -342,7 +346,7 @@ async fn jobs_list(State(st): S) -> Json<Value> {
 }
 
 async fn job_get(State(st): S, Path(id): Path<u64>) -> Result<Json<Value>, ApiError> {
-    st.jobs.get(id).map(|j| Json(json!(j))).ok_or(ApiError(StatusCode::NOT_FOUND, json!({ "error": "no such job" })))
+    st.jobs.get(id).map(|j| Json(json!(j))).ok_or(ApiError::not_found("no such job"))
 }
 
 // ---------- websockets ----------
@@ -381,11 +385,11 @@ async fn preview_ws(State(st): S, ws: WebSocketUpgrade) -> Response {
             }
         };
         let _ = socket.send(Message::Text(json!({ "ready": true, "scale": *st.preview.scale.lock().unwrap() }).to_string().into())).await;
-        if preview::reload(&st).await.is_err() {
-            let _ = socket.send(Message::Text(json!({ "error": "compile failed" }).to_string().into())).await;
-        }
         let mut frames = engine.frames.subscribe();
         let fps = st.project.read().unwrap().fps;
+        if let Some(e) = reload_into(&st, &engine).await {
+            let _ = socket.send(Message::Text(json!({ "error": e }).to_string().into())).await;
+        }
         loop {
             tokio::select! {
                 f = frames.recv() => match f {
@@ -401,21 +405,27 @@ async fn preview_ws(State(st): S, ws: WebSocketUpgrade) -> Response {
                 msg = socket.recv() => match msg {
                     Some(Ok(Message::Text(t))) => {
                         let t = t.to_string();
-                        let cmd = if let Some(s) = t.strip_prefix("seek ") {
-                            s.trim().parse::<f64>().ok().map(|secs| format!("seek {}", fps.frame(secs)))
+                        let mut cmd = None;
+                        let mut err = None;
+                        if let Some(s) = t.strip_prefix("seek ") {
+                            cmd = s.trim().parse::<f64>().ok().map(|secs| format!("seek {}", fps.frame(secs)));
                         } else if t == "play" || t == "pause" {
-                            Some(t.clone())
+                            cmd = Some(t.clone());
                         } else if t == "reload" {
-                            let _ = preview::reload(&st).await;
-                            None
+                            err = reload_into(&st, &engine).await;
                         } else if let Some(s) = t.strip_prefix("scale ") {
                             if let Ok(v) = s.trim().parse::<f64>() {
                                 *st.preview.scale.lock().unwrap() = v.clamp(0.25, 1.0);
-                                let _ = preview::reload(&st).await;
+                                err = reload_into(&st, &engine).await;
                             }
-                            None
-                        } else { None };
-                        if let Some(c) = cmd { let _ = engine.send(&c).await; }
+                        }
+                        if let Some(c) = cmd {
+                            if engine.send(&c).await.is_err() { err = Some("preview engine exited; reconnect"); }
+                        }
+                        if let Some(e) = err {
+                            let _ = socket.send(Message::Text(json!({ "error": e }).to_string().into())).await;
+                            if e != "compile failed" { break; }
+                        }
                     }
                     Some(Ok(Message::Close(_))) | None | Some(Err(_)) => break,
                     _ => {}
@@ -424,6 +434,16 @@ async fn preview_ws(State(st): S, ws: WebSocketUpgrade) -> Response {
         }
         let _ = engine.send("pause").await;
     })
+}
+
+/// Recompile and load the preview. A socket is bound to one engine process: if that one
+/// died and `reload` started another, the client must reconnect rather than keep
+/// listening to a dead channel.
+async fn reload_into(st: &Arc<AppState>, engine: &Arc<preview::Engine>) -> Option<&'static str> {
+    if preview::reload(st).await.is_err() {
+        return Some("compile failed");
+    }
+    st.preview.get().filter(|e| Arc::ptr_eq(e, engine)).is_none().then_some("preview engine restarted; reconnect")
 }
 
 #[derive(Deserialize, Default)]
@@ -447,15 +467,16 @@ async fn preview_reload(State(st): S, body: Option<Json<PreviewReload>>) -> ApiR
 /// preloaded, so the UI can drive it with `HyperframesPlayer.seek(t)`.
 async fn overlay_preview(State(st): S, Path(clip): Path<String>) -> Result<Response, ApiError> {
     let project = st.project.read().unwrap().clone();
-    let (_, c) = project.find_clip(&clip).ok_or(ApiError(StatusCode::NOT_FOUND, json!({ "error": "no such clip" })))?;
+    let (_, c) = project.find_clip(&clip).ok_or(ApiError::not_found("no such clip"))?;
     let ClipSource::Overlay { overlay, vars } = &c.src else {
-        return Err(ApiError(StatusCode::BAD_REQUEST, json!({ "error": "not an overlay clip" })));
+        return Err(ApiError::bad_request("not an overlay clip"));
     };
     let templates = st.templates.read().unwrap();
-    let (dir, manifest) = templates.get(overlay).ok_or(ApiError(StatusCode::NOT_FOUND, json!({ "error": "unknown template" })))?;
+    let (dir, manifest) = templates.get(overlay).ok_or(ApiError::not_found("unknown template"))?;
     let resolved = manifest.resolve_vars(vars);
     let html = std::fs::read_to_string(dir.join(&manifest.entry)).map_err(|e| anyhow::anyhow!(e))?;
-    let head_extra = format!("<base href=\"/overlay-preview/{clip}/\">\n<script src=\"/vendor/hyperframe.runtime.iife.js\"></script>\n");
+    // Clip ids are validated to be URL-safe.
+    let head_extra = format!("<base href=\"/overlay-preview/{}/\">\n<script src=\"/vendor/hyperframe.runtime.iife.js\"></script>\n", c.id);
     let out = kuma_overlay::Contract {
         vars: &resolved,
         fps: project.fps,
@@ -474,9 +495,9 @@ async fn overlay_preview(State(st): S, Path(clip): Path<String>) -> Result<Respo
 /// Files referenced by a previewed overlay, resolved against its template dir.
 async fn overlay_file(State(st): S, Path((clip, rest)): Path<(String, String)>) -> Result<Response, ApiError> {
     let project = st.project.read().unwrap().clone();
-    let (_, c) = project.find_clip(&clip).ok_or(ApiError(StatusCode::NOT_FOUND, json!({ "error": "no such clip" })))?;
+    let (_, c) = project.find_clip(&clip).ok_or(ApiError::not_found("no such clip"))?;
     let ClipSource::Overlay { overlay, .. } = &c.src else {
-        return Err(ApiError(StatusCode::BAD_REQUEST, json!({ "error": "not an overlay clip" })));
+        return Err(ApiError::bad_request("not an overlay clip"));
     };
     serve_template_file(&st, overlay, &rest)
 }
@@ -485,60 +506,43 @@ async fn overlay_static(State(st): S, Path((id, rest)): Path<(String, String)>) 
     serve_template_file(&st, &id, &rest)
 }
 
+/// A file inside a template folder. `_vendor/...` resolves exactly as the bake stages it.
 fn serve_template_file(st: &AppState, template: &str, rest: &str) -> Result<Response, ApiError> {
-    if rest.contains("..") {
-        return Err(ApiError(StatusCode::BAD_REQUEST, json!({ "error": "bad path" })));
-    }
     let templates = st.templates.read().unwrap();
-    let (dir, _) = templates.get(template).ok_or(ApiError(StatusCode::NOT_FOUND, json!({ "error": "unknown template" })))?;
-    let mut path = dir.join(rest);
+    let (dir, _) = templates.get(template).ok_or(ApiError::not_found("unknown template"))?;
+    let mut path = safe_join(dir, rest).ok_or(ApiError::bad_request("bad path"))?;
     if !path.is_file() {
-        // `_vendor/...` falls back to the shared library folder next to the templates.
-        if let Some(v) = rest.strip_prefix("_vendor/") {
-            for base in [dir.parent().map(|p| p.join("_vendor")), Some(st.config.repo_root.join("overlays/_vendor"))].into_iter().flatten() {
-                let cand = base.join(v);
-                if cand.is_file() {
-                    path = cand;
-                    break;
-                }
-            }
+        if let Some((vendor, v)) = rest.strip_prefix("_vendor/").and_then(|v| st.baker.vendor_for(dir).map(|d| (d, v))) {
+            path = safe_join(&vendor, v).ok_or(ApiError::bad_request("bad path"))?;
         }
     }
     file_response(&path)
 }
 
 async fn vendor(State(st): S, Path(rest): Path<String>) -> Result<Response, ApiError> {
-    if rest.contains("..") {
-        return Err(ApiError(StatusCode::BAD_REQUEST, json!({ "error": "bad path" })));
-    }
     let nm = st.config.repo_root.join("node_modules");
-    let candidates = [
-        nm.join("hyperframes/dist").join(&rest),
-        nm.join("gsap/dist").join(&rest),
-        st.config.repo_root.join("overlays/_vendor").join(&rest),
-    ];
-    for c in candidates {
-        if c.is_file() {
-            return file_response(&c);
-        }
-    }
-    Err(ApiError(StatusCode::NOT_FOUND, json!({ "error": "not found" })))
+    let bases = [nm.join("hyperframes/dist"), nm.join("gsap/dist"), st.baker.vendor_dir.clone()];
+    bases
+        .iter()
+        .filter_map(|b| safe_join(b, &rest))
+        .find(|c| c.is_file())
+        .map(|c| file_response(&c))
+        .unwrap_or_else(|| Err(ApiError::not_found("not found")))
 }
 
-/// Serve any file under the project root or the kuma cache (thumbnails, samples, bakes).
+/// Serve a file under the project root (renders, samples, bakes) or the overlay library
+/// (thumbnails). Anything else, including the rest of the repo, is refused.
 async fn file(State(st): S, Query(q): Query<PathQuery>) -> Result<Response, ApiError> {
-    let p = jobs::resolve_path(&st, &q.path);
-    let canon = p.canonicalize().map_err(|_| ApiError(StatusCode::NOT_FOUND, json!({ "error": "not found" })))?;
-    let root = st.config.project_root().canonicalize().unwrap_or_default();
-    let repo = st.config.repo_root.canonicalize().unwrap_or_default();
-    if !(canon.starts_with(&root) || canon.starts_with(&repo)) {
-        return Err(ApiError(StatusCode::FORBIDDEN, json!({ "error": "outside project" })));
+    let canon = jobs::resolve_path(&st, &q.path).canonicalize().map_err(|_| ApiError::not_found("not found"))?;
+    let allowed = [st.config.project_root(), st.config.repo_root.join("overlays")];
+    if !allowed.iter().filter_map(|d| d.canonicalize().ok()).any(|d| canon.starts_with(d)) {
+        return Err(ApiError::new(StatusCode::FORBIDDEN, "outside the project"));
     }
     file_response(&canon)
 }
 
 fn file_response(path: &std::path::Path) -> Result<Response, ApiError> {
-    let bytes = std::fs::read(path).map_err(|_| ApiError(StatusCode::NOT_FOUND, json!({ "error": "not found" })))?;
+    let bytes = std::fs::read(path).map_err(|_| ApiError::not_found("not found"))?;
     let mime = match path.extension().and_then(|e| e.to_str()).unwrap_or("") {
         "html" => "text/html; charset=utf-8",
         "js" | "mjs" => "text/javascript",

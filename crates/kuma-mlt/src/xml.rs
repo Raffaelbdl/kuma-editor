@@ -72,13 +72,6 @@ impl XmlWriter {
         self.buf.push_str("</property>\n");
     }
 
-    pub fn comment(&mut self, text: &str) {
-        self.indent();
-        self.buf.push_str("<!-- ");
-        self.buf.push_str(&text.replace("--", "- -"));
-        self.buf.push_str(" -->\n");
-    }
-
     pub fn finish(self) -> String {
         self.buf
     }

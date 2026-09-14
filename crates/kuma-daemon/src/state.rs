@@ -52,6 +52,9 @@ pub struct UndoStack {
 pub struct AppState {
     pub config: Config,
     pub project: RwLock<Project>,
+    /// Held for the whole of every mutation (check → validate → swap → save) so two
+    /// edits against the same base revision cannot both succeed.
+    edit: Mutex<()>,
     pub undo: Mutex<UndoStack>,
     pub templates: RwLock<BTreeMap<String, (PathBuf, TemplateManifest)>>,
     pub baker: Baker,
@@ -74,12 +77,7 @@ impl AppState {
             let text = std::fs::read_to_string(&config.project_file)?;
             serde_json::from_str::<Project>(&text)?
         } else {
-            let name = config
-                .project_file
-                .file_stem()
-                .map(|s| s.to_string_lossy().trim_end_matches(".kuma").to_string())
-                .unwrap_or_default();
-            Project::new_default(name, 1920, 1080, kuma_core::Fps::default())
+            Project::new_default(Project::name_from_path(&config.project_file), 1920, 1080, kuma_core::Fps::default())
         };
         std::fs::create_dir_all(config.cache_dir())?;
         let baker = Baker::discover(&config.repo_root, config.cache_dir().join("bakes"));
@@ -87,6 +85,7 @@ impl AppState {
         let st = AppState {
             templates: RwLock::new(BTreeMap::new()),
             project: RwLock::new(project),
+            edit: Mutex::new(()),
             undo: Mutex::new(UndoStack { past: Vec::new(), future: Vec::new() }),
             baker,
             events,
@@ -128,77 +127,79 @@ impl AppState {
     }
 
     pub fn save(&self) -> anyhow::Result<()> {
-        let p = self.project.read().unwrap();
-        let text = serde_json::to_string_pretty(&*p)?;
+        let p = self.project.read().unwrap().clone();
+        self.write_file(&p)
+    }
+
+    fn write_file(&self, p: &Project) -> anyhow::Result<()> {
         let tmp = self.config.project_file.with_extension("json.tmp");
-        std::fs::write(&tmp, text)?;
+        std::fs::write(&tmp, serde_json::to_string_pretty(p)?)?;
         std::fs::rename(&tmp, &self.config.project_file)?;
         Ok(())
     }
 
-    fn commit(&self, next: Project, origin: &str, warnings: Vec<Issue>) -> anyhow::Result<(u64, Vec<Issue>)> {
-        let prev = {
-            let mut p = self.project.write().unwrap();
-            std::mem::replace(&mut *p, next)
-        };
-        {
-            let mut u = self.undo.lock().unwrap();
-            u.past.push((prev, origin.to_string()));
-            if u.past.len() > 200 {
-                u.past.remove(0);
-            }
-            u.future.clear();
-        }
-        self.save()?;
-        let rev = self.project.read().unwrap().revision;
+    /// Persist `next`, then make it current. Nothing changes in memory if the write
+    /// fails, so a failed edit never leaves clients on a revision the disk lacks.
+    fn commit(&self, next: Project, origin: &str) -> anyhow::Result<Project> {
+        self.write_file(&next)?;
+        let rev = next.revision;
+        let prev = std::mem::replace(&mut *self.project.write().unwrap(), next);
         let _ = self.events.send(Event::ProjectChanged { revision: rev, origin: origin.to_string() });
-        Ok((rev, warnings))
+        Ok(prev)
+    }
+
+    fn edit<F>(&self, origin: &str, f: F) -> Result<(u64, Vec<Issue>), EditError>
+    where
+        F: FnOnce(&Project) -> Result<edit::EditOutcome, EditError>,
+    {
+        let _guard = self.edit.lock().unwrap();
+        let out = f(&self.project.read().unwrap())?;
+        let rev = out.project.revision;
+        let prev = self.commit(out.project, origin).map_err(|e| EditError::Patch(e.to_string()))?;
+        let mut u = self.undo.lock().unwrap();
+        u.past.push((prev, origin.to_string()));
+        if u.past.len() > 200 {
+            u.past.remove(0);
+        }
+        u.future.clear();
+        Ok((rev, out.warnings))
     }
 
     pub fn apply_patch(&self, patch: &[json_patch::PatchOperation], base: Option<u64>, origin: &str) -> Result<(u64, Vec<Issue>), EditError> {
-        let out = {
-            let p = self.project.read().unwrap();
-            edit::apply_patch(&p, base, patch, &self.validation_context())?
-        };
-        self.commit(out.project, origin, out.warnings).map_err(|e| EditError::Patch(e.to_string()))
+        self.edit(origin, |p| edit::apply_patch(p, base, patch, &self.validation_context()))
     }
 
     pub fn replace_project(&self, doc: serde_json::Value, base: Option<u64>, origin: &str) -> Result<(u64, Vec<Issue>), EditError> {
-        let out = {
-            let p = self.project.read().unwrap();
-            edit::replace(&p, base, doc, &self.validation_context())?
-        };
-        self.commit(out.project, origin, out.warnings).map_err(|e| EditError::Patch(e.to_string()))
+        self.edit(origin, |p| edit::replace(p, base, doc, &self.validation_context()))
     }
 
     /// Undo/redo swap whole snapshots; the revision keeps increasing so clients never
     /// confuse an undone state with an older one.
     pub fn undo(&self) -> Option<u64> {
-        let (prev, origin) = self.undo.lock().unwrap().past.pop()?;
-        let mut cur = self.project.write().unwrap();
-        let rev = cur.revision + 1;
-        let mut restored = prev;
-        restored.revision = rev;
-        let now = std::mem::replace(&mut *cur, restored);
-        drop(cur);
-        self.undo.lock().unwrap().future.push((now, origin.clone()));
-        let _ = self.save();
-        let _ = self.events.send(Event::ProjectChanged { revision: rev, origin: format!("undo:{origin}") });
-        Some(rev)
+        self.swap(false)
     }
 
     pub fn redo(&self) -> Option<u64> {
-        let (next, origin) = self.undo.lock().unwrap().future.pop()?;
-        let mut cur = self.project.write().unwrap();
-        let rev = cur.revision + 1;
-        let mut restored = next;
-        restored.revision = rev;
-        let now = std::mem::replace(&mut *cur, restored);
-        drop(cur);
-        self.undo.lock().unwrap().past.push((now, origin.clone()));
-        let _ = self.save();
-        let _ = self.events.send(Event::ProjectChanged { revision: rev, origin: format!("redo:{origin}") });
-        Some(rev)
+        self.swap(true)
+    }
+
+    fn swap(&self, redo: bool) -> Option<u64> {
+        let _guard = self.edit.lock().unwrap();
+        let mut u = self.undo.lock().unwrap();
+        let (mut restored, origin) = if redo { u.future.pop()? } else { u.past.pop()? };
+        restored.revision = self.project.read().unwrap().revision + 1;
+        let rev = restored.revision;
+        let label = format!("{}:{origin}", if redo { "redo" } else { "undo" });
+        match self.commit(restored, &label) {
+            Ok(now) => {
+                if redo { &mut u.past } else { &mut u.future }.push((now, origin));
+                Some(rev)
+            }
+            Err(e) => {
+                tracing::warn!("{label} failed: {e:#}");
+                None
+            }
+        }
     }
 
     pub fn history(&self) -> (Vec<String>, Vec<String>) {

@@ -217,7 +217,7 @@ impl VarSpec {
     }
 }
 
-fn is_css_color(s: &str) -> bool {
+pub(crate) fn is_css_color(s: &str) -> bool {
     let Some(hex) = s.strip_prefix('#') else { return false };
     matches!(hex.len(), 3 | 4 | 6 | 8) && hex.chars().all(|c| c.is_ascii_hexdigit())
 }

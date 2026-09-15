@@ -125,6 +125,7 @@ async fn health(State(st): S) -> Json<Value> {
         "hyperframes": st.baker.version,
         "browser": st.baker.browser,
         "template_dirs": st.config.all_template_dirs(),
+        "templates_loaded": read(&st.templates).loaded.len(),
         "template_errors": read(&st.templates).errors,
         "preview_engine": preview::PreviewHandle::engine_path(&st).is_file(),
         "preview_running": st.preview.get().is_some(),

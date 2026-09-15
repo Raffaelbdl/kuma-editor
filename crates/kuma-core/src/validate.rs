@@ -38,7 +38,13 @@ pub struct ValidationContext {
     /// Project directory; bin paths resolve against it.
     pub root: PathBuf,
     /// Loaded overlay templates by id.
-    pub templates: BTreeMap<String, (PathBuf, TemplateManifest)>,
+    ///
+    /// `None` means the caller has no template knowledge and overlay ids are left
+    /// unchecked — that is the compiler, which knows nothing about the library. `Some`
+    /// means checked against exactly this set, so an id that is not in it is an error
+    /// **even when the set is empty**. Inferring the difference from emptiness instead
+    /// let a daemon with no library installed wave every overlay through as a warning.
+    pub templates: Option<BTreeMap<String, (PathBuf, TemplateManifest)>>,
     /// If false, missing media files are not checked at all (useful for tests).
     pub check_files: bool,
 }
@@ -71,16 +77,21 @@ pub fn validate(p: &Project, ctx: &ValidationContext) -> Vec<Issue> {
                     }
                 }
             }
-            BinSource::Overlay { template, vars } => match ctx.templates.get(template) {
-                None if ctx.templates.is_empty() => {
-                    issues.push(Issue::warn(format!("{ip}/source/template"), format!("template `{template}` not checked (no templates loaded)")));
-                }
-                None => issues.push(Issue::error(format!("{ip}/source/template"), format!("unknown template `{template}`"))),
-                Some((_, m)) => {
-                    for problem in m.check_vars(vars) {
-                        issues.push(Issue::error(format!("{ip}/source/vars"), problem));
+            BinSource::Overlay { template, vars } => match ctx.templates.as_ref() {
+                // The compiler validates structure without knowing the library.
+                None => {}
+                Some(loaded) => match loaded.get(template) {
+                    None if loaded.is_empty() => issues.push(Issue::error(
+                        format!("{ip}/source/template"),
+                        format!("unknown template `{template}`: no templates are loaded at all — install the library with `kuma library`"),
+                    )),
+                    None => issues.push(Issue::error(format!("{ip}/source/template"), format!("unknown template `{template}`"))),
+                    Some((_, m)) => {
+                        for problem in m.check_vars(vars) {
+                            issues.push(Issue::error(format!("{ip}/source/vars"), problem));
+                        }
                     }
-                }
+                },
             },
             BinSource::Color { color } => {
                 if !crate::template::is_css_color(color) {
@@ -411,9 +422,31 @@ mod tests {
             ]}]
         }));
         let manifest: TemplateManifest = serde_json::from_value(json!({ "id": "location-tag" })).unwrap();
-        let mut ctx = ValidationContext::default();
-        ctx.templates.insert("location-tag".into(), (PathBuf::new(), manifest));
+        let ctx = ValidationContext { templates: Some([("location-tag".to_string(), (PathBuf::new(), manifest))].into()), ..Default::default() };
         let m: Vec<_> = validate(&p, &ctx).into_iter().map(|i| i.message).collect();
         assert_eq!(m.iter().filter(|m| m.contains("nope")).count(), 1, "{m:?}");
+    }
+
+    /// An agent must not be able to add an overlay that does not exist. The daemon always
+    /// passes `Some`, so an unresolvable id is an error even when nothing is installed —
+    /// it used to downgrade to a warning and fail much later, at bake time.
+    #[test]
+    fn an_unknown_template_is_an_error_even_with_an_empty_library() {
+        let p = project(json!({
+            "bin": { "ghost": { "source": { "template": "totally-made-up" } } },
+            "tracks": [{ "id": "o1", "kind": "overlay", "clips": [
+                { "id": "g1", "start": 0, "end": 4, "bin": "ghost" }
+            ]}]
+        }));
+        // Daemon with nothing installed: refused, and the message says what to do.
+        let known_empty = ValidationContext { templates: Some(BTreeMap::new()), ..Default::default() };
+        let issues = validate(&p, &known_empty);
+        let bad: Vec<_> = issues.iter().filter(|i| i.severity == Severity::Error && i.path.contains("template")).collect();
+        assert_eq!(bad.len(), 1, "{issues:?}");
+        assert!(bad[0].message.contains("kuma library"), "{:?}", bad[0]);
+
+        // The compiler passes `None` and must stay silent about ids it cannot know.
+        let no_knowledge = ValidationContext::default();
+        assert!(validate(&p, &no_knowledge).iter().all(|i| !i.path.contains("template")), "compiler path must not judge template ids");
     }
 }

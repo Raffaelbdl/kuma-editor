@@ -152,6 +152,14 @@ impl AppState {
         for e in &errors {
             tracing::warn!("template skipped: {e}");
         }
+        // Zero templates is a configuration problem that otherwise looks like health:
+        // every overlay edit will now be refused, so say why once, loudly.
+        if all.is_empty() {
+            tracing::warn!(
+                "no overlay templates loaded from {:?} — overlay clips will be refused; run `kuma library` to install the starter set",
+                self.config.all_template_dirs()
+            );
+        }
         *write(&self.templates) = Templates { loaded: all, errors };
     }
 
@@ -164,7 +172,9 @@ impl AppState {
     }
 
     pub fn validation_context(&self) -> ValidationContext {
-        ValidationContext { root: self.config.project_root(), templates: read(&self.templates).loaded.clone(), check_files: true }
+        // `Some` even when empty: the daemon knows what is installed, so an unresolvable
+        // overlay id is an error rather than something to find out about at render time.
+        ValidationContext { root: self.config.project_root(), templates: Some(read(&self.templates).loaded.clone()), check_files: true }
     }
 
     pub fn save(&self) -> anyhow::Result<()> {

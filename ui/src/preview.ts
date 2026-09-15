@@ -11,7 +11,7 @@
 import { api } from "./api";
 import { store, toast } from "./store";
 import type { Clip, Project } from "./types";
-import { binItem, isOverlayClip, isSequenceSource, transformAt } from "./types";
+import { allClips, binItem, isOverlayClip, isSequenceSource, transformAt } from "./types";
 
 interface OverlayView {
   clipId: string;
@@ -303,14 +303,24 @@ export class Preview {
 }
 
 /** Everything the preview compile depends on, so an edit that cannot change the engine's
- *  picture does not make it reload the timeline. Overlays are excluded because they are
- *  live DOM (or, inside a nested sequence, skipped) — which means dropping overlay entries
- *  from the bin and overlay tracks from every sequence in it, not just the open one. */
+ *  picture does not make it reload the timeline.
+ *
+ *  Only the *open* sequence's overlays are outside it: those are live DOM, and the compile
+ *  skips them. Overlays inside nested sequences are baked into the engine's picture, so
+ *  editing one has to reload it — which means keeping their tracks and their bin entries
+ *  in the key, and dropping an overlay entry only when nothing but the open sequence
+ *  uses it. */
 function engineKey(p: Project, sequence: string): string {
+  const usedElsewhere = new Set(allClips(p).filter(({ seq }) => seq !== sequence).map(({ clip }) => clip.bin));
   const bin = Object.fromEntries(
     Object.entries(p.bin)
-      .filter(([, i]) => !("template" in i.source))
-      .map(([id, i]) => [id, isSequenceSource(i.source) ? { ...i, source: { ...i.source, tracks: i.source.tracks.filter((t) => t.kind !== "overlay") } } : i]),
+      .filter(([id, i]) => !("template" in i.source) || usedElsewhere.has(id))
+      .map(([id, i]) => [
+        id,
+        isSequenceSource(i.source) && id === sequence
+          ? { ...i, source: { ...i.source, tracks: i.source.tracks.filter((t) => t.kind !== "overlay") } }
+          : i,
+      ]),
   );
   return JSON.stringify([sequence, p.fps, p.width, p.height, p.sample_rate, bin]);
 }

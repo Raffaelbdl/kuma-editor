@@ -360,7 +360,18 @@ struct SnapshotQuery {
 
 /// One composited frame as PNG (melt), the pre-engine preview fallback.
 async fn snapshot(State(st): S, Query(q): Query<SnapshotQuery>) -> Result<Response, ApiError> {
-    let req = SampleRequest { t0: q.t, t1: None, count: 1, rect: None, width: q.width.or(Some(960)), overlays: false, sequence: Some(st.current_sequence()) };
+    // Same overlay scope as the engine preview this stands in for: nested sequences baked
+    // in, the open sequence's own left to the live DOM the UI draws on top.
+    let req = SampleRequest {
+        t0: q.t,
+        t1: None,
+        count: 1,
+        rect: None,
+        width: q.width.or(Some(960)),
+        overlays: false,
+        sequence: Some(st.current_sequence()),
+        nested_overlays_only: true,
+    };
     let samples = blocking(move || jobs::sample_frames(&st, &req, &|_, _| {})).await??;
     let bytes = std::fs::read(&samples[0].path).map_err(|e| anyhow::anyhow!(e))?;
     Ok(([(header::CONTENT_TYPE, "image/png"), (header::CACHE_CONTROL, "no-store")], bytes).into_response())

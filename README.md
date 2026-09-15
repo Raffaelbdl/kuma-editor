@@ -181,7 +181,9 @@ holds the tracks, and `master` names the one that gets rendered. A sequence plac
 another sequence is a nested sequence — edit a part separately, place it in the final cut,
 trim into it and put effects on this placement without touching the other. The editor
 opens one sequence at a time (the picker in the topbar); the preview compiles whichever is
-open, since the engine loads one timeline. A sequence cannot contain itself, and cannot be
+open, since the engine loads one timeline. Overlays on that sequence stay live DOM so edits
+show as you type; overlays inside the sequences it nests are baked into the preview, which
+is content you are not editing and is what the render will show. A sequence cannot contain itself, and cannot be
 sped up — MLT's `timewarp` takes a resource path, not a tractor, so render the part out
 and place the result as media.
 

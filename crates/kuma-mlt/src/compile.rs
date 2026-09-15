@@ -897,6 +897,31 @@ mod tests {
         assert!(xml.contains(r#"<transition id="luma_s1_s2" in="105" out="134">"#), "{xml}");
     }
 
+    /// An overlay inside a nested sequence is baked (the editor cannot drive it as live
+    /// DOM, since its clip times are its own sequence's), so its producer has to land
+    /// inside that sequence's tractor and not in the master's.
+    #[test]
+    fn a_baked_overlay_inside_a_nested_sequence_lands_in_that_sequence() {
+        let p = project(json!({
+            "fps": 30,
+            "bin": {
+                "tag": { "source": { "template": "location-tag" } },
+                "part": { "source": { "tracks": [{ "id": "po1", "kind": "overlay", "clips": [
+                    { "id": "o_in", "start": 0, "end": 4, "bin": "tag" }
+                ]}]}}
+            },
+            "tracks": [{ "id": "v1", "clips": [ { "id": "s1", "start": 0, "end": 4, "bin": "part" } ] }]
+        }));
+        let mut opts = CompileOptions::new("/proj");
+        // Unbaked it is skipped, which leaves the sequence empty and the compile with
+        // nothing to place.
+        assert!(!compile(&p, &opts).unwrap().contains("clip_o_in"));
+        opts.bakes.insert("o_in".into(), OverlayBake { resource: "/proj/.kuma/bakes/x/frame_%06d.png".into(), is_still: false });
+        let xml = compile(&p, &opts).unwrap();
+        assert!(xml.contains(r#"<producer id="clip_o_in""#), "{xml}");
+        assert!(xml.find("clip_o_in") < xml.find(r#"<tractor id="seq_part""#), "inside the sequence it belongs to: {xml}");
+    }
+
     /// Sound two levels down still needs an audio mix on the track carrying the sequence.
     #[test]
     fn audio_inside_a_sequence_reaches_the_outer_mix() {

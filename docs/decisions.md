@@ -114,11 +114,42 @@ MLT element ids in one compiled document and URL segments in one daemon, and kee
 global means `find_clip(id)`, the overlay preview routes and the bake map all work
 unchanged.
 
-**Known limitation:** an overlay inside a nested sequence is not live DOM while you scrub
-the timeline above it. Overlays are skipped by the preview compile everywhere, and only
-the open sequence's own overlay clips are driven as iframes, because only their clip times
-are the playhead's times. It renders correctly, and it is live when you open that
-sequence.
+**Overlays are live where you are editing and baked where you are not** — adopted, after
+the first cut shipped without it and an overlay inside a nested sequence was simply absent
+from the preview.
+
+The preview compile skips unbaked overlays, and the editor drives the open sequence's own
+overlay clips as live DOM. A nested sequence's overlays fell between the two: nothing
+drove them, because their clip times are their own sequence's rather than the playhead's,
+and nothing baked them either. The fix is to bake exactly those and leave the rest skipped
+— the two sets are disjoint, so no overlay is ever drawn twice.
+
+The split is not a compromise, it is the distinction the editor already draws. An overlay
+on the sequence you have open is being edited, so it must be live: that is why live DOM
+exists. An overlay inside a sequence you have merely placed is finished content, and a
+bake is the honest picture of it — it is what the render will show. Because bake keys are
+content hashes, it is a cache hit on every reload after the first (7 ms against 200 ms in
+a project with one nested overlay), and it warms the very entry the render then reuses.
+
+Two things this had to not break. Baking is **best effort**: a template that will not bake,
+or no hyperframes installed at all, costs that one overlay in the preview and never the
+preview itself, which was free before. And the baked set is narrowed to sequences the open
+one actually reaches, skipping hidden tracks, so a bin full of unplaced sequences does not
+buy a bake on every reload.
+
+The UI's engine key had to follow: overlay bin entries and overlay tracks used to be
+stripped from it wholesale, on the grounds that no overlay could change the engine's
+picture. Now the nested ones can, so only the *open* sequence's overlay tracks are
+stripped, and an overlay entry is dropped only when nothing outside the open sequence
+uses it.
+
+**Rejected: mapping a nested overlay's time up to the playhead and driving it live.** It
+is what "live everywhere" would need, and each step costs something. One sequence can be
+placed twice, so one overlay clip becomes two iframes and the view map stops being keyed
+by clip id. The placement's own trim and effects would have to compose with the inner
+clip's. And it would still be an approximation, since every overlay iframe is drawn above
+the engine's canvas regardless of what the timeline stacks above it. Baking is less code
+and is exactly right by construction.
 
 ---
 
@@ -309,19 +340,14 @@ annoying, because the validator and the agent both read metadata today.
 
 ## Still open
 
-Nested sequences are done, so this list is now the whole of what is next. The two items
-it gained from that work come first because they are the parts deliberately left out.
+Nested sequences are done, so this list is now the whole of what is next. The item it
+gained from that work comes first, because it is the part deliberately left out.
 
 - **Speed on a sequence clip**, refused today. The mechanism is known to work (see the
   spike above): write the sub-sequence to its own `.mlt` in the cache and hand `timewarp`
   that path. What makes it more than an afternoon is the lifecycle — one file per sped-up
   sequence, regenerated on every compile and at every size, since the preview compiles at
   half resolution and would need its own copy.
-
-- **Live preview of an overlay inside a nested sequence.** It renders; it is simply not
-  driven as DOM unless you open the sequence it lives on, because mapping its clip time up
-  through a trim (and through more than one placement) has no single answer. Baking the
-  nested overlays for the preview compile would work and would cost a bake on every edit.
 
 - **Every numeric effect parameter keyframable, through one shared type** — agreed, not
   built. Today only `transform` and `volume` take keyframes, so a "go blurry" ramp needs

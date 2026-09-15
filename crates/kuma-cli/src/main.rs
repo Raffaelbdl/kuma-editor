@@ -186,7 +186,7 @@ async fn main() -> anyhow::Result<()> {
                     Ok::<_, anyhow::Error>(kuma_core::template::Region { x: v[0], y: v[1], w: v[2], h: v[3] })
                 })
                 .transpose()?;
-            let req = kuma_daemon::jobs::SampleRequest { t0: *t0, t1: *t1, count: *count, rect, width: *width, overlays: true, sequence: sequence.clone() };
+            let req = kuma_daemon::jobs::SampleRequest { t0: *t0, t1: *t1, count: *count, rect, width: *width, overlays: true, sequence: sequence.clone(), nested_overlays_only: false };
             let samples = tokio::task::spawn_blocking(move || kuma_daemon::jobs::sample_frames(&state, &req, &|_, _| {})).await??;
             println!("{}", serde_json::to_string_pretty(&samples)?);
         }

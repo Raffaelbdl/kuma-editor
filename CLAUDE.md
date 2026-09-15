@@ -58,6 +58,10 @@ Chrome headless shell if hyperframes should not download one.
   tractor however often it is placed; each placement is a wrapper playlist carrying its own
   cut and filters, and a nested sequence's background is transparent. The daemon holds the
   open sequence as session state — never in the document.
+- Overlays are live DOM on the sequence you have open and **baked** in the sequences it
+  nests, which is what puts them in the preview at all; the two sets are disjoint, so none
+  is drawn twice. Preview bakes are best effort — a template that will not bake costs that
+  overlay, never the preview.
 - Every MLT detail (inclusive in/out, `<blank length>`, background track, `qtblend`/`mix`
   transitions, A/B lanes for dissolves) stays in `crates/kuma-mlt/src/compile.rs`.
   `tests/fixtures/reference.mlt` is a golden file: regenerate with

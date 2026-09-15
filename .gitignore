@@ -11,11 +11,12 @@ ui/dist/
 /engine/build
 
 # Project working data
-/.kuma/
-**/.kuma-cache/
+.kuma/
 /renders/
 /media/
 
 # Scratch
 *.log
 .DS_Store
+# Overlay thumbnails are generated (kuma thumbs)
+library/overlays/*/thumb.png

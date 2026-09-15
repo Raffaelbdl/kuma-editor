@@ -6,12 +6,6 @@ pub struct XmlWriter {
     depth: usize,
 }
 
-impl Default for XmlWriter {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl XmlWriter {
     pub fn new() -> Self {
         XmlWriter { buf: String::from("<?xml version=\"1.0\" encoding=\"utf-8\"?>\n"), depth: 0 }
@@ -70,13 +64,6 @@ impl XmlWriter {
         self.buf.push_str("\">");
         self.buf.push_str(&escape(value.as_ref()));
         self.buf.push_str("</property>\n");
-    }
-
-    pub fn comment(&mut self, text: &str) {
-        self.indent();
-        self.buf.push_str("<!-- ");
-        self.buf.push_str(&text.replace("--", "- -"));
-        self.buf.push_str(" -->\n");
     }
 
     pub fn finish(self) -> String {

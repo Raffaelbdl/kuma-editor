@@ -22,21 +22,12 @@ pub struct TemplateManifest {
     /// Default clip duration when dropped on the timeline, seconds.
     #[serde(default = "default_duration")]
     pub duration_default: f64,
-    /// Entry HTML file, relative to the template directory.
-    #[serde(default = "default_entry")]
-    pub entry: String,
     /// If true the template does not animate: it bakes to a single still frame.
     #[serde(default, rename = "static")]
     pub is_static: bool,
-    /// Bounding region in composition pixels that actually paints. Bakes crop to it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub region: Option<Region>,
     /// Typed variables exposed in the properties panel.
     #[serde(default)]
     pub vars: BTreeMap<String, VarSpec>,
-    /// Sound effects to place on an audio track, relative to the clip start.
-    #[serde(default)]
-    pub sfx: Vec<Sfx>,
     /// Free-form tags for the library browser.
     #[serde(default)]
     pub tags: Vec<String>,
@@ -45,10 +36,8 @@ pub struct TemplateManifest {
 fn default_duration() -> f64 {
     4.0
 }
-fn default_entry() -> String {
-    "index.html".into()
-}
 
+/// A pixel rectangle in composition space (frame sampling crops to one).
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct Region {
@@ -56,22 +45,6 @@ pub struct Region {
     pub y: u32,
     pub w: u32,
     pub h: u32,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct Sfx {
-    /// Path relative to the template directory.
-    pub path: String,
-    /// Offset from the clip start, seconds.
-    #[serde(default)]
-    pub at: f64,
-    #[serde(default = "one")]
-    pub gain: f64,
-}
-
-fn one() -> f64 {
-    1.0
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -83,7 +56,6 @@ pub enum VarType {
     Color,
     Boolean,
     Enum,
-    Asset,
     Point,
 }
 
@@ -111,30 +83,61 @@ pub struct VarSpec {
 impl TemplateManifest {
     pub fn load(dir: &Path) -> Result<Self, TemplateError> {
         let path = dir.join("template.json");
-        let text = std::fs::read_to_string(&path)
-            .map_err(|e| TemplateError::Io(path.clone(), e.to_string()))?;
-        let m: TemplateManifest = serde_json::from_str(&text)
-            .map_err(|e| TemplateError::Parse(path.clone(), e.to_string()))?;
+        let err = |reason: String| TemplateError { path: path.clone(), reason };
+        let text = std::fs::read_to_string(&path).map_err(|e| err(format!("cannot read: {e}")))?;
+        let m: TemplateManifest = serde_json::from_str(&text).map_err(|e| err(format!("cannot parse: {e}")))?;
         let folder = dir.file_name().and_then(|s| s.to_str()).unwrap_or("");
         if m.id != folder {
-            return Err(TemplateError::IdMismatch { path, id: m.id, folder: folder.into() });
+            return Err(err(format!("manifest id `{}` does not match folder `{folder}`", m.id)));
+        }
+        if let Some(problem) = m.check() {
+            return Err(err(problem));
+        }
+        // The renderer and the live preview both open `index.html` unconditionally, so a
+        // folder without one resolves fine and then 404s in preview and fails the bake.
+        // Refuse it here instead, the way a bin entry with a missing file is refused.
+        if !dir.join("index.html").is_file() {
+            return Err(err("index.html is missing from the template folder".into()));
         }
         Ok(m)
     }
 
-    /// Load every `overlays/*/template.json` under `root`.
-    pub fn load_all(root: &Path) -> BTreeMap<String, (PathBuf, TemplateManifest)> {
+    /// The manifest's own consistency: defaults obey their specs, enums have options,
+    /// the default duration is positive.
+    pub fn check(&self) -> Option<String> {
+        if !(self.duration_default > 0.0) {
+            return Some("duration_default must be > 0".into());
+        }
+        for (k, spec) in &self.vars {
+            if spec.ty == VarType::Enum && spec.options.is_empty() {
+                return Some(format!("var `{k}`: enum needs options"));
+            }
+            if let Some(p) = spec.check(&spec.default) {
+                return Some(format!("var `{k}`: default {p}"));
+            }
+        }
+        None
+    }
+
+    /// Load every `<root>/*/template.json`. A folder whose manifest fails to load is
+    /// reported, not silently skipped: a typo in one manifest would otherwise turn every
+    /// clip using it into an "unknown template" error.
+    pub fn load_all(root: &Path) -> (BTreeMap<String, (PathBuf, TemplateManifest)>, Vec<TemplateError>) {
         let mut out = BTreeMap::new();
-        let Ok(rd) = std::fs::read_dir(root) else { return out };
+        let mut errors = Vec::new();
+        let Ok(rd) = std::fs::read_dir(root) else { return (out, errors) };
         for entry in rd.flatten() {
             let dir = entry.path();
             if dir.join("template.json").is_file() {
-                if let Ok(m) = TemplateManifest::load(&dir) {
-                    out.insert(m.id.clone(), (dir, m));
+                match TemplateManifest::load(&dir) {
+                    Ok(m) => {
+                        out.insert(m.id.clone(), (dir, m));
+                    }
+                    Err(e) => errors.push(e),
                 }
             }
         }
-        out
+        (out, errors)
     }
 
     /// Effective variable values: defaults overlaid with `overrides`.
@@ -200,11 +203,6 @@ impl VarSpec {
                     return Some(format!("`{s}` not in {:?}", self.options));
                 }
             }
-            VarType::Asset => {
-                if !v.is_string() {
-                    return Some("expected a path string".into());
-                }
-            }
             VarType::Point => {
                 let ok = v.get("x").and_then(Value::as_f64).is_some()
                     && v.get("y").and_then(Value::as_f64).is_some();
@@ -217,19 +215,17 @@ impl VarSpec {
     }
 }
 
-fn is_css_color(s: &str) -> bool {
+pub(crate) fn is_css_color(s: &str) -> bool {
     let Some(hex) = s.strip_prefix('#') else { return false };
     matches!(hex.len(), 3 | 4 | 6 | 8) && hex.chars().all(|c| c.is_ascii_hexdigit())
 }
 
-#[derive(Debug, thiserror::Error)]
-pub enum TemplateError {
-    #[error("cannot read {0}: {1}")]
-    Io(PathBuf, String),
-    #[error("cannot parse {0}: {1}")]
-    Parse(PathBuf, String),
-    #[error("{path}: manifest id `{id}` does not match folder `{folder}`")]
-    IdMismatch { path: PathBuf, id: String, folder: String },
+/// A manifest that could not be loaded: which file, and why.
+#[derive(Debug, Clone, thiserror::Error, Serialize)]
+#[error("{path}: {reason}")]
+pub struct TemplateError {
+    pub path: PathBuf,
+    pub reason: String,
 }
 
 #[cfg(test)]
@@ -270,5 +266,34 @@ mod tests {
         o.insert("nope".into(), json!(1));
         let p = m.check_vars(&o);
         assert_eq!(p.len(), 4, "{p:?}");
+    }
+
+    #[test]
+    fn manifest_checks_itself() {
+        let bad = |v: serde_json::Value| serde_json::from_value::<TemplateManifest>(v).unwrap().check().expect("should be rejected");
+        assert!(bad(json!({ "id": "t", "duration_default": 0 })).contains("duration"));
+        assert!(bad(json!({ "id": "t", "vars": { "s": { "type": "enum", "default": "a", "options": [] } } })).contains("options"));
+        assert!(bad(json!({ "id": "t", "vars": { "n": { "type": "number", "default": "big" } } })).contains("default"));
+        assert!(bad(json!({ "id": "t", "vars": { "n": { "type": "number", "default": 5, "max": 1 } } })).contains("max"));
+        assert!(manifest().check().is_none());
+    }
+
+    /// A folder carrying a manifest but no markup used to load, resolve and validate
+    /// cleanly, then 404 in the live preview and fail the bake.
+    #[test]
+    fn a_template_folder_needs_its_index_html() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("location-tag");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("template.json"), r#"{ "id": "location-tag" }"#).unwrap();
+
+        let e = TemplateManifest::load(&dir).expect_err("no index.html yet");
+        assert!(e.reason.contains("index.html"), "{e:?}");
+        // load_all reports it rather than skipping the folder silently.
+        let (loaded, errors) = TemplateManifest::load_all(tmp.path());
+        assert!(loaded.is_empty() && errors.len() == 1, "{loaded:?} {errors:?}");
+
+        std::fs::write(dir.join("index.html"), "<div data-composition-id=\"main\"></div>").unwrap();
+        assert_eq!(TemplateManifest::load(&dir).unwrap().id, "location-tag");
     }
 }

@@ -25,7 +25,7 @@ pub enum FpsRepr {
 impl From<FpsRepr> for Fps {
     fn from(r: FpsRepr) -> Self {
         match r {
-            FpsRepr::Rational { num, den } => Fps { num, den: den.max(1) },
+            FpsRepr::Rational { num, den } => Fps::new(num, den.max(1)),
             FpsRepr::Number(n) => Fps::from_f64(n),
         }
     }
@@ -52,8 +52,10 @@ impl JsonSchema for Fps {
 }
 
 impl Fps {
+    /// Always stored reduced, so `Eq`/`Hash`/`Display` agree for equal rates.
     pub const fn new(num: u32, den: u32) -> Self {
-        Fps { num, den }
+        let g = gcd(num, den);
+        if g == 0 { Fps { num, den } } else { Fps { num: num / g, den: den / g } }
     }
 
     /// Map a float to a rational, snapping the NTSC family to their exact 1001 forms.
@@ -70,11 +72,8 @@ impl Fps {
                 return Fps { num, den: 1001 };
             }
         }
-        if (n - n.round()).abs() < 1e-9 {
-            return Fps { num: n.round() as u32, den: 1 };
-        }
-        // Generic fallback: 3 decimal places.
-        Fps { num: (n * 1000.0).round() as u32, den: 1000 }
+        // Generic fallback: 3 decimal places, reduced.
+        Fps::new((n * 1000.0).round() as u32, 1000)
     }
 
     pub fn as_f64(&self) -> f64 {
@@ -84,11 +83,6 @@ impl Fps {
     /// Seconds → frame index, rounded to nearest. This is the only rounding site.
     pub fn frame(&self, secs: f64) -> i64 {
         (secs * self.num as f64 / self.den as f64).round() as i64
-    }
-
-    /// Frame index → seconds (exact for the rational).
-    pub fn secs(&self, frame: i64) -> f64 {
-        frame as f64 * self.den as f64 / self.num as f64
     }
 
     /// Frame span for a `[start, end)` range in seconds, as MLT expects it:
@@ -111,16 +105,6 @@ impl Default for Fps {
     }
 }
 
-impl std::fmt::Display for Fps {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if self.den == 1 {
-            write!(f, "{}", self.num)
-        } else {
-            write!(f, "{}/{}", self.num, self.den)
-        }
-    }
-}
-
 /// Inclusive frame range as MLT models it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ClipFrames {
@@ -132,9 +116,10 @@ impl ClipFrames {
     pub fn len(&self) -> i64 {
         self.out - self.in_ + 1
     }
-    pub fn is_empty(&self) -> bool {
-        self.len() <= 0
-    }
+}
+
+const fn gcd(a: u32, b: u32) -> u32 {
+    if b == 0 { a } else { gcd(b, a % b) }
 }
 
 #[cfg(test)]
@@ -146,6 +131,8 @@ mod tests {
         assert_eq!(Fps::from_f64(29.97), Fps::new(30000, 1001));
         assert_eq!(Fps::from_f64(23.976), Fps::new(24000, 1001));
         assert_eq!(Fps::from_f64(30.0), Fps::new(30, 1));
+        assert_eq!(Fps::from_f64(25.5), Fps { num: 51, den: 2 });
+        assert_eq!(Fps::new(60000, 2002), Fps::new(30000, 1001));
     }
 
     #[test]
@@ -175,8 +162,6 @@ mod tests {
         // 10 minutes at 29.97 is 17982.017 frames → 17982; an integer 29.97 would give 17982
         // here too but drift by a frame every ~33 s in accumulated clip math.
         assert_eq!(fps.frame(600.0), 17982);
-        // Round-tripping lands within one frame period of the original time.
-        assert!((fps.secs(fps.frame(600.0)) - 600.0).abs() < 1.0 / fps.as_f64());
         // Accumulating 1000 one-second clips must equal one 1000-second clip.
         let per_clip: i64 = (0..1000).map(|i| fps.clip_frames(i as f64, i as f64 + 1.0).len()).sum();
         assert_eq!(per_clip, fps.clip_frames(0.0, 1000.0).len());

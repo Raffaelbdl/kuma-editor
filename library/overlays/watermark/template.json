@@ -1,0 +1,14 @@
+{
+  "id": "watermark",
+  "name": "Watermark",
+  "description": "Static text watermark in a corner. Bakes to a single still frame.",
+  "duration_default": 10.0,
+  "static": true,
+  "tags": ["watermark", "static", "brand"],
+  "vars": {
+    "text":    { "type": "string", "default": "@kuma", "label": "Text" },
+    "corner":  { "type": "enum",   "options": ["top-left", "top-right", "bottom-left", "bottom-right"], "default": "bottom-right", "label": "Corner" },
+    "opacity": { "type": "number", "default": 0.6, "min": 0.05, "max": 1, "step": 0.05, "label": "Opacity" },
+    "size":    { "type": "number", "default": 1.0, "min": 0.5, "max": 3, "step": 0.1, "label": "Size" }
+  }
+}

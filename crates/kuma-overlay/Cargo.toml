@@ -3,6 +3,16 @@ name = "kuma-overlay"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+description = "Bakes HTML overlay templates to alpha frame sequences via hyperframes"
 
 [dependencies]
 kuma-core.workspace = true
+kuma-mlt.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+hex.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

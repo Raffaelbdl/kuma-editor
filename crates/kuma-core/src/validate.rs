@@ -35,11 +35,17 @@ impl Issue {
 /// What the validator needs from the outside world.
 #[derive(Debug, Default, Clone)]
 pub struct ValidationContext {
-    /// Project directory; asset paths resolve against it.
+    /// Project directory; bin paths resolve against it.
     pub root: PathBuf,
     /// Loaded overlay templates by id.
-    pub templates: BTreeMap<String, (PathBuf, TemplateManifest)>,
-    /// If false, missing asset files are warnings rather than errors (useful for tests).
+    ///
+    /// `None` means the caller has no template knowledge and overlay ids are left
+    /// unchecked — that is the compiler, which knows nothing about the library. `Some`
+    /// means checked against exactly this set, so an id that is not in it is an error
+    /// **even when the set is empty**. Inferring the difference from emptiness instead
+    /// let a daemon with no library installed wave every overlay through as a warning.
+    pub templates: Option<BTreeMap<String, (PathBuf, TemplateManifest)>>,
+    /// If false, missing media files are not checked at all (useful for tests).
     pub check_files: bool,
 }
 
@@ -56,15 +62,41 @@ pub fn validate(p: &Project, ctx: &ValidationContext) -> Vec<Issue> {
         issues.push(Issue::error("/width", "width/height must be positive even numbers"));
     }
 
-    for (id, a) in &p.assets {
-        if ctx.check_files {
-            let path = if std::path::Path::new(&a.path).is_absolute() {
-                PathBuf::from(&a.path)
-            } else {
-                ctx.root.join(&a.path)
-            };
-            if !path.is_file() {
-                issues.push(Issue::error(format!("/assets/{id}/path"), format!("file not found: {}", a.path)));
+    // Bin entries are checked once each, however many clips place them. Overlay vars are
+    // checked here rather than per clip, because the entry is what carries them now.
+    let mut bin_ids = HashSet::new();
+    for (id, item) in &p.bin {
+        let ip = format!("/bin/{id}");
+        check_id(&mut issues, &mut bin_ids, id, format!("{ip}/id"), "bin");
+        match &item.source {
+            BinSource::File { path, .. } => {
+                if ctx.check_files {
+                    let full = if std::path::Path::new(path).is_absolute() { PathBuf::from(path) } else { ctx.root.join(path) };
+                    if !full.is_file() {
+                        issues.push(Issue::error(format!("{ip}/source/path"), format!("file not found: {path}")));
+                    }
+                }
+            }
+            BinSource::Overlay { template, vars } => match ctx.templates.as_ref() {
+                // The compiler validates structure without knowing the library.
+                None => {}
+                Some(loaded) => match loaded.get(template) {
+                    None if loaded.is_empty() => issues.push(Issue::error(
+                        format!("{ip}/source/template"),
+                        format!("unknown template `{template}`: no templates are loaded at all — install the library with `kuma library`"),
+                    )),
+                    None => issues.push(Issue::error(format!("{ip}/source/template"), format!("unknown template `{template}`"))),
+                    Some((_, m)) => {
+                        for problem in m.check_vars(vars) {
+                            issues.push(Issue::error(format!("{ip}/source/vars"), problem));
+                        }
+                    }
+                },
+            },
+            BinSource::Color { color } => {
+                if !crate::template::is_css_color(color) {
+                    issues.push(Issue::error(format!("{ip}/source/color"), "colour must be #rgb, #rrggbb or #rrggbbaa"));
+                }
             }
         }
     }
@@ -73,73 +105,73 @@ pub fn validate(p: &Project, ctx: &ValidationContext) -> Vec<Issue> {
     let mut clip_ids = HashSet::new();
     for (ti, t) in p.tracks.iter().enumerate() {
         let tp = format!("/tracks/{ti}");
-        if !track_ids.insert(t.id.as_str()) {
-            issues.push(Issue::error(format!("{tp}/id"), format!("duplicate track id `{}`", t.id)));
-        }
-        let mut clips: Vec<(usize, &Clip)> = t.clips.iter().enumerate().collect();
-        clips.sort_by(|a, b| a.1.start.partial_cmp(&b.1.start).unwrap_or(std::cmp::Ordering::Equal));
+        check_id(&mut issues, &mut track_ids, &t.id, format!("{tp}/id"), "track");
+        let clips = t.sorted_clips();
 
         for (ci, c) in &clips {
             let cp = format!("{tp}/clips/{ci}");
-            if !clip_ids.insert(c.id.as_str()) {
-                issues.push(Issue::error(format!("{cp}/id"), format!("duplicate clip id `{}`", c.id)));
-            }
+            check_id(&mut issues, &mut clip_ids, &c.id, format!("{cp}/id"), "clip");
             if !(c.start >= 0.0 && c.end > c.start) {
                 issues.push(Issue::error(format!("{cp}/end"), "clip must have start >= 0 and end > start"));
+            } else if c.duration() * p.fps.as_f64() < 1.0 - 1e-9 {
+                issues.push(Issue::error(format!("{cp}/end"), "clip is shorter than one frame"));
             }
+            let item = p.item(c);
             if c.speed == 0.0 || !c.speed.is_finite() || c.speed.abs() > 20.0 || c.speed.abs() < 0.01 {
                 issues.push(Issue::error(format!("{cp}/speed"), "speed must be in ±[0.01, 20]"));
+            } else if item.is_some_and(BinItem::is_overlay) && !(1.0..=240.0).contains(&(p.fps.as_f64() / c.speed.abs())) {
+                // The bake renders at fps/|speed|, which hyperframes bounds to 1..240.
+                issues.push(Issue::error(format!("{cp}/speed"), "overlay speed must keep fps/|speed| within 1..240"));
             }
-            match &c.src {
-                ClipSource::Asset { asset, source_in } => {
-                    if t.kind == TrackKind::Overlay {
-                        issues.push(Issue::error(format!("{cp}/src"), "overlay tracks only hold overlay clips"));
+            match item {
+                None => issues.push(Issue::error(format!("{cp}/bin"), format!("unknown bin entry `{}`", c.bin))),
+                Some(item) => {
+                    // A track's kind changes what the compiler does, so only the case that
+                    // actually breaks is an error. An overlay track is skipped by the
+                    // preview compile, so anything else on one is invisible while
+                    // scrubbing and then reappears in the render. The rest render
+                    // correctly and are warnings about intent: a baked overlay is an
+                    // ordinary producer anywhere, and an audio-only entry on a video track
+                    // simply shows the tracks beneath it while its sound still plays.
+                    // Video on an audio track stays silent here: the compiler hides its
+                    // picture deliberately, which is the normal "use only the audio" move.
+                    if t.kind == TrackKind::Overlay && !item.is_overlay() {
+                        issues.push(Issue::error(format!("{cp}/bin"), "overlay tracks only hold overlay clips"));
+                    } else if t.kind != TrackKind::Overlay && item.is_overlay() {
+                        issues.push(Issue::warn(format!("{cp}/bin"), "overlay clip on a non-overlay track"));
+                    } else if t.kind == TrackKind::Video && item.is_audio_only() {
+                        issues.push(Issue::warn(
+                            format!("{cp}/bin"),
+                            format!("`{}` has no video: on a video track it takes up a lane and shows nothing. Put it on an audio track.", c.bin),
+                        ));
                     }
-                    match p.assets.get(asset) {
-                        None => issues.push(Issue::error(format!("{cp}/src/asset"), format!("unknown asset `{asset}`"))),
-                        Some(a) => {
-                            if *source_in < 0.0 {
-                                issues.push(Issue::error(format!("{cp}/src/in"), "in must be >= 0"));
-                            }
-                            if let Some(d) = a.meta.as_ref().and_then(|m| m.duration) {
-                                let need = source_in + c.duration() * c.speed.abs();
-                                if a.kind != AssetKind::Image && need > d + 1e-6 {
-                                    issues.push(Issue::warn(
-                                        format!("{cp}/end"),
-                                        format!("clip reads {need:.2}s of a {d:.2}s asset; tail will be black/silent"),
-                                    ));
-                                }
-                            }
-                        }
+                    if c.source_in < 0.0 {
+                        issues.push(Issue::error(format!("{cp}/in"), "in must be >= 0"));
+                    } else if c.source_in > 0.0 && !item.is_timed_media() {
+                        issues.push(Issue::error(format!("{cp}/in"), "in applies only to video/audio entries; this one is generated to fit the clip"));
                     }
-                }
-                ClipSource::Overlay { overlay, vars } => {
-                    if t.kind != TrackKind::Overlay {
-                        issues.push(Issue::warn(format!("{cp}/src"), "overlay clip on a non-overlay track"));
-                    }
-                    match ctx.templates.get(overlay) {
-                        None => {
-                            if ctx.templates.is_empty() {
-                                issues.push(Issue::warn(format!("{cp}/src/overlay"), format!("template `{overlay}` not checked (no templates loaded)")));
-                            } else {
-                                issues.push(Issue::error(format!("{cp}/src/overlay"), format!("unknown template `{overlay}`")));
-                            }
-                        }
-                        Some((_, m)) => {
-                            for problem in m.check_vars(vars) {
-                                issues.push(Issue::error(format!("{cp}/src/vars"), problem));
+                    if item.is_timed_media() {
+                        if let Some(d) = item.meta.as_ref().and_then(|m| m.duration) {
+                            let need = c.source_in + c.duration() * c.speed.abs();
+                            if need > d + 1e-6 {
+                                issues.push(Issue::warn(
+                                    format!("{cp}/end"),
+                                    format!("clip reads {need:.2}s of a {d:.2}s source; tail will be black/silent"),
+                                ));
                             }
                         }
-                    }
-                }
-                ClipSource::Color { color } => {
-                    if !color.starts_with('#') {
-                        issues.push(Issue::error(format!("{cp}/src/color"), "colour must be #rrggbb or #rrggbbaa"));
                     }
                 }
             }
+            // A second effect of these kinds would stack (two volume filters square the
+            // gain) or silently shadow the first (blend); only `mlt` may repeat.
+            let mut kinds = HashSet::new();
             for (ei, e) in c.effects.iter().enumerate() {
                 let ep = format!("{cp}/effects/{ei}");
+                let kind = serde_json::to_value(e).ok().and_then(|v| v["type"].as_str().map(String::from)).unwrap_or_default();
+                if kind != "mlt" && !kinds.insert(kind.clone()) {
+                    issues.push(Issue::error(ep.clone(), format!("duplicate `{kind}` effect on this clip")));
+                }
                 match e {
                     Effect::Crop { left, right, top, bottom, radius } => {
                         if left + right >= 1.0 || top + bottom >= 1.0 {
@@ -149,18 +181,18 @@ pub fn validate(p: &Project, ctx: &ValidationContext) -> Vec<Issue> {
                             issues.push(Issue::error(ep.clone(), "crop values must be within 0..1"));
                         }
                     }
-                    Effect::Transform { keyframes, opacity, .. } => {
+                    Effect::Transform { keyframes, opacity, scale, .. } => {
                         if !(0.0..=1.0).contains(opacity) {
                             issues.push(Issue::error(format!("{ep}/opacity"), "opacity must be 0..1"));
                         }
-                        let mut last = f64::NEG_INFINITY;
+                        let good_scale = |s: f64| s.is_finite() && s > 0.0;
+                        if !good_scale(*scale) {
+                            issues.push(Issue::error(format!("{ep}/scale"), "scale must be > 0"));
+                        }
+                        check_keyframes(&mut issues, &ep, c, keyframes.iter().map(|k| k.t));
                         for (ki, k) in keyframes.iter().enumerate() {
-                            if k.t < last {
-                                issues.push(Issue::error(format!("{ep}/keyframes/{ki}/t"), "keyframes must be sorted by t"));
-                            }
-                            last = k.t;
-                            if k.t > c.duration() + 1e-9 {
-                                issues.push(Issue::warn(format!("{ep}/keyframes/{ki}/t"), "keyframe beyond clip end"));
+                            if k.scale.is_some_and(|s| !good_scale(s)) {
+                                issues.push(Issue::error(format!("{ep}/keyframes/{ki}/scale"), "scale must be > 0"));
                             }
                         }
                     }
@@ -178,6 +210,7 @@ pub fn validate(p: &Project, ctx: &ValidationContext) -> Vec<Issue> {
                         if keyframes.is_empty() {
                             issues.push(Issue::error(ep.clone(), "volume needs at least one keyframe"));
                         }
+                        check_keyframes(&mut issues, &ep, c, keyframes.iter().map(|k| k.t));
                     }
                     Effect::Mlt { service, .. } => {
                         if service.trim().is_empty() {
@@ -201,41 +234,104 @@ pub fn validate(p: &Project, ctx: &ValidationContext) -> Vec<Issue> {
             }
         }
 
-        // Transitions must join adjacent clips and have handles.
+        // Transitions must join adjacent media clips and have handles. A clip may be the
+        // `to` of one transition and the `from` of the next; the two halves must fit.
+        let mut handles: BTreeMap<&str, f64> = BTreeMap::new();
+        let mut pairs = HashSet::new();
         for (xi, x) in t.transitions.iter().enumerate() {
             let xp = format!("{tp}/transitions/{xi}");
+            if !pairs.insert((x.from.as_str(), x.to.as_str())) {
+                issues.push(Issue::error(xp.clone(), "duplicate transition"));
+            }
             let from = clips.iter().position(|(_, c)| c.id == x.from);
             let to = clips.iter().position(|(_, c)| c.id == x.to);
-            match (from, to) {
-                (Some(f), Some(tt)) if tt == f + 1 => {
-                    let (_, a) = clips[f];
-                    let (_, b) = clips[tt];
-                    if (b.start - a.end).abs() > 1e-6 {
-                        issues.push(Issue::error(xp.clone(), "transition clips must be butt-joined (no gap)"));
-                    }
-                    if x.duration <= 0.0 {
-                        issues.push(Issue::error(format!("{xp}/duration"), "duration must be > 0"));
-                    }
-                    let half = x.duration / 2.0;
-                    if let ClipSource::Asset { source_in, .. } = &b.src {
-                        if *source_in < half - 1e-9 {
-                            issues.push(Issue::error(
-                                format!("{xp}/duration"),
-                                format!("`{}` needs {half:.2}s of handle before its in point", b.id),
-                            ));
+            let (a, b) = match (from, to) {
+                (Some(f), Some(tt)) if tt == f + 1 => (clips[f].1, clips[tt].1),
+                (Some(_), Some(_)) => {
+                    issues.push(Issue::error(xp, "transition clips must be adjacent, from → to"));
+                    continue;
+                }
+                _ => {
+                    issues.push(Issue::error(xp, "transition references an unknown clip"));
+                    continue;
+                }
+            };
+            if (b.start - a.end).abs() > 1e-6 {
+                issues.push(Issue::error(xp.clone(), "transition clips must be butt-joined (no gap)"));
+            }
+            if x.duration <= 0.0 {
+                issues.push(Issue::error(format!("{xp}/duration"), "duration must be > 0"));
+            }
+            if [a, b].iter().any(|c| p.item(c).is_some_and(BinItem::is_overlay)) {
+                issues.push(Issue::error(xp.clone(), "transitions are not supported on overlay clips (bakes carry no handles)"));
+            }
+            let half = x.duration / 2.0;
+            for c in [a, b] {
+                let h = handles.entry(c.id.as_str()).or_default();
+                *h += half;
+                if *h > c.duration() + 1e-9 {
+                    issues.push(Issue::error(format!("{xp}/duration"), format!("transitions on `{}` are longer than the clip", c.id)));
+                }
+            }
+            // Handles are in source time: a 2× clip eats twice the material. Stills and
+            // colours are generated to any length and need none.
+            if p.item(b).is_some_and(BinItem::is_timed_media) {
+                let need = half * b.speed.abs();
+                if b.source_in < need - 1e-9 {
+                    issues.push(Issue::error(format!("{xp}/duration"), format!("`{}` needs {need:.2}s of handle before its in point", b.id)));
+                }
+            }
+            // The `from` side needs material after its out point; only checkable with probed metadata.
+            if let Some(d) = p.item(a).filter(|i| i.is_timed_media()).and_then(|i| i.meta.as_ref()).and_then(|m| m.duration) {
+                let need = a.source_in + (a.duration() + half) * a.speed.abs();
+                if need > d + 1e-6 {
+                    issues.push(Issue::warn(
+                        format!("{xp}/duration"),
+                        format!("`{}` has no {:.2}s of handle after its out point; the dissolve tail will be black", a.id, half * a.speed.abs()),
+                    ));
+                }
+            }
+            if x.kind == TransitionKind::Wipe {
+                if !(0.0..=1.0).contains(&x.softness) {
+                    issues.push(Issue::error(format!("{xp}/softness"), "softness must be 0..1"));
+                }
+                if let Some(l) = &x.luma {
+                    if !LUMAS.contains(&l.as_str()) {
+                        let lp = std::path::Path::new(l);
+                        if lp.is_absolute() || lp.components().any(|c| !matches!(c, std::path::Component::Normal(_))) {
+                            issues.push(Issue::error(format!("{xp}/luma"), "luma path must stay inside the project"));
+                        } else if ctx.check_files && !ctx.root.join(lp).is_file() {
+                            issues.push(Issue::error(format!("{xp}/luma"), format!("unknown luma `{l}`: use one of {LUMAS:?} or a file under the project")));
                         }
                     }
-                    if half > a.duration() || half > b.duration() {
-                        issues.push(Issue::error(format!("{xp}/duration"), "transition longer than the clips it joins"));
-                    }
                 }
-                (Some(_), Some(_)) => issues.push(Issue::error(xp, "transition clips must be adjacent, from → to")),
-                _ => issues.push(Issue::error(xp, "transition references an unknown clip")),
             }
         }
     }
 
     issues
+}
+
+/// Keyframe times must be non-negative and sorted; beyond the clip end they are pointless.
+fn check_keyframes(issues: &mut Vec<Issue>, ep: &str, c: &Clip, times: impl Iterator<Item = f64>) {
+    let mut last = f64::NEG_INFINITY;
+    for (ki, t) in times.enumerate() {
+        if t < 0.0 || t < last {
+            issues.push(Issue::error(format!("{ep}/keyframes/{ki}/t"), "keyframes must be >= 0 and sorted by t"));
+        }
+        last = t;
+        if t > c.duration() + 1e-9 {
+            issues.push(Issue::warn(format!("{ep}/keyframes/{ki}/t"), "keyframe beyond clip end"));
+        }
+    }
+}
+
+fn check_id<'a>(issues: &mut Vec<Issue>, seen: &mut HashSet<&'a str>, id: &'a str, path: String, what: &str) {
+    if !is_valid_id(id) {
+        issues.push(Issue::error(path, format!("{what} id `{id}` must match [A-Za-z_][A-Za-z0-9_-]*")));
+    } else if !seen.insert(id) {
+        issues.push(Issue::error(path, format!("duplicate {what} id `{id}`")));
+    }
 }
 
 pub fn has_errors(issues: &[Issue]) -> bool {
@@ -252,30 +348,147 @@ mod tests {
     }
 
     #[test]
-    fn overlap_and_missing_asset_are_errors() {
+    fn overlap_and_missing_bin_entry_are_errors() {
         let p = project(json!({
-            "assets": {},
+            "bin": { "black": { "source": { "color": "#000" } } },
             "tracks": [{ "id": "v1", "clips": [
-                { "id": "a", "start": 0, "end": 5, "src": { "asset": "nope" } },
-                { "id": "b", "start": 4, "end": 8, "src": { "color": "#000" } }
+                { "id": "a", "start": 0, "end": 5, "bin": "nope" },
+                { "id": "b", "start": 4, "end": 8, "bin": "black" }
             ]}]
         }));
         let issues = validate(&p, &ValidationContext::default());
         let msgs: Vec<_> = issues.iter().map(|i| i.message.as_str()).collect();
-        assert!(msgs.iter().any(|m| m.contains("unknown asset")), "{msgs:?}");
+        assert!(msgs.iter().any(|m| m.contains("unknown bin entry")), "{msgs:?}");
         assert!(msgs.iter().any(|m| m.contains("overlaps")), "{msgs:?}");
     }
 
+    fn messages(p: &Project) -> Vec<String> {
+        validate(p, &ValidationContext::default()).into_iter().map(|i| i.message).collect()
+    }
+
     #[test]
-    fn transition_needs_handle() {
+    fn transition_needs_handle_in_source_time() {
         let p = project(json!({
-            "assets": { "x": { "path": "x.mp4" } },
+            "bin": { "x": { "source": { "path": "x.mp4" } } },
             "tracks": [{ "id": "v1", "clips": [
-                { "id": "a", "start": 0, "end": 5, "src": { "asset": "x" } },
-                { "id": "b", "start": 5, "end": 8, "src": { "asset": "x", "in": 0.1 } }
+                { "id": "a", "start": 0, "end": 5, "bin": "x" },
+                { "id": "b", "start": 5, "end": 8, "bin": "x", "in": 0.1 }
             ], "transitions": [ { "from": "a", "to": "b", "duration": 1.0 } ]}]
         }));
+        assert!(messages(&p).iter().any(|m| m.contains("handle")));
+        // 0.5 s of handle is enough at 1×, not at 2×.
+        let mut p2 = p.clone();
+        p2.tracks[0].clips[1].source_in = 0.5;
+        assert!(!messages(&p2).iter().any(|m| m.contains("handle")));
+        p2.tracks[0].clips[1].speed = 2.0;
+        assert!(messages(&p2).iter().any(|m| m.contains("handle")));
+    }
+
+    #[test]
+    fn chained_transitions_must_fit_the_middle_clip() {
+        let p = project(json!({
+            "bin": { "x": { "source": { "path": "x.mp4" } } },
+            "tracks": [{ "id": "v1", "clips": [
+                { "id": "a", "start": 0, "end": 5, "bin": "x" },
+                { "id": "b", "start": 5, "end": 6, "bin": "x", "in": 2 },
+                { "id": "c", "start": 6, "end": 10, "bin": "x", "in": 2 }
+            ], "transitions": [ { "from": "a", "to": "b", "duration": 1.5 }, { "from": "b", "to": "c", "duration": 1.5 } ]}]
+        }));
+        assert!(messages(&p).iter().any(|m| m.contains("longer than the clip")));
+    }
+
+    #[test]
+    fn ids_sub_frame_clips_and_colours_are_checked() {
+        let p = project(json!({
+            "fps": 30,
+            "bin": { "red": { "source": { "color": "#red" } } },
+            "tracks": [{ "id": "v 1", "clips": [
+                { "id": "1a", "start": 0, "end": 0.01, "bin": "red" }
+            ]}]
+        }));
+        let m = messages(&p);
+        assert!(m.iter().any(|m| m.contains("track id")) && m.iter().any(|m| m.contains("clip id")), "{m:?}");
+        assert!(m.iter().any(|m| m.contains("shorter than one frame")), "{m:?}");
+        assert!(m.iter().any(|m| m.contains("colour")), "{m:?}");
+    }
+
+    #[test]
+    fn in_is_rejected_on_a_generated_entry() {
+        let p = project(json!({
+            "bin": { "black": { "source": { "color": "#000000" } }, "v": { "source": { "path": "x.mp4" } } },
+            "tracks": [{ "id": "v1", "clips": [
+                { "id": "a", "start": 0, "end": 5, "bin": "black", "in": 2 },
+                { "id": "b", "start": 5, "end": 9, "bin": "v", "in": 2 }
+            ]}]
+        }));
+        let m = messages(&p);
+        assert_eq!(m.iter().filter(|m| m.contains("in applies only")).count(), 1, "{m:?}");
+    }
+
+    #[test]
+    fn overlay_vars_are_checked_once_per_entry_not_per_clip() {
+        // Two clips of one entry must not report the same bad var twice.
+        let p = project(json!({
+            "bin": { "tag": { "source": { "template": "location-tag", "vars": { "nope": 1 } } } },
+            "tracks": [{ "id": "o1", "kind": "overlay", "clips": [
+                { "id": "a", "start": 0, "end": 4, "bin": "tag" },
+                { "id": "b", "start": 4, "end": 8, "bin": "tag" }
+            ]}]
+        }));
+        let manifest: TemplateManifest = serde_json::from_value(json!({ "id": "location-tag" })).unwrap();
+        let ctx = ValidationContext { templates: Some([("location-tag".to_string(), (PathBuf::new(), manifest))].into()), ..Default::default() };
+        let m: Vec<_> = validate(&p, &ctx).into_iter().map(|i| i.message).collect();
+        assert_eq!(m.iter().filter(|m| m.contains("nope")).count(), 1, "{m:?}");
+    }
+
+    /// Track kinds change what the compiler emits, so the rules differ by direction:
+    /// only the combination that renders wrongly is refused.
+    #[test]
+    fn a_clip_is_checked_against_its_track_kind() {
+        let p = project(json!({
+            "bin": {
+                "song": { "source": { "path": "song.mp3", "kind": "audio" } },
+                "cam":  { "source": { "path": "cam.mp4", "kind": "video" } }
+            },
+            "tracks": [
+                { "id": "v1", "kind": "video", "clips": [ { "id": "a", "start": 0, "end": 4, "bin": "song" } ] },
+                { "id": "a1", "kind": "audio", "clips": [ { "id": "b", "start": 0, "end": 4, "bin": "cam" } ] },
+                { "id": "o1", "kind": "overlay", "clips": [ { "id": "c", "start": 0, "end": 4, "bin": "cam" } ] }
+            ]
+        }));
         let issues = validate(&p, &ValidationContext::default());
-        assert!(issues.iter().any(|i| i.message.contains("handle")), "{issues:?}");
+        let at = |path: &str| issues.iter().find(|i| i.path == path);
+
+        // Audio on a video track renders fine but hides nothing and shows nothing: warn.
+        let w = at("/tracks/0/clips/0/bin").expect("audio on a video track is flagged");
+        assert_eq!(w.severity, Severity::Warning);
+        assert!(w.message.contains("no video"), "{w:?}");
+        // Video on an audio track is the deliberate "use only the audio" case: silent.
+        assert!(at("/tracks/1/clips/0/bin").is_none(), "{issues:?}");
+        // Anything but an overlay on an overlay track is invisible in preview: error.
+        assert_eq!(at("/tracks/2/clips/0/bin").expect("checked").severity, Severity::Error);
+    }
+
+    /// An agent must not be able to add an overlay that does not exist. The daemon always
+    /// passes `Some`, so an unresolvable id is an error even when nothing is installed —
+    /// it used to downgrade to a warning and fail much later, at bake time.
+    #[test]
+    fn an_unknown_template_is_an_error_even_with_an_empty_library() {
+        let p = project(json!({
+            "bin": { "ghost": { "source": { "template": "totally-made-up" } } },
+            "tracks": [{ "id": "o1", "kind": "overlay", "clips": [
+                { "id": "g1", "start": 0, "end": 4, "bin": "ghost" }
+            ]}]
+        }));
+        // Daemon with nothing installed: refused, and the message says what to do.
+        let known_empty = ValidationContext { templates: Some(BTreeMap::new()), ..Default::default() };
+        let issues = validate(&p, &known_empty);
+        let bad: Vec<_> = issues.iter().filter(|i| i.severity == Severity::Error && i.path.contains("template")).collect();
+        assert_eq!(bad.len(), 1, "{issues:?}");
+        assert!(bad[0].message.contains("kuma library"), "{:?}", bad[0]);
+
+        // The compiler passes `None` and must stay silent about ids it cannot know.
+        let no_knowledge = ValidationContext::default();
+        assert!(validate(&p, &no_knowledge).iter().all(|i| !i.path.contains("template")), "compiler path must not judge template ids");
     }
 }

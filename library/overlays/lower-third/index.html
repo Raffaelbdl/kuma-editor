@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <script src="_vendor/gsap.min.js"></script>
+    <script src="_vendor/kuma.js"></script>
+    <link rel="stylesheet" href="_vendor/kuma.css" />
+    <style>
+      .lt {
+        position: absolute; bottom: calc(var(--var-bottom) * 100%);
+        left: calc(5.5 * var(--u));
+        display: grid; grid-template-columns: auto 1fr; align-items: stretch;
+        font-family: "Segoe UI", system-ui, sans-serif; color: #fff;
+        will-change: transform, opacity;
+      }
+      .lt.right { left: auto; right: calc(5.5 * var(--u)); direction: rtl; }
+      .lt.right .text { direction: ltr; text-align: right; }
+      .rule { width: calc(0.9 * var(--u)); background: var(--var-accent); border-radius: 2px; transform-origin: 50% 100%; }
+      .text { padding: calc(1.2 * var(--u)) calc(2.4 * var(--u)); background: rgba(12, 12, 18, 0.82);
+              backdrop-filter: blur(8px); border-radius: 0 calc(1.2 * var(--u)) calc(1.2 * var(--u)) 0; overflow: hidden; }
+      .lt.right .text { border-radius: calc(1.2 * var(--u)) 0 0 calc(1.2 * var(--u)); }
+      .name { font-size: calc(4.2 * var(--u)); font-weight: 700; letter-spacing: -0.01em; line-height: 1.05; }
+      .title { font-size: calc(2.0 * var(--u)); opacity: 0.78; margin-top: calc(0.5 * var(--u)); }
+    </style>
+  </head>
+  <body>
+    <div id="root" data-composition-id="main" data-start="0" data-duration="5" data-width="1920" data-height="1080">
+      <div id="lt" class="clip lt" data-start="0" data-duration="5">
+        <div class="rule" id="rule"></div>
+        <div class="text">
+          <div class="name" id="name">Raffael</div>
+          <div class="title" id="title">Hybrid video editing</div>
+        </div>
+      </div>
+    </div>
+    <script>
+      const { vars, duration, text, timeline } = kumaTemplate({
+        name: "Raffael", title: "Hybrid video editing", accent: "#ff4f00", side: "left", bottom: 0.12, size: 1,
+      });
+      text("name", vars.name);
+      text("title", vars.title);
+      document.getElementById("lt").classList.toggle("right", vars.side === "right");
+      const dir = vars.side === "right" ? 1 : -1;
+
+      const tl = timeline();
+      tl.from("#rule", { scaleY: 0, duration: 0.4, ease: "power3.out" }, 0);
+      tl.from(".text", { xPercent: dir * -8, opacity: 0, clipPath: "inset(0 100% 0 0)", duration: 0.6, ease: "power3.out" }, 0.15);
+      tl.to("#lt", { x: dir * -60, opacity: 0, duration: 0.45, ease: "power2.in" }, Math.max(0.8, duration - 0.45));
+    </script>
+  </body>
+</html>

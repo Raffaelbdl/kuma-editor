@@ -1,0 +1,20 @@
+{
+  "id": "zoom-to-rect",
+  "name": "Zoom to region",
+  "description": "Zoom into a region of a screen recording and hold. Region is given as centre + zoom factor in composition pixels.",
+  "params": {
+    "cx": { "type": "number", "default": 960, "min": 0, "max": 3840, "step": 10, "label": "Centre X" },
+    "cy": { "type": "number", "default": 540, "min": 0, "max": 2160, "step": 10, "label": "Centre Y" },
+    "zoom": { "type": "number", "default": 1.6, "min": 1.0, "max": 4.0, "step": 0.1 },
+    "in": { "type": "number", "default": 0.8, "min": 0.1, "max": 10, "step": 0.1, "label": "Zoom-in seconds" },
+    "hold": { "type": "number", "default": 4, "min": 0, "max": 60, "step": 0.5, "label": "Hold seconds" }
+  },
+  "effects": [
+    { "type": "transform", "keyframes": [
+      { "t": 0, "scale": 1.0, "x": 0, "y": 0 },
+      { "t": "$in", "scale": "$zoom", "x": "$(width / 2 - cx) * zoom", "y": "$(height / 2 - cy) * zoom" },
+      { "t": "$in + hold", "scale": "$zoom", "x": "$(width / 2 - cx) * zoom", "y": "$(height / 2 - cy) * zoom" },
+      { "t": "$in + hold + in", "scale": 1.0, "x": 0, "y": 0 }
+    ] }
+  ]
+}

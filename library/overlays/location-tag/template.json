@@ -1,0 +1,15 @@
+{
+  "id": "location-tag",
+  "name": "Location tag",
+  "description": "A map-pin style tag with a place name and optional coordinates. Slides in, floats gently, slides out.",
+  "duration_default": 4.0,
+  "tags": ["label", "tag", "location", "travel"],
+  "vars": {
+    "label":   { "type": "string", "default": "Paris, France", "label": "Place" },
+    "sub":     { "type": "string", "default": "48.8566° N, 2.3522° E", "label": "Subtitle" },
+    "accent":  { "type": "color",  "default": "#ff4f00", "label": "Accent" },
+    "anchor":  { "type": "point",  "default": { "x": 0.68, "y": 0.28 }, "label": "Anchor (fraction of frame)" },
+    "style":   { "type": "enum",   "options": ["pin", "chip"], "default": "pin", "label": "Style" },
+    "size":    { "type": "number", "default": 1.0, "min": 0.5, "max": 2.5, "step": 0.1, "label": "Size" }
+  }
+}

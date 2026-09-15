@@ -3,26 +3,25 @@
 
 use std::path::{Path, PathBuf};
 
-pub const BUILTIN: &[&str] = &[
-    "wipe_left",
-    "wipe_right",
-    "wipe_up",
-    "wipe_down",
-    "iris",
-    "diagonal",
-];
+use kuma_core::LUMAS;
 
-/// Resolve a luma name or path to a file, generating built-ins under `cache_dir`.
-pub fn resolve(name: &str, cache_dir: &Path) -> std::io::Result<PathBuf> {
-    let p = Path::new(name);
-    if p.is_file() {
-        return Ok(p.to_path_buf());
+/// Resolve a luma name or project-relative path to a file, generating built-ins under
+/// `cache_dir`. Paths may not leave the project (the validator checks this too).
+pub fn resolve(name: &str, root: &Path, cache_dir: &Path) -> std::io::Result<PathBuf> {
+    let rel = Path::new(name);
+    let inside = !rel.is_absolute() && rel.components().all(|c| matches!(c, std::path::Component::Normal(_)));
+    let p = root.join(rel);
+    if inside && p.is_file() {
+        return Ok(p);
     }
-    if BUILTIN.contains(&name) {
+    if LUMAS.contains(&name) {
         let out = cache_dir.join(format!("{name}.pgm"));
         if !out.is_file() {
+            // A preview compile and a render may generate the same luma at once.
             std::fs::create_dir_all(cache_dir)?;
-            std::fs::write(&out, generate(name, 512, 288))?;
+            let tmp = cache_dir.join(format!("{name}.pgm.tmp{}", std::process::id()));
+            std::fs::write(&tmp, generate(name, 512, 288))?;
+            std::fs::rename(&tmp, &out)?;
         }
         return Ok(out);
     }

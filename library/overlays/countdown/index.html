@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <script src="_vendor/gsap.min.js"></script>
+    <script src="_vendor/kuma.js"></script>
+    <link rel="stylesheet" href="_vendor/kuma.css" />
+    <style>
+      .cd { position: absolute; left: calc(var(--var-at-x) * 100%); top: calc(var(--var-at-y) * 100%);
+            transform: translate(-50%, -50%); width: calc(28 * var(--u)); height: calc(28 * var(--u)); }
+      svg { position: absolute; inset: 0; width: 100%; height: 100%; transform: rotate(-90deg); }
+      .track { fill: rgba(0,0,0,0.5); stroke: rgba(255,255,255,0.18); stroke-width: 6; }
+      .ring { fill: none; stroke: var(--var-accent); stroke-width: 6; stroke-linecap: round; }
+      .digit { position: absolute; inset: 0; display: grid; place-items: center; color: #fff;
+               font: 800 calc(14 * var(--u))/1 "Segoe UI", system-ui, sans-serif; will-change: transform, opacity; }
+    </style>
+  </head>
+  <body>
+    <div id="root" data-composition-id="main" data-start="0" data-duration="3" data-width="1920" data-height="1080">
+      <div id="cd" class="clip cd" data-start="0" data-duration="3">
+        <svg viewBox="0 0 100 100"><circle class="track" cx="50" cy="50" r="46" /><circle id="ring" class="ring" cx="50" cy="50" r="46" /></svg>
+        <div id="digits"></div>
+      </div>
+    </div>
+    <script>
+      const { vars, timeline } = kumaTemplate({ from: 3, accent: "#ff4f00", at: { x: 0.5, y: 0.5 }, size: 1 });
+      const n = Math.max(1, Math.round(vars.from));
+      const digits = document.getElementById("digits");
+      const els = [];
+      for (let i = n; i >= 1; i--) { const d = document.createElement("div"); d.className = "digit"; d.textContent = String(i); d.style.opacity = "0"; digits.appendChild(d); els.push(d); }
+      const C = 2 * Math.PI * 46;
+      document.getElementById("ring").style.strokeDasharray = String(C);
+
+      // Every second: a digit pops in and fades; the ring drains linearly over the whole count.
+      const tl = timeline();
+      tl.fromTo("#ring", { strokeDashoffset: 0 }, { strokeDashoffset: C, duration: n, ease: "none" }, 0);
+      els.forEach((d, i) => {
+        tl.fromTo(d, { opacity: 0, scale: 1.6 }, { opacity: 1, scale: 1, duration: 0.25, ease: "power3.out" }, i);
+        tl.to(d, { opacity: 0, scale: 0.8, duration: 0.25, ease: "power2.in" }, i + 0.75);
+      });
+    </script>
+  </body>
+</html>

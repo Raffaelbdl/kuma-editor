@@ -1,0 +1,15 @@
+{
+  "id": "lower-third",
+  "name": "Lower third",
+  "description": "Name and title bar anchored to the bottom, with an accent rule. Slides in from the side and out at the end.",
+  "duration_default": 5.0,
+  "tags": ["lower-third", "name", "title", "talking-head"],
+  "vars": {
+    "name":     { "type": "string", "default": "Raffael", "label": "Name" },
+    "title":    { "type": "string", "default": "Hybrid video editing", "label": "Title" },
+    "accent":   { "type": "color",  "default": "#ff4f00", "label": "Accent" },
+    "side":     { "type": "enum",   "options": ["left", "right"], "default": "left", "label": "Side" },
+    "bottom":   { "type": "number", "default": 0.12, "min": 0, "max": 0.9, "step": 0.01, "label": "Bottom (fraction)" },
+    "size":     { "type": "number", "default": 1.0, "min": 0.5, "max": 2.5, "step": 0.1, "label": "Size" }
+  }
+}

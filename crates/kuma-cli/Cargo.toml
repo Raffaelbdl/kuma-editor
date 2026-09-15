@@ -3,6 +3,7 @@ name = "kuma-cli"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+description = "kuma command line: serve, render, bake, sample, mcp"
 
 [[bin]]
 name = "kuma"
@@ -10,3 +11,13 @@ path = "src/main.rs"
 
 [dependencies]
 kuma-core.workspace = true
+kuma-mlt.workspace = true
+kuma-overlay.workspace = true
+kuma-daemon.workspace = true
+kuma-mcp.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+tokio.workspace = true
+clap.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true

@@ -1,0 +1,53 @@
+import type { DaemonEvent, EffectPreset, Issue, PatchOp, Preset, Project, TemplateInfo } from "./types";
+
+async function json<T>(url: string, init?: RequestInit): Promise<T> {
+  const r = await fetch(url, { headers: { "content-type": "application/json" }, ...init });
+  const body = await r.json().catch(() => ({}));
+  if (!r.ok) {
+    const err = new Error(body.error ?? `${r.status} ${r.statusText}`) as Error & { status: number; body: unknown };
+    err.status = r.status;
+    err.body = body;
+    throw err;
+  }
+  return body as T;
+}
+
+export const api = {
+  project: () => json<Project>("/api/project"),
+  patch: (patch: PatchOp[], base_revision: number, origin = "ui") =>
+    json<{ revision: number; warnings: Issue[] }>("/api/project/patch", { method: "POST", body: JSON.stringify({ patch, base_revision, origin }) }),
+  undo: () => json<{ revision: number | null }>("/api/project/undo", { method: "POST", body: "{}" }),
+  redo: () => json<{ revision: number | null }>("/api/project/redo", { method: "POST", body: "{}" }),
+  templates: () => json<TemplateInfo[]>("/api/templates"),
+  presets: () => json<Preset[]>("/api/presets"),
+  effectPresets: () => json<EffectPreset[]>("/api/presets/effects"),
+  thumbs: () => json<{ job: number }>("/api/templates/thumbs", { method: "POST", body: "{}" }),
+  reloadTemplates: () => json<TemplateInfo[]>("/api/templates", { method: "POST", body: "{}" }),
+  addMedia: (path: string, base_revision: number) =>
+    json<{ id: string; revision: number }>("/api/bin", { method: "POST", body: JSON.stringify({ path, base_revision, origin: "ui: add media" }) }),
+  render: (preset: string) => json<{ job: number }>("/api/render", { method: "POST", body: JSON.stringify({ preset }) }),
+  previewReload: (scale?: number) => json<{ mlt: string; scale: number }>("/api/preview/reload", { method: "POST", body: JSON.stringify(scale === undefined ? {} : { scale }) }),
+  snapshotUrl: (t: number, width = 960) => `/api/snapshot?t=${t.toFixed(3)}&width=${width}&_=${Date.now()}`,
+};
+
+/** Subscribe to daemon events with automatic reconnect. */
+export function subscribeEvents(onEvent: (e: DaemonEvent) => void, onStatus?: (connected: boolean) => void): () => void {
+  let ws: WebSocket | null = null;
+  let closed = false;
+  let timer = 0;
+  const connect = () => {
+    const proto = location.protocol === "https:" ? "wss" : "ws";
+    ws = new WebSocket(`${proto}://${location.host}/api/events`);
+    ws.onopen = () => onStatus?.(true);
+    ws.onmessage = (m) => {
+      try { onEvent(JSON.parse(m.data)); } catch { /* ignore */ }
+    };
+    ws.onclose = () => {
+      onStatus?.(false);
+      if (!closed) timer = window.setTimeout(connect, 1500);
+    };
+    ws.onerror = () => ws?.close();
+  };
+  connect();
+  return () => { closed = true; clearTimeout(timer); ws?.close(); };
+}

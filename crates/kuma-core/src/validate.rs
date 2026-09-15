@@ -126,10 +126,24 @@ pub fn validate(p: &Project, ctx: &ValidationContext) -> Vec<Issue> {
             match item {
                 None => issues.push(Issue::error(format!("{cp}/bin"), format!("unknown bin entry `{}`", c.bin))),
                 Some(item) => {
-                    if item.is_overlay() && t.kind != TrackKind::Overlay {
-                        issues.push(Issue::warn(format!("{cp}/bin"), "overlay clip on a non-overlay track"));
-                    } else if !item.is_overlay() && t.kind == TrackKind::Overlay {
+                    // A track's kind changes what the compiler does, so only the case that
+                    // actually breaks is an error. An overlay track is skipped by the
+                    // preview compile, so anything else on one is invisible while
+                    // scrubbing and then reappears in the render. The rest render
+                    // correctly and are warnings about intent: a baked overlay is an
+                    // ordinary producer anywhere, and an audio-only entry on a video track
+                    // simply shows the tracks beneath it while its sound still plays.
+                    // Video on an audio track stays silent here: the compiler hides its
+                    // picture deliberately, which is the normal "use only the audio" move.
+                    if t.kind == TrackKind::Overlay && !item.is_overlay() {
                         issues.push(Issue::error(format!("{cp}/bin"), "overlay tracks only hold overlay clips"));
+                    } else if t.kind != TrackKind::Overlay && item.is_overlay() {
+                        issues.push(Issue::warn(format!("{cp}/bin"), "overlay clip on a non-overlay track"));
+                    } else if t.kind == TrackKind::Video && item.is_audio_only() {
+                        issues.push(Issue::warn(
+                            format!("{cp}/bin"),
+                            format!("`{}` has no video: on a video track it takes up a lane and shows nothing. Put it on an audio track.", c.bin),
+                        ));
                     }
                     if c.source_in < 0.0 {
                         issues.push(Issue::error(format!("{cp}/in"), "in must be >= 0"));
@@ -425,6 +439,34 @@ mod tests {
         let ctx = ValidationContext { templates: Some([("location-tag".to_string(), (PathBuf::new(), manifest))].into()), ..Default::default() };
         let m: Vec<_> = validate(&p, &ctx).into_iter().map(|i| i.message).collect();
         assert_eq!(m.iter().filter(|m| m.contains("nope")).count(), 1, "{m:?}");
+    }
+
+    /// Track kinds change what the compiler emits, so the rules differ by direction:
+    /// only the combination that renders wrongly is refused.
+    #[test]
+    fn a_clip_is_checked_against_its_track_kind() {
+        let p = project(json!({
+            "bin": {
+                "song": { "source": { "path": "song.mp3", "kind": "audio" } },
+                "cam":  { "source": { "path": "cam.mp4", "kind": "video" } }
+            },
+            "tracks": [
+                { "id": "v1", "kind": "video", "clips": [ { "id": "a", "start": 0, "end": 4, "bin": "song" } ] },
+                { "id": "a1", "kind": "audio", "clips": [ { "id": "b", "start": 0, "end": 4, "bin": "cam" } ] },
+                { "id": "o1", "kind": "overlay", "clips": [ { "id": "c", "start": 0, "end": 4, "bin": "cam" } ] }
+            ]
+        }));
+        let issues = validate(&p, &ValidationContext::default());
+        let at = |path: &str| issues.iter().find(|i| i.path == path);
+
+        // Audio on a video track renders fine but hides nothing and shows nothing: warn.
+        let w = at("/tracks/0/clips/0/bin").expect("audio on a video track is flagged");
+        assert_eq!(w.severity, Severity::Warning);
+        assert!(w.message.contains("no video"), "{w:?}");
+        // Video on an audio track is the deliberate "use only the audio" case: silent.
+        assert!(at("/tracks/1/clips/0/bin").is_none(), "{issues:?}");
+        // Anything but an overlay on an overlay track is invisible in preview: error.
+        assert_eq!(at("/tracks/2/clips/0/bin").expect("checked").severity, Severity::Error);
     }
 
     /// An agent must not be able to add an overlay that does not exist. The daemon always

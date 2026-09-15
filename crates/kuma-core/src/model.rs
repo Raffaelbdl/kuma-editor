@@ -214,6 +214,12 @@ impl BinItem {
         matches!(self.source, BinSource::Overlay { .. })
     }
 
+    /// A media file the probe found no video in. It renders nothing, so on a video track
+    /// it occupies a lane and shows the tracks below it.
+    pub fn is_audio_only(&self) -> bool {
+        matches!(&self.source, BinSource::File { kind, .. } if *kind == MediaKind::Audio)
+    }
+
     /// What the browser shows for this entry.
     pub fn display_name<'a>(&'a self, id: &'a str) -> &'a str {
         if self.name.is_empty() {

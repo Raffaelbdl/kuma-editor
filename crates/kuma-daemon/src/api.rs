@@ -30,6 +30,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/project/undo", post(undo))
         .route("/api/project/redo", post(redo))
         .route("/api/project/validate", get(validate_project))
+        .route("/api/sequence", get(get_sequence).post(open_sequence))
         .route("/api/schema", get(schema))
         .route("/api/templates", get(templates).post(reload_templates))
         .route("/api/templates/thumbs", post(thumbs))
@@ -129,6 +130,7 @@ async fn health(State(st): S) -> Json<Value> {
         "template_errors": read(&st.templates).errors,
         "preview_engine": preview::PreviewHandle::engine_path(&st).is_file(),
         "preview_running": st.preview.get().is_some(),
+        "sequence": st.current_sequence(),
         "preview_error": lock(&st.preview.last_error).clone(),
     }))
 }
@@ -167,6 +169,32 @@ async fn validate_project(State(st): S) -> Json<Value> {
     let p = read(&st.project).clone();
     let issues = validate(&p, &st.validation_context());
     Json(json!({ "issues": issues, "duration": p.duration() }))
+}
+
+/// Which sequence is open for editing, and every sequence available to open. Session
+/// state: it is not in the document and does not survive a restart.
+async fn get_sequence(State(st): S) -> Json<Value> {
+    let p = read(&st.project);
+    let current = st.current_sequence();
+    let list: Vec<Value> = p
+        .sequences()
+        .map(|(id, seq)| json!({ "id": id, "name": p.bin[id].display_name(id), "duration": seq.duration(), "tracks": seq.tracks.len() }))
+        .collect();
+    Json(json!({ "current": current, "master": p.master, "sequences": list }))
+}
+
+#[derive(Deserialize)]
+struct OpenSequence {
+    /// Sequence to open. `null` goes back to following the master.
+    #[serde(default)]
+    sequence: Option<String>,
+}
+
+async fn open_sequence(State(st): S, Json(req): Json<OpenSequence>) -> ApiResult {
+    let current = st.open_sequence(req.sequence).map_err(ApiError::bad_request)?;
+    // The engine holds one compiled timeline, so opening a sequence is a reload.
+    let reloaded = preview::reload(&st).await.is_ok();
+    Ok(Json(json!({ "current": current, "preview_reloaded": reloaded })))
 }
 
 async fn schema() -> Json<Value> {
@@ -332,7 +360,7 @@ struct SnapshotQuery {
 
 /// One composited frame as PNG (melt), the pre-engine preview fallback.
 async fn snapshot(State(st): S, Query(q): Query<SnapshotQuery>) -> Result<Response, ApiError> {
-    let req = SampleRequest { t0: q.t, t1: None, count: 1, rect: None, width: q.width.or(Some(960)), overlays: false };
+    let req = SampleRequest { t0: q.t, t1: None, count: 1, rect: None, width: q.width.or(Some(960)), overlays: false, sequence: Some(st.current_sequence()) };
     let samples = blocking(move || jobs::sample_frames(&st, &req, &|_, _| {})).await??;
     let bytes = std::fs::read(&samples[0].path).map_err(|e| anyhow::anyhow!(e))?;
     Ok(([(header::CONTENT_TYPE, "image/png"), (header::CACHE_CONTROL, "no-store")], bytes).into_response())
@@ -465,7 +493,7 @@ async fn preview_reload(State(st): S, body: Option<Json<PreviewReload>>) -> ApiR
 /// preloaded, so the UI can drive it with `seek(t)`.
 async fn overlay_preview(State(st): S, Path(clip): Path<String>) -> Result<Response, ApiError> {
     let project = read(&st.project).clone();
-    let (_, c) = project.find_clip(&clip).ok_or(ApiError::not_found("no such clip"))?;
+    let (_, _, c) = project.find_clip(&clip).ok_or(ApiError::not_found("no such clip"))?;
     // The bin entry decides the template and its vars; the clip decides how long it runs.
     let Some(BinSource::Overlay { template, vars }) = project.item(c).map(|i| &i.source) else {
         return Err(ApiError::bad_request("not an overlay clip"));
@@ -493,7 +521,7 @@ async fn overlay_preview(State(st): S, Path(clip): Path<String>) -> Result<Respo
 /// Files referenced by a previewed overlay, resolved against its template dir.
 async fn overlay_file(State(st): S, Path((clip, rest)): Path<(String, String)>) -> Result<Response, ApiError> {
     let project = read(&st.project).clone();
-    let (_, c) = project.find_clip(&clip).ok_or(ApiError::not_found("no such clip"))?;
+    let (_, _, c) = project.find_clip(&clip).ok_or(ApiError::not_found("no such clip"))?;
     let Some(BinSource::Overlay { template, .. }) = project.item(c).map(|i| &i.source) else {
         return Err(ApiError::bad_request("not an overlay clip"));
     };

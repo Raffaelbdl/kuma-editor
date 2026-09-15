@@ -11,63 +11,114 @@ then replaced; **deferred** is agreed direction, not yet built. Where a decision
 
 ---
 
-## Next step: nested sequences
+## Nested sequences
 
-**Not started.** This is the priority for whoever picks the project up, ahead of the
-folders and search work that the bin refactor was meant to unblock.
-
-**What.** A sequence is a timeline that can be placed on another timeline, so parts of a
-video are edited separately and juxtaposed in the final render. It is the feature the
-project's owner uses heavily in Kdenlive, and kuma has no equivalent: `tracks` sits at
-project level, so there is exactly one timeline.
+**Adopted.** A sequence is a timeline that can be placed on another timeline, so parts of
+a video are edited separately and juxtaposed in the final render. It was the priority for
+whoever picked the project up, and it is now in the code.
 
 **Shape.** A sequence is a bin entry, which is how Kdenlive does it — its file format
 documentation describes `main_bin` as listing clips *and* timeline sequences as entries.
-That makes it a fourth source variant rather than a new concept:
+It is a fourth source variant rather than a new concept:
 
 ```rust
 pub enum BinSource {
     File { path, kind, proxy },
     Overlay { template, vars },
     Color { color },
-    Sequence { tracks: Vec<Track>, markers: Vec<Marker> },   // new
+    Sequence(Sequence),          // { tracks, markers }
 }
 ```
 
-`Project.tracks` moves into a bin entry and the project keeps a pointer to whichever entry
-is the master. Everything a clip already does then applies to a sequence unchanged —
-naming, thumbnails, trim, effects, transitions — because a clip is a placement and does
-not care what it places. This is the payoff of the bin refactor and the reason to do this
-now rather than before it.
+`Project.tracks` and `Project.markers` are gone; the project keeps `master`, the id of the
+entry that is the master timeline. Everything a clip already did applies to a sequence
+unchanged — naming, trim, `in`, effects, transitions — because a clip is a placement and
+does not care what it places. This was the payoff of the bin refactor.
 
-**Already in place.** MLT nests natively: a sequence is a tractor and a tractor is a
-producer. The compiler does this in miniature today, emitting a tractor for a track with a
-dissolve and then referencing it as that track's producer, so the emit-and-reference
-machinery exists and is covered by the golden test.
+`tracks` is **required** on the sequence variant rather than defaulted. The enum is
+untagged, so without that an entry whose source matched nothing would quietly deserialize
+as an empty timeline instead of being rejected.
 
-**Spike this first.** Speed on a sequence clip. Trimming into a nested tractor should be
-fine, but the `timewarp` producer takes a resource path and it is unconfirmed that it
-accepts a tractor. If it does not, a sped-up sequence needs a different mechanism and that
-shapes the model, so settle it with `melt` before writing any Rust.
+**The format stays version 1, with no migration** — decided rather than inherited. This
+supersedes nothing: the earlier "no upgrade path" entry below said changing the format
+means bumping `PROJECT_VERSION` and writing one, and the answer here was that there is
+nothing to migrate, so neither happened. A `*.kuma.json` written before this change does
+not open; `kuma init` writes the new shape.
 
-**The three parts that are real work, not plumbing.**
+### What the spike settled
 
-1. *Cycle detection*, and it has to land with the model rather than after. A sequence that
-   contains itself transitively makes the compiler recurse forever. It is a graph walk in
-   the validator.
-2. *Topological compile order*. Inner sequences must be emitted as tractors before the
-   outer ones reference them. The compiler currently emits producers and then one tractor,
-   so this is the part that changes most.
-3. *Preview scope*. The engine loads one compiled file, so editing a sub-sequence means
-   previewing that sub-sequence. The daemon needs a notion of the current sequence, which
-   is session state rather than project state, and it touches the preview transport, the
-   compile path and the UI together.
+The previous version of this entry said to settle speed on a sequence clip with `melt`
+before writing any Rust, because `timewarp` takes a resource path and it was unconfirmed
+that it accepts a tractor. It does not, and four other things came out of the same
+afternoon. Measurements used a 120-frame source whose frame *i* is a solid grey of level
+*i*×2, so a decoded frame names its own source index.
 
-Also remember `bake_all` walks `project.tracks` and will need to walk every sequence.
+1. **`timewarp` cannot take a tractor.** `resource="0.5:seq"` makes MLT resolve `seq` as a
+   file path: `[producer_xml] failed to load producer "0.5:<root>/seq"`, and the output is
+   one frozen frame rather than an error. **`timewarp` on a `.mlt` *file* does work** —
+   60 output frames spanning source 0..30 at 0.5×. So the file route is available, and
+   what shipped is the other option: **speed ≠ 1 on a sequence clip is a validation
+   error** naming the workaround (render the part out, place it as media). Doing it
+   properly means writing each sped-up sequence to its own `.mlt` in the cache and
+   regenerating it per compile and per size, which is a side-file lifecycle the compiler
+   does not otherwise have. Left for when someone wants it; it is known to work.
+2. **Trimming into a nested tractor is exact**, so `in` on a sequence clip needed no
+   special mechanism.
+3. **One tractor can back several placements.** Three entries into one tractor with
+   different `in`/`out` gave three different ranges. So a sequence is emitted **once**,
+   and the alternative — a tractor per placement — was rejected: it duplicates the whole
+   subtree, multiplicatively once sequences nest.
+4. **A filter on a `<playlist>` is attached to that playlist and honours its frame
+   range.** This is what makes one shared tractor workable: each placement is a wrapper
+   playlist carrying the cut and *that placement's* effects, which do not reach the other
+   placements. Verified twice — a `brightness` filter dimmed one of two placements and
+   not the other, and with `in="10" out="19"` on a two-entry wrapper it dimmed only the
+   second entry. The MLT DTD does not allow it, and the DTD is what is wrong: Kdenlive
+   carries track effects the same way. Our local copy of the DTD was relaxed, with the
+   evidence written next to it.
+5. **A nested sequence's background track must be transparent** (`0x00000000`), not
+   `black`. With an opaque base a sequence painted over everything under it (a gap read 5
+   instead of the 128 underneath). Only the master, which is the bottom of the render,
+   gets an opaque base. This was a bug that would have shipped: nothing about the master's
+   own compile hints at it.
 
-**Scale.** Larger than the bin refactor, mostly because of the compiler and the preview
-scope. The stopgap that needs no code is to render each part and add the output to the bin
-as media, which costs live editing of the parts and a re-encode.
+Audio needed nothing: a nested tractor plus wrapper measured identical to the flat path
+(−24.1 dB mean, −18.0 dB max both ways). Neither did the C++ preview engine, which loads
+the document through a plain `Mlt::Producer(profile, "xml", path)`.
+
+### The three parts that were real work
+
+1. *Cycle detection*, landed with the model as agreed. `Project::compile_order` is one
+   depth-first walk that both orders the compile and reports a ring, so the validator and
+   the compiler cannot disagree about what is cyclic. It runs over **every** sequence, not
+   only what the master reaches, so a ring is refused as it is built rather than when it
+   is first placed, and it reports one issue rather than one per entry on the ring.
+   `seq_has_audio` carries its own visited set as well, because the daemon keeps calling
+   these on documents the validator has already refused.
+2. *Topological compile order*, innermost first, so an outer sequence only ever references
+   a tractor already written. `compile` emits one block per sequence and the root becomes
+   `main_tractor`.
+3. *Preview scope*. The daemon holds one open sequence as **session state** — not in the
+   document, so it never bumps the revision, never lands in the undo stack and never
+   causes a `base_revision` conflict; a project reopened tomorrow starts on its master.
+   `GET`/`POST /api/sequence` read and set it, and setting it recompiles the preview. A
+   chosen sequence that is deleted (undo, an agent edit) falls back to the master on both
+   sides rather than failing every compile until someone notices.
+
+`bake_all` walks every sequence, as the old entry warned. `sample_frames` and `render`
+take an optional `sequence` and default to the master, which keeps MCP stateless: the
+agent says which timeline it means instead of depending on what the human has open.
+
+**Track and clip ids stay unique across the whole project**, not per sequence. They are
+MLT element ids in one compiled document and URL segments in one daemon, and keeping them
+global means `find_clip(id)`, the overlay preview routes and the bake map all work
+unchanged.
+
+**Known limitation:** an overlay inside a nested sequence is not live DOM while you scrub
+the timeline above it. Overlays are skipped by the preview compile everywhere, and only
+the open sequence's own overlay clips are driven as iframes, because only their clip times
+are the playhead's times. It renders correctly, and it is live when you open that
+sequence.
 
 ---
 
@@ -258,7 +309,19 @@ annoying, because the validator and the agent both read metadata today.
 
 ## Still open
 
-Lower priority than nested sequences above.
+Nested sequences are done, so this list is now the whole of what is next. The two items
+it gained from that work come first because they are the parts deliberately left out.
+
+- **Speed on a sequence clip**, refused today. The mechanism is known to work (see the
+  spike above): write the sub-sequence to its own `.mlt` in the cache and hand `timewarp`
+  that path. What makes it more than an afternoon is the lifecycle — one file per sped-up
+  sequence, regenerated on every compile and at every size, since the preview compiles at
+  half resolution and would need its own copy.
+
+- **Live preview of an overlay inside a nested sequence.** It renders; it is simply not
+  driven as DOM unless you open the sequence it lives on, because mapping its clip time up
+  through a trim (and through more than one placement) has no single answer. Baking the
+  nested overlays for the preview compile would work and would cost a bake on every edit.
 
 - **Every numeric effect parameter keyframable, through one shared type** — agreed, not
   built. Today only `transform` and `volume` take keyframes, so a "go blurry" ramp needs
@@ -375,7 +438,14 @@ Lower priority than nested sequences above.
   no reason and stops improvements reaching the copy. Same shape as the media search path
   below: the library wants to hold more kinds of thing than templates, and the two should
   be one mechanism.
-- Folders and search in the browser, now that the bin is the thing they organise.
+- Folders and search in the browser, now that the bin is the thing they organise. The bin
+  now holds sequences too, which makes this more pressing than it was.
+- A thumbnail for a sequence entry. The `thumbs` job renders overlay entries with their
+  own vars; a sequence would want a frame of itself, which is `sample_frames` rather than
+  a bake, so it is a different path and was left alone.
+- "Make a sequence from the selected clips", the Kdenlive move that collapses part of a
+  timeline into a new sequence in place. Everything under it exists — a sequence is one
+  patch — but it is a UI affordance nobody has written.
 - A re-probe or reload action on a bin entry.
 - `kuma add-media` resolves a relative path against the shell's directory rather than the
   project's, which surprises when run from elsewhere.

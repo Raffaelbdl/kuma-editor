@@ -19,6 +19,9 @@ struct Cli {
     /// Address the daemon listens on (and where other commands look for it).
     #[arg(long, global = true, env = "KUMA_BIND", default_value = DEFAULT_BIND)]
     bind: SocketAddr,
+    /// Sequence (bin id) to render, sample or compile. The project's master when unset.
+    #[arg(long, global = true)]
+    sequence: Option<String>,
     #[command(subcommand)]
     cmd: Cmd,
 }
@@ -132,6 +135,7 @@ async fn main() -> anyhow::Result<()> {
         builder.init();
     }
 
+    let sequence = cli.sequence.clone();
     match &cli.cmd {
         Cmd::Serve => {
             let (state, addr) = kuma_daemon::serve(config(&cli)?).await?;
@@ -156,7 +160,7 @@ async fn main() -> anyhow::Result<()> {
         Cmd::Doctor => doctor(&cli).await?,
         Cmd::Render { preset, output } => {
             let state = open(&cli)?;
-            let req = kuma_daemon::jobs::RenderRequest { preset: preset.clone(), output: output.as_deref().map(absolute).transpose()?, range: None };
+            let req = kuma_daemon::jobs::RenderRequest { preset: preset.clone(), output: output.as_deref().map(absolute).transpose()?, range: None, sequence: sequence.clone() };
             let out = tokio::task::spawn_blocking(move || kuma_daemon::jobs::render(&state, &req, &|p, m| eprintln!("[{p:3}%] {m}"))).await??;
             println!("{}", serde_json::to_string_pretty(&out)?);
         }
@@ -182,14 +186,14 @@ async fn main() -> anyhow::Result<()> {
                     Ok::<_, anyhow::Error>(kuma_core::template::Region { x: v[0], y: v[1], w: v[2], h: v[3] })
                 })
                 .transpose()?;
-            let req = kuma_daemon::jobs::SampleRequest { t0: *t0, t1: *t1, count: *count, rect, width: *width, overlays: true };
+            let req = kuma_daemon::jobs::SampleRequest { t0: *t0, t1: *t1, count: *count, rect, width: *width, overlays: true, sequence: sequence.clone() };
             let samples = tokio::task::spawn_blocking(move || kuma_daemon::jobs::sample_frames(&state, &req, &|_, _| {})).await??;
             println!("{}", serde_json::to_string_pretty(&samples)?);
         }
         Cmd::Compile => {
             let state = open(&cli)?;
             let project = state.project.read().unwrap().clone();
-            print!("{}", kuma_daemon::jobs::compile_xml(&state, &project, Default::default(), kuma_mlt::UnbakedPolicy::Skip, None)?);
+            print!("{}", kuma_daemon::jobs::compile_xml(&state, &project, Default::default(), kuma_mlt::UnbakedPolicy::Skip, None, sequence.clone())?);
         }
         Cmd::Validate => {
             let state = open(&cli)?;

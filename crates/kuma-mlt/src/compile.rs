@@ -5,6 +5,7 @@
 //! ```text
 //! <mlt LC_NUMERIC="C" root=… producer="main_tractor">
 //!   <profile …/>
+//!   …one block per nested sequence, innermost first…           see `emit_sequence`
 //!   <producer id="black"/>          <playlist id="background"/>      track 0
 //!   <chain id="clip_c1">…filters…</chain>   one producer copy per timeline clip
 //!   <playlist id="v1_a"/> [<playlist id="v1_b"/> <tractor id="track_v1"> luma… </tractor>]
@@ -14,6 +15,35 @@
 //!   </tractor>
 //! </mlt>
 //! ```
+//!
+//! ## Nested sequences
+//!
+//! A sequence is a bin entry holding a timeline, and MLT nests natively: a sequence is a
+//! tractor and a tractor is a producer. Each sequence is emitted **once**, as
+//! `<tractor id="seq_<bin>">`, in dependency order so an outer one only ever references a
+//! tractor already written. A clip placing it is a wrapper playlist:
+//!
+//! ```text
+//! <tractor id="seq_part">…</tractor>              emitted once, however often it is used
+//! <playlist id="clip_c1">                         one per placement
+//!   <entry producer="seq_part" in="60" out="209"/>     the trim into the sequence
+//!   <filter …/>                                        this placement's effects
+//! </playlist>
+//! ```
+//!
+//! The wrapper is what keeps one tractor shareable: filters hung on the tractor itself
+//! would apply to every placement of it, and a tractor per placement would duplicate the
+//! whole subtree — multiplicatively, once sequences nest. The lane playlist then cuts the
+//! wrapper at `0..len-1`, because a wrapper starts at its own zero.
+//!
+//! Two things a nested sequence does differently from the master:
+//!
+//! * its background track is **transparent** (`0x00000000`), not black, so the gaps in it
+//!   show the tracks underneath rather than painting over them. Only the master, which is
+//!   the bottom of the render, gets an opaque base.
+//! * `speed` is refused on a sequence clip by the validator: MLT's `timewarp` producer
+//!   takes a resource *path*, and handed a tractor id it fails to load and freezes on one
+//!   frame. See `docs/decisions.md`.
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
@@ -52,6 +82,9 @@ pub struct CompileOptions {
     pub unbaked: UnbakedPolicy,
     /// Override the output size (preview at half resolution). Transforms scale with it.
     pub size: Option<(u32, u32)>,
+    /// Which sequence to compile as the root. `None` means the project's master — what a
+    /// render always wants. The preview sets it to whichever sequence is open.
+    pub sequence: Option<BinId>,
 }
 
 impl CompileOptions {
@@ -63,6 +96,7 @@ impl CompileOptions {
             bakes: HashMap::new(),
             unbaked: UnbakedPolicy::Skip,
             size: None,
+            sequence: None,
         }
     }
 }
@@ -85,7 +119,14 @@ pub fn compile(project: &Project, opts: &CompileOptions) -> Result<String, Compi
     if kuma_core::validate::has_errors(&issues) {
         return Err(CompileError::Invalid(issues));
     }
-    let duration = project.duration();
+    let root = opts.sequence.clone().unwrap_or_else(|| project.master.clone());
+    if project.seq(&root).is_none() {
+        return Err(CompileError::Internal(format!("`{root}` is not a sequence in this project")));
+    }
+    // Innermost first, so every reference below points at a tractor already written. The
+    // validator refuses cycles, so this only fails on a document it never saw.
+    let order = project.compile_order(&root).map_err(|ring| CompileError::Internal(format!("sequence cycle: {}", ring.join(" → "))))?;
+    let duration = project.seq_duration(&root);
     if duration <= 0.0 {
         return Err(CompileError::Internal("empty timeline".into()));
     }
@@ -94,7 +135,7 @@ pub fn compile(project: &Project, opts: &CompileOptions) -> Result<String, Compi
 
     let (pw, ph) = opts.size.unwrap_or((project.width, project.height));
     let scale = pw as f64 / project.width as f64;
-    let ctx = Ctx { project, opts, fps, pw, ph, scale, total };
+    let ctx = Ctx { project, opts, fps, pw, ph, scale };
 
     let mut w = XmlWriter::new();
     w.open(
@@ -123,28 +164,43 @@ pub fn compile(project: &Project, opts: &CompileOptions) -> Result<String, Compi
         ],
     );
 
-    // Track 0: black background.
-    w.open("producer", &[("id", "black".into()), ("in", "0".into()), ("out", (total - 1).to_string())]);
+    // `order` ends on the root, which becomes `main_tractor`; the rest are nested and get
+    // a transparent base so their gaps show whatever they were laid over.
+    for id in &order {
+        let seq = project.seq(id).ok_or_else(|| CompileError::Internal(format!("`{id}` is not a sequence")))?;
+        let is_root = id == &root;
+        let (tractor_id, seq_total) = if is_root { ("main_tractor".to_string(), total) } else { (format!("seq_{id}"), fps.length(seq.duration())) };
+        emit_sequence(&ctx, id, seq, &tractor_id, is_root, seq_total, &mut w)?;
+    }
+    w.close("mlt");
+    Ok(w.finish())
+}
+
+/// One timeline: a background, its tracks' producers and playlists, then the tractor that
+/// composites them. `opaque` distinguishes the master (black base, the bottom of the
+/// render) from a nested sequence (transparent base, so it composites like any other clip).
+fn emit_sequence(ctx: &Ctx, seq_id: &str, seq: &Sequence, tractor_id: &str, opaque: bool, total: i64, w: &mut XmlWriter) -> Result<(), CompileError> {
+    let (bg, bg_pl) = if opaque { ("black".to_string(), "background".to_string()) } else { (format!("bg_{seq_id}"), format!("bgpl_{seq_id}")) };
+    w.open("producer", &[("id", bg.clone()), ("in", "0".into()), ("out", (total - 1).to_string())]);
     w.property("mlt_service", "color");
-    w.property("resource", "black");
+    w.property("resource", if opaque { "black" } else { "0x00000000" });
     w.property("length", total.to_string());
     w.property("mlt_image_format", "rgba");
     w.close("producer");
-    w.open("playlist", &[("id", "background".into())]);
-    w.empty("entry", &[("producer", "black".into()), ("in", "0".into()), ("out", (total - 1).to_string())]);
+    w.open("playlist", &[("id", bg_pl.clone())]);
+    w.empty("entry", &[("producer", bg), ("in", "0".into()), ("out", (total - 1).to_string())]);
     w.close("playlist");
 
     let mut compiled_tracks: Vec<CompiledTrack> = Vec::new();
-    for track in &project.tracks {
-        if let Some(ct) = compile_track(&ctx, track, &mut w)? {
+    for track in &seq.tracks {
+        if let Some(ct) = compile_track(ctx, track, total, w)? {
             compiled_tracks.push(ct);
         }
     }
 
-    // Main tractor.
-    w.open("tractor", &[("id", "main_tractor".into()), ("in", "0".into()), ("out", (total - 1).to_string())]);
+    w.open("tractor", &[("id", tractor_id.to_string()), ("in", "0".into()), ("out", (total - 1).to_string())]);
     w.open("multitrack", &[]);
-    w.empty("track", &[("producer", "background".into())]);
+    w.empty("track", &[("producer", bg_pl)]);
     for ct in &compiled_tracks {
         let mut attrs = vec![("producer", ct.producer_id.clone())];
         if let Some(h) = ct.hide {
@@ -177,8 +233,7 @@ pub fn compile(project: &Project, opts: &CompileOptions) -> Result<String, Compi
         }
     }
     w.close("tractor");
-    w.close("mlt");
-    Ok(w.finish())
+    Ok(())
 }
 
 struct Ctx<'a> {
@@ -188,7 +243,6 @@ struct Ctx<'a> {
     pw: u32,
     ph: u32,
     scale: f64,
-    total: i64,
 }
 
 impl Ctx<'_> {
@@ -196,6 +250,19 @@ impl Ctx<'_> {
     /// validated on edit, so never index the map.
     fn item(&self, clip: &Clip) -> Result<&BinItem, CompileError> {
         self.project.item(clip).ok_or_else(|| CompileError::Internal(format!("clip `{}`: unknown bin entry `{}`", clip.id, clip.bin)))
+    }
+
+    /// Whether this clip contributes sound, so its track needs an audio mix. A sequence
+    /// is asked what it contains rather than assumed silent.
+    fn has_audio(&self, clip: &Clip) -> Result<bool, CompileError> {
+        if clip.muted {
+            return Ok(false);
+        }
+        let item = self.item(clip)?;
+        Ok(match &item.source {
+            BinSource::Sequence(_) => self.project.seq_has_audio(&clip.bin),
+            _ => item.is_timed_media(),
+        })
     }
 }
 
@@ -230,9 +297,16 @@ struct Plan<'a> {
     /// Timeline in/out (inclusive), including any transition extension.
     tl_in: i64,
     tl_out: i64,
-    /// Producer in/out (inclusive), including any transition extension.
+    /// Producer in/out (inclusive), including any transition extension: the cut into the
+    /// thing this clip plays.
     p_in: i64,
     p_out: i64,
+    /// What the *lane playlist* entry asks for, and the range this clip's filters span.
+    /// The same as `p_in`/`p_out` for an ordinary producer, which the lane cuts directly.
+    /// A sequence clip is a wrapper playlist that has already done the cut, and a wrapper
+    /// starts at its own zero, so this is `0..len-1` instead.
+    e_in: i64,
+    e_out: i64,
     /// Frames added before/after the clip's own range for a dissolve. Effects are
     /// measured from the clip's own start, so keyframes are offset by `pre`.
     pre: i64,
@@ -240,7 +314,7 @@ struct Plan<'a> {
     producer_id: String,
 }
 
-fn compile_track(ctx: &Ctx, track: &Track, w: &mut XmlWriter) -> Result<Option<CompiledTrack>, CompileError> {
+fn compile_track(ctx: &Ctx, track: &Track, total: i64, w: &mut XmlWriter) -> Result<Option<CompiledTrack>, CompileError> {
     let fps = ctx.fps;
     let tid = &track.id;
 
@@ -289,8 +363,9 @@ fn compile_track(ctx: &Ctx, track: &Track, w: &mut XmlWriter) -> Result<Option<C
         } else {
             (0, len - 1)
         };
+        let (e_in, e_out) = if ctx.item(clip)?.is_sequence() { (0, len - 1) } else { (p_in, p_out) };
         let producer_id = format!("clip_{}", clip.id);
-        plans.push(Plan { clip, lane, tl_in, tl_out, p_in, p_out, pre: e.before, post: e.after, producer_id });
+        plans.push(Plan { clip, lane, tl_in, tl_out, p_in, p_out, e_in, e_out, pre: e.before, post: e.after, producer_id });
     }
     if plans.is_empty() {
         return Ok(None);
@@ -301,7 +376,7 @@ fn compile_track(ctx: &Ctx, track: &Track, w: &mut XmlWriter) -> Result<Option<C
     let mut has_audio = false;
     for p in &plans {
         emit_clip_producer(ctx, p, w)?;
-        has_audio |= ctx.item(p.clip)?.is_timed_media() && !p.clip.muted;
+        has_audio |= ctx.has_audio(p.clip)?;
         for e in &p.clip.effects {
             if let Effect::Blend { mode } = e {
                 if *mode != BlendMode::Normal {
@@ -322,7 +397,7 @@ fn compile_track(ctx: &Ctx, track: &Track, w: &mut XmlWriter) -> Result<Option<C
         if p.tl_in > cursor[l] {
             lanes[l].push(Item::Blank(p.tl_in - cursor[l]));
         }
-        lanes[l].push(Item::Entry { producer: p.producer_id.clone(), in_: p.p_in, out: p.p_out });
+        lanes[l].push(Item::Entry { producer: p.producer_id.clone(), in_: p.e_in, out: p.e_out });
         cursor[l] = p.tl_out + 1;
     }
     let two_lanes = !lanes[1].is_empty();
@@ -346,7 +421,7 @@ fn compile_track(ctx: &Ctx, track: &Track, w: &mut XmlWriter) -> Result<Option<C
 
     let producer_id = if two_lanes {
         let tr_id = format!("track_{tid}");
-        w.open("tractor", &[("id", tr_id.clone()), ("in", "0".into()), ("out", (ctx.total - 1).to_string())]);
+        w.open("tractor", &[("id", tr_id.clone()), ("in", "0".into()), ("out", (total - 1).to_string())]);
         w.open("multitrack", &[]);
         w.empty("track", &[("producer", format!("{tid}_a"))]);
         w.empty("track", &[("producer", format!("{tid}_b"))]);
@@ -440,6 +515,15 @@ fn emit_clip_producer(ctx: &Ctx, p: &Plan, w: &mut XmlWriter) -> Result<(), Comp
             emit_filters(ctx, p, w);
             w.close("producer");
         }
+        // A sequence is already a producer (its tractor), emitted once for the whole
+        // document. This placement is a playlist that cuts it and hangs its own filters,
+        // so a second placement of the same sequence is unaffected by them.
+        BinSource::Sequence(_) => {
+            w.open("playlist", &[("id", p.producer_id.clone())]);
+            w.empty("entry", &[("producer", format!("seq_{}", clip.bin)), ("in", p.p_in.to_string()), ("out", p.p_out.to_string())]);
+            emit_filters(ctx, p, w);
+            w.close("playlist");
+        }
         BinSource::Overlay { .. } => {
             let bake = ctx.opts.bakes.get(&clip.id).ok_or_else(|| CompileError::Unbaked(clip.id.clone()))?;
             w.open("producer", &base);
@@ -462,7 +546,7 @@ fn emit_clip_producer(ctx: &Ctx, p: &Plan, w: &mut XmlWriter) -> Result<(), Comp
 fn emit_filters(ctx: &Ctx, p: &Plan, w: &mut XmlWriter) {
     let clip = p.clip;
     let fps = ctx.fps;
-    let len = p.p_out - p.p_in + 1;
+    let len = p.e_out - p.e_in + 1;
     let n = std::cell::Cell::new(0usize);
     // Open a `<filter>` with a unique id over an explicit frame range; the caller adds
     // properties and closes it.
@@ -471,7 +555,7 @@ fn emit_filters(ctx: &Ctx, p: &Plan, w: &mut XmlWriter) {
         w.open("filter", &[("id", format!("{}_{name}{}", p.producer_id, n.get())), ("in", in_.to_string()), ("out", out.to_string())]);
         w.property("mlt_service", service);
     };
-    let open = |w: &mut XmlWriter, name: &str, service: &str| open_at(w, name, service, p.p_in, p.p_out);
+    let open = |w: &mut XmlWriter, name: &str, service: &str| open_at(w, name, service, p.e_in, p.e_out);
     // Keyframe positions are relative to the clip's own start, i.e. `pre` frames in.
     let at = |t: f64| (fps.frame(t) + p.pre).clamp(0, len - 1);
 
@@ -540,7 +624,7 @@ fn emit_filters(ctx: &Ctx, p: &Plan, w: &mut XmlWriter) {
             }
             Effect::Fade { fade_in, fade_out } => {
                 // Fades span the clip's own range, not the dissolve handles.
-                let (own_in, own_out) = (p.p_in + p.pre, p.p_out - p.post);
+                let (own_in, own_out) = (p.e_in + p.pre, p.e_out - p.post);
                 let own_len = own_out - own_in + 1;
                 if *fade_in > 0.0 {
                     let fi = fps.length(*fade_in).min(own_len);
@@ -666,16 +750,24 @@ mod tests {
         assert_eq!(s, "0|=14;135|=14;240|=0");
     }
 
+    /// A project from `{bin, tracks}`, with `tracks` folded into the master sequence.
+    fn project(v: serde_json::Value) -> Project {
+        let mut v = v;
+        if let Some(tracks) = v.as_object_mut().and_then(|o| o.remove("tracks")) {
+            v["bin"]["main"] = json!({ "source": { "tracks": tracks } });
+        }
+        serde_json::from_value(v).unwrap()
+    }
+
     #[test]
     fn transitions_split_into_two_lanes() {
-        let p: Project = serde_json::from_value(json!({
+        let p = project(json!({
             "fps": 30, "bin": { "x": { "source": { "path": "x.mp4" } } },
             "tracks": [{ "id": "v1", "clips": [
                 { "id": "a", "start": 0, "end": 5, "bin": "x" },
                 { "id": "b", "start": 5, "end": 8, "bin": "x", "in": 2 }
             ], "transitions": [ { "from": "a", "to": "b", "duration": 1.0 } ]}]
-        }))
-        .unwrap();
+        }));
         let xml = compile(&p, &CompileOptions::new("/proj")).unwrap();
         assert!(xml.contains(r#"<playlist id="v1_b">"#));
         assert!(xml.contains(r#"<tractor id="track_v1""#));
@@ -685,5 +777,140 @@ mod tests {
         assert!(xml.contains(r#"<blank length="135"/>"#), "{xml}");
         assert!(xml.contains(r#"<entry producer="clip_b" in="45" out="149"/>"#), "{xml}");
         assert!(xml.contains(r#"<transition id="luma_a_b" in="135" out="164">"#), "{xml}");
+    }
+
+    fn nested() -> Project {
+        project(json!({
+            "fps": 30,
+            "bin": {
+                "x": { "source": { "path": "x.mp4" } },
+                "part": { "source": { "tracks": [{ "id": "pv", "clips": [
+                    { "id": "p1", "start": 0, "end": 6, "bin": "x" }
+                ]}]}}
+            },
+            "tracks": [{ "id": "v1", "clips": [
+                { "id": "s1", "start": 0, "end": 2, "bin": "part", "in": 1 },
+                { "id": "s2", "start": 2, "end": 4, "bin": "part", "effects": [ { "type": "blur", "radius": 3 } ] }
+            ]}]
+        }))
+    }
+
+    /// A sequence becomes one tractor whatever the number of placements, each placement a
+    /// wrapper playlist that does its own cut. Emitting a tractor per placement instead
+    /// would duplicate the subtree, multiplicatively once sequences nest.
+    #[test]
+    fn a_sequence_is_emitted_once_and_placed_through_wrappers() {
+        let xml = compile(&nested(), &CompileOptions::new("/proj")).unwrap();
+        assert_eq!(xml.matches(r#"<tractor id="seq_part""#).count(), 1, "{xml}");
+        // s1 is trimmed 1s into the sequence and runs 2s: source frames 30..89.
+        assert!(xml.contains(r#"<playlist id="clip_s1">"#), "{xml}");
+        assert!(xml.contains(r#"<entry producer="seq_part" in="30" out="89"/>"#), "{xml}");
+        assert!(xml.contains(r#"<entry producer="seq_part" in="0" out="59"/>"#), "{xml}");
+        // The lane cuts the wrapper from its own zero, not from the cut into the sequence.
+        assert!(xml.contains(r#"<entry producer="clip_s1" in="0" out="59"/>"#), "{xml}");
+        // The blur belongs to s2's placement alone.
+        let s2 = xml.split(r#"<playlist id="clip_s2">"#).nth(1).unwrap();
+        assert!(s2[..s2.find("</playlist>").unwrap()].contains("avfilter.gblur"), "{xml}");
+        let s1 = xml.split(r#"<playlist id="clip_s1">"#).nth(1).unwrap();
+        assert!(!s1[..s1.find("</playlist>").unwrap()].contains("avfilter.gblur"), "{xml}");
+    }
+
+    /// The inner tractor must be written before the outer one references it, and a nested
+    /// sequence's own base must be transparent or it paints over the tracks below it.
+    #[test]
+    fn nested_sequences_are_ordered_and_composite_over_what_is_under_them() {
+        let xml = compile(&nested(), &CompileOptions::new("/proj")).unwrap();
+        assert!(xml.find(r#"<tractor id="seq_part""#) < xml.find(r#"<playlist id="clip_s1">"#), "{xml}");
+        assert!(xml.find(r#"<playlist id="clip_s1">"#) < xml.find(r#"<tractor id="main_tractor""#), "{xml}");
+        assert!(xml.contains(r#"<property name="resource">0x00000000</property>"#), "nested base is transparent: {xml}");
+        // Only the master gets the opaque base the render sits on.
+        assert_eq!(xml.matches(r#"<property name="resource">black</property>"#).count(), 1, "{xml}");
+    }
+
+    /// The preview compiles whichever sequence is open, so a sub-sequence has to stand on
+    /// its own as a root — and as a root it is the bottom of the picture, hence opaque.
+    #[test]
+    fn a_sub_sequence_can_be_compiled_as_the_root() {
+        let mut opts = CompileOptions::new("/proj");
+        opts.sequence = Some("part".into());
+        let xml = compile(&nested(), &opts).unwrap();
+        assert!(xml.contains(r#"<tractor id="main_tractor" in="0" out="179">"#), "6s at 30fps: {xml}");
+        assert!(!xml.contains("seq_part"), "nothing outside the sequence is compiled: {xml}");
+        assert!(!xml.contains("0x00000000"), "as a root it gets the opaque base: {xml}");
+    }
+
+    /// Three levels deep: each tractor must be written before the one that references it,
+    /// and each must be emitted once however many paths reach it. `deep` is placed by both
+    /// `mid` and the master, which is where a tractor-per-placement scheme would start
+    /// duplicating.
+    #[test]
+    fn nesting_is_ordered_at_depth_and_on_a_diamond() {
+        let p = project(json!({
+            "fps": 30,
+            "bin": {
+                "x": { "source": { "path": "x.mp4" } },
+                "deep": { "source": { "tracks": [{ "id": "dv", "clips": [
+                    { "id": "d1", "start": 0, "end": 4, "bin": "x" }
+                ]}]}},
+                "mid": { "source": { "tracks": [{ "id": "mv", "clips": [
+                    { "id": "m1", "start": 0, "end": 4, "bin": "deep" }
+                ]}]}}
+            },
+            "tracks": [{ "id": "v1", "clips": [
+                { "id": "s1", "start": 0, "end": 4, "bin": "mid" },
+                { "id": "s2", "start": 4, "end": 8, "bin": "deep" }
+            ]}]
+        }));
+        let xml = compile(&p, &CompileOptions::new("/proj")).unwrap();
+        for id in ["seq_deep", "seq_mid"] {
+            assert_eq!(xml.matches(&format!(r#"<tractor id="{id}""#)).count(), 1, "{id} emitted once: {xml}");
+        }
+        assert!(xml.find(r#"<tractor id="seq_deep""#) < xml.find(r#"<tractor id="seq_mid""#), "{xml}");
+        assert!(xml.find(r#"<tractor id="seq_mid""#) < xml.find(r#"<tractor id="main_tractor""#), "{xml}");
+    }
+
+    /// A dissolve between two sequence placements. The handle extends the cut inside the
+    /// wrapper while the lane still reads it from zero, and the luma spans track time —
+    /// so the two frame ranges must not be confused for one another.
+    #[test]
+    fn a_dissolve_between_two_sequence_clips_keeps_its_two_frame_ranges() {
+        let p = project(json!({
+            "fps": 30,
+            "bin": {
+                "x": { "source": { "path": "x.mp4" } },
+                "part": { "source": { "tracks": [{ "id": "pv", "clips": [
+                    { "id": "p1", "start": 0, "end": 10, "bin": "x" }
+                ]}]}}
+            },
+            "tracks": [{ "id": "v1", "clips": [
+                { "id": "s1", "start": 0, "end": 4, "bin": "part", "in": 1 },
+                { "id": "s2", "start": 4, "end": 8, "bin": "part", "in": 2 }
+            ], "transitions": [ { "from": "s1", "to": "s2", "duration": 1.0 } ]}]
+        }));
+        let xml = compile(&p, &CompileOptions::new("/proj")).unwrap();
+        // s1: source 30, 120 frames + 15 of tail handle → cut 30..164, lane 0..134.
+        assert!(xml.contains(r#"<entry producer="seq_part" in="30" out="164"/>"#), "{xml}");
+        assert!(xml.contains(r#"<entry producer="clip_s1" in="0" out="134"/>"#), "{xml}");
+        // s2: in 2 s minus the 15-frame handle → source 45, pulled 15 frames earlier.
+        assert!(xml.contains(r#"<entry producer="seq_part" in="45" out="179"/>"#), "{xml}");
+        assert!(xml.contains(r#"<entry producer="clip_s2" in="0" out="134"/>"#), "{xml}");
+        assert!(xml.contains(r#"<transition id="luma_s1_s2" in="105" out="134">"#), "{xml}");
+    }
+
+    /// Sound two levels down still needs an audio mix on the track carrying the sequence.
+    #[test]
+    fn audio_inside_a_sequence_reaches_the_outer_mix() {
+        let silent = project(json!({
+            "fps": 30,
+            "bin": {
+                "still": { "source": { "path": "logo.png", "kind": "image" } },
+                "part": { "source": { "tracks": [{ "id": "pv", "clips": [
+                    { "id": "p1", "start": 0, "end": 4, "bin": "still" }
+                ]}]}}
+            },
+            "tracks": [{ "id": "v1", "clips": [ { "id": "s1", "start": 0, "end": 4, "bin": "part" } ] }]
+        }));
+        assert!(!compile(&silent, &CompileOptions::new("/proj")).unwrap().contains(r#"id="mix_v1""#));
+        assert!(compile(&nested(), &CompileOptions::new("/proj")).unwrap().contains(r#"id="mix_v1""#));
     }
 }

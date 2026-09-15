@@ -135,6 +135,7 @@ kuma render --preset youtube-1080p         # bakes overlays, compiles, renders w
 kuma sample 12.0 14.0 --count 4 --rect 400,300,800,400
 kuma bake                                  # bake all overlay clips (cached by content)
 kuma compile > timeline.mlt                # inspect the MLT graph (or open it in Kdenlive)
+kuma render --sequence intro               # render one nested sequence instead of the master
 kuma validate | thumbs | library | doctor
 ```
 
@@ -143,32 +144,50 @@ kuma validate | thumbs | library | doctor
 ```json
 {
   "fps": { "num": 30000, "den": 1001 }, "width": 1920, "height": 1080,
+  "master": "main",
   "bin": {
     "screen": { "name": "Screen recording", "source": { "path": "media/screen.mp4", "kind": "video" } },
     "paris":  { "name": "Paris tag", "source": { "template": "location-tag", "vars": { "label": "Paris" } } },
-    "navy":   { "name": "Navy card", "source": { "color": "#102030" } }
-  },
-  "tracks": [
-    { "id": "v1", "kind": "video", "clips": [
-      { "id": "c1", "start": 0, "end": 12.5, "bin": "screen", "in": 3.2,
-        "effects": [
-          { "type": "crop", "left": 0.05, "right": 0.05 },
-          { "type": "transform", "keyframes": [ { "t": 0, "scale": 1 }, { "t": 3, "scale": 1.4, "x": -120 } ] } ] } ] },
-    { "id": "o1", "kind": "overlay", "clips": [
-      { "id": "o1c1", "start": 2, "end": 8, "bin": "paris",
-        "speed": 0.5, "effects": [ { "type": "blend", "mode": "screen" } ] } ] }
-  ]
+    "navy":   { "name": "Navy card", "source": { "color": "#102030" } },
+
+    "intro":  { "name": "Intro", "source": { "tracks": [
+      { "id": "iv1", "kind": "video", "clips": [
+        { "id": "i1", "start": 0, "end": 6, "bin": "screen", "in": 20 } ] } ] } },
+
+    "main":   { "name": "Main", "source": { "tracks": [
+      { "id": "v1", "kind": "video", "clips": [
+        { "id": "s1", "start": 0, "end": 6, "bin": "intro" },
+        { "id": "c1", "start": 6, "end": 18.5, "bin": "screen", "in": 3.2,
+          "effects": [
+            { "type": "crop", "left": 0.05, "right": 0.05 },
+            { "type": "transform", "keyframes": [ { "t": 0, "scale": 1 }, { "t": 3, "scale": 1.4, "x": -120 } ] } ] } ] },
+      { "id": "o1", "kind": "overlay", "clips": [
+        { "id": "o1c1", "start": 2, "end": 8, "bin": "paris",
+          "speed": 0.5, "effects": [ { "type": "blend", "mode": "screen" } ] } ] }
+    ] } }
+  }
 }
 ```
 
-**The bin holds everything placeable** — media files, configured overlays and colours —
-each with an id, a name and optional probed metadata. A clip is a *placement*: it says
-which entry, when, how fast and with which effects, and never carries a source of its own.
-So an overlay's text lives on its bin entry and every placement of it follows; a second
-wording is a second entry. Overlay clips take the same effects as video clips.
+**The bin holds everything placeable** — media files, configured overlays, colours and
+*sequences* — each with an id, a name and optional probed metadata. A clip is a
+*placement*: it says which entry, when, how fast and with which effects, and never carries
+a source of its own. So an overlay's text lives on its bin entry and every placement of it
+follows; a second wording is a second entry. Overlay clips take the same effects as video
+clips.
 
-Seconds everywhere, `end` exclusive, fps rational, tracks bottom-up, `in` meaningful only
-for video and audio entries. The full schema: `GET /api/schema` or the `get_schema` tool.
+**A timeline is a bin entry too.** There is no project-level `tracks`: a sequence entry
+holds the tracks, and `master` names the one that gets rendered. A sequence placed on
+another sequence is a nested sequence — edit a part separately, place it in the final cut,
+trim into it and put effects on this placement without touching the other. The editor
+opens one sequence at a time (the picker in the topbar); the preview compiles whichever is
+open, since the engine loads one timeline. A sequence cannot contain itself, and cannot be
+sped up — MLT's `timewarp` takes a resource path, not a tractor, so render the part out
+and place the result as media.
+
+Seconds everywhere, `end` exclusive, fps rational, tracks bottom-up, `in` meaningful for
+video, audio and sequence entries. Track and clip ids are unique across the whole project,
+not per sequence. The full schema: `GET /api/schema` or the `get_schema` tool.
 
 ## Overlay templates
 

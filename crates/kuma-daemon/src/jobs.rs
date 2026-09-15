@@ -100,12 +100,14 @@ pub fn add_media(state: &AppState, path: &Path, id: Option<String>, base_revisio
 }
 
 /// Bake every overlay clip in the project (cached). Returns bakes keyed by clip id.
+///
+/// Walks every sequence, not just the master: an overlay two levels down is still in the
+/// render, and clip ids are unique across the project so one flat map still addresses it.
 pub fn bake_all(state: &AppState, project: &Project, only: Option<&[String]>, progress: &dyn Fn(u8, &str)) -> anyhow::Result<HashMap<String, OverlayBake>> {
     let templates = read(&state.templates).loaded.clone();
     let clips: Vec<_> = project
-        .tracks
-        .iter()
-        .flat_map(|t| t.clips.iter())
+        .all_clips()
+        .map(|(_, _, c)| c)
         .filter(|c| project.item(c).is_some_and(kuma_core::BinItem::is_overlay))
         .filter(|c| only.map(|o| o.iter().any(|id| id == &c.id)).unwrap_or(true))
         .collect();
@@ -122,20 +124,37 @@ pub fn bake_all(state: &AppState, project: &Project, only: Option<&[String]>, pr
     Ok(out)
 }
 
-/// Compile a project to MLT XML with the given bakes.
-pub fn compile_xml(state: &AppState, project: &Project, bakes: HashMap<String, OverlayBake>, unbaked: UnbakedPolicy, size: Option<(u32, u32)>) -> anyhow::Result<String> {
+/// Compile a project to MLT XML with the given bakes. `sequence` is the timeline to
+/// compile as the root; `None` means the master, which is what a render always wants.
+pub fn compile_xml(
+    state: &AppState,
+    project: &Project,
+    bakes: HashMap<String, OverlayBake>,
+    unbaked: UnbakedPolicy,
+    size: Option<(u32, u32)>,
+    sequence: Option<String>,
+) -> anyhow::Result<String> {
     let mut opts = CompileOptions::new(state.config.project_root());
     opts.cache_dir = state.config.cache_dir().join("cache");
     opts.bakes = bakes;
     opts.unbaked = unbaked;
     opts.size = size;
+    opts.sequence = sequence;
     Ok(compile(project, &opts)?)
 }
 
 /// Compile to `.kuma/<name>.mlt`, replacing the file atomically: a melt or engine that
 /// is still reading the previous compile keeps its own (unlinked) copy.
-pub fn compile_project(state: &AppState, project: &Project, bakes: HashMap<String, OverlayBake>, name: &str, unbaked: UnbakedPolicy, size: Option<(u32, u32)>) -> anyhow::Result<PathBuf> {
-    let xml = compile_xml(state, project, bakes, unbaked, size)?;
+pub fn compile_project(
+    state: &AppState,
+    project: &Project,
+    bakes: HashMap<String, OverlayBake>,
+    name: &str,
+    unbaked: UnbakedPolicy,
+    size: Option<(u32, u32)>,
+    sequence: Option<String>,
+) -> anyhow::Result<PathBuf> {
+    let xml = compile_xml(state, project, bakes, unbaked, size, sequence)?;
     let dir = state.config.cache_dir();
     std::fs::create_dir_all(&dir)?;
     let path = dir.join(format!("{name}.mlt"));
@@ -152,6 +171,9 @@ pub struct RenderRequest {
     pub output: Option<PathBuf>,
     /// Seconds; whole timeline when absent.
     pub range: Option<(f64, f64)>,
+    /// Sequence to render. The master when absent — rendering a part is the exception.
+    #[serde(default)]
+    pub sequence: Option<String>,
 }
 fn default_preset() -> String {
     "youtube-1080p".into()
@@ -160,11 +182,16 @@ fn default_preset() -> String {
 pub fn render(state: &AppState, req: &RenderRequest, progress: &dyn Fn(u8, &str)) -> anyhow::Result<serde_json::Value> {
     let project = read(&state.project).clone();
     let preset = kuma_mlt::presets::find(&req.preset).ok_or_else(|| anyhow::anyhow!("unknown preset `{}`", req.preset))?;
+    let sequence = req.sequence.clone().unwrap_or_else(|| project.master.clone());
+    if project.seq(&sequence).is_none() {
+        anyhow::bail!("`{sequence}` is not a sequence in this project");
+    }
     let bakes = bake_all(state, &project, None, &|p, m| progress(p / 2, m))?;
-    let mlt = compile_project(state, &project, bakes, "render", UnbakedPolicy::Error, None)?;
+    let mlt = compile_project(state, &project, bakes, "render", UnbakedPolicy::Error, None, Some(sequence.clone()))?;
     let output = req.output.clone().unwrap_or_else(|| {
         let name = if project.name.is_empty() { "kuma" } else { project.name.as_str() };
-        state.config.project_root().join("renders").join(format!("{name}-{}.{}", preset.id, preset.extension))
+        let part = if sequence == project.master { String::new() } else { format!("-{sequence}") };
+        state.config.project_root().join("renders").join(format!("{name}{part}-{}.{}", preset.id, preset.extension))
     });
     let output = if output.is_absolute() { output } else { state.config.project_root().join(output) };
     let range = req.range.map(|(a, b)| {
@@ -175,7 +202,7 @@ pub fn render(state: &AppState, req: &RenderRequest, progress: &dyn Fn(u8, &str)
     let job = RenderJob { mlt_file: mlt.clone(), output: output.clone(), preset, range, extra };
     progress(50, "rendering with melt");
     kuma_mlt::render(&job, |p| progress(50 + p.percent / 2, &format!("frame {}", p.frame)))?;
-    Ok(serde_json::json!({ "output": output, "mlt": mlt, "preset": preset.id }))
+    Ok(serde_json::json!({ "output": output, "mlt": mlt, "preset": preset.id, "sequence": sequence }))
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -194,6 +221,9 @@ pub struct SampleRequest {
     /// Include baked overlays (default true; slower on first call while bakes are created).
     #[serde(default = "yes")]
     pub overlays: bool,
+    /// Sequence to sample. The master when absent.
+    #[serde(default)]
+    pub sequence: Option<String>,
 }
 fn one_usize() -> usize {
     1
@@ -214,16 +244,23 @@ pub struct Sample {
 /// two concurrent samples of the same frame never read a half-written PNG.
 pub fn sample_frames(state: &AppState, req: &SampleRequest, progress: &dyn Fn(u8, &str)) -> anyhow::Result<Vec<Sample>> {
     let project = read(&state.project).clone();
+    let sequence = req.sequence.clone().unwrap_or_else(|| project.master.clone());
+    if project.seq(&sequence).is_none() {
+        anyhow::bail!("`{sequence}` is not a sequence in this project");
+    }
     let t1 = req.t1.unwrap_or(req.t0);
     let count = req.count.clamp(1, 32);
     let bakes = if req.overlays {
-        // Only bake overlays that intersect the sampled range.
+        // Skip overlays outside the sampled range — but only on the sequence being
+        // sampled, where clip times are the times asked for. A nested sequence's clips are
+        // in its own time, and one sequence can be placed more than once, so there is no
+        // single window to test them against: those are baked whatever the range.
         let ids: Vec<String> = project
-            .tracks
-            .iter()
-            .flat_map(|t| t.clips.iter())
-            .filter(|c| project.item(c).is_some_and(kuma_core::BinItem::is_overlay) && c.end > req.t0 && c.start <= t1)
-            .map(|c| c.id.clone())
+            .all_clips()
+            .filter(|(seq, _, c)| {
+                project.item(c).is_some_and(kuma_core::BinItem::is_overlay) && (**seq != sequence || (c.end > req.t0 && c.start <= t1))
+            })
+            .map(|(_, _, c)| c.id.clone())
             .collect();
         bake_all(state, &project, Some(&ids), &|p, m| progress(p / 2, m))?
     } else {
@@ -234,7 +271,7 @@ pub fn sample_frames(state: &AppState, req: &SampleRequest, progress: &dyn Fn(u8
     // Overlay templates can change without a project revision (the agent edits the HTML),
     // so the bake keys are part of the frame cache key.
     let bake_stamp = hash_str(&bakes.values().map(|b| b.resource.to_string_lossy().into_owned()).collect::<Vec<_>>().join("\n"));
-    let xml = compile_xml(state, &project, bakes, UnbakedPolicy::Skip, None)?;
+    let xml = compile_xml(state, &project, bakes, UnbakedPolicy::Skip, None, Some(sequence.clone()))?;
     let mlt_file = tempfile::Builder::new().prefix("sample-").suffix(".mlt").tempfile_in(state.config.cache_dir())?;
     std::fs::write(mlt_file.path(), xml)?;
     // Produce `target` through `f(tmp)` and publish it with a rename.
@@ -252,7 +289,7 @@ pub fn sample_frames(state: &AppState, req: &SampleRequest, progress: &dyn Fn(u8
         let t = if count == 1 { req.t0 } else { req.t0 + (t1 - req.t0) * i as f64 / (count - 1) as f64 };
         let frame = project.fps.frame(t);
         progress((50 + 50 * i / count) as u8, &format!("frame {frame}"));
-        let stamp = format!("{}_{}{}", project.revision, frame, if req.overlays { format!("o{bake_stamp}") } else { String::new() });
+        let stamp = format!("{}_{sequence}_{}{}", project.revision, frame, if req.overlays { format!("o{bake_stamp}") } else { String::new() });
         let full = out_dir.join(format!("f{stamp}.png"));
         atomic(&full, &|tmp| Ok(kuma_mlt::melt::snapshot(mlt_file.path(), frame, tmp)?))?;
         let path = if req.rect.is_some() || req.width.is_some() {

@@ -1,10 +1,13 @@
 import { api, subscribeEvents } from "./api";
 import type { Clip, DaemonEvent, Job, PatchOp, Project, TemplateInfo, Track } from "./types";
-import { fpsValue, freeId } from "./types";
+import { allClips, fpsValue, freeId, seqDuration, sequenceIds, sequenceOf } from "./types";
 
 export interface State {
   project: Project | null;
   templates: TemplateInfo[];
+  /** The sequence open for editing. The daemon owns this (the preview compiles it), so it
+   *  is set through the API rather than locally. Empty until the first load. */
+  sequence: string;
   selection: string | null;
   playhead: number;
   playing: boolean;
@@ -17,7 +20,7 @@ export interface State {
 type Listener = (s: State) => void;
 
 class Store {
-  state: State = { project: null, templates: [], selection: null, playhead: 0, playing: false, zoom: 60, connected: false, jobs: {} };
+  state: State = { project: null, templates: [], sequence: "", selection: null, playhead: 0, playing: false, zoom: 60, connected: false, jobs: {} };
   private listeners = new Set<Listener>();
   private refreshing: Promise<void> | null = null;
   private refreshAgain = false;
@@ -52,9 +55,21 @@ class Store {
   }
 
   async init() {
-    const [project, templates] = await Promise.all([api.project(), api.templates()]);
-    this.set({ project, templates });
+    const [project, templates, seq] = await Promise.all([api.project(), api.templates(), api.sequence()]);
+    this.set({ project, templates, sequence: seq.current });
     subscribeEvents((e) => this.onEvent(e), (connected) => this.set({ connected }));
+  }
+
+  /** Open a sequence for editing. The daemon recompiles the preview for it, so this is a
+   *  round trip rather than a local flag. */
+  async openSequence(id: string) {
+    if (id === this.state.sequence) return;
+    try {
+      const { current } = await api.openSequence(id);
+      this.set({ sequence: current, selection: null, playhead: 0 });
+    } catch (e) {
+      toast((e as Error).message, "err");
+    }
   }
 
   private async onEvent(e: DaemonEvent) {
@@ -83,8 +98,11 @@ class Store {
         do {
           this.refreshAgain = false;
           const project = await api.project();
-          const selection = project.tracks.some((t) => t.clips.some((c) => c.id === this.state.selection)) ? this.state.selection : null;
-          this.set({ project, selection });
+          // The open sequence can be deleted out from under us (undo, an agent edit); the
+          // daemon falls back to the master and so do we, rather than showing nothing.
+          const sequence = sequenceOf(project, this.state.sequence) ? this.state.sequence : project.master;
+          const selection = allClips(project).some(({ clip }) => clip.id === this.state.selection) ? this.state.selection : null;
+          this.set({ project, sequence, selection });
         } while (this.refreshAgain);
       } catch (e) {
         toast(`Cannot reload the project: ${(e as Error).message}`, "err");
@@ -126,30 +144,44 @@ class Store {
     return this.state.project ? fpsValue(this.state.project.fps) : 30;
   }
 
+  /** Duration of the sequence being edited, not of the whole project. */
   get duration(): number {
     const p = this.state.project;
-    if (!p) return 0;
-    return Math.max(0, ...p.tracks.flatMap((t) => t.clips.map((c) => c.end)));
+    return p ? seqDuration(p, this.state.sequence) : 0;
   }
 
-  findClip(id: string | null): { track: Track; ti: number; clip: Clip; ci: number } | null {
+  /** The tracks on screen: those of the open sequence. */
+  get tracks(): Track[] {
+    const p = this.state.project;
+    return (p && sequenceOf(p, this.state.sequence)?.tracks) ?? [];
+  }
+
+  /** JSON pointer to the open sequence's timeline — the prefix for every track edit. */
+  get seqPath(): string {
+    return `/bin/${pointerSegment(this.state.sequence)}/source`;
+  }
+
+  /** Find a clip anywhere in the project; ids are unique across every sequence. */
+  findClip(id: string | null): { seq: string; track: Track; ti: number; clip: Clip; ci: number } | null {
     const p = this.state.project;
     if (!p || !id) return null;
-    for (let ti = 0; ti < p.tracks.length; ti++) {
-      const ci = p.tracks[ti].clips.findIndex((c) => c.id === id);
-      if (ci >= 0) return { track: p.tracks[ti], ti, clip: p.tracks[ti].clips[ci], ci };
-    }
-    return null;
+    return allClips(p).find(({ clip }) => clip.id === id) ?? null;
   }
 
   clipPath(id: string): string | null {
     const f = this.findClip(id);
-    return f ? `/tracks/${f.ti}/clips/${f.ci}` : null;
+    return f ? `/bin/${pointerSegment(f.seq)}/source/tracks/${f.ti}/clips/${f.ci}` : null;
   }
 
-  /** A clip id that is free across all tracks (clip ids are global). */
+  /** A clip id free across the whole project: clip ids are global, not per sequence. */
   newId(prefix: string): string {
-    return freeId(prefix, this.state.project!.tracks.flatMap((t) => t.clips.map((c) => c.id)));
+    return freeId(prefix, allClips(this.state.project!).map(({ clip }) => clip.id));
+  }
+
+  /** A track id free across the whole project, for the same reason. */
+  newTrackId(prefix: string): string {
+    const p = this.state.project!;
+    return freeId(prefix, sequenceIds(p).flatMap((id) => sequenceOf(p, id)!.tracks.map((t) => t.id)));
   }
 
   /** Round to the frame grid. */
@@ -165,6 +197,11 @@ class Store {
 }
 
 export const store = new Store();
+
+/** RFC 6901 escaping for a bin id used as a pointer segment. Bin ids are validated to
+ *  `[A-Za-z_][A-Za-z0-9_-]*`, so this never fires — it is here so a pointer built from a
+ *  daemon that loosens that rule cannot silently address the wrong entry. */
+export const pointerSegment = (id: string) => id.replace(/~/g, "~0").replace(/\//g, "~1");
 
 // ---- toasts ------------------------------------------------------------------
 

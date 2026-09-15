@@ -21,10 +21,20 @@ you read, so you never overwrite a human edit made meanwhile. Every edit is vali
 undoable; label your edits with `note`.
 
 Everything placeable lives in `bin`, keyed by a short id: media files (`{"source": {"path": …}}`),
-configured overlays (`{"source": {"template": …, "vars": {…}}}`) and colours. A clip is a *placement*
-of one entry: it carries `bin`, `start`, `end`, `in`, `speed` and `effects`, never a source of its
-own. So changing an overlay's text edits its bin entry and every placement follows; to vary the text,
-add a second entry. Add media with `add_media` rather than by hand.
+configured overlays (`{"source": {"template": …, "vars": {…}}}`), colours, and *sequences*
+(`{"source": {"tracks": [...], "markers": [...]}}`). A clip is a *placement* of one entry: it carries
+`bin`, `start`, `end`, `in`, `speed` and `effects`, never a source of its own. So changing an
+overlay's text edits its bin entry and every placement follows; to vary the text, add a second entry.
+Add media with `add_media` rather than by hand.
+
+**There is no project-level `tracks`.** A timeline is a sequence entry in the bin, and `master` names
+the one that gets rendered — so a clip lives at `/bin/<sequence>/source/tracks/<i>/clips/<j>`. A
+sequence placed on another sequence is a nested sequence: edit a part separately, then place it in
+the final cut. `in` offsets into it and trimming works as on any clip; two placements of one sequence
+share its content and keep their own effects. A sequence cannot contain itself (refused), cannot be
+sped up (MLT cannot time-warp a timeline: render it out and place the result as media), and must not
+be empty when placed. Track and clip ids are unique across the *whole project*, not per sequence.
+`sample_frames` and `render` take an optional `sequence` and default to the master.
 
 Overlay entries reference an HTML template (`list_templates`). Templates live in the user's library
 (`~/.local/share/kuma/overlays/<id>/`) or in the project's own `overlays/<id>/`, as a folder with
@@ -111,6 +121,9 @@ pub struct SampleFrames {
     /// Include baked overlays (default true). Set false for a faster footage-only look.
     #[serde(default)]
     pub overlays: Option<bool>,
+    /// Bin id of the sequence to sample. The project's `master` when omitted.
+    #[serde(default)]
+    pub sequence: Option<String>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -139,6 +152,9 @@ pub struct Render {
     /// Optional `[start, end]` seconds to render only part of the timeline.
     #[serde(default)]
     pub range: Option<(f64, f64)>,
+    /// Bin id of the sequence to render. The project's `master` when omitted.
+    #[serde(default)]
+    pub sequence: Option<String>,
     /// Seconds to wait for completion before returning the job id (default 900).
     #[serde(default)]
     pub wait_seconds: Option<u64>,
@@ -223,13 +239,14 @@ impl KumaServer {
         self.post("/api/bin", &json!({ "path": p.path, "id": p.id, "base_revision": p.base_revision, "origin": "claude: add media" })).await
     }
 
-    #[tool(description = "Render exact composited frames of the timeline (through the real MLT graph, overlays included) and return them as images. Use a rect to zoom into a region. Frames are also written as PNGs whose paths are returned.")]
+    #[tool(description = "Render exact composited frames of the timeline (through the real MLT graph, overlays included) and return them as images. Use a rect to zoom into a region. Pass `sequence` to look at a nested sequence instead of the master. Frames are also written as PNGs whose paths are returned.")]
     async fn sample_frames(&self, Parameters(p): Parameters<SampleFrames>) -> Result<CallToolResult, McpError> {
         let body = json!({
             "t0": p.t0, "t1": p.t1, "count": p.count.unwrap_or(1),
             "rect": p.rect.as_ref().map(|r| json!({ "x": r.x, "y": r.y, "w": r.w, "h": r.h })),
             "width": p.width.or(if p.rect.is_some() { None } else { Some(960) }),
             "overlays": p.overlays.unwrap_or(true),
+            "sequence": p.sequence,
         });
         let v = self.client.post("/api/sample", &body).await.map_err(err)?;
         let mut content = Vec::new();
@@ -256,11 +273,11 @@ impl KumaServer {
         self.job("/api/bake", &json!({ "clips": p.clips }), Duration::from_secs(1800)).await
     }
 
-    #[tool(description = "Render the timeline to a video file with an export preset. Waits up to wait_seconds; if still running, returns the job id to poll with job_status.")]
+    #[tool(description = "Render the timeline to a video file with an export preset. Renders the master unless `sequence` names another one. Waits up to wait_seconds; if still running, returns the job id to poll with job_status.")]
     async fn render(&self, Parameters(p): Parameters<Render>) -> Result<CallToolResult, McpError> {
         let body = json!({
             "preset": p.preset.unwrap_or_else(|| "youtube-1080p".into()),
-            "output": p.output, "range": p.range,
+            "output": p.output, "range": p.range, "sequence": p.sequence,
         });
         self.job("/api/render", &body, Duration::from_secs(p.wait_seconds.unwrap_or(900))).await
     }

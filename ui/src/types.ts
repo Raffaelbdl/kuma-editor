@@ -9,13 +9,17 @@ export interface MediaMeta {
   duration?: number; width?: number; height?: number; fps?: Fps; has_audio: boolean;
 }
 
+/** A timeline: what a sequence bin entry holds, master included. */
+export interface Sequence { tracks: Track[]; markers?: Marker[] }
+
 /** What a bin entry is. Exactly one shape. */
 export type BinSource =
   | { path: string; kind: MediaKind; proxy?: string | null }
   | { template: string; vars?: Record<string, unknown> }
-  | { color: string };
+  | { color: string }
+  | Sequence;
 
-/** One entry in the project bin: media, a configured overlay, or a colour. */
+/** One entry in the project bin: media, a configured overlay, a colour, or a sequence. */
 export interface BinItem { name: string; source: BinSource; meta?: MediaMeta | null }
 
 export type TrackKind = "video" | "audio" | "overlay";
@@ -45,9 +49,19 @@ export interface Clip {
 
 export interface Transition { from: string; to: string; kind: "dissolve" | "wipe"; duration: number; luma?: string | null; softness?: number }
 
+export interface Marker { t: number; label: string; color?: string | null }
+
+/** There is no project-level `tracks`: every timeline is a sequence entry in the bin, and
+ *  `master` names the one that gets rendered. */
 export interface Project {
   version: number; name: string; revision: number; fps: Fps; width: number; height: number; sample_rate: number;
-  bin: Record<string, BinItem>; tracks: Track[]; markers: { t: number; label: string; color?: string | null }[];
+  bin: Record<string, BinItem>; master: string;
+}
+
+/** What the daemon says about the sequence currently open (session state, not document). */
+export interface SequenceState {
+  current: string; master: string;
+  sequences: { id: string; name: string; duration: number; tracks: number }[];
 }
 
 export interface VarSpec {
@@ -129,27 +143,57 @@ export const fpsValue = (f: Fps) => f.num / f.den;
 
 export const isOverlaySource = (s: BinSource): s is { template: string; vars?: Record<string, unknown> } => "template" in s;
 export const isFileSource = (s: BinSource): s is { path: string; kind: MediaKind; proxy?: string | null } => "path" in s;
+export const isSequenceSource = (s: BinSource): s is Sequence => "tracks" in s;
 
 /** What a bin entry is, for badges and track placement. */
-export type ItemKind = "overlay" | "video" | "audio" | "image" | "color";
+export type ItemKind = "overlay" | "video" | "audio" | "image" | "color" | "sequence";
 export function itemKind(item: BinItem): ItemKind {
   if (isOverlaySource(item.source)) return "overlay";
+  if (isSequenceSource(item.source)) return "sequence";
   return isFileSource(item.source) ? item.source.kind : "color";
+}
+
+/** The timeline a bin entry holds, if it is a sequence. */
+export function sequenceOf(p: Project, id: string): Sequence | undefined {
+  const src = p.bin[id]?.source;
+  return src && isSequenceSource(src) ? src : undefined;
+}
+
+/** Every sequence in the bin, in bin order. */
+export function sequenceIds(p: Project): string[] {
+  return Object.keys(p.bin).filter((id) => sequenceOf(p, id));
+}
+
+/** A sequence's own duration: its latest clip end. */
+export function seqDuration(p: Project, id: string): number {
+  const seq = sequenceOf(p, id);
+  return seq ? Math.max(0, ...seq.tracks.flatMap((t) => t.clips.map((c) => c.end))) : 0;
+}
+
+/** Every clip in the project with the sequence it sits on. Clip ids are unique across all
+ *  of them, which is what lets anything address a clip by id alone. */
+export function allClips(p: Project): { seq: string; track: Track; ti: number; clip: Clip; ci: number }[] {
+  return sequenceIds(p).flatMap((seq) =>
+    sequenceOf(p, seq)!.tracks.flatMap((track, ti) => track.clips.map((clip, ci) => ({ seq, track, ti, clip, ci }))),
+  );
 }
 
 /** The entry a clip plays, if it resolves. */
 export const binItem = (p: Project, c: Clip): BinItem | undefined => p.bin[c.bin];
 export const isOverlayClip = (p: Project, c: Clip): boolean => !!binItem(p, c) && itemKind(binItem(p, c)!) === "overlay";
 /** True when `in` and a time warp mean something: video and audio only. */
-export const isTimedMedia = (item: BinItem | undefined): boolean => !!item && (itemKind(item) === "video" || itemKind(item) === "audio");
+/** True when `in` means something: video, audio and sequences have a timeline to offset
+ *  into; a still, a colour and an overlay are generated to fit the clip. */
+export const isTimedMedia = (item: BinItem | undefined): boolean =>
+  !!item && ["video", "audio", "sequence"].includes(itemKind(item));
 
 /** The track lane a clip is drawn in. */
-export type ClipKind = "overlay" | "video" | "audio" | "color";
+export type ClipKind = "overlay" | "video" | "audio" | "color" | "sequence";
 export function clipKind(p: Project, c: Clip, track?: Track): ClipKind {
   const item = binItem(p, c);
   if (!item) return "color";
   const k = itemKind(item);
-  if (k === "overlay" || k === "color" || k === "audio") return k;
+  if (k === "overlay" || k === "color" || k === "audio" || k === "sequence") return k;
   return track?.kind === "audio" ? "audio" : "video";
 }
 

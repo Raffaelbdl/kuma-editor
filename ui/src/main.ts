@@ -4,9 +4,9 @@ import { Inspector } from "./inspector";
 import { Library } from "./library";
 import { Preview } from "./preview";
 import { fmtTime, store, toast } from "./store";
-import { addTrack, Timeline } from "./timeline";
+import { addTrack, newSequence, Timeline } from "./timeline";
 import type { Clip, PatchOp, TrackKind } from "./types";
-import { binItem, isTimedMedia, shiftEffect, trimEffect } from "./types";
+import { binItem, isTimedMedia, sequenceIds, shiftEffect, trimEffect } from "./types";
 
 async function main() {
   await store.init();
@@ -23,6 +23,14 @@ function topbar(preview: Preview) {
   const host = document.getElementById("topbar")!;
   const name = el("span", "name");
   const rev = el("span", "muted mono");
+  // Which timeline is being edited. The master is one entry in this list like any other:
+  // that is the whole point of a sequence being a bin entry.
+  const seqSel = el("select");
+  seqSel.style.width = "auto";
+  seqSel.title = "Sequence being edited (the preview follows it)";
+  seqSel.onchange = () => {
+    if (seqSel.value === "+") { promptNewSequence(); } else { store.openSequence(seqSel.value); }
+  };
   const presets = el("select");
   presets.style.width = "auto";
   api.presets().then((ps) => options(presets, ps.map((p) => ({ value: p.id, title: p.description }))));
@@ -31,8 +39,16 @@ function topbar(preview: Preview) {
   });
   render.className = "primary";
   const status = el("span", "status");
-  host.append(name, rev, button("Undo", () => store.undo()), button("Redo", () => store.redo()), el("span", "spacer"), presets, render, button("Reload preview", () => preview.reload()), status);
-  store.select((s) => [s.project, s.connected, s.jobs], (s) => {
+  host.append(name, seqSel, rev, button("Undo", () => store.undo()), button("Redo", () => store.redo()), el("span", "spacer"), presets, render, button("Reload preview", () => preview.reload()), status);
+  store.select((s) => [s.project, s.sequence, s.connected, s.jobs], (s) => {
+    if (s.project) {
+      const ids = sequenceIds(s.project);
+      options(
+        seqSel,
+        [...ids.map((id) => ({ value: id, label: `${s.project!.bin[id].name || id}${id === s.project!.master ? " (master)" : ""}` })), { value: "+", label: "+ new sequence…" }],
+        s.sequence,
+      );
+    }
     name.textContent = s.project?.name || "kuma";
     rev.textContent = s.project ? `r${s.project.revision}${s.connected ? "" : " · offline"}` : "";
     const running = Object.entries(s.jobs).filter(([, j]) => !j.done);
@@ -81,6 +97,13 @@ function togglePlay(preview: Preview) {
  * left half keeps its fade-in, the right half its fade-out, and keyframes are re-based
  * on the new start. A transition leaving the clip now leaves its right half.
  */
+async function promptNewSequence() {
+  const name = prompt("Name for the new sequence");
+  // Put the picker back on the open sequence: a cancelled prompt must not leave it on "+".
+  store.set({ ...store.state });
+  if (name?.trim()) await newSequence(name.trim());
+}
+
 async function splitAtPlayhead() {
   const f = store.findClip(store.state.selection);
   const t = store.state.playhead;
@@ -91,10 +114,11 @@ async function splitAtPlayhead() {
   const right: Clip = { ...c, id: store.newId(c.id + "_"), start: t, effects: c.effects.map((e) => shiftEffect(e, cut)) };
   // Both halves keep playing the same bin entry; only the right one moves its in point.
   if (isTimedMedia(binItem(store.state.project!, c))) right.in = (c.in ?? 0) + cut * Math.abs(c.speed);
-  const path = `/tracks/${f.ti}/clips/${f.ci}`;
-  const ops: PatchOp[] = [{ op: "replace", path, value: left }, { op: "add", path: `/tracks/${f.ti}/clips/-`, value: right }];
+  const path = store.clipPath(c.id)!;
+  const tracks = `${store.seqPath}/tracks/${f.ti}`;
+  const ops: PatchOp[] = [{ op: "replace", path, value: left }, { op: "add", path: `${tracks}/clips/-`, value: right }];
   if (f.track.transitions.some((x) => x.from === c.id)) {
-    ops.push({ op: "replace", path: `/tracks/${f.ti}/transitions`, value: f.track.transitions.map((x) => (x.from === c.id ? { ...x, from: right.id } : x)) });
+    ops.push({ op: "replace", path: `${tracks}/transitions`, value: f.track.transitions.map((x) => (x.from === c.id ? { ...x, from: right.id } : x)) });
   }
   await store.patch(ops, `split ${c.id}`);
 }

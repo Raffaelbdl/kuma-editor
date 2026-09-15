@@ -182,8 +182,8 @@ pub fn has_bin(name: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Compile the current project for preview (at the preview scale, unbaked overlays
-/// skipped — they are live DOM in the UI) and (re)load it into the engine.
+/// Compile the open sequence for preview (at the preview scale, unbaked overlays skipped
+/// — they are live DOM in the UI) and (re)load it into the engine.
 pub async fn reload(state: &Arc<AppState>) -> anyhow::Result<PathBuf> {
     let st = state.clone();
     let path = tokio::task::spawn_blocking(move || {
@@ -191,7 +191,10 @@ pub async fn reload(state: &Arc<AppState>) -> anyhow::Result<PathBuf> {
         let scale = (*lock(&st.preview.scale)).clamp(0.25, 1.0);
         let even = |v: f64| ((v.round() as u32).max(2)) & !1;
         let (w, h) = (even(project.width as f64 * scale), even(project.height as f64 * scale));
-        crate::jobs::compile_project(&st, &project, HashMap::new(), "preview", UnbakedPolicy::Skip, Some((w, h)))
+        // The engine loads one compiled file, so editing a sub-sequence means previewing
+        // that sub-sequence: it is compiled as the root, exactly as a render of it would be.
+        let sequence = st.current_sequence();
+        crate::jobs::compile_project(&st, &project, HashMap::new(), "preview", UnbakedPolicy::Skip, Some((w, h)), Some(sequence))
     })
     .await??;
     state.preview.ensure(state).await?.send(&format!("load {}", path.display())).await?;

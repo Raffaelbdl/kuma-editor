@@ -98,19 +98,59 @@ pub fn validate(p: &Project, ctx: &ValidationContext) -> Vec<Issue> {
                     issues.push(Issue::error(format!("{ip}/source/color"), "colour must be #rgb, #rrggbb or #rrggbbaa"));
                 }
             }
+            // A sequence's own contents are checked below, with every other timeline.
+            BinSource::Sequence(_) => {}
         }
     }
 
+    match p.bin.get(&p.master) {
+        None => issues.push(Issue::error("/master", format!("master names no bin entry `{}`", p.master))),
+        Some(i) if !i.is_sequence() => {
+            issues.push(Issue::error("/master", format!("master `{}` is not a sequence: the master timeline must be a sequence entry", p.master)))
+        }
+        Some(_) => {}
+    }
+
+    // A sequence containing itself, however indirectly, would make the compiler recurse
+    // forever. Checked over the whole bin rather than only what the master reaches, so a
+    // cycle is refused when it is built rather than when it is first placed. One report:
+    // every entry on the ring would otherwise raise the same error.
+    if let Some(ring) = p.sequences().find_map(|(id, _)| p.compile_order(id).err()) {
+        issues.push(Issue::error(
+            format!("/bin/{}/source/tracks", ring[0]),
+            format!("sequence `{}` contains itself: {}", ring[0], ring.join(" → ")),
+        ));
+    }
+
+    // Track and clip ids are unique across the *whole project*, not per sequence: they
+    // become MLT element ids in one compiled document and URL segments in one daemon.
     let mut track_ids = HashSet::new();
     let mut clip_ids = HashSet::new();
-    for (ti, t) in p.tracks.iter().enumerate() {
-        let tp = format!("/tracks/{ti}");
-        check_id(&mut issues, &mut track_ids, &t.id, format!("{tp}/id"), "track");
+    for (seq_id, seq) in p.sequences() {
+        check_sequence(&mut issues, p, ctx, seq_id, seq, &mut track_ids, &mut clip_ids);
+    }
+
+    issues
+}
+
+fn check_sequence(
+    issues: &mut Vec<Issue>,
+    p: &Project,
+    ctx: &ValidationContext,
+    seq_id: &str,
+    seq: &Sequence,
+    track_ids: &mut HashSet<String>,
+    clip_ids: &mut HashSet<String>,
+) {
+    let base = format!("/bin/{seq_id}/source");
+    for (ti, t) in seq.tracks.iter().enumerate() {
+        let tp = format!("{base}/tracks/{ti}");
+        check_id(issues, track_ids, &t.id, format!("{tp}/id"), "track");
         let clips = t.sorted_clips();
 
         for (ci, c) in &clips {
             let cp = format!("{tp}/clips/{ci}");
-            check_id(&mut issues, &mut clip_ids, &c.id, format!("{cp}/id"), "clip");
+            check_id(issues, clip_ids, &c.id, format!("{cp}/id"), "clip");
             if !(c.start >= 0.0 && c.end > c.start) {
                 issues.push(Issue::error(format!("{cp}/end"), "clip must have start >= 0 and end > start"));
             } else if c.duration() * p.fps.as_f64() < 1.0 - 1e-9 {
@@ -122,6 +162,14 @@ pub fn validate(p: &Project, ctx: &ValidationContext) -> Vec<Issue> {
             } else if item.is_some_and(BinItem::is_overlay) && !(1.0..=240.0).contains(&(p.fps.as_f64() / c.speed.abs())) {
                 // The bake renders at fps/|speed|, which hyperframes bounds to 1..240.
                 issues.push(Issue::error(format!("{cp}/speed"), "overlay speed must keep fps/|speed| within 1..240"));
+            } else if item.is_some_and(BinItem::is_sequence) && (c.speed - 1.0).abs() > 1e-9 {
+                // MLT's `timewarp` producer takes a resource *path*: handed the id of a
+                // tractor it resolves it as a file, fails to load, and renders one frozen
+                // frame. Measured, not assumed — see docs/decisions.md.
+                issues.push(Issue::error(
+                    format!("{cp}/speed"),
+                    "a sequence clip cannot be sped up or slowed down; render the sequence out and place the result as media",
+                ));
             }
             match item {
                 None => issues.push(Issue::error(format!("{cp}/bin"), format!("unknown bin entry `{}`", c.bin))),
@@ -148,17 +196,19 @@ pub fn validate(p: &Project, ctx: &ValidationContext) -> Vec<Issue> {
                     if c.source_in < 0.0 {
                         issues.push(Issue::error(format!("{cp}/in"), "in must be >= 0"));
                     } else if c.source_in > 0.0 && !item.is_timed_media() {
-                        issues.push(Issue::error(format!("{cp}/in"), "in applies only to video/audio entries; this one is generated to fit the clip"));
+                        issues.push(Issue::error(format!("{cp}/in"), "in applies only to video, audio and sequence entries; this one is generated to fit the clip"));
                     }
-                    if item.is_timed_media() {
-                        if let Some(d) = item.meta.as_ref().and_then(|m| m.duration) {
-                            let need = c.source_in + c.duration() * c.speed.abs();
-                            if need > d + 1e-6 {
-                                issues.push(Issue::warn(
-                                    format!("{cp}/end"),
-                                    format!("clip reads {need:.2}s of a {d:.2}s source; tail will be black/silent"),
-                                ));
-                            }
+                    // An empty sequence compiles to nothing, so a clip placing one would
+                    // silently be a gap. Say so where it is placed.
+                    if item.is_sequence() && p.seq_duration(&c.bin) <= 0.0 {
+                        issues.push(Issue::error(format!("{cp}/bin"), format!("sequence `{}` is empty; put a clip on it before placing it", c.bin)));
+                    } else if let Some(d) = source_duration(p, c) {
+                        let need = c.source_in + c.duration() * c.speed.abs();
+                        if need > d + 1e-6 {
+                            issues.push(Issue::warn(
+                                format!("{cp}/end"),
+                                format!("clip reads {need:.2}s of a {d:.2}s source; tail will be black/silent"),
+                            ));
                         }
                     }
                 }
@@ -189,7 +239,7 @@ pub fn validate(p: &Project, ctx: &ValidationContext) -> Vec<Issue> {
                         if !good_scale(*scale) {
                             issues.push(Issue::error(format!("{ep}/scale"), "scale must be > 0"));
                         }
-                        check_keyframes(&mut issues, &ep, c, keyframes.iter().map(|k| k.t));
+                        check_keyframes(issues, &ep, c, keyframes.iter().map(|k| k.t));
                         for (ki, k) in keyframes.iter().enumerate() {
                             if k.scale.is_some_and(|s| !good_scale(s)) {
                                 issues.push(Issue::error(format!("{ep}/keyframes/{ki}/scale"), "scale must be > 0"));
@@ -210,7 +260,7 @@ pub fn validate(p: &Project, ctx: &ValidationContext) -> Vec<Issue> {
                         if keyframes.is_empty() {
                             issues.push(Issue::error(ep.clone(), "volume needs at least one keyframe"));
                         }
-                        check_keyframes(&mut issues, &ep, c, keyframes.iter().map(|k| k.t));
+                        check_keyframes(issues, &ep, c, keyframes.iter().map(|k| k.t));
                     }
                     Effect::Mlt { service, .. } => {
                         if service.trim().is_empty() {
@@ -281,8 +331,9 @@ pub fn validate(p: &Project, ctx: &ValidationContext) -> Vec<Issue> {
                     issues.push(Issue::error(format!("{xp}/duration"), format!("`{}` needs {need:.2}s of handle before its in point", b.id)));
                 }
             }
-            // The `from` side needs material after its out point; only checkable with probed metadata.
-            if let Some(d) = p.item(a).filter(|i| i.is_timed_media()).and_then(|i| i.meta.as_ref()).and_then(|m| m.duration) {
+            // The `from` side needs material after its out point; only checkable when the
+            // source length is known (probed for a file, exact for a sequence).
+            if let Some(d) = source_duration(p, a) {
                 let need = a.source_in + (a.duration() + half) * a.speed.abs();
                 if need > d + 1e-6 {
                     issues.push(Issue::warn(
@@ -308,8 +359,20 @@ pub fn validate(p: &Project, ctx: &ValidationContext) -> Vec<Issue> {
             }
         }
     }
+}
 
-    issues
+/// How much material a clip's entry has, when that is knowable: the probed duration of a
+/// media file, or a sequence's own length. `None` for a still, a colour, an overlay or an
+/// unprobed file, all of which are generated to whatever length is asked of them.
+fn source_duration(p: &Project, c: &Clip) -> Option<f64> {
+    let item = p.item(c)?;
+    if item.is_sequence() {
+        Some(p.seq_duration(&c.bin))
+    } else if item.is_timed_media() {
+        item.meta.as_ref().and_then(|m| m.duration)
+    } else {
+        None
+    }
 }
 
 /// Keyframe times must be non-negative and sorted; beyond the clip end they are pointless.
@@ -326,10 +389,10 @@ fn check_keyframes(issues: &mut Vec<Issue>, ep: &str, c: &Clip, times: impl Iter
     }
 }
 
-fn check_id<'a>(issues: &mut Vec<Issue>, seen: &mut HashSet<&'a str>, id: &'a str, path: String, what: &str) {
+fn check_id(issues: &mut Vec<Issue>, seen: &mut HashSet<String>, id: &str, path: String, what: &str) {
     if !is_valid_id(id) {
         issues.push(Issue::error(path, format!("{what} id `{id}` must match [A-Za-z_][A-Za-z0-9_-]*")));
-    } else if !seen.insert(id) {
+    } else if !seen.insert(id.to_string()) {
         issues.push(Issue::error(path, format!("duplicate {what} id `{id}`")));
     }
 }
@@ -343,8 +406,19 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    fn project(v: serde_json::Value) -> Project {
+    /// Build a project from `{bin, tracks, …}`, folding a bare `tracks` into the master
+    /// sequence entry. Most of these fixtures are about one timeline, and saying so twice
+    /// would bury what each test is actually checking.
+    fn project(mut v: serde_json::Value) -> Project {
+        if let Some(tracks) = v.as_object_mut().and_then(|o| o.remove("tracks")) {
+            v["bin"]["main"] = json!({ "name": "Main", "source": { "tracks": tracks } });
+        }
         serde_json::from_value(v).unwrap()
+    }
+
+    /// Where a clip lives in the document now that timelines hang off the bin.
+    fn clip_path(seq: &str, ti: usize, ci: usize) -> String {
+        format!("/bin/{seq}/source/tracks/{ti}/clips/{ci}")
     }
 
     #[test]
@@ -360,6 +434,14 @@ mod tests {
         let msgs: Vec<_> = issues.iter().map(|i| i.message.as_str()).collect();
         assert!(msgs.iter().any(|m| m.contains("unknown bin entry")), "{msgs:?}");
         assert!(msgs.iter().any(|m| m.contains("overlaps")), "{msgs:?}");
+    }
+
+    /// The master sequence's tracks, mutably: fixtures poke at them between assertions.
+    fn main_tracks(p: &mut Project) -> &mut Vec<Track> {
+        match &mut p.bin.get_mut("main").unwrap().source {
+            BinSource::Sequence(s) => &mut s.tracks,
+            _ => unreachable!(),
+        }
     }
 
     fn messages(p: &Project) -> Vec<String> {
@@ -378,9 +460,9 @@ mod tests {
         assert!(messages(&p).iter().any(|m| m.contains("handle")));
         // 0.5 s of handle is enough at 1×, not at 2×.
         let mut p2 = p.clone();
-        p2.tracks[0].clips[1].source_in = 0.5;
+        main_tracks(&mut p2)[0].clips[1].source_in = 0.5;
         assert!(!messages(&p2).iter().any(|m| m.contains("handle")));
-        p2.tracks[0].clips[1].speed = 2.0;
+        main_tracks(&mut p2)[0].clips[1].speed = 2.0;
         assert!(messages(&p2).iter().any(|m| m.contains("handle")));
     }
 
@@ -457,16 +539,16 @@ mod tests {
             ]
         }));
         let issues = validate(&p, &ValidationContext::default());
-        let at = |path: &str| issues.iter().find(|i| i.path == path);
+        let at = |ti: usize| issues.iter().find(|i| i.path == format!("{}/bin", clip_path("main", ti, 0)));
 
         // Audio on a video track renders fine but hides nothing and shows nothing: warn.
-        let w = at("/tracks/0/clips/0/bin").expect("audio on a video track is flagged");
+        let w = at(0).expect("audio on a video track is flagged");
         assert_eq!(w.severity, Severity::Warning);
         assert!(w.message.contains("no video"), "{w:?}");
         // Video on an audio track is the deliberate "use only the audio" case: silent.
-        assert!(at("/tracks/1/clips/0/bin").is_none(), "{issues:?}");
+        assert!(at(1).is_none(), "{issues:?}");
         // Anything but an overlay on an overlay track is invisible in preview: error.
-        assert_eq!(at("/tracks/2/clips/0/bin").expect("checked").severity, Severity::Error);
+        assert_eq!(at(2).expect("checked").severity, Severity::Error);
     }
 
     /// An agent must not be able to add an overlay that does not exist. The daemon always

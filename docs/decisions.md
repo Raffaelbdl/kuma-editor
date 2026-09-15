@@ -320,6 +320,20 @@ Lower priority than nested sequences above.
   If only the audio case matters, the cheap version is a gain field on file entries and no
   general mechanism.
 
+- **Defect: the probe reports the wrong frame rate for variable-rate sources.** It records
+  ffprobe's `r_frame_rate`, which for a variable-rate file is the smallest rate that can
+  express every timestamp rather than the actual one. A test file with real frame deltas
+  of 100/67/33 ms, averaging just under 12 fps, reports 30. Informational only, since the
+  probed rate never reaches the compiler, but it is what the bin shows and what an agent
+  reads from `get_project`. `avg_frame_rate` is the honest number, and storing both would
+  let the UI say "variable" when they diverge.
+
+  *Rendering itself is fine, and was checked rather than assumed:* times are seconds and
+  become frames once, at the project rate, so nothing assumes the source has a grid. A
+  clip trimmed two seconds into that variable-rate file sampled pixel-identical to
+  ffmpeg's own extraction at the same source times. Audio drift over a long recording is
+  untested.
+
 - **Defect: blur is horizontal only.** The compiler sets `av.sigma` and not `av.sigmaV`,
   and MLT does not mirror one into the other, so a blurred clip keeps perfectly sharp
   horizontal edges. Confirmed by rendering colour bars with and without the vertical

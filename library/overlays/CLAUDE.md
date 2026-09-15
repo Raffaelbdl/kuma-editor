@@ -8,7 +8,10 @@ library's `overlays/` and from the project's own `overlays/`, later wins on an i
 2. each directory in `KUMA_LIBRARY` (`:`-separated), as `<dir>/overlays`,
 3. `<project dir>/overlays` — the place for one-off templates written for that video.
 
-`GET /api/health` (the `health` tool) lists `template_dirs` and `template_errors`.
+`GET /api/health` (the `health` tool) lists `template_dirs` and `template_errors`. A folder
+is only a template if it holds a `template.json`, and loading refuses one without an
+`index.html` beside it, so write both before rescanning or the template reports as broken
+rather than appearing.
 
 ```
 overlays/<id>/

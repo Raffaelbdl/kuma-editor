@@ -93,6 +93,12 @@ impl TemplateManifest {
         if let Some(problem) = m.check() {
             return Err(err(problem));
         }
+        // The renderer and the live preview both open `index.html` unconditionally, so a
+        // folder without one resolves fine and then 404s in preview and fails the bake.
+        // Refuse it here instead, the way a bin entry with a missing file is refused.
+        if !dir.join("index.html").is_file() {
+            return Err(err("index.html is missing from the template folder".into()));
+        }
         Ok(m)
     }
 
@@ -270,5 +276,24 @@ mod tests {
         assert!(bad(json!({ "id": "t", "vars": { "n": { "type": "number", "default": "big" } } })).contains("default"));
         assert!(bad(json!({ "id": "t", "vars": { "n": { "type": "number", "default": 5, "max": 1 } } })).contains("max"));
         assert!(manifest().check().is_none());
+    }
+
+    /// A folder carrying a manifest but no markup used to load, resolve and validate
+    /// cleanly, then 404 in the live preview and fail the bake.
+    #[test]
+    fn a_template_folder_needs_its_index_html() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path().join("location-tag");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("template.json"), r#"{ "id": "location-tag" }"#).unwrap();
+
+        let e = TemplateManifest::load(&dir).expect_err("no index.html yet");
+        assert!(e.reason.contains("index.html"), "{e:?}");
+        // load_all reports it rather than skipping the folder silently.
+        let (loaded, errors) = TemplateManifest::load_all(tmp.path());
+        assert!(loaded.is_empty() && errors.len() == 1, "{loaded:?} {errors:?}");
+
+        std::fs::write(dir.join("index.html"), "<div data-composition-id=\"main\"></div>").unwrap();
+        assert_eq!(TemplateManifest::load(&dir).unwrap().id, "location-tag");
     }
 }

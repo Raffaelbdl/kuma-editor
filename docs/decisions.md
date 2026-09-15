@@ -339,6 +339,26 @@ Lower priority than nested sequences above.
   horizontal edges. Confirmed by rendering colour bars with and without the vertical
   sigma. One line in `emit_filters`; not yet fixed.
 
+- **The bake cache grows forever and nothing prunes it.** A successful bake only ever
+  adds a directory. The only deletions anywhere in the bake path are the scratch frames
+  inside one bake and the drop guard that cleans up after a failure, so every superseded
+  entry stays complete and unreachable. Keys are content hashes covering the template
+  folder, the vendor folder, the resolved vars, and the clip's duration and speed, which
+  means trimming a clip creates a new entry just as surely as editing markup does. The
+  frames are full-resolution PNG sequences, so a few seconds of 1080p overlay costs tens
+  of megabytes per superseded version. Fine for a proof of concept, not fine for a project
+  someone keeps for months.
+
+  One accidental mitigation: because keys are content hashes rather than a sequence,
+  reverting a template to an earlier state hits that entry again instead of baking a third
+  copy, so switching back and forth between two versions costs two entries rather than one
+  per switch.
+
+  The fix when it is wanted is a prune that recomputes the live key set from the project
+  and deletes everything else. That needs no rendering, because the key function is pure
+  and can be evaluated for every overlay entry directly. A size or age cap is the lazier
+  version and is worse: it can evict the entry for a clip that is about to be rendered.
+
 - **A configured overlay cannot be shared between projects.** The template travels in the
   library and its manifest defaults with it, but an entry's var overrides live in the
   project file, so a house lower third styled once has to be rebuilt in the next project.

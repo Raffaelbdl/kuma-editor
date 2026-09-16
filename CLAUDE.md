@@ -6,8 +6,7 @@ project file and exposed to agents over MCP. Read `README.md` for the architectu
 `library/overlays/CLAUDE.md` before authoring an overlay template.
 
 **Picking this up? Read `docs/decisions.md` first.** It records why the model looks the
-way it does, including what was tried and rejected, and it opens with the agreed next
-step: **nested sequences**, not started, ahead of everything in its "still open" list.
+way it does, including what was tried and rejected, and what is still open.
 
 ## Layout
 
@@ -49,10 +48,25 @@ Chrome headless shell if hyperframes should not download one.
 
 - Times in the model are seconds; `end` is exclusive; fps is rational. Seconds → frames
   happens once, in `Fps::frame`. Never do frame math anywhere else.
-- The `bin` holds everything placeable (media, configured overlays, colours); a clip is a
-  placement referencing one entry and never carries a source. What is shown lives on the
-  entry, when it is shown lives on the clip. Nothing has shipped yet, so the format has no
-  upgrade path: changing it means bumping `PROJECT_VERSION` and writing one.
+- The `bin` holds everything placeable (media, configured overlays, colours, sequences); a
+  clip is a placement referencing one entry and never carries a source. What is shown lives
+  on the entry, when it is shown lives on the clip. Nothing has shipped yet, so the format
+  has no upgrade path: changing it means bumping `PROJECT_VERSION` and writing one.
+- There is no project-level `tracks`: a timeline is a `Sequence` bin entry and `master`
+  names the one that renders, so a clip lives at `/bin/<seq>/source/tracks/<i>/clips/<j>`.
+  Track and clip ids are unique across the whole project. A sequence compiles to one
+  tractor however often it is placed; each placement is a wrapper playlist carrying its own
+  cut and filters, and a nested sequence's background is transparent. The daemon holds the
+  open sequence as session state — never in the document.
+- Overlays are live DOM on the sequence you have open and **baked** in the sequences it
+  nests, which is what puts them in the preview at all; the two sets are disjoint, so none
+  is drawn twice. Preview bakes are best effort — a template that will not bake costs that
+  overlay, never the preview.
+- Clients ask for a preview reload on **every** edit and never decide whether one is
+  needed: `preview::reload` compiles, compares the document against what the engine holds,
+  and only then reloads it. Do not reintroduce a client-side model of what the compiler
+  depends on — that is what `engineKey` was, and it drifted twice. This makes the compiler
+  deterministic a requirement, not a nicety (`compile.rs` tests it).
 - Every MLT detail (inclusive in/out, `<blank length>`, background track, `qtblend`/`mix`
   transitions, A/B lanes for dissolves) stays in `crates/kuma-mlt/src/compile.rs`.
   `tests/fixtures/reference.mlt` is a golden file: regenerate with

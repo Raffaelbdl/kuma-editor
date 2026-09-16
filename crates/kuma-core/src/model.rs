@@ -1,6 +1,6 @@
 //! The project document. This is the JSON the agent and the UI edit.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -38,21 +38,23 @@ pub struct Project {
     /// mixes at 48 kHz regardless.
     #[serde(default = "default_sample_rate")]
     pub sample_rate: u32,
-    /// Everything this project can place on a track — media files, overlay instances and
-    /// colours — keyed by a short stable id. Clips reference an entry; they never carry a
-    /// source of their own.
+    /// Everything this project can place on a track — media files, overlay instances,
+    /// colours and *sequences* — keyed by a short stable id. Clips reference an entry;
+    /// they never carry a source of their own.
     #[serde(default)]
     pub bin: BTreeMap<BinId, BinItem>,
-    /// Tracks in **bottom-to-top** compositing order: `tracks[0]` is painted first.
-    #[serde(default)]
-    pub tracks: Vec<Track>,
-    /// Timeline markers (annotation only; never rendered).
-    #[serde(default)]
-    pub markers: Vec<Marker>,
+    /// The bin entry holding the master timeline. It must be a [`BinSource::Sequence`];
+    /// it is what `render` renders and what [`Project::duration`] measures. Every other
+    /// sequence is reached by being placed on it, directly or through another sequence.
+    #[serde(default = "default_master")]
+    pub master: BinId,
 }
 
 fn default_version() -> u32 {
     crate::PROJECT_VERSION
+}
+fn default_master() -> BinId {
+    "main".into()
 }
 fn default_width() -> u32 {
     1920
@@ -75,8 +77,7 @@ impl Default for Project {
             height: 1080,
             sample_rate: 48000,
             bin: BTreeMap::new(),
-            tracks: Vec::new(),
-            markers: Vec::new(),
+            master: default_master(),
         }
     }
 }
@@ -94,16 +95,24 @@ impl Project {
             clips: Vec::new(),
             transitions: Vec::new(),
         };
+        let main = BinItem {
+            name: "Main".into(),
+            source: BinSource::Sequence(Sequence {
+                tracks: vec![
+                    track("v1", TrackKind::Video, "Video"),
+                    track("o1", TrackKind::Overlay, "Overlays"),
+                    track("a1", TrackKind::Audio, "Audio"),
+                ],
+                markers: Vec::new(),
+            }),
+            meta: None,
+        };
         Project {
             name: name.into(),
             width,
             height,
             fps,
-            tracks: vec![
-                track("v1", TrackKind::Video, "Video"),
-                track("o1", TrackKind::Overlay, "Overlays"),
-                track("a1", TrackKind::Audio, "Audio"),
-            ],
+            bin: [(default_master(), main)].into(),
             ..Project::default()
         }
     }
@@ -113,19 +122,106 @@ impl Project {
         path.file_stem().map(|s| s.to_string_lossy().trim_end_matches(".kuma").to_string()).unwrap_or_default()
     }
 
-    /// Timeline duration in seconds: the latest clip end across all tracks.
-    pub fn duration(&self) -> f64 {
-        self.tracks
-            .iter()
-            .flat_map(|t| t.clips.iter())
-            .map(|c| c.end)
-            .fold(0.0, f64::max)
+    /// The timeline held by a bin entry, if that entry is a sequence.
+    pub fn seq(&self, id: &str) -> Option<&Sequence> {
+        match self.bin.get(id).map(|i| &i.source) {
+            Some(BinSource::Sequence(s)) => Some(s),
+            _ => None,
+        }
     }
 
-    pub fn find_clip(&self, id: &str) -> Option<(&Track, &Clip)> {
-        self.tracks
-            .iter()
-            .find_map(|t| t.clips.iter().find(|c| c.id == id).map(|c| (t, c)))
+    /// The master timeline. `None` only for a document the validator would reject.
+    pub fn master_seq(&self) -> Option<&Sequence> {
+        self.seq(&self.master)
+    }
+
+    /// Every sequence in the bin, id and all, in bin order.
+    pub fn sequences(&self) -> impl Iterator<Item = (&BinId, &Sequence)> {
+        self.bin.iter().filter_map(|(id, item)| match &item.source {
+            BinSource::Sequence(s) => Some((id, s)),
+            _ => None,
+        })
+    }
+
+    /// The sequence a job should treat as its root: the one asked for, or the master.
+    /// Every entry point that takes an optional sequence resolves it here, so they cannot
+    /// drift on either the default or the wording of the refusal.
+    pub fn sequence_or_master(&self, id: Option<&str>) -> Result<&BinId, String> {
+        let wanted = id.unwrap_or(&self.master);
+        // Borrow the id out of the bin so the caller gets one that outlives its argument.
+        match self.bin.get_key_value(wanted) {
+            Some((id, item)) if item.is_sequence() => Ok(id),
+            _ => Err(format!("`{wanted}` is not a sequence in this project")),
+        }
+    }
+
+    /// Every clip in the project, with the sequence it lives on. Cheap enough to walk:
+    /// jobs that touch "every overlay clip" use this rather than knowing about nesting.
+    pub fn all_clips(&self) -> impl Iterator<Item = (&BinId, &Track, &Clip)> {
+        self.sequences().flat_map(|(id, s)| s.tracks.iter().flat_map(move |t| t.clips.iter().map(move |c| (id, t, c))))
+    }
+
+    /// A sequence's own duration in seconds: the latest clip end across its tracks. An id
+    /// that is not a sequence measures 0.
+    pub fn seq_duration(&self, id: &str) -> f64 {
+        self.seq(id).map(Sequence::duration).unwrap_or(0.0)
+    }
+
+    /// Master timeline duration in seconds — what `render` produces.
+    pub fn duration(&self) -> f64 {
+        self.seq_duration(&self.master)
+    }
+
+    /// Find a clip by id, anywhere in the project. Clip ids are unique across every
+    /// sequence, which is what lets the daemon address one by id alone.
+    pub fn find_clip(&self, id: &str) -> Option<(&BinId, &Track, &Clip)> {
+        self.all_clips().find(|(_, _, c)| c.id == id)
+    }
+
+    /// Sequences reachable from `root`, **innermost first**: the order the compiler must
+    /// emit tractors in, so an outer sequence only ever references one already written.
+    /// `Err` carries the reference chain that closes a cycle, ending on the repeat.
+    pub fn compile_order(&self, root: &str) -> Result<Vec<BinId>, Vec<BinId>> {
+        let mut walk = SequenceWalk::default();
+        walk.visit(self, root)?;
+        Ok(walk.order)
+    }
+
+    /// Refuse a bin in which any sequence contains itself, returning the ring that closes.
+    /// One walk for the whole bin rather than one per sequence: the visited set is shared,
+    /// so an entry reached from several roots is expanded once.
+    pub fn check_cycles(&self) -> Result<(), Vec<BinId>> {
+        let mut walk = SequenceWalk::default();
+        self.sequences().try_for_each(|(id, _)| walk.visit(self, id))
+    }
+
+    /// Whether a clip contributes audible sound: what decides if its track needs an audio
+    /// mix. Stated once here because the compiler asks the same question of the same clip,
+    /// and the two answers have to agree or a render comes out silent.
+    pub fn clip_has_audio(&self, clip: &Clip) -> bool {
+        !clip.muted
+            && match self.item(clip) {
+                Some(item) if item.is_sequence() => self.seq_has_audio(&clip.bin),
+                Some(item) => item.is_timed_media(),
+                None => false,
+            }
+    }
+
+    /// Whether a sequence carries any audible sound, following nested sequences. Cycle-safe.
+    pub fn seq_has_audio(&self, id: &str) -> bool {
+        fn walk<'a>(p: &'a Project, id: &'a str, seen: &mut HashSet<&'a str>) -> bool {
+            if !seen.insert(id) {
+                return false;
+            }
+            let Some(seq) = p.seq(id) else { return false };
+            seq.tracks.iter().filter(|t| !t.muted).flat_map(|t| t.clips.iter()).any(|c| match p.item(c) {
+                _ if c.muted => false,
+                Some(item) if item.is_sequence() => p.bin.get_key_value(&c.bin).is_some_and(|(id, _)| walk(p, id, seen)),
+                Some(item) => item.is_timed_media(),
+                None => false,
+            })
+        }
+        walk(self, id, &mut HashSet::new())
     }
 
     /// The bin entry a clip plays, if it resolves.
@@ -136,6 +232,40 @@ impl Project {
     /// Lowest free `<prefix><n>` bin id.
     pub fn free_bin_id(&self, prefix: &str) -> BinId {
         (1..).map(|n| format!("{prefix}{n}")).find(|id| !self.bin.contains_key(id)).unwrap_or_default()
+    }
+}
+
+/// A depth-first walk of the sequence graph, shared by `compile_order` (one root, and the
+/// order is the answer) and `check_cycles` (every root, and only the failure is).
+#[derive(Default)]
+struct SequenceWalk {
+    /// Reachable sequences, innermost first.
+    order: Vec<BinId>,
+    done: HashSet<BinId>,
+    /// The chain currently being expanded; an id already on it closes a ring.
+    path: Vec<BinId>,
+}
+
+impl SequenceWalk {
+    fn visit(&mut self, p: &Project, id: &str) -> Result<(), Vec<BinId>> {
+        if self.done.contains(id) {
+            return Ok(());
+        }
+        if let Some(at) = self.path.iter().position(|p| p == id) {
+            // The ring itself, not the walk that found it: from the repeated id round to it.
+            return Err(self.path[at..].iter().cloned().chain([id.to_string()]).collect());
+        }
+        let Some(seq) = p.seq(id) else { return Ok(()) };
+        self.path.push(id.to_string());
+        // Visiting a clip that plays something other than a sequence is a no-op, so the
+        // walk does not need to know which clips are which.
+        for clip in seq.clips() {
+            self.visit(p, &clip.bin)?;
+        }
+        self.path.pop();
+        self.done.insert(id.to_string());
+        self.order.push(id.to_string());
+        Ok(())
     }
 }
 
@@ -200,18 +330,56 @@ pub enum BinSource {
         /// CSS-style colour, e.g. `#000000` or `#ff4f00cc`.
         color: String,
     },
+    /// A timeline of its own, placeable on another timeline. The project's `master` is
+    /// one of these; so is every part edited separately and juxtaposed in the final cut.
+    Sequence(Sequence),
+}
+
+/// A timeline: tracks and their markers. Held by a [`BinSource::Sequence`] entry rather
+/// than by the project, so the master timeline and a nested one are the same thing and
+/// every clip operation works on both.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Sequence {
+    /// Tracks in **bottom-to-top** compositing order: `tracks[0]` is painted first.
+    /// Required (not defaulted) so an empty object cannot deserialize as a sequence.
+    pub tracks: Vec<Track>,
+    /// Timeline markers (annotation only; never rendered).
+    #[serde(default)]
+    pub markers: Vec<Marker>,
+}
+
+impl Sequence {
+    /// Every clip on this timeline, in track order. The one place a timeline is walked,
+    /// so a new traversal does not spell the nesting out again.
+    pub fn clips(&self) -> impl Iterator<Item = &Clip> {
+        self.tracks.iter().flat_map(|t| t.clips.iter())
+    }
+
+    /// Duration in seconds: the latest clip end across the sequence's tracks.
+    pub fn duration(&self) -> f64 {
+        self.clips().map(|c| c.end).fold(0.0, f64::max)
+    }
 }
 
 impl BinItem {
     /// True when the source carries its own timeline to seek into, so a clip's `in` is
-    /// meaningful and speed becomes a time warp. Stills, colours and overlays all start
-    /// at their own zero and are generated to fit the clip instead.
+    /// meaningful. Stills, colours and overlays all start at their own zero and are
+    /// generated to fit the clip instead; a sequence has a timeline like a media file.
     pub fn is_timed_media(&self) -> bool {
-        matches!(&self.source, BinSource::File { kind, .. } if *kind != MediaKind::Image)
+        match &self.source {
+            BinSource::File { kind, .. } => *kind != MediaKind::Image,
+            BinSource::Sequence(_) => true,
+            _ => false,
+        }
     }
 
     pub fn is_overlay(&self) -> bool {
         matches!(self.source, BinSource::Overlay { .. })
+    }
+
+    pub fn is_sequence(&self) -> bool {
+        matches!(self.source, BinSource::Sequence(_))
     }
 
     /// A media file the probe found no video in. It renders nothing, so on a video track
@@ -487,41 +655,112 @@ pub struct Marker {
 
 #[cfg(test)]
 mod tests {
+    use serde_json::json;
+
     use super::*;
 
     #[test]
     fn example_project_round_trips() {
         let json = r#"{
-          "version": 1, "name": "demo",
+          "version": 1, "name": "demo", "master": "main",
           "fps": {"num": 30000, "den": 1001}, "width": 1920, "height": 1080,
           "bin": {
             "screen": { "name": "Screen recording", "source": { "path": "media/screen.mp4", "kind": "video" } },
-            "third":  { "name": "Intro title", "source": { "template": "lower-third", "vars": { "title": "kuma" } } }
-          },
-          "tracks": [
-            { "id": "v1", "kind": "video", "clips": [
-              { "id": "c1", "start": 0.0, "end": 12.5, "bin": "screen", "in": 3.2,
-                "effects": [
-                  { "type": "crop", "left": 0.05, "right": 0.05 },
-                  { "type": "transform", "keyframes": [
-                    { "t": 0.0, "scale": 1.0 }, { "t": 3.0, "scale": 1.4, "x": -120 } ] } ] } ] },
-            { "id": "o1", "kind": "overlay", "clips": [
-              { "id": "o_c1", "start": 2.0, "end": 8.0, "bin": "third", "speed": 0.5,
-                "effects": [ { "type": "blend", "mode": "screen" }, { "type": "blur", "radius": 2 } ] } ] }
-          ]
+            "third":  { "name": "Intro title", "source": { "template": "lower-third", "vars": { "title": "kuma" } } },
+            "main": { "name": "Main", "source": { "tracks": [
+              { "id": "v1", "kind": "video", "clips": [
+                { "id": "c1", "start": 0.0, "end": 12.5, "bin": "screen", "in": 3.2,
+                  "effects": [
+                    { "type": "crop", "left": 0.05, "right": 0.05 },
+                    { "type": "transform", "keyframes": [
+                      { "t": 0.0, "scale": 1.0 }, { "t": 3.0, "scale": 1.4, "x": -120 } ] } ] } ] },
+              { "id": "o1", "kind": "overlay", "clips": [
+                { "id": "o_c1", "start": 2.0, "end": 8.0, "bin": "third", "speed": 0.5,
+                  "effects": [ { "type": "blend", "mode": "screen" }, { "type": "blur", "radius": 2 } ] } ] }
+            ] } }
+          }
         }"#;
         let p: Project = serde_json::from_str(json).expect("parse");
-        assert!(p.item(&p.tracks[1].clips[0]).unwrap().is_overlay());
-        assert!(p.item(&p.tracks[0].clips[0]).unwrap().is_timed_media());
+        let tracks = &p.master_seq().expect("master is a sequence").tracks;
+        assert!(p.item(&tracks[1].clips[0]).unwrap().is_overlay());
+        assert!(p.item(&tracks[0].clips[0]).unwrap().is_timed_media());
         assert_eq!(p.duration(), 12.5);
+    }
+
+    fn seq(tracks: Value) -> Value {
+        json!({ "source": { "tracks": tracks } })
+    }
+
+    /// A sequence is just a fourth kind of bin entry, so everything a clip already does
+    /// applies to it: `in` offsets into its timeline, and its length is its own.
+    #[test]
+    fn a_sequence_is_a_bin_entry_a_clip_can_place() {
+        let p: Project = serde_json::from_value(json!({
+            "bin": {
+                "x": { "source": { "path": "x.mp4" } },
+                "part": seq(json!([{ "id": "pv", "clips": [ { "id": "p1", "start": 0, "end": 6, "bin": "x" } ] }])),
+                "main": seq(json!([{ "id": "v1", "clips": [ { "id": "c1", "start": 0, "end": 4, "bin": "part", "in": 2 } ] }]))
+            }
+        }))
+        .unwrap();
+        assert_eq!(p.seq_duration("part"), 6.0);
+        assert_eq!(p.duration(), 4.0, "the master measures its own clips, not what they contain");
+        let c1 = &p.master_seq().unwrap().tracks[0].clips[0];
+        assert!(p.item(c1).unwrap().is_timed_media(), "a sequence has a timeline to offset into");
+        // A clip anywhere is findable by id, and says which sequence it is on.
+        assert_eq!(p.find_clip("p1").unwrap().0, "part");
+        assert_eq!(p.compile_order("main").unwrap(), vec!["part", "main"], "inner sequences first");
+    }
+
+    #[test]
+    fn a_sequence_containing_itself_is_reported_as_a_ring() {
+        let p: Project = serde_json::from_value(json!({
+            "bin": {
+                "a": seq(json!([{ "id": "av", "clips": [ { "id": "ac", "start": 0, "end": 4, "bin": "b" } ] }])),
+                "b": seq(json!([{ "id": "bv", "clips": [ { "id": "bc", "start": 0, "end": 4, "bin": "a" } ] }])),
+                "main": seq(json!([{ "id": "v1", "clips": [ { "id": "c1", "start": 0, "end": 4, "bin": "a" } ] }]))
+            }
+        }))
+        .unwrap();
+        // The chain closes on the entry it started from, so the message can name the ring.
+        assert_eq!(p.compile_order("main").unwrap_err(), vec!["a", "b", "a"]);
+        assert!(p.compile_order("b").is_err());
+        // Nothing hangs on a cyclic document: these are the calls the daemon still makes.
+        assert!(!p.seq_has_audio("a"));
+        assert_eq!(p.seq_duration("a"), 4.0);
+    }
+
+    #[test]
+    fn audio_is_found_through_nesting() {
+        let mk = |muted: bool| -> Project {
+            serde_json::from_value(json!({
+                "bin": {
+                    "song": { "source": { "path": "song.mp3", "kind": "audio" } },
+                    "still": { "source": { "path": "logo.png", "kind": "image" } },
+                    "inner": seq(json!([{ "id": "ia", "kind": "audio", "muted": muted,
+                        "clips": [ { "id": "i1", "start": 0, "end": 4, "bin": "song" } ] }])),
+                    "main": seq(json!([
+                        { "id": "v1", "clips": [ { "id": "c1", "start": 0, "end": 4, "bin": "still" } ] },
+                        { "id": "v2", "clips": [ { "id": "c2", "start": 0, "end": 4, "bin": "inner" } ] }
+                    ]))
+                }
+            }))
+            .unwrap()
+        };
+        assert!(mk(false).seq_has_audio("main"), "sound two levels down still needs a mix");
+        assert!(!mk(true).seq_has_audio("main"), "a muted track inside carries nothing out");
     }
 
     #[test]
     fn unknown_fields_are_rejected() {
-        let json = r#"{ "tracks": [ { "id": "v1", "clipz": [] } ] }"#;
+        let json = r#"{ "bin": { "m": { "source": { "tracks": [ { "id": "v1", "clipz": [] } ] } } } }"#;
         assert!(serde_json::from_str::<Project>(json).is_err());
         // Also inside the untagged source enum, where serde would otherwise drop them.
         let json = r#"{ "bin": { "a": { "source": { "path": "x.mp4", "offset": 3 } } } }"#;
+        assert!(serde_json::from_str::<Project>(json).is_err());
+        // `tracks` is what tells a sequence apart from the other sources, so it is
+        // required: an entry with no recognisable source must not become an empty timeline.
+        let json = r#"{ "bin": { "a": { "source": { } } } }"#;
         assert!(serde_json::from_str::<Project>(json).is_err());
     }
 

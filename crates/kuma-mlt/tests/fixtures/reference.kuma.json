@@ -1,6 +1,7 @@
 {
   "version": 1,
   "name": "reference",
+  "master": "main",
   "fps": { "num": 30, "den": 1 },
   "width": 1920,
   "height": 1080,
@@ -11,52 +12,90 @@
     "logo": { "name": "Logo", "source": { "path": "media/logo.png", "kind": "image" } },
     "navy": { "name": "Navy card", "source": { "color": "#102030" } },
     "paris": { "name": "Paris tag", "source": { "template": "location-tag", "vars": { "label": "Paris, France" } } },
-    "third": { "name": "Lower third", "source": { "template": "lower-third" } }
-  },
-  "tracks": [
-    {
-      "id": "v1", "kind": "video", "name": "Main",
-      "clips": [
-        {
-          "id": "c1", "start": 0.0, "end": 10.0, "bin": "screen", "in": 3.0,
-          "effects": [
-            { "type": "crop", "left": 0.05, "right": 0.05, "top": 0.05, "bottom": 0.05 },
-            { "type": "transform", "keyframes": [
-              { "t": 0.0, "scale": 1.0 },
-              { "t": 3.0, "scale": 1.4, "x": -120, "y": -80 },
-              { "t": 10.0, "scale": 1.4, "x": -120, "y": -80 } ] },
-            { "type": "fade", "in": 0.5, "out": 0.5 }
-          ]
-        },
-        {
-          "id": "c2", "start": 10.0, "end": 14.0, "bin": "cam", "in": 1.0,
-          "speed": 0.5, "volume": 0.5,
-          "effects": [ { "type": "color", "saturation": 1.2 } ]
-        },
-        { "id": "c3", "start": 14.0, "end": 15.0, "bin": "navy" }
-      ],
-      "transitions": [ { "from": "c1", "to": "c2", "duration": 1.0, "kind": "dissolve" } ]
+    "third": { "name": "Lower third", "source": { "template": "lower-third" } },
+
+    "intro": {
+      "name": "Intro sequence",
+      "source": {
+        "tracks": [
+          {
+            "id": "iv1", "kind": "video", "name": "Intro main",
+            "clips": [
+              { "id": "i1", "start": 0.0, "end": 3.0, "bin": "navy" },
+              { "id": "i2", "start": 3.0, "end": 6.0, "bin": "cam", "in": 2.0 }
+            ],
+            "transitions": [ { "from": "i1", "to": "i2", "duration": 0.5, "kind": "dissolve" } ]
+          },
+          {
+            "id": "iv2", "kind": "video", "name": "Intro logo",
+            "clips": [
+              { "id": "i3", "start": 1.0, "end": 4.0, "bin": "logo",
+                "effects": [ { "type": "transform", "x": 0, "y": -200, "scale": 0.3 } ] }
+            ]
+          }
+        ],
+        "markers": [ { "t": 3.0, "label": "cut to camera" } ]
+      }
     },
-    {
-      "id": "v2", "kind": "video", "name": "PiP",
-      "clips": [
-        {
-          "id": "pip", "start": 4.0, "end": 9.0, "muted": true, "bin": "logo",
-          "effects": [
-            { "type": "transform", "x": 600, "y": 300, "scale": 0.25, "opacity": 0.9 },
-            { "type": "blend", "mode": "screen" },
-            { "type": "blur", "radius": 4 }
-          ]
-        }
-      ]
-    },
-    {
-      "id": "o1", "kind": "overlay", "name": "Overlays",
-      "clips": [
-        { "id": "o_c1", "start": 2.0, "end": 5.0, "bin": "paris" },
-        { "id": "o_c2", "start": 6.0, "end": 8.0, "bin": "third" }
-      ]
+
+    "main": {
+      "name": "Main",
+      "source": {
+        "tracks": [
+          {
+            "id": "v1", "kind": "video", "name": "Main",
+            "clips": [
+              {
+                "id": "c1", "start": 0.0, "end": 10.0, "bin": "screen", "in": 3.0,
+                "effects": [
+                  { "type": "crop", "left": 0.05, "right": 0.05, "top": 0.05, "bottom": 0.05 },
+                  { "type": "transform", "keyframes": [
+                    { "t": 0.0, "scale": 1.0 },
+                    { "t": 3.0, "scale": 1.4, "x": -120, "y": -80 },
+                    { "t": 10.0, "scale": 1.4, "x": -120, "y": -80 } ] },
+                  { "type": "fade", "in": 0.5, "out": 0.5 }
+                ]
+              },
+              {
+                "id": "c2", "start": 10.0, "end": 14.0, "bin": "cam", "in": 1.0,
+                "speed": 0.5, "volume": 0.5,
+                "effects": [ { "type": "color", "saturation": 1.2 } ]
+              },
+              { "id": "c3", "start": 14.0, "end": 15.0, "bin": "navy" }
+            ],
+            "transitions": [ { "from": "c1", "to": "c2", "duration": 1.0, "kind": "dissolve" } ]
+          },
+          {
+            "id": "v2", "kind": "video", "name": "PiP",
+            "clips": [
+              {
+                "id": "pip", "start": 4.0, "end": 9.0, "muted": true, "bin": "logo",
+                "effects": [
+                  { "type": "transform", "x": 600, "y": 300, "scale": 0.25, "opacity": 0.9 },
+                  { "type": "blend", "mode": "screen" },
+                  { "type": "blur", "radius": 4 }
+                ]
+              }
+            ]
+          },
+          {
+            "id": "v3", "kind": "video", "name": "Parts",
+            "clips": [
+              { "id": "s1", "start": 9.0, "end": 13.0, "bin": "intro" },
+              { "id": "s2", "start": 13.0, "end": 15.0, "bin": "intro", "in": 4.0,
+                "effects": [ { "type": "blur", "radius": 3 } ] }
+            ]
+          },
+          {
+            "id": "o1", "kind": "overlay", "name": "Overlays",
+            "clips": [
+              { "id": "o_c1", "start": 2.0, "end": 5.0, "bin": "paris" },
+              { "id": "o_c2", "start": 6.0, "end": 8.0, "bin": "third" }
+            ]
+          }
+        ],
+        "markers": [ { "t": 4.0, "label": "zoom done" } ]
+      }
     }
-  ],
-  "markers": [ { "t": 4.0, "label": "zoom done" } ]
+  }
 }

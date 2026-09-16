@@ -4,7 +4,7 @@ import { api } from "./api";
 import { button, el, options } from "./dom";
 import { store, toast } from "./store";
 import type { BinItem, Clip, Effect, PatchOp, VarSpec } from "./types";
-import { binItem, expandPreset, isFileSource, isOverlaySource, isTimedMedia } from "./types";
+import { binItem, binPath, canTimeWarp, expandPreset, isFileSource, isOverlaySource, isSequenceSource, isTimedMedia, placementsOf, seqDuration } from "./types";
 
 const presetsPromise = api.effectPresets().catch(() => []);
 
@@ -26,7 +26,7 @@ const EFFECTS: Partial<Record<Effect["type"], EffectSpec>> = {
 
 export class Inspector {
   constructor(private host: HTMLElement) {
-    store.select((s) => [s.project, s.selection, s.templates], () => this.render());
+    store.select((s) => [s.project, s.selection, s.templates, s.sequence], () => this.render());
   }
 
   private render() {
@@ -37,8 +37,8 @@ export class Inspector {
         <h3>Shortcuts</h3><p class="muted"><kbd>Space</kbd> play/pause · <kbd>←</kbd><kbd>→</kbd> frame step · <kbd>Del</kbd> delete · <kbd>Ctrl+Z</kbd>/<kbd>Ctrl+Shift+Z</kbd> undo/redo · <kbd>Ctrl+wheel</kbd> zoom · <kbd>S</kbd> split at playhead</p>`;
       return;
     }
-    const { clip, ti, ci } = f;
-    const path = `/tracks/${ti}/clips/${ci}`;
+    const { clip } = f;
+    const path = store.clipPath(clip.id)!;
     const rep = (sub: string, value: unknown, note: string) => store.patch([{ op: "replace", path: `${path}${sub}`, value }], note);
 
     const h = el("h3", "", "Clip ");
@@ -49,7 +49,10 @@ export class Inspector {
     const frame = 1 / store.fps;
     this.host.appendChild(field("Start", numInput(clip.start, (v) => rep("/start", v, "start"), frame)));
     this.host.appendChild(field("End", numInput(clip.end, (v) => rep("/end", v, "end"), frame)));
-    this.host.appendChild(field("Speed", numInput(clip.speed, (v) => rep("/speed", v, "speed"), 0.05)));
+    // MLT cannot time-warp a timeline, so the field would only ever be refused.
+    if (canTimeWarp(item)) {
+      this.host.appendChild(field("Speed", numInput(clip.speed, (v) => rep("/speed", v, "speed"), 0.05)));
+    }
     if (isTimedMedia(item)) {
       this.host.appendChild(field("Source in", numInput(clip.in ?? 0, (v) => rep("/in", v, "in"), frame)));
       this.host.appendChild(field("Volume", numInput(clip.volume, (v) => rep("/volume", v, "volume"), 0.05)));
@@ -69,7 +72,7 @@ export class Inspector {
 
   /** The bin entry the clip plays. Editing here changes every placement of it. */
   private renderBinItem(id: string, item: BinItem) {
-    const bp = `/bin/${id}`;
+    const bp = binPath(id);
     const h = el("h3", "", "Bin entry ");
     h.appendChild(el("span", "mono muted", id));
     this.host.appendChild(h);
@@ -77,6 +80,14 @@ export class Inspector {
 
     if (isFileSource(item.source)) {
       this.host.appendChild(field("Path", textInput(item.source.path, (v) => store.patch([{ op: "replace", path: `${bp}/source/path`, value: v }], `path ${id}`))));
+      return;
+    }
+    if (isSequenceSource(item.source)) {
+      const p = store.state.project!;
+      this.host.appendChild(field("Length", el("div", "mono muted", `${seqDuration(p, id).toFixed(2)}s`)));
+      const open = button("Open this sequence", () => store.openSequence(id), "Edit its own timeline");
+      (open as HTMLButtonElement).disabled = id === store.state.sequence;
+      this.host.appendChild(open);
       return;
     }
     if (!isOverlaySource(item.source)) return;
@@ -88,7 +99,7 @@ export class Inspector {
       this.host.appendChild(el("p", "muted", "Unknown template — is its library on the search path?"));
       return;
     }
-    const places = store.state.project!.tracks.flatMap((t) => t.clips).filter((c) => c.bin === id).length;
+    const places = placementsOf(store.state.project!, id);
     if (places > 1) this.host.appendChild(el("p", "muted", `Used by ${places} clips — these values apply to all of them.`));
     const vars = source.vars ?? {};
     const setVar = (k: string, v: unknown) => store.patch([{ op: "add", path: `${bp}/source/vars`, value: { ...vars, [k]: v } }], `var ${k}`);

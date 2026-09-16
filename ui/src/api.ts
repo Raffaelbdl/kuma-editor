@@ -1,4 +1,4 @@
-import type { DaemonEvent, EffectPreset, Issue, PatchOp, Preset, Project, TemplateInfo } from "./types";
+import type { DaemonEvent, EffectPreset, Issue, PatchOp, Preset, Project, SequenceState, TemplateInfo } from "./types";
 
 async function json<T>(url: string, init?: RequestInit): Promise<T> {
   const r = await fetch(url, { headers: { "content-type": "application/json" }, ...init });
@@ -18,6 +18,9 @@ export const api = {
     json<{ revision: number; warnings: Issue[] }>("/api/project/patch", { method: "POST", body: JSON.stringify({ patch, base_revision, origin }) }),
   undo: () => json<{ revision: number | null }>("/api/project/undo", { method: "POST", body: "{}" }),
   redo: () => json<{ revision: number | null }>("/api/project/redo", { method: "POST", body: "{}" }),
+  sequence: () => json<SequenceState>("/api/sequence"),
+  openSequence: (sequence: string) =>
+    json<{ current: string }>("/api/sequence", { method: "POST", body: JSON.stringify({ sequence }) }),
   templates: () => json<TemplateInfo[]>("/api/templates"),
   presets: () => json<Preset[]>("/api/presets"),
   effectPresets: () => json<EffectPreset[]>("/api/presets/effects"),

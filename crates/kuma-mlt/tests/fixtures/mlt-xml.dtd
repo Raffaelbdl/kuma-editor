@@ -2,6 +2,16 @@
 
 <!-- MLT XML DTD v7.0.0 -->
 
+<!-- Two local fixes to the copy MLT 7.22 ships. Both are about the DTD lagging the
+     parser, not about kuma emitting something exotic:
+
+     * `properties` was declared as exactly one `property`, which no real document obeys.
+     * `playlist` did not allow `filter`, although MLT attaches one to a playlist and
+       honours its frame range — this is how Kdenlive carries track effects, and how kuma
+       gives one placement of a nested sequence its own effects without them reaching the
+       other placements. Measured before relaxing it: a `brightness` filter with
+       in="10" out="19" on a two-entry playlist dimmed only the second entry. -->
+
 <!ELEMENT mlt (profile | producer | playlist | tractor | multitrack | consumer | chain)+ >
 <!ATTLIST mlt
     LC_NUMERIC CDATA    #IMPLIED
@@ -74,7 +84,7 @@
     a_track  CDATA    #IMPLIED
     b_track  CDATA    #IMPLIED
 >
-<!ELEMENT playlist ((property | properties)*,(entry | blank | producer | playlist | tractor | multitrack |chain)*) >
+<!ELEMENT playlist ((property | properties)*,(entry | blank | producer | playlist | tractor | multitrack |chain)*, (filter)*) >
 <!ATTLIST playlist
     id       ID       #IMPLIED
     in       CDATA    #IMPLIED

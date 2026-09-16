@@ -10,11 +10,12 @@
 //! reconnects, which starts a fresh engine. Until the engine is built, `snapshot`
 //! (single frame via melt) is the fallback the UI uses.
 
-use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use kuma_mlt::UnbakedPolicy;
+use crate::jobs::OverlayScope;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, Command};
 use tokio::sync::{broadcast, Mutex as AsyncMutex};
@@ -46,12 +47,46 @@ pub struct PreviewHandle {
     pub last_error: Mutex<Option<String>>,
     /// Preview resolution as a fraction of the project size (0.25..=1.0).
     pub scale: Mutex<f64>,
+    /// Hash of the compiled timeline the engine is currently holding, so an edit that
+    /// compiles to the same document does not cost it a graph rebuild. Cleared whenever a
+    /// fresh engine starts, which is holding nothing.
+    loaded: Mutex<Option<u64>>,
+    /// Counts timelines handed to an engine. `reload` reports "changed" by comparing this
+    /// across the call, not by comparing hashes: a restarted engine has to be given the
+    /// same document again, and a caller whose work was done by a coalesced run still
+    /// wants to hear that the engine was updated.
+    loads: AtomicU64,
+    /// Compiles performed. Only diagnostic — it is how the coalescing is observed, here
+    /// and in `tests/preview.rs`.
+    pub compiles: AtomicU64,
+    /// One compile at a time. Whoever holds this does the work; `pending` is how a caller
+    /// that arrived mid-compile asks for one more pass.
+    compiling: AsyncMutex<()>,
+    pending: AtomicBool,
 }
 
 impl Default for PreviewHandle {
     fn default() -> Self {
-        PreviewHandle { inner: Mutex::new(None), starting: AsyncMutex::new(()), last_error: Mutex::new(None), scale: Mutex::new(0.5) }
+        PreviewHandle {
+            inner: Mutex::new(None),
+            starting: AsyncMutex::new(()),
+            last_error: Mutex::new(None),
+            scale: Mutex::new(0.5),
+            loaded: Mutex::new(None),
+            loads: AtomicU64::new(0),
+            compiles: AtomicU64::new(0),
+            compiling: AsyncMutex::new(()),
+            pending: AtomicBool::new(false),
+        }
     }
+}
+
+/// What a reload did. `changed` is false when the project compiled to the document the
+/// engine already had, so it was left alone.
+#[derive(Debug, Clone)]
+pub struct Reloaded {
+    pub path: PathBuf,
+    pub changed: bool,
 }
 
 pub struct Engine {
@@ -66,6 +101,13 @@ const MAX_FRAME_BYTES: usize = 64 << 20;
 impl PreviewHandle {
     pub fn get(&self) -> Option<Arc<Engine>> {
         lock(&self.inner).clone()
+    }
+
+    /// Forget the running engine, so the next use starts a fresh one. This is what the
+    /// reader task does when the process exits; having it here is also what a "restart the
+    /// preview" action would call.
+    pub fn forget(&self) {
+        *lock(&self.inner) = None;
     }
 
     pub fn engine_path(state: &AppState) -> PathBuf {
@@ -112,6 +154,8 @@ impl PreviewHandle {
         let (events, _) = broadcast::channel(8);
         let engine = Arc::new(Engine { stdin: AsyncMutex::new(stdin), events: events.clone(), _child: child });
         *lock(&self.inner) = Some(engine.clone());
+        // A new process holds no timeline, whatever the old one had.
+        *lock(&self.loaded) = None;
 
         // Reader task: parse the line protocol and fan out frames.
         let st = state.clone();
@@ -182,18 +226,75 @@ pub fn has_bin(name: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Compile the current project for preview (at the preview scale, unbaked overlays
-/// skipped — they are live DOM in the UI) and (re)load it into the engine.
-pub async fn reload(state: &Arc<AppState>) -> anyhow::Result<PathBuf> {
+/// Bring the engine up to date with the open sequence, and say whether that meant giving
+/// it a new timeline.
+///
+/// Two things keep this cheap enough to call on every edit. The compile is compared
+/// against what the engine is already holding, so an edit that cannot change the picture
+/// costs a compile (milliseconds) rather than a graph rebuild — which is why no client
+/// has to predict what the compiler depends on. And compiles are coalesced: a caller
+/// arriving while one is running asks for one more pass instead of queuing its own, so a
+/// burst of patches collapses. The pass at the end re-reads the project, so the last
+/// thing compiled is always a state observed after the last edit.
+pub async fn reload(state: &Arc<AppState>) -> anyhow::Result<Reloaded> {
+    let before = state.preview.loads.load(Ordering::SeqCst);
+    state.preview.pending.store(true, Ordering::SeqCst);
+    let _guard = state.preview.compiling.lock().await;
+    while state.preview.pending.swap(false, Ordering::SeqCst) {
+        compile_and_load(state).await?;
+    }
+    Ok(Reloaded { path: preview_path(state), changed: state.preview.loads.load(Ordering::SeqCst) != before })
+}
+
+fn preview_path(state: &AppState) -> PathBuf {
+    state.config.cache_dir().join("preview.mlt")
+}
+
+/// Compile the open sequence (at the preview scale) and hand it to the engine if it is not
+/// already playing exactly that. [`OverlayScope::Nested`] is what makes the overlays of the
+/// sequences it nests appear at all; its own are left unbaked, and therefore skipped, for
+/// the UI's live DOM.
+async fn compile_and_load(state: &Arc<AppState>) -> anyhow::Result<()> {
+    // First, because starting an engine clears what it is holding.
+    let engine = state.preview.ensure(state).await?;
     let st = state.clone();
-    let path = tokio::task::spawn_blocking(move || {
+    let fresh = tokio::task::spawn_blocking(move || {
         let project = read(&st.project).clone();
         let scale = (*lock(&st.preview.scale)).clamp(0.25, 1.0);
         let even = |v: f64| ((v.round() as u32).max(2)) & !1;
         let (w, h) = (even(project.width as f64 * scale), even(project.height as f64 * scale));
-        crate::jobs::compile_project(&st, &project, HashMap::new(), "preview", UnbakedPolicy::Skip, Some((w, h)))
+        // The engine loads one compiled file, so editing a sub-sequence means previewing
+        // that sub-sequence: it is compiled as the root, exactly as a render of it would be.
+        let sequence = st.current_sequence();
+        let mut opts = crate::jobs::compile_options(&st);
+        opts.bakes = crate::jobs::bake_for(&st, &project, &sequence, OverlayScope::Nested, None, &|_, _| {})?;
+        opts.size = Some((w, h));
+        opts.sequence = Some(sequence);
+        let xml = crate::jobs::compile_xml(&project, &opts)?;
+        // The document is the whole input: profile, every producer, and the bake
+        // directories — whose names are themselves content hashes, so a template edited on
+        // disk changes this even though the project document did not.
+        let stamp = stamp(&xml);
+        st.preview.compiles.fetch_add(1, Ordering::SeqCst);
+        tracing::debug!("preview: compiled {} bytes, stamp {stamp:016x}", xml.len());
+        if *lock(&st.preview.loaded) == Some(stamp) {
+            return Ok(None);
+        }
+        Ok::<_, anyhow::Error>(Some((crate::jobs::write_compiled(&st, &xml, "preview")?, stamp)))
     })
     .await??;
-    state.preview.ensure(state).await?.send(&format!("load {}", path.display())).await?;
-    Ok(path)
+    // Only once the engine has actually been told, so a failed send does not leave us
+    // believing it holds something it never received.
+    if let Some((path, stamp)) = fresh {
+        engine.send(&format!("load {}", path.display())).await?;
+        *lock(&state.preview.loaded) = Some(stamp);
+        state.preview.loads.fetch_add(1, Ordering::SeqCst);
+    }
+    Ok(())
+}
+
+fn stamp(xml: &str) -> u64 {
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    xml.hash(&mut h);
+    h.finish()
 }

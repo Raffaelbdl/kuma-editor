@@ -81,17 +81,20 @@ mod tests {
     #[test]
     fn patch_bumps_revision_and_validates() {
         let p: Project = serde_json::from_value(json!({
-            "bin": { "a": { "source": { "path": "a.mp4" } } },
-            "tracks": [{ "id": "v1", "clips": [] }]
+            "bin": {
+                "a": { "source": { "path": "a.mp4" } },
+                "main": { "source": { "tracks": [{ "id": "v1", "clips": [] }] } }
+            }
         }))
         .unwrap();
+        let clips = "/bin/main/source/tracks/0/clips";
         let patch: json_patch::Patch = serde_json::from_value(json!([
-            { "op": "add", "path": "/tracks/0/clips/-", "value": { "id": "c1", "start": 0, "end": 2, "bin": "a" } }
+            { "op": "add", "path": format!("{clips}/-"), "value": { "id": "c1", "start": 0, "end": 2, "bin": "a" } }
         ]))
         .unwrap();
         let out = apply_patch(&p, Some(0), &patch.0, &ValidationContext::default()).unwrap();
         assert_eq!(out.project.revision, 1);
-        assert_eq!(out.project.tracks[0].clips.len(), 1);
+        assert_eq!(out.project.master_seq().unwrap().tracks[0].clips.len(), 1);
 
         // Stale base revision is rejected.
         let err = apply_patch(&out.project, Some(0), &patch.0, &ValidationContext::default()).unwrap_err();
@@ -99,7 +102,7 @@ mod tests {
 
         // A patch that produces an invalid project is rejected atomically.
         let bad: json_patch::Patch = serde_json::from_value(json!([
-            { "op": "replace", "path": "/tracks/0/clips/0/end", "value": -1 }
+            { "op": "replace", "path": format!("{clips}/0/end"), "value": -1 }
         ]))
         .unwrap();
         let err = apply_patch(&out.project, None, &bad.0, &ValidationContext::default()).unwrap_err();

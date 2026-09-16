@@ -1,6 +1,93 @@
 <?xml version="1.0" encoding="utf-8"?>
 <mlt LC_NUMERIC="C" version="7.22.0" root="/proj" producer="main_tractor">
   <profile description="kuma 1920x1080 30/1" width="1920" height="1080" progressive="1" sample_aspect_num="1" sample_aspect_den="1" display_aspect_num="1920" display_aspect_den="1080" frame_rate_num="30" frame_rate_den="1" colorspace="709"/>
+  <producer id="bg_intro" in="0" out="179">
+    <property name="mlt_service">color</property>
+    <property name="resource">0x00000000</property>
+    <property name="length">180</property>
+    <property name="mlt_image_format">rgba</property>
+  </producer>
+  <playlist id="bgpl_intro">
+    <entry producer="bg_intro" in="0" out="179"/>
+  </playlist>
+  <producer id="clip_i1" in="0" out="97">
+    <property name="mlt_service">color</property>
+    <property name="resource">0x102030ff</property>
+    <property name="length">98</property>
+    <property name="mlt_image_format">rgba</property>
+  </producer>
+  <chain id="clip_i2" in="0" out="149">
+    <property name="mlt_service">avformat-novalidate</property>
+    <property name="resource">/proj/media/cam.mp4</property>
+  </chain>
+  <playlist id="iv1_a">
+    <entry producer="clip_i1" in="0" out="97"/>
+  </playlist>
+  <playlist id="iv1_b">
+    <blank length="83"/>
+    <entry producer="clip_i2" in="53" out="149"/>
+  </playlist>
+  <tractor id="track_iv1" in="0" out="179">
+    <multitrack>
+      <track producer="iv1_a"/>
+      <track producer="iv1_b"/>
+    </multitrack>
+    <transition id="luma_i1_i2" in="83" out="97">
+      <property name="mlt_service">luma</property>
+      <property name="a_track">0</property>
+      <property name="b_track">1</property>
+      <property name="progressive">1</property>
+    </transition>
+    <transition id="xfade_i1_i2" in="83" out="97">
+      <property name="mlt_service">mix</property>
+      <property name="a_track">0</property>
+      <property name="b_track">1</property>
+      <property name="start">0</property>
+      <property name="end">1</property>
+    </transition>
+  </tractor>
+  <producer id="clip_i3" in="0" out="89">
+    <property name="mlt_service">pixbuf</property>
+    <property name="resource">/proj/media/logo.png</property>
+    <property name="length">90</property>
+    <property name="ttl">1</property>
+    <filter id="clip_i3_xform1" in="0" out="89">
+      <property name="mlt_service">qtblend</property>
+      <property name="compositing">0</property>
+      <property name="rect">672 178 576 324 1</property>
+      <property name="rotation">0</property>
+    </filter>
+  </producer>
+  <playlist id="iv2_a">
+    <blank length="30"/>
+    <entry producer="clip_i3" in="0" out="89"/>
+  </playlist>
+  <tractor id="seq_intro" in="0" out="179">
+    <multitrack>
+      <track producer="bgpl_intro"/>
+      <track producer="track_iv1"/>
+      <track producer="iv2_a" hide="audio"/>
+    </multitrack>
+    <transition id="mix_iv1">
+      <property name="mlt_service">mix</property>
+      <property name="a_track">0</property>
+      <property name="b_track">1</property>
+      <property name="always_active">1</property>
+      <property name="sum">1</property>
+    </transition>
+    <transition id="comp_iv1">
+      <property name="mlt_service">qtblend</property>
+      <property name="a_track">0</property>
+      <property name="b_track">1</property>
+      <property name="always_active">1</property>
+    </transition>
+    <transition id="comp_iv2">
+      <property name="mlt_service">qtblend</property>
+      <property name="a_track">0</property>
+      <property name="b_track">2</property>
+      <property name="always_active">1</property>
+    </transition>
+  </tractor>
   <producer id="black" in="0" out="449">
     <property name="mlt_service">color</property>
     <property name="resource">black</property>
@@ -104,6 +191,22 @@
     <blank length="120"/>
     <entry producer="clip_pip" in="0" out="149"/>
   </playlist>
+  <playlist id="clip_s1">
+    <entry producer="seq_intro" in="0" out="119"/>
+  </playlist>
+  <playlist id="clip_s2">
+    <entry producer="seq_intro" in="120" out="179"/>
+    <filter id="clip_s2_blur1" in="0" out="59">
+      <property name="mlt_service">avfilter.gblur</property>
+      <property name="av.sigma">1.5</property>
+      <property name="av.steps">2</property>
+    </filter>
+  </playlist>
+  <playlist id="v3_a">
+    <blank length="270"/>
+    <entry producer="clip_s1" in="0" out="119"/>
+    <entry producer="clip_s2" in="0" out="59"/>
+  </playlist>
   <producer id="clip_o_c1" in="0" out="89">
     <property name="mlt_service">avformat</property>
     <property name="resource">/proj/.kuma/bakes/abc/frame_%06d.png</property>
@@ -128,6 +231,7 @@
       <track producer="background"/>
       <track producer="track_v1"/>
       <track producer="v2_a" hide="audio"/>
+      <track producer="v3_a"/>
       <track producer="o1_a" hide="audio"/>
     </multitrack>
     <transition id="mix_v1">
@@ -150,10 +254,23 @@
       <property name="always_active">1</property>
       <property name="compositing">0|=0;120|=14;270|=0</property>
     </transition>
-    <transition id="comp_o1">
+    <transition id="mix_v3">
+      <property name="mlt_service">mix</property>
+      <property name="a_track">0</property>
+      <property name="b_track">3</property>
+      <property name="always_active">1</property>
+      <property name="sum">1</property>
+    </transition>
+    <transition id="comp_v3">
       <property name="mlt_service">qtblend</property>
       <property name="a_track">0</property>
       <property name="b_track">3</property>
+      <property name="always_active">1</property>
+    </transition>
+    <transition id="comp_o1">
+      <property name="mlt_service">qtblend</property>
+      <property name="a_track">0</property>
+      <property name="b_track">4</property>
       <property name="always_active">1</property>
     </transition>
   </tractor>

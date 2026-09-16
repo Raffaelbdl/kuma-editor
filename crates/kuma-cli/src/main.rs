@@ -39,6 +39,9 @@ enum Cmd {
         preset: String,
         #[arg(short, long)]
         output: Option<PathBuf>,
+        /// Sequence (bin id) to use instead of the project's master.
+        #[arg(long)]
+        sequence: Option<String>,
     },
     /// Bake all overlay clips (or the given clip ids).
     Bake { clips: Vec<String> },
@@ -53,9 +56,16 @@ enum Cmd {
         rect: Option<String>,
         #[arg(long)]
         width: Option<u32>,
+        /// Sequence (bin id) to use instead of the project's master.
+        #[arg(long)]
+        sequence: Option<String>,
     },
     /// Write the compiled MLT XML to stdout (overlays skipped unless baked).
-    Compile,
+    Compile {
+        /// Sequence (bin id) to use instead of the project's master.
+        #[arg(long)]
+        sequence: Option<String>,
+    },
     /// Validate the project and print issues (exit 1 on errors).
     Validate,
     /// Check the installation: repo, tools, engine, library, daemon, MCP config.
@@ -154,9 +164,9 @@ async fn main() -> anyhow::Result<()> {
             kuma_mcp::run_stdio(url, note).await?;
         }
         Cmd::Doctor => doctor(&cli).await?,
-        Cmd::Render { preset, output } => {
+        Cmd::Render { preset, output, sequence } => {
             let state = open(&cli)?;
-            let req = kuma_daemon::jobs::RenderRequest { preset: preset.clone(), output: output.as_deref().map(absolute).transpose()?, range: None };
+            let req = kuma_daemon::jobs::RenderRequest { preset: preset.clone(), output: output.as_deref().map(absolute).transpose()?, range: None, sequence: sequence.clone() };
             let out = tokio::task::spawn_blocking(move || kuma_daemon::jobs::render(&state, &req, &|p, m| eprintln!("[{p:3}%] {m}"))).await??;
             println!("{}", serde_json::to_string_pretty(&out)?);
         }
@@ -172,7 +182,7 @@ async fn main() -> anyhow::Result<()> {
                 println!("{k}\t{}", b.resource.display());
             }
         }
-        Cmd::Sample { t0, t1, count, rect, width } => {
+        Cmd::Sample { t0, t1, count, rect, width, sequence } => {
             let state = open(&cli)?;
             let rect = rect
                 .as_deref()
@@ -182,14 +192,16 @@ async fn main() -> anyhow::Result<()> {
                     Ok::<_, anyhow::Error>(kuma_core::template::Region { x: v[0], y: v[1], w: v[2], h: v[3] })
                 })
                 .transpose()?;
-            let req = kuma_daemon::jobs::SampleRequest { t0: *t0, t1: *t1, count: *count, rect, width: *width, overlays: true };
+            let req = kuma_daemon::jobs::SampleRequest { t0: *t0, t1: *t1, count: *count, rect, width: *width, overlays: Default::default(), sequence: sequence.clone() };
             let samples = tokio::task::spawn_blocking(move || kuma_daemon::jobs::sample_frames(&state, &req, &|_, _| {})).await??;
             println!("{}", serde_json::to_string_pretty(&samples)?);
         }
-        Cmd::Compile => {
+        Cmd::Compile { sequence } => {
             let state = open(&cli)?;
             let project = state.project.read().unwrap().clone();
-            print!("{}", kuma_daemon::jobs::compile_xml(&state, &project, Default::default(), kuma_mlt::UnbakedPolicy::Skip, None)?);
+            let mut opts = kuma_daemon::jobs::compile_options(&state);
+            opts.sequence = sequence.clone();
+            print!("{}", kuma_daemon::jobs::compile_xml(&project, &opts)?);
         }
         Cmd::Validate => {
             let state = open(&cli)?;

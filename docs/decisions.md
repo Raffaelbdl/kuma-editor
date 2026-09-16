@@ -1,73 +1,252 @@
 # kuma-editor — decision record
 
 Decisions taken during the review and bin refactor on `claude/happy-davinci-tspnqo`
-(commits `eede385` and `25849c1`). `docs/plan.md` is the original plan and predates
-these; where the two disagree, this file is later.
+(commits `eede385` and `25849c1`), and during nested sequences on
+`claude/fervent-hypatia-cpx7e6`. `docs/plan.md` is the original plan and predates both;
+where they disagree, this file is later.
 
 Status key: **adopted** is in the code, unless the entry says otherwise; **rejected** was
-considered and turned down; **superseded** was adopted earlier in the same session and
-then replaced; **deferred** is agreed direction, not yet built. Where a decision was to
+considered and turned down; **superseded** was adopted earlier and has since been
+replaced, and the entry says by what; **deferred** is agreed direction, not yet built. Where a decision was to
 *not* build something, the entry says so rather than implying an implementation.
 
 ---
 
-## Next step: nested sequences
+## Nested sequences
 
-**Not started.** This is the priority for whoever picks the project up, ahead of the
-folders and search work that the bin refactor was meant to unblock.
-
-**What.** A sequence is a timeline that can be placed on another timeline, so parts of a
-video are edited separately and juxtaposed in the final render. It is the feature the
-project's owner uses heavily in Kdenlive, and kuma has no equivalent: `tracks` sits at
-project level, so there is exactly one timeline.
+**Adopted.** A sequence is a timeline that can be placed on another timeline, so parts of
+a video are edited separately and juxtaposed in the final render. It was the priority for
+whoever picked the project up, and it is now in the code.
 
 **Shape.** A sequence is a bin entry, which is how Kdenlive does it — its file format
 documentation describes `main_bin` as listing clips *and* timeline sequences as entries.
-That makes it a fourth source variant rather than a new concept:
+It is a fourth source variant rather than a new concept:
 
 ```rust
 pub enum BinSource {
     File { path, kind, proxy },
     Overlay { template, vars },
     Color { color },
-    Sequence { tracks: Vec<Track>, markers: Vec<Marker> },   // new
+    Sequence(Sequence),          // { tracks, markers }
 }
 ```
 
-`Project.tracks` moves into a bin entry and the project keeps a pointer to whichever entry
-is the master. Everything a clip already does then applies to a sequence unchanged —
-naming, thumbnails, trim, effects, transitions — because a clip is a placement and does
-not care what it places. This is the payoff of the bin refactor and the reason to do this
-now rather than before it.
+`Project.tracks` and `Project.markers` are gone; the project keeps `master`, the id of the
+entry that is the master timeline. Everything a clip already did applies to a sequence
+unchanged — naming, trim, `in`, effects, transitions — because a clip is a placement and
+does not care what it places. This was the payoff of the bin refactor.
 
-**Already in place.** MLT nests natively: a sequence is a tractor and a tractor is a
-producer. The compiler does this in miniature today, emitting a tractor for a track with a
-dissolve and then referencing it as that track's producer, so the emit-and-reference
-machinery exists and is covered by the golden test.
+`tracks` is **required** on the sequence variant rather than defaulted. The enum is
+untagged, so without that an entry whose source matched nothing would quietly deserialize
+as an empty timeline instead of being rejected.
 
-**Spike this first.** Speed on a sequence clip. Trimming into a nested tractor should be
-fine, but the `timewarp` producer takes a resource path and it is unconfirmed that it
-accepts a tractor. If it does not, a sped-up sequence needs a different mechanism and that
-shapes the model, so settle it with `melt` before writing any Rust.
+**The format stays version 1, with no migration** — decided rather than inherited. This
+supersedes nothing: the earlier "no upgrade path" entry below said changing the format
+means bumping `PROJECT_VERSION` and writing one, and the answer here was that there is
+nothing to migrate, so neither happened. A `*.kuma.json` written before this change does
+not open; `kuma init` writes the new shape.
 
-**The three parts that are real work, not plumbing.**
+### What the spike settled
 
-1. *Cycle detection*, and it has to land with the model rather than after. A sequence that
-   contains itself transitively makes the compiler recurse forever. It is a graph walk in
-   the validator.
-2. *Topological compile order*. Inner sequences must be emitted as tractors before the
-   outer ones reference them. The compiler currently emits producers and then one tractor,
-   so this is the part that changes most.
-3. *Preview scope*. The engine loads one compiled file, so editing a sub-sequence means
-   previewing that sub-sequence. The daemon needs a notion of the current sequence, which
-   is session state rather than project state, and it touches the preview transport, the
-   compile path and the UI together.
+The previous version of this entry said to settle speed on a sequence clip with `melt`
+before writing any Rust, because `timewarp` takes a resource path and it was unconfirmed
+that it accepts a tractor. It does not, and four other things came out of the same
+afternoon. Measurements used a 120-frame source whose frame *i* is a solid grey of level
+*i*×2, so a decoded frame names its own source index.
 
-Also remember `bake_all` walks `project.tracks` and will need to walk every sequence.
+1. **`timewarp` cannot take a tractor.** `resource="0.5:seq"` makes MLT resolve `seq` as a
+   file path: `[producer_xml] failed to load producer "0.5:<root>/seq"`, and the output is
+   one frozen frame rather than an error. **`timewarp` on a `.mlt` *file* does work** —
+   60 output frames spanning source 0..30 at 0.5×. So the file route is available, and
+   what shipped is the other option: **speed ≠ 1 on a sequence clip is a validation
+   error** naming the workaround (render the part out, place it as media). Doing it
+   properly means writing each sped-up sequence to its own `.mlt` in the cache and
+   regenerating it per compile and per size, which is a side-file lifecycle the compiler
+   does not otherwise have. Left for when someone wants it; it is known to work.
+2. **Trimming into a nested tractor is exact**, so `in` on a sequence clip needed no
+   special mechanism.
+3. **One tractor can back several placements.** Three entries into one tractor with
+   different `in`/`out` gave three different ranges. So a sequence is emitted **once**,
+   and the alternative — a tractor per placement — was rejected: it duplicates the whole
+   subtree, multiplicatively once sequences nest.
+4. **A filter on a `<playlist>` is attached to that playlist and honours its frame
+   range.** This is what makes one shared tractor workable: each placement is a wrapper
+   playlist carrying the cut and *that placement's* effects, which do not reach the other
+   placements. Verified twice — a `brightness` filter dimmed one of two placements and
+   not the other, and with `in="10" out="19"` on a two-entry wrapper it dimmed only the
+   second entry. The MLT DTD does not allow it, and the DTD is what is wrong: Kdenlive
+   carries track effects the same way. Our local copy of the DTD was relaxed, with the
+   evidence written next to it.
+5. **A nested sequence's background track must be transparent** (`0x00000000`), not
+   `black`. With an opaque base a sequence painted over everything under it (a gap read 5
+   instead of the 128 underneath). Only the master, which is the bottom of the render,
+   gets an opaque base. This was a bug that would have shipped: nothing about the master's
+   own compile hints at it.
 
-**Scale.** Larger than the bin refactor, mostly because of the compiler and the preview
-scope. The stopgap that needs no code is to render each part and add the output to the bin
-as media, which costs live editing of the parts and a re-encode.
+Audio needed nothing: a nested tractor plus wrapper measured identical to the flat path
+(−24.1 dB mean, −18.0 dB max both ways). Neither did the C++ preview engine, which loads
+the document through a plain `Mlt::Producer(profile, "xml", path)`.
+
+### The three parts that were real work
+
+1. *Cycle detection*, landed with the model as agreed. `Project::compile_order` is one
+   depth-first walk that both orders the compile and reports a ring, so the validator and
+   the compiler cannot disagree about what is cyclic. It runs over **every** sequence, not
+   only what the master reaches, so a ring is refused as it is built rather than when it
+   is first placed, and it reports one issue rather than one per entry on the ring.
+   `seq_has_audio` carries its own visited set as well, because the daemon keeps calling
+   these on documents the validator has already refused.
+2. *Topological compile order*, innermost first, so an outer sequence only ever references
+   a tractor already written. `compile` emits one block per sequence and the root becomes
+   `main_tractor`.
+3. *Preview scope*. The daemon holds one open sequence as **session state** — not in the
+   document, so it never bumps the revision, never lands in the undo stack and never
+   causes a `base_revision` conflict; a project reopened tomorrow starts on its master.
+   `GET`/`POST /api/sequence` read and set it, and setting it recompiles the preview. A
+   chosen sequence that is deleted (undo, an agent edit) falls back to the master on both
+   sides rather than failing every compile until someone notices.
+
+`bake_all` walks every sequence, as the old entry warned. `sample_frames` and `render`
+take an optional `sequence` and default to the master, which keeps MCP stateless: the
+agent says which timeline it means instead of depending on what the human has open.
+
+### What broke, and how it was found
+
+Four defects shipped in the first cut and were caught by a correctness review afterwards.
+Recorded because two of them came from the *cleanup* passes, and because the shape of the
+mistake repeats.
+
+1. **A hidden track's overlays stopped being baked, so those projects would not render.**
+   A `!t.hidden` filter was added to the bake selection as an optimisation. Hiding is per
+   track and applied on the tractor, so the compiler still emits the clips, and under
+   `UnbakedPolicy::Error` a render died with "overlay clip has no bake". *The compiler
+   decides what needs a bake; the daemon does not get to decide it is unnecessary* — now
+   pinned by a test in `tests/golden.rs`.
+2. **`muted` did nothing on a sequence clip.** A media clip mutes by not decoding its
+   audio (`audio_index=-1`); a wrapper playlist has no decoder to switch off, so the sound
+   came through whenever another clip kept the track's mix alive. It now carries a
+   `volume` filter at `MUTE_DB`. That constant is -200, not the `db()` floor of -60,
+   because -60 dB measures -87 out of the encoder against -91 for a silent file; the floor
+   itself stays at -60, since volume *ramps* interpolate through it.
+3. **`sample_frames` baked every overlay the sequence reaches**, having lost the
+   "intersecting the sampled range" filter in a refactor — so one frame paid for the whole
+   timeline, and because that path is strict, one broken template anywhere failed a sample
+   that would never have shown it.
+4. **A deleted open sequence was remembered.** The fallback to the master did not clear
+   the stored id, so re-creating that id — an undo, an agent adding it back — silently
+   reopened it on the daemon while every client still showed the master.
+
+The process lesson is worth more than the four fixes. Both quality passes explicitly left
+bugs aside ("that is what a correctness review is for"), and one of them introduced a
+regression that stopped renders working. *A refactor is not verified by the refactor
+passing review; run the correctness pass after it.* None of these four announced itself —
+a silent overlay and a stale preview both look exactly like working software, which is why
+they are worth tests rather than care.
+
+**Track and clip ids stay unique across the whole project**, not per sequence. They are
+MLT element ids in one compiled document and URL segments in one daemon, and keeping them
+global means `find_clip(id)`, the overlay preview routes and the bake map all work
+unchanged.
+
+**Overlays are live where you are editing and baked where you are not** — adopted, after
+the first cut shipped without it and an overlay inside a nested sequence was simply absent
+from the preview.
+
+The preview compile skips unbaked overlays, and the editor drives the open sequence's own
+overlay clips as live DOM. A nested sequence's overlays fell between the two: nothing
+drove them, because their clip times are their own sequence's rather than the playhead's,
+and nothing baked them either. The fix is to bake exactly those and leave the rest skipped
+— the two sets are disjoint, so no overlay is ever drawn twice.
+
+The split is not a compromise, it is the distinction the editor already draws. An overlay
+on the sequence you have open is being edited, so it must be live: that is why live DOM
+exists. An overlay inside a sequence you have merely placed is finished content, and a
+bake is the honest picture of it — it is what the render will show. Because bake keys are
+content hashes, it is a cache hit on every reload after the first (7 ms against 200 ms in
+a project with one nested overlay), and it warms the very entry the render then reuses.
+
+Two things this had to not break. Baking is **best effort**: a template that will not bake,
+or no hyperframes installed at all, costs that one overlay in the preview and never the
+preview itself, which was free before. And the baked set is narrowed to the sequences the
+open one actually reaches, so a bin full of unplaced sequences does not buy a bake on every
+reload. Narrowing it by *visibility* as well was tried and was a mistake — see "What broke"
+above: the compiler emits a hidden track's clips, so skipping their bakes broke renders.
+
+The UI's engine key had to follow: overlay bin entries and overlay tracks used to be
+stripped from it wholesale, on the grounds that no overlay could change the engine's
+picture. Now the nested ones can, so only the *open* sequence's overlay tracks are
+stripped, and an overlay entry is dropped only when nothing outside the open sequence
+uses it.
+
+**The daemon decides whether the engine needs a new timeline; the client never guesses** —
+adopted, after the client's guess was wrong twice.
+
+Reloading the engine means rebuilding its MLT graph, which is the visible hiccup, so an
+edit that cannot change the picture must not cause one. That decision used to live in the
+browser: `engineKey` hashed "everything the preview compile depends on" and only sent
+`reload` when it changed. Which meant restating, in TypeScript, what the Rust compiler
+reads — the root sequence, reachability through `compile_order`, that the open sequence's
+overlays are skipped while nested ones are baked, the profile fields, the entries those
+tracks place. Every one of those is a fact that lives in the compiler.
+
+It drifted as fast as it was written. Baking nested overlays made the key wrong (nested
+overlay edits would not reload); the fix after that excluded an overlay entry placed both
+on the open sequence and inside a nested one (its baked copy is in the picture, so it must
+reload). Two of three versions shipped wrong, and neither failure was visible — a stale
+preview looks like a preview.
+
+So the client stopped predicting and the daemon started comparing. `preview::reload`
+hashes the compiled XML — which already names every input, including the bake directories,
+whose names are themselves content hashes — and skips the `load` when it matches what the
+engine holds. `engineKey` is deleted. The guard is unchanged in effect; it moved to the
+side that is holding the answer.
+
+Measured before committing to it: a warm reload (bake-cache probe, compile, write, send)
+is ~2 ms against the ~0.5 ms every revision already spends serving `GET /api/project`, so
+asking on every edit is not a cost worth optimising. It is also *sharper* than the key
+was: `engineKey` serialized whole clip objects, so renaming a clip forced a rebuild; the
+document comparison does not, because a label never reaches the XML.
+
+Two things this needs to stay correct, both of them tested. Compiling must be
+deterministic, or the hash never matches and the guard silently does nothing — `bakes` and
+the transition-extension map are both `HashMap`s, so `compile.rs` has a test that the same
+project compiles byte-identically eight times running. And a restarted engine holds
+nothing, so the stored hash is cleared whenever one starts; `changed` is reported by
+counting loads rather than comparing hashes, because a fresh engine has to be handed the
+same document again.
+
+`crates/kuma-daemon/tests/preview.rs` is where those live, and it is the daemon's first
+test: it drives a real `AppState` and a real engine process, and skips with a message when
+the engine is not built, the way the render tests skip without melt. Its project is one
+colour clip, so it needs no media, ffmpeg, melt or hyperframes. The tests were
+mutation-checked rather than trusted for being green — making the reload never skip fails
+two of the three, which is the only evidence that a passing test is worth anything.
+
+**Reloads are coalesced, not debounced** — adopted.
+A caller arriving while a compile is running sets a flag instead of queuing, and the
+running pass goes round once more; the extra pass re-reads the project, so the last thing
+compiled is always a state observed after the last edit. Thirty-two simultaneous reloads
+cost two compiles — the pass that was running, plus one for everything that queued behind
+it, which is the whole of what the mechanism can collapse to. (Over HTTP the same burst
+measured ten, because the requests arrive spread out rather than together; that is arrival
+spread, not the coalescing falling short.)
+
+Debouncing was considered and turned down. The UI already commits rather than streams —
+fields patch on `onchange`, drags patch on `pointerup` — so a human editing produces one
+patch per deliberate edit and there is no burst to collapse; a delay would only put
+latency between an edit and seeing it, which is the one thing a preview must not do.
+Bursts come from agents and from held-down undo, and those overlap in time, which is
+exactly what coalescing collapses. Cancelling an in-flight compile was also rejected:
+there is nothing to save in 2 ms of compiling, and mid-bake it would throw away a headless
+browser run that is seconds deep and probably still wanted.
+
+**Rejected: mapping a nested overlay's time up to the playhead and driving it live.** It
+is what "live everywhere" would need, and each step costs something. One sequence can be
+placed twice, so one overlay clip becomes two iframes and the view map stops being keyed
+by clip id. The placement's own trim and effects would have to compose with the inner
+clip's. And it would still be an approximation, since every overlay iframe is drawn above
+the engine's canvas regardless of what the timeline stacks above it. Baking is less code
+and is exactly right by construction.
 
 ---
 
@@ -153,7 +332,18 @@ showstopper of the review. The cut belongs to `<entry in out>` alone.
 **The golden MLT file is the regression oracle** — adopted.
 `tests/fixtures/reference.mlt` is regenerated with `UPDATE_GOLDEN=1` and the diff is read
 by hand. It earned its keep during the bin refactor: the compiled XML came out
-byte-identical, which is the proof that restructuring the model changed no pixels.
+byte-identical, which is the proof that restructuring the model changed no pixels. It did
+so again through nested sequences — the emitted document for the pre-existing tracks did
+not move by a byte while the compiler was restructured around them, and stayed still
+through two later refactors of the same code.
+
+**The DTD is a local copy with two fixes** — adopted.
+`tests/fixtures/mlt-xml.dtd` is not what MLT 7.22 ships. `properties` was declared as
+exactly one `property`, which no real document obeys, and `playlist` did not allow
+`filter` — although MLT attaches one to a playlist and honours its frame range, which is
+how Kdenlive carries track effects and how a nested sequence's placements carry their own.
+Both were measured before the DTD was relaxed, and the evidence is written beside the
+declarations. Prefer fixing the copy over emitting worse XML to satisfy it.
 
 ## Templates and presets as user assets
 
@@ -174,9 +364,12 @@ this is about browsing and organisation rather than capability.
 
 ## Preview
 
-**Engine reload is keyed on non-overlay state** — adopted.
-Overlays are live DOM in the editor and are skipped by the preview compile, so an
-overlay-only edit must not make the engine reload the whole timeline.
+**Engine reload is keyed on non-overlay state** — superseded, by "the daemon decides when
+the engine needs a new timeline" under *Nested sequences*.
+The rule itself still holds — an overlay-only edit on the open sequence must not reload
+the engine — but the client no longer works it out. The daemon compares the compiled
+document instead, which covers this case and the ones a client-side key kept getting
+wrong.
 
 **Overlay iframes are driven through the hyperframes player** — adopted.
 When the runtime's player is up, seeking goes through it, which is the same scrub path
@@ -258,7 +451,14 @@ annoying, because the validator and the agent both read metadata today.
 
 ## Still open
 
-Lower priority than nested sequences above.
+Nested sequences are done, so this list is now the whole of what is next. The item it
+gained from that work comes first, because it is the part deliberately left out.
+
+- **Speed on a sequence clip**, refused today. The mechanism is known to work (see the
+  spike above): write the sub-sequence to its own `.mlt` in the cache and hand `timewarp`
+  that path. What makes it more than an afternoon is the lifecycle — one file per sped-up
+  sequence, regenerated on every compile and at every size, since the preview compiles at
+  half resolution and would need its own copy.
 
 - **Every numeric effect parameter keyframable, through one shared type** — agreed, not
   built. Today only `transform` and `volume` take keyframes, so a "go blurry" ramp needs
@@ -375,7 +575,14 @@ Lower priority than nested sequences above.
   no reason and stops improvements reaching the copy. Same shape as the media search path
   below: the library wants to hold more kinds of thing than templates, and the two should
   be one mechanism.
-- Folders and search in the browser, now that the bin is the thing they organise.
+- Folders and search in the browser, now that the bin is the thing they organise. The bin
+  now holds sequences too, which makes this more pressing than it was.
+- A thumbnail for a sequence entry. The `thumbs` job renders overlay entries with their
+  own vars; a sequence would want a frame of itself, which is `sample_frames` rather than
+  a bake, so it is a different path and was left alone.
+- "Make a sequence from the selected clips", the Kdenlive move that collapses part of a
+  timeline into a new sequence in place. Everything under it exists — a sequence is one
+  patch — but it is a UI affordance nobody has written.
 - A re-probe or reload action on a bin entry.
 - `kuma add-media` resolves a relative path against the shell's directory rather than the
   project's, which surprises when run from elsewhere.

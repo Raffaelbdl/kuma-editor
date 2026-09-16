@@ -111,4 +111,29 @@ fn renders_reference_project_with_melt() {
     snapshot(&bare_mlt, 120, &a).unwrap();
     snapshot(&bare_mlt, 150, &b).unwrap();
     assert_ne!(std::fs::read(&a).unwrap(), std::fs::read(&b).unwrap(), "trimmed clip renders as a still");
+
+    // A nested sequence must render as itself. `s1` places the whole `intro` sequence on
+    // the master's top track at t=9, so the master at 9+x has to show what `intro` shows
+    // at x — through the transparent base, with the inner sequence's own track stack
+    // composited, and with the master's other tracks hidden underneath rather than
+    // bleeding through. Compiling `intro` as its own root is the same thing the preview
+    // does when you open a sub-sequence.
+    let mut inner_opts = CompileOptions::new(&root);
+    inner_opts.sequence = Some("intro".into());
+    let inner_mlt = root.join("intro.mlt");
+    std::fs::write(&inner_mlt, compile(&p, &inner_opts).unwrap()).unwrap();
+    // intro t=0.5 s is bare colour; t=2.0 s also has the inner sequence's own logo track.
+    for (offset, probes) in [(15i64, vec![(200u32, 950u32)]), (60, vec![(200, 950), (960, 340)])] {
+        let outer = root.join(format!("outer{offset}.png"));
+        let inner = root.join(format!("inner{offset}.png"));
+        snapshot(&bare_mlt, 9 * 30 + offset, &outer).unwrap();
+        snapshot(&inner_mlt, offset, &inner).unwrap();
+        for (x, y) in probes {
+            let (o, i) = (pixel(&outer, x, y), pixel(&inner, x, y));
+            assert_eq!(o.len(), 3);
+            for c in 0..3 {
+                assert!((o[c] as i32 - i[c] as i32).abs() <= 2, "nested sequence differs at ({x},{y}) frame {offset}: {o:?} vs {i:?}");
+            }
+        }
+    }
 }

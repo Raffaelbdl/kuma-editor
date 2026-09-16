@@ -9,11 +9,11 @@ import { button, el } from "./dom";
 import { store, toast } from "./store";
 import { addFromLibrary, placeBinItem } from "./timeline";
 import type { BinItem, Project } from "./types";
-import { isFileSource, isOverlaySource, itemKind } from "./types";
+import { binPath, isFileSource, isOverlaySource, isSequenceSource, itemKind, placementsOf, seqDuration, wouldRecurse } from "./types";
 
 export class Library {
   constructor(private host: HTMLElement) {
-    store.select((s) => [s.project, s.templates], () => this.render());
+    store.select((s) => [s.project, s.templates, s.sequence], () => this.render());
   }
 
   private render() {
@@ -79,18 +79,41 @@ function binCard(p: Project, id: string, item: BinItem): HTMLDivElement {
     lines.push(["desc mono", item.source.template]);
     const vars = Object.entries(item.source.vars ?? {}).map(([k, v]) => `${k}: ${v}`).join(" · ");
     lines.push(["desc", vars]);
+  } else if (isSequenceSource(item.source)) {
+    const n = item.source.tracks.length;
+    const clips = item.source.tracks.reduce((a, t) => a + t.clips.length, 0);
+    lines.push(["desc", [`${seqDuration(p, id).toFixed(1)}s`, `${n} track${n === 1 ? "" : "s"}`, `${clips} clip${clips === 1 ? "" : "s"}`].join(" · ")]);
+    if (id === p.master) lines.push(["desc mono", "master — this is what renders"]);
   } else {
     lines.push(["desc mono", item.source.color]);
   }
   const card = card2(item.name || id, kind, lines, { bin: id });
+  if (id === store.state.sequence) card.classList.add("open");
   // Overlay entries get a thumbnail of their own configuration once `thumbs` has run.
   if (isOverlaySource(item.source)) prependThumb(card, `/api/bin/${encodeURIComponent(id)}/thumb.png`);
   const del = button("×", async () => {
-    const used = p.tracks.flatMap((t) => t.clips).filter((c) => c.bin === id).length;
+    // Usage is counted across every sequence, not just the one on screen: an entry can be
+    // placed on a timeline you are not looking at.
+    const used = placementsOf(p, id);
     if (used) { toast(`${id} is used by ${used} clip${used > 1 ? "s" : ""}`, "err"); return; }
-    await store.patch([{ op: "remove", path: `/bin/${id}` }], `remove ${id}`);
+    if (id === p.master) { toast("The master sequence cannot be removed", "err"); return; }
+    await store.patch([{ op: "remove", path: binPath(id) }], `remove ${id}`);
   }, "Remove from the bin");
-  card.appendChild(actionRow(button("Add at playhead", () => placeBinItem(id, store.state.playhead)), del));
+  const actions = [];
+  // Opening a sequence is what "edit this part separately" means; placing it puts the
+  // whole thing on the timeline you are looking at.
+  if (isSequenceSource(item.source)) {
+    const open = button(id === store.state.sequence ? "Open ✓" : "Open", () => store.openSequence(id), "Edit this timeline");
+    (open as HTMLButtonElement).disabled = id === store.state.sequence;
+    actions.push(open);
+  }
+  // A sequence cannot be placed on itself, directly or otherwise: don't offer the button.
+  // `placeBinItem` checks the same rule, for the drop path that has no button to hide.
+  if (!wouldRecurse(p, id, store.state.sequence)) {
+    actions.push(button("Add at playhead", () => placeBinItem(id, store.state.playhead)));
+  }
+  actions.push(del);
+  card.appendChild(actionRow(...actions));
   return card;
 }
 

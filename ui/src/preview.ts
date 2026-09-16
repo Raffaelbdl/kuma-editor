@@ -35,7 +35,8 @@ export class Preview {
   private snapshotTimer = 0;
   private lastSentSeek = -1;
   private lastRevision = -1;
-  private engineKey = "";
+  /** The sequence the stage is showing; opening another one rebuilds it like an edit. */
+  private lastSequence = "";
   /** Why the engine is unavailable, as reported by the daemon (empty when it runs). */
   private engineError = "";
   /** Timeline time of the last frame the engine sent while playing. */
@@ -56,7 +57,7 @@ export class Preview {
     this.stage.append(this.canvas, this.layer, this.badge);
     host.appendChild(this.stage);
     new ResizeObserver(() => this.layout()).observe(host);
-    store.subscribe((s) => this.onState(s.playhead, s.playing, s.project?.revision ?? -1));
+    store.subscribe((s) => this.onState(s.playhead, s.playing, s.project?.revision ?? -1, s.sequence));
     this.connect();
   }
 
@@ -201,20 +202,21 @@ export class Preview {
     bmp.close();
   }
 
-  private onState(playhead: number, playing: boolean, revision: number) {
+  private onState(playhead: number, playing: boolean, revision: number, sequence: string) {
     const p = store.state.project;
     if (!p) return;
-    const edited = revision !== this.lastRevision;
+    // Opening another sequence replaces the whole picture, overlays included, though no
+    // revision changed: it is nobody's edit.
+    const edited = revision !== this.lastRevision || sequence !== this.lastSequence;
     if (edited) {
       this.lastRevision = revision;
+      this.lastSequence = sequence;
       this.syncOverlays();
-      // Overlays are live DOM here, never part of the preview compile: an overlay-only
-      // edit (vars, a nudge) must not make the engine reload the whole timeline.
-      const key = engineKey(p);
-      if (key !== this.engineKey) {
-        this.engineKey = key;
-        this.reload();
-      }
+      // Ask on every edit and let the daemon decide. It compiles either way — cheap — and
+      // only hands the engine a new timeline when the document actually differs, so the
+      // client does not have to model what the compiler depends on. It used to, and got
+      // it wrong twice as the compiler grew.
+      this.reload();
     }
     if (playing && this.wsOk) {
       // The engine drives the playhead; a jump that did not come from it is a user seek.
@@ -237,7 +239,11 @@ export class Preview {
   private syncOverlays() {
     const p = store.state.project!;
     const wanted = new Map<string, Clip>();
-    for (const t of p.tracks) {
+    // Only the open sequence's own overlays are live DOM here: their clip times are the
+    // playhead's times. An overlay inside a nested sequence is skipped by the preview
+    // compile too, so it shows up in the render and when you open that sequence, but not
+    // while scrubbing the timeline above it.
+    for (const t of store.tracks) {
       if (t.hidden) continue;
       for (const c of t.clips) if (isOverlayClip(p, c)) wanted.set(c.id, c);
     }
@@ -291,12 +297,6 @@ export class Preview {
       applyEffects(v.iframe, c, playhead - c.start, p.width, p.height);
     }
   }
-}
-
-/** Everything the preview compile depends on; overlay tracks are live DOM instead. */
-function engineKey(p: Project): string {
-  const bin = Object.fromEntries(Object.entries(p.bin).filter(([, i]) => !("template" in i.source)));
-  return JSON.stringify([p.fps, p.width, p.height, p.sample_rate, bin, p.tracks.filter((t) => t.kind !== "overlay")]);
 }
 
 /** Everything the overlay document is a function of: its injected `window.kuma`. The bin

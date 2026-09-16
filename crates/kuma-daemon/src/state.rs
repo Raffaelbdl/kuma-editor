@@ -88,6 +88,10 @@ pub struct AppState {
     pub events: broadcast::Sender<Event>,
     pub jobs: crate::jobs::Jobs,
     pub preview: crate::preview::PreviewHandle,
+    /// Which sequence is open for editing and preview. Session state, not document state:
+    /// it is nobody's edit, it must not bump the revision or land in the undo stack, and a
+    /// project reopened tomorrow should start on its master. `None` follows the master.
+    open_sequence: Mutex<Option<kuma_core::BinId>>,
 }
 
 #[derive(Debug, Serialize)]
@@ -131,6 +135,7 @@ impl AppState {
             events,
             jobs: crate::jobs::Jobs::default(),
             preview: crate::preview::PreviewHandle::default(),
+            open_sequence: Mutex::new(None),
             config,
         };
         st.reload_templates();
@@ -169,6 +174,30 @@ impl AppState {
             .iter()
             .map(|(id, (dir, m))| TemplateInfo { id: id.clone(), manifest: m.clone(), has_thumb: dir.join("thumb.png").is_file() })
             .collect()
+    }
+
+    /// The sequence being edited. A chosen one that has since been deleted (or turned into
+    /// something that is not a sequence) falls back to the master rather than failing every
+    /// compile until someone notices — and is *forgotten*, so that re-creating an id by
+    /// that name (an undo, an agent re-adding it) does not silently reopen it here while
+    /// every client is still showing the master.
+    pub fn current_sequence(&self) -> kuma_core::BinId {
+        let p = read(&self.project);
+        let mut open = lock(&self.open_sequence);
+        if open.as_deref().is_some_and(|id| p.seq(id).is_none()) {
+            *open = None;
+        }
+        open.clone().unwrap_or_else(|| p.master.clone())
+    }
+
+    /// Open a sequence for editing. `None` returns to following the master.
+    pub fn open_sequence(&self, id: Option<kuma_core::BinId>) -> anyhow::Result<kuma_core::BinId> {
+        if let Some(id) = &id {
+            let p = read(&self.project);
+            anyhow::ensure!(p.seq(id).is_some(), "`{id}` is not a sequence in this project");
+        }
+        *lock(&self.open_sequence) = id;
+        Ok(self.current_sequence())
     }
 
     pub fn validation_context(&self) -> ValidationContext {

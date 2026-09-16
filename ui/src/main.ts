@@ -159,4 +159,12 @@ function shortcuts(preview: Preview) {
   });
 }
 
-main().catch((e) => { console.error(e); toast(`Failed to start: ${e.message}`, "err", 10000); });
+main().catch((e) => {
+  console.error(e);
+  // Startup reads the document's shape, so a crash here is nearly always a `ui/dist`
+  // built from older sources than the project it was handed — `ui/dist` is not in git,
+  // so a pull leaves it behind. The raw message ("t.tracks is not iterable") names
+  // nothing anyone can act on, so say the likely cause next to it.
+  toast(`Failed to start: ${e.message}`, "err", 60000);
+  toast("This usually means ui/dist was built from older sources. Run `npm run rebuild` in the kuma checkout (or `npm run build` in ui/), then reload.", "err", 60000);
+});

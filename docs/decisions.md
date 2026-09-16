@@ -250,6 +250,148 @@ and is exactly right by construction.
 
 ---
 
+## Desktop shell
+
+The editor became an application: a launcher that opens or creates a project, and a window
+per project, with the daemon's lifetime tied to the window. `app/` is an Electron main
+process; the editor page inside the window is the existing UI, served by the daemon,
+unchanged.
+
+**Electron rather than Tauri** — adopted, against the grain of a Rust workspace.
+
+Tauri was the obvious choice and lost on one point. Its Linux webview is WebKitGTK, and
+the overlay baker drives **Chromium** (hyperframes on Playwright's
+`chromium_headless_shell`). The premise in the README is "same HTML, two consumers": live
+DOM while you scrub, baked alpha at export. Previewing in one engine and baking in another
+breaks that quietly — a blend mode, a font metric or a filter that differs shows up only
+after a bake, which is the slowest possible feedback loop. Electron is Chromium, so the
+scrub and the export agree by construction.
+
+What that cost: Tauri would have been ~10 MB against Electron's ~200 MB, and — the part
+that actually stings — `kuma-app` could have been a Rust binary calling
+`kuma_daemon::serve()` in-process, with no subprocess to supervise at all. The shell
+supervises `kuma serve` instead. Judged worth it, because overlay fidelity is the product
+and the binary size is not.
+
+Also weighed and rejected: **Chromium in `--app=` mode** driven by a `kuma app`
+subcommand. Right engine, almost no new machinery, but no native menus or dialogs, and a
+launcher window that spawns editor windows is awkward without a process that owns them.
+**Wry, Neutralino, Photino** are all system-webview, so they lose for Tauri's reason
+without Tauri's compensations.
+
+**One daemon per project, owned by the shell** — adopted.
+
+The alternative was one daemon taught to switch projects, which is what a "launcher plus
+editor" shape suggests. It was rejected: `AppState` is loaded from a project file and
+handed to the router as an `Arc`, and the preview engine, job list and undo stack all hang
+off it, so switching means making every handler read through an indirection and tearing
+down the engine on each swap. More importantly `kuma mcp` resolves a daemon *by the
+project it serves* — a daemon that changes projects underneath that check is a race with
+no good answer. A daemon per project needs no daemon change at all, and multiple open
+projects fall out of it.
+
+So the shell starts one, waits for `/api/health`, and stops it when the window closes;
+quitting stops all of them. A daemon that dies on its own raises a dialog with the tail of
+its output and an offer to restart, rather than leaving a blank window.
+
+**Attaching to a daemon already serving that project** — adopted, and it is the one
+exception to the rule above.
+
+Two daemons on one `.kuma.json` would both believe they are its single owner, which is the
+invariant everything else rests on. And a daemon already on that file is most likely a
+`kuma mcp` with a Claude Code session behind it. So the shell joins it, shares its state,
+and does **not** stop it when the window closes — it did not start it. Every daemon the
+shell started, it owns completely.
+
+**The first project takes 7455** — adopted.
+That is where `kuma mcp`, and so the `.mcp.json` that `kuma init` writes, looks. Opening a
+project there means an agent attaches to the window you have open with no configuration.
+Later projects take an ephemeral port; their agents get a private daemon, which `kuma mcp`
+already explains when it happens.
+
+**The launcher is a page in the shell, not a route in the editor UI** — adopted.
+The editor UI is served *by a daemon*, and a daemon always has exactly one project. There
+is no point in that page where "no project is open" is a reachable state, so a launcher
+route there would have to be served by something else anyway. It lives on a `kuma-app://`
+scheme rather than `file://`, so ES modules load and the CSP has a real origin to name.
+
+**Menu accelerators for the editor's own shortcuts** — rejected.
+Space, `S` and Ctrl+Z are bound in the page, where the handler can tell whether a text
+field has focus. An Electron menu accelerator fires regardless, so `S` would be stolen
+from every input in the inspector and Ctrl+Z would run a project undo while you are typing
+a label. The Project menu therefore carries those items with **no** accelerator, and the
+Edit menu keeps the native `undo`/`redo` roles, which are text editing and should stay
+that way.
+
+**Desktop features degrade rather than gate** — adopted.
+`ui/src/desktop.ts` exports `desktop()`, which returns the preload's bridge or `null`. The
+native file picker and the menu commands are behind it; in a browser tab the UI is exactly
+what it was. `kuma serve` plus a browser has to keep working — it is what CI, a remote
+machine and `kuma mcp` all use.
+
+**The shell distrusts the binary it runs** — adopted, after it bit someone.
+
+`kuma init` is an external program, and the shell can be pointed at a `kuma` older than
+the checkout — a stale `target/release/kuma`, or one `cargo install`ed months ago. A
+binary from before the bin refactor writes a project with `tracks` on it and no `bin`,
+which nothing here can open. The first report of this was a new project that created its
+folder, failed to open, and then refused to be created again because the folder was in the
+way: three confusing symptoms for one cause.
+
+So `create` reads back what `kuma init` wrote and, if it cannot be opened, **removes the
+directory it made** — a folder that blocks a retry while being useless is worse than no
+folder — and says the binary is the problem. `checkOpenable` names the old format when it
+sees one rather than reporting "not a kuma project", which sends people to inspect a file
+that is fine for the version that wrote it. And the launcher's footer shows which binary
+was resolved and whether its commit is an ancestor of HEAD, which is what `build.rs`
+stamps the commit into `--version` for in the first place. Only a strict ancestor is
+reported, so a binary built from another branch or a non-git install stays quiet.
+
+**Nothing the daemon serves may be reused without revalidating** — adopted, after this
+turned out to be the real bug behind two rounds of misdiagnosis.
+
+`ServeDir` sent no `Cache-Control` and no `ETag`, only `Last-Modified`. A browser then
+falls back to *heuristic* freshness: it invents a lifetime from the file's age and serves
+the response without asking again. So an editor window that had cached `ui/dist` kept
+running that bundle after a correct rebuild — the files on disk were new, the daemon was
+new, and the window was executing month-old JavaScript. It reported `t.tracks is not
+iterable`, which reads exactly like a stale build, so the first two fixes chased staleness
+on disk and found nothing wrong with it.
+
+The router now adds `Cache-Control: no-cache` to every response, `if_not_present` so the
+handlers that chose `no-store` keep it. `no-cache` permits storing and requires
+revalidating, which on loopback is a 304. It covers more than the editor: a template being
+authored is reloaded constantly, a regenerated thumbnail keeps its URL, and API JSON is
+live state that was never safe to cache.
+
+A cache entry stored *before* this keeps its invented freshness, so the shell also clears
+its session cache at startup. Everything it loads is on loopback and worth nothing between
+runs.
+
+The lesson worth keeping: "the artifact on disk is current" and "the running program is
+that artifact" are different claims, and only the second one matters. Both earlier fixes
+checked the first.
+
+The same reasoning covers `ui/dist`, which is not in git either and which the *daemon*
+serves. A build from before sequences became bin entries reads `project.tracks`, spreads
+it, and dies with `t.tracks is not iterable` before the editor draws anything — a message
+that names nothing a user could act on. That one is not a footer warning: the window is
+certain to be broken, so opening a project checks whether `ui/dist` is older than `ui/src`
+and asks first, with "Open anyway" kept because the check is an mtime heuristic and must
+never be a hard no.
+
+Three stale-artifact traps in a row (`app/dist`, the `kuma` binary, `ui/dist`) is a
+pattern, not bad luck: the shell is the one component that runs all three and is therefore
+the only place that can see the skew. `app/dist` it simply builds, since it owns it. The
+other two it refuses to paper over, because rebuilding a Rust binary or the daemon's own
+assets behind the user's back is not the shell's call.
+
+Still open here: packaging (there is no `electron-builder` config, so the app runs from the
+checkout), remembering window size and position, and opening a second project from an
+editor window rather than going back to the launcher.
+
+---
+
 ## Project model
 
 **One bin holds everything placeable** — adopted.
@@ -449,10 +591,77 @@ Keyed by path, size and mtime the way the bake cache already works, staleness be
 impossible and the revision is never touched. Held back until flag-and-reload proves
 annoying, because the validator and the agent both read metadata today.
 
+
+## Regression tests for the things that are not Rust
+
+**Built.** The suite covered the model, the compiler and the daemon well, and covered
+nothing that only goes wrong in a browser or in the shell. Three bugs reached the user in
+one sitting, all of them in that gap, none of them the kind a Rust test would have seen —
+and each is now pinned by one of the tiers below:
+
+- **Overlay transparency.** A `color-scheme: dark` on the editor's root stopped Chromium
+  compositing the overlay iframes: a template declares no colour scheme, so it is a
+  light-scheme document, and a light document is not allowed to show through a dark-scheme
+  embedder. The preview painted the template's white canvas where the video should be,
+  while the render stayed correct — the preview/render gap the live-DOM preview exists to
+  close. Nothing failed; it just looked wrong.
+- **Stale assets served from cache.** `ServeDir` sent no `Cache-Control` and no `ETag`, so
+  a browser invented a freshness lifetime and kept running a bundle from weeks earlier
+  after everything on disk had been rebuilt.
+- **The shell's own logic** — daemon lifecycle, attach-versus-spawn, stale-binary and
+  stale-`ui/dist` detection, the library fallback. All verified during development with
+  throwaway Node scripts that were never committed, which is the same as not being tested.
+
+Three tiers, cheapest first. **All three are built.**
+
+1. **Response headers, in Rust — done** (`crates/kuma-daemon/tests/http.rs`). That
+   everything the daemon serves carries `Cache-Control`, and that a handler asking for
+   `no-store` keeps it, against a daemon on a loopback port with a stand-in `ui/dist` and
+   a one-template library, so it needs nothing built and nothing installed. The request is
+   hand-rolled rather than adding a client crate for a test. Confirmed to fail with the
+   header removed. The cache bug was the most expensive of the three to find and is the
+   cheapest to catch.
+2. **The shell, in `app/` — done** (`app/test/`, `node --test`, no new dependency and no
+   Electron: those modules avoid importing it precisely so they can be driven directly).
+   18 cases over the library fallback's precedence, the staleness checks, and what happens
+   when `kuma init` writes something unreadable — including that the folder is rolled back
+   so the name is free to retry, which is the bug as it was reported. A shell script
+   stands in for a stale `kuma`, so no Rust build is involved.
+3. **The composite, in a browser — done** (`ui/test/composite.test.mjs`). A fixture
+   project with a half-red, half-transparent overlay, the editor screenshotted by the
+   browser the baker already uses, and two assertions: the red reaches the page, and
+   nothing on it is white. Reintroducing the dark root turns the second into 106,323
+   near-white pixels against a threshold of 2,000, so it catches the bug with fifty times
+   the margin it needs.
+
+   Both assertions are **position-independent on purpose**. Where the stage sits depends
+   on the window, the letterboxing and the panel widths, and a test that had to know would
+   break on every layout change without ever finding a compositing fault. Counting colours
+   over the whole page does not care. The pair matters too: "nothing is white" alone would
+   also pass on a page where the overlay never loaded.
+
+   Pixels are read by a ~60-line PNG decoder (`ui/test/png.mjs`) over Node's `zlib`, which
+   is cheaper than depending on an image library or on ImageMagick being installed. It
+   skips when the browser or `ui/dist` is missing, the way the render tests skip without
+   melt.
+
+The pixel assertions stay coarse on purpose — "this region is not white", "this region is
+the colour of the clip under it" — because the point is compositing, not appearance. A
+screenshot-diff suite over the whole editor would fail on every font and theme change and
+be turned off within a month.
+
+Worth saying plainly: tier 3 is the one that matters and the one most likely to be
+skipped, because the bug it catches is invisible rather than loud. The preview looking
+right *is* the product.
+
+---
+
 ## Still open
 
-Nested sequences are done, so this list is now the whole of what is next. The item it
-gained from that work comes first, because it is the part deliberately left out.
+Nested sequences are done and the editor is an application now, so this list is the whole
+of what is next on the *model and compiler*; the desktop shell's own loose ends are at the
+end of its section above. The item this list gained from the sequence work comes first,
+because it is the part deliberately left out.
 
 - **Speed on a sequence clip**, refused today. The mechanism is known to work (see the
   spike above): write the sub-sequence to its own `.mlt` in the cache and hand `timewarp`

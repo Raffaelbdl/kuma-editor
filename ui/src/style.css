@@ -14,7 +14,24 @@
   --sans: Inter, system-ui, -apple-system, "Segoe UI", sans-serif;
 }
 * { box-sizing: border-box; }
+/* Dark built-in controls — select popups, checkboxes, spinners.
+   **Not on :root.** A dark root makes every overlay iframe composite against an opaque
+   backdrop instead of staying transparent: Chromium will not let a light-scheme document
+   (which a template is, having no `color-scheme` of its own) show through a dark-scheme
+   embedder, so the preview paints the template's white canvas over the video. Scoped to
+   the controls that need it, the stage keeps compositing as it did. */
+button, input, select, textarea, option { color-scheme: dark; }
 html, body { height: 100%; margin: 0; background: var(--bg); color: var(--fg); font: 13px/1.4 var(--sans); }
+
+/* Scrollbars, themed. `scrollbar-*` is the standard property; the `::-webkit-` rules are
+   what Chromium actually honours, and they allow the inset thumb this palette wants. */
+* { scrollbar-width: thin; scrollbar-color: var(--bg-3) transparent; }
+::-webkit-scrollbar { width: 11px; height: 11px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--bg-3); border: 3px solid transparent; background-clip: content-box; border-radius: 8px; }
+::-webkit-scrollbar-thumb:hover { background: var(--line); background-clip: content-box; }
+::-webkit-scrollbar-thumb:active { background: var(--fg-2); background-clip: content-box; }
+::-webkit-scrollbar-corner { background: transparent; }
 button, input, select, textarea { font: inherit; color: inherit; }
 button { background: var(--bg-3); border: 1px solid var(--line); border-radius: 6px; padding: 4px 10px; cursor: pointer; }
 button:hover { border-color: var(--fg-2); }
@@ -28,6 +45,36 @@ h3 { margin: 12px 0 6px; font-size: 11px; letter-spacing: 0.08em; text-transform
 .mono { font-family: var(--mono); }
 
 #app { height: 100%; display: grid; grid-template-rows: 40px 1fr 300px; }
+/* The desktop shell's windows are frameless, so the page draws the title bar and the
+   grid gains a row for it. A browser never sets this class and keeps the old layout. */
+body.has-titlebar #app { grid-template-rows: 32px 40px 1fr 300px; }
+
+#titlebar { display: none; }
+body.has-titlebar #titlebar {
+  display: grid; grid-template-columns: auto 1fr auto; align-items: center;
+  background: var(--bg-2); border-bottom: 1px solid var(--line); height: 32px;
+  /* The bar moves the window; every control inside it opts back out. */
+  -webkit-app-region: drag; user-select: none;
+}
+.tb-menu { display: flex; align-items: center; padding-left: 4px; }
+.tb-item {
+  background: none; border: 0; border-radius: 4px; padding: 3px 9px; font-size: 12.5px;
+  color: var(--fg); line-height: 20px;
+}
+.tb-item:hover { background: var(--bg-3); border-color: transparent; }
+.tb-item.open { background: var(--bg-3); }
+.tb-title {
+  text-align: center; font-size: 12px; color: var(--fg-2);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 0 12px;
+}
+.tb-controls { display: flex; height: 100%; }
+.tb-btn {
+  background: none; border: 0; border-radius: 0; width: 46px; height: 100%; padding: 0;
+  display: grid; place-items: center; color: var(--fg-2);
+}
+.tb-btn:hover { background: var(--bg-3); color: var(--fg); border-color: transparent; }
+/* Red on close only, the one destructive button — matching what every desktop does. */
+.tb-btn.close:hover { background: #e5484d; color: #fff; }
 #topbar { display: flex; align-items: center; gap: 10px; padding: 0 12px; background: var(--bg-2); border-bottom: 1px solid var(--line); }
 #topbar .name { font-weight: 600; }
 #topbar .spacer { flex: 1; }
@@ -42,7 +89,10 @@ h3 { margin: 12px 0 6px; font-size: 11px; letter-spacing: 0.08em; text-transform
 .stage canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
 .stage .overlay-layer { position: absolute; inset: 0; overflow: hidden; pointer-events: none; }
 .stage .ov { position: absolute; left: 0; top: 0; transform-origin: 0 0; }
-.stage .ov iframe { border: 0; background: transparent; display: block; }
+/* `color-scheme: normal` is load-bearing, not decoration: it keeps the embedder's scheme
+   matching the template's so Chromium composites the iframe transparently. Without it a
+   dark scheme anywhere above puts an opaque backdrop behind every overlay. */
+.stage .ov iframe { border: 0; background: transparent; display: block; color-scheme: normal; }
 .stage .badge { position: absolute; right: 8px; top: 8px; font: 11px var(--mono); color: var(--fg-2); background: rgba(0,0,0,0.5); padding: 2px 6px; border-radius: 4px; }
 
 #bottom { display: grid; grid-template-rows: 32px 1fr; border-top: 1px solid var(--line); background: var(--bg-2); min-height: 0; }
@@ -57,12 +107,27 @@ h3 { margin: 12px 0 6px; font-size: 11px; letter-spacing: 0.08em; text-transform
 .tl-track { position: relative; height: 48px; border-bottom: 1px solid var(--line); }
 .tl-track.overlay { height: 40px; }
 .tl-track.audio { height: 36px; }
-.tl-head { position: sticky; left: 0; width: 120px; height: 100%; background: var(--bg-2); border-right: 1px solid var(--line); z-index: 2; padding: 4px 6px; font-size: 11px; display: flex; flex-direction: column; justify-content: space-between; }
-.tl-head .kind { color: var(--fg-2); text-transform: uppercase; font-size: 9px; letter-spacing: 0.06em; }
-.tl-head .toggles { display: flex; gap: 4px; }
+/* Kind and name stacked, toggles beside them — not underneath. Stacked all three, the
+   buttons fell outside a 36px audio track and were clipped. Beside, the head needs the
+   height of the label alone and fits every track kind. */
+.tl-head {
+  position: sticky; left: 0; width: 136px; height: 100%; z-index: 2;
+  background: var(--bg-2); border-right: 1px solid var(--line);
+  padding: 3px 6px; font-size: 11px;
+  display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 0 6px;
+  /* The kind's own colour, the same one the bin badge and its clips carry. */
+  border-left: 3px solid var(--kind, var(--line));
+}
+.tl-track.video .tl-head { --kind: var(--video); }
+.tl-track.overlay .tl-head { --kind: var(--overlay); }
+.tl-track.audio .tl-head { --kind: var(--audio); }
+.tl-head .label { min-width: 0; }
+.tl-head .kind { color: var(--kind, var(--fg-2)); text-transform: uppercase; font-size: 9px; letter-spacing: 0.06em; }
+.tl-head .tname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tl-head .toggles { display: flex; gap: 3px; }
 .tl-head .toggles button { padding: 0 5px; font-size: 10px; line-height: 16px; }
 .tl-head .toggles button.on { background: var(--accent); border-color: var(--accent); color: #fff; }
-.tl-lane { position: absolute; left: 120px; top: 0; right: 0; height: 100%; }
+.tl-lane { position: absolute; left: 136px; top: 0; right: 0; height: 100%; }
 .clip { position: absolute; top: 4px; bottom: 4px; border-radius: 5px; background: var(--video); border: 1px solid rgba(255,255,255,0.15); overflow: hidden; cursor: grab; padding: 3px 8px; font-size: 11px; white-space: nowrap; }
 .clip.overlay { background: var(--overlay); }
 .clip.audio { background: var(--audio); }
@@ -79,6 +144,39 @@ h3 { margin: 12px 0 6px; font-size: 11px; letter-spacing: 0.08em; text-transform
 .tl-playhead::before { content: ""; position: absolute; top: 0; left: -6px; border: 6px solid transparent; border-top: 8px solid var(--accent); }
 .tl-marker { position: absolute; top: 22px; bottom: 0; border-left: 1px dashed var(--sel); z-index: 1; pointer-events: none; }
 .tl-xfade { position: absolute; top: 2px; height: 10px; background: repeating-linear-gradient(45deg, var(--sel), var(--sel) 2px, transparent 2px, transparent 5px); opacity: 0.8; border-radius: 3px; z-index: 1; }
+
+/* The bin is a list, not a stack of cards: one line per entry, name and kind. Detail
+   lives in the inspector, which is where selecting a row sends it. */
+.bin-list { display: flex; flex-direction: column; gap: 1px; margin-bottom: 8px; }
+/* Grid, not flex: `1fr auto` pins the badge to the right edge whatever the name is, so
+   every row is the same full width and the badges line up down the panel. */
+.bin-row {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px;
+  width: 100%; padding: 4px 6px; border-radius: 4px;
+  cursor: grab; border: 1px solid transparent; user-select: none;
+}
+.bin-row:hover { background: var(--bg-3); }
+.bin-row.selected { background: var(--bg-3); border-color: var(--fg-2); }
+/* The sequence you are editing, marked the way the topbar picker marks it. */
+.bin-row.open .bin-name { color: var(--sel); }
+.bin-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Panel tabs, Kdenlive's shape: the strip sits above the content it switches. */
+.tabs { display: flex; gap: 2px; margin: -2px -10px 10px; padding: 0 10px; border-bottom: 1px solid var(--line); }
+button.tab {
+  background: none; border: 0; border-bottom: 2px solid transparent; border-radius: 0;
+  padding: 5px 10px; color: var(--fg-2); font-size: 11px; letter-spacing: 0.08em;
+  text-transform: uppercase; font-weight: 600;
+}
+button.tab:hover { color: var(--fg); }
+button.tab.on { color: var(--fg); border-bottom-color: var(--accent); }
+
+.insp-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
+.insp-thumb { width: 100%; border-radius: 4px; margin: 6px 0; background: repeating-conic-gradient(#333 0 25%, #444 0 50%) 0 0 / 12px 12px; }
+.tiny { font-size: 11px; margin: 2px 0 8px; }
+/* Navigation, not an edit: it moves the panel to the entry this clip plays. */
+button.linkish { background: none; border: 0; padding: 0; color: var(--sel); text-align: left; }
+button.linkish:hover { text-decoration: underline; }
 
 .lib-item { border: 1px solid var(--line); border-radius: 8px; padding: 8px; margin-bottom: 8px; background: var(--bg-3); cursor: grab; }
 .lib-item:hover { border-color: var(--fg-2); }
@@ -101,6 +199,15 @@ h3 { margin: 12px 0 6px; font-size: 11px; letter-spacing: 0.08em; text-transform
 .effect { border: 1px solid var(--line); border-radius: 6px; padding: 6px; margin-bottom: 6px; background: var(--bg-3); }
 .effect .head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; font-weight: 600; }
 .effect .head button { padding: 0 6px; font-size: 11px; }
+
+dialog.modal {
+  border: 1px solid var(--line); border-radius: 10px; background: var(--bg-2); color: var(--fg);
+  padding: 16px 18px; min-width: 320px; box-shadow: 0 16px 48px rgba(0, 0, 0, 0.5);
+}
+dialog.modal::backdrop { background: rgba(0, 0, 0, 0.5); }
+dialog.modal h3 { margin-top: 0; }
+dialog.modal .field { grid-template-columns: 60px 1fr; }
+.modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
 
 #toasts { position: fixed; right: 12px; bottom: 312px; display: flex; flex-direction: column; gap: 6px; z-index: 10; }
 .toast { background: var(--bg-3); border: 1px solid var(--line); border-left: 3px solid var(--accent); padding: 8px 10px; border-radius: 6px; max-width: 360px; font-size: 12px; }

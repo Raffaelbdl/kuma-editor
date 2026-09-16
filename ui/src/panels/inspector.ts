@@ -1,10 +1,17 @@
-// Properties panel: clip fields, template vars (from the manifest), effects.
+// Properties panel.
+//
+// It shows one of two things, and the split is the model's, not a layout choice: what is
+// shown lives on the **bin entry** (its name, its file, an overlay's vars) and when it is
+// shown lives on the **clip** (start, end, speed, trim, effects). So selecting an entry
+// edits the thing itself — and every placement of it follows — while selecting a clip
+// edits only that placement. A clip has no name for the same reason; it has a label.
 
-import { api } from "./api";
-import { button, el, options } from "./dom";
-import { store, toast } from "./store";
-import type { BinItem, Clip, Effect, PatchOp, VarSpec } from "./types";
-import { binItem, binPath, canTimeWarp, expandPreset, isFileSource, isOverlaySource, isSequenceSource, isTimedMedia, placementsOf, seqDuration } from "./types";
+import { api } from "../api";
+import { button, el, options } from "../dom";
+import { store, toast } from "../store";
+import type { BinItem, Clip, Effect, PatchOp, VarSpec } from "../types";
+import { placeBinItem } from "../edits";
+import { binItem, binPath, canTimeWarp, expandPreset, isColorSource, isFileSource, isOverlaySource, isSequenceSource, isTimedMedia, placementsOf, seqDuration, wouldRecurse } from "../types";
 
 const presetsPromise = api.effectPresets().catch(() => []);
 
@@ -30,10 +37,13 @@ export class Inspector {
   }
 
   private render() {
-    const f = store.findClip(store.state.selection);
+    const sel = store.state.selection;
     this.host.innerHTML = "";
+    if (sel?.kind === "bin") return this.renderBinEntry(sel.id);
+    const f = store.findClip(sel?.kind === "clip" ? sel.id : null);
     if (!f) {
-      this.host.innerHTML = `<h3>Inspector</h3><p class="muted">Select a clip. Drop templates or assets from the library onto the timeline.</p>
+      this.host.innerHTML = `<h3>Inspector</h3>
+        <p class="muted">Select a <b>bin entry</b> to change what it is, or a <b>clip</b> to change where and how it plays. Drag from the bin onto the timeline to place one.</p>
         <h3>Shortcuts</h3><p class="muted"><kbd>Space</kbd> play/pause · <kbd>←</kbd><kbd>→</kbd> frame step · <kbd>Del</kbd> delete · <kbd>Ctrl+Z</kbd>/<kbd>Ctrl+Shift+Z</kbd> undo/redo · <kbd>Ctrl+wheel</kbd> zoom · <kbd>S</kbd> split at playhead</p>`;
       return;
     }
@@ -44,6 +54,7 @@ export class Inspector {
     const h = el("h3", "", "Clip ");
     h.appendChild(el("span", "mono muted", clip.id));
     this.host.appendChild(h);
+    this.host.appendChild(el("p", "muted tiny", "This placement only."));
 
     const item = binItem(store.state.project!, clip);
     const frame = 1 / store.fps;
@@ -62,7 +73,13 @@ export class Inspector {
     }
     this.host.appendChild(field("Label", textInput(clip.label, (v) => rep("/label", v, "label"))));
 
-    if (item) this.renderBinItem(clip.bin, item);
+    // Not the entry's fields: those belong to every other placement too. A way through
+    // to them instead, so "where do I change the text" has an answer from here.
+    if (item) {
+      const go = el("div", "field");
+      go.append(el("label", "", "Plays"), linkButton(`${item.name || clip.bin} →`, () => store.selectItem("bin", clip.bin), "Edit the bin entry (changes every clip that plays it)"));
+      this.host.appendChild(go);
+    }
     this.renderEffects(clip, path);
 
     const del = button("Delete clip", () => store.patch([{ op: "remove", path }], `delete ${clip.id}`));
@@ -70,24 +87,70 @@ export class Inspector {
     this.host.appendChild(del);
   }
 
-  /** The bin entry the clip plays. Editing here changes every placement of it. */
-  private renderBinItem(id: string, item: BinItem) {
+  /**
+   * A bin entry: what it *is*. Every clip that places it follows these, which is why the
+   * panel says so rather than leaving it to be discovered by editing one and watching
+   * another change.
+   */
+  private renderBinEntry(id: string) {
+    const p = store.state.project!;
+    const item = p.bin[id];
+    if (!item) return;
     const bp = binPath(id);
     const h = el("h3", "", "Bin entry ");
     h.appendChild(el("span", "mono muted", id));
     this.host.appendChild(h);
-    this.host.appendChild(field("Name", textInput(item.name, (v) => store.patch([{ op: "replace", path: `${bp}/name`, value: v }], `name ${id}`))));
 
+    const places = placementsOf(p, id);
+    this.host.appendChild(el("p", "muted tiny", places === 0 ? "Not placed on any timeline yet." : `Placed by ${places} clip${places > 1 ? "s" : ""} — these apply to all of them.`));
+
+    this.host.appendChild(field("Name", textInput(item.name, (v) => store.patch([{ op: "replace", path: `${bp}/name`, value: v }], `name ${id}`))));
+    this.renderSource(id, item, bp);
+
+    const actions = el("div", "insp-actions");
+    // A sequence cannot be placed on itself, directly or through another.
+    if (!wouldRecurse(p, id, store.state.sequence)) {
+      actions.appendChild(button("Add at playhead", () => placeBinItem(id, store.state.playhead)));
+    }
+    if (isSequenceSource(item.source)) {
+      const open = button("Open", () => store.openSequence(id), "Edit its own timeline");
+      (open as HTMLButtonElement).disabled = id === store.state.sequence;
+      actions.appendChild(open);
+    }
+    const remove = button("Remove from bin", () => {
+      if (places) return toast(`${id} is placed by ${places} clip${places > 1 ? "s" : ""}`, "err");
+      if (id === p.master) return toast("The master sequence cannot be removed", "err");
+      void store.patch([{ op: "remove", path: bp }], `remove ${id}`);
+    });
+    remove.title = places ? "Remove its clips first" : "Delete this entry";
+    actions.appendChild(remove);
+    this.host.appendChild(actions);
+  }
+
+  /** The `source` half of an entry — the part that differs per kind. */
+  private renderSource(id: string, item: BinItem, bp: string) {
     if (isFileSource(item.source)) {
       this.host.appendChild(field("Path", textInput(item.source.path, (v) => store.patch([{ op: "replace", path: `${bp}/source/path`, value: v }], `path ${id}`))));
+      const m = item.meta;
+      const facts = [m?.duration ? `${m.duration.toFixed(2)}s` : "", m?.width ? `${m.width}×${m.height}` : "", m?.has_audio ? "audio" : ""].filter(Boolean).join(" · ");
+      if (facts) this.host.appendChild(field("Probed", el("div", "mono muted", facts)));
+      return;
+    }
+    if (isColorSource(item.source)) {
+      const c = el("input");
+      c.type = "color";
+      c.value = String(item.source.color).slice(0, 7);
+      c.onchange = () => store.patch([{ op: "replace", path: `${bp}/source/color`, value: c.value }], `colour ${id}`);
+      this.host.appendChild(field("Colour", c));
       return;
     }
     if (isSequenceSource(item.source)) {
       const p = store.state.project!;
+      const n = item.source.tracks.length;
+      const clips = item.source.tracks.reduce((a, t) => a + t.clips.length, 0);
       this.host.appendChild(field("Length", el("div", "mono muted", `${seqDuration(p, id).toFixed(2)}s`)));
-      const open = button("Open this sequence", () => store.openSequence(id), "Edit its own timeline");
-      (open as HTMLButtonElement).disabled = id === store.state.sequence;
-      this.host.appendChild(open);
+      this.host.appendChild(field("Contents", el("div", "mono muted", `${n} track${n === 1 ? "" : "s"} · ${clips} clip${clips === 1 ? "" : "s"}`)));
+      if (id === p.master) this.host.appendChild(el("p", "muted tiny", "This is the master — it is what renders."));
       return;
     }
     if (!isOverlaySource(item.source)) return;
@@ -99,8 +162,15 @@ export class Inspector {
       this.host.appendChild(el("p", "muted", "Unknown template — is its library on the search path?"));
       return;
     }
-    const places = placementsOf(store.state.project!, id);
-    if (places > 1) this.host.appendChild(el("p", "muted", `Used by ${places} clips — these values apply to all of them.`));
+    // The row cannot show this and stay one line, but an overlay is the one entry kind
+    // whose look is the point, so it moves here rather than being dropped. Absent until
+    // the `thumbs` job has run, and it removes itself when there is nothing to show.
+    const thumb = el("img", "insp-thumb");
+    thumb.src = `/api/bin/${encodeURIComponent(id)}/thumb.png`;
+    thumb.alt = "";
+    thumb.onerror = () => thumb.remove();
+    this.host.appendChild(thumb);
+
     const vars = source.vars ?? {};
     const setVar = (k: string, v: unknown) => store.patch([{ op: "add", path: `${bp}/source/vars`, value: { ...vars, [k]: v } }], `var ${k}`);
     for (const [k, spec] of Object.entries(tpl.manifest.vars)) {
@@ -175,6 +245,13 @@ export class Inspector {
 }
 
 // ---- inputs --------------------------------------------------------------------
+
+/** A button that reads as a link: it navigates the panel rather than changing anything. */
+function linkButton(label: string, onClick: () => void, title = ""): HTMLButtonElement {
+  const b = button(label, onClick, title);
+  b.className = "linkish";
+  return b;
+}
 
 function field(label: string, input: HTMLElement): HTMLDivElement {
   const row = el("div", "field");

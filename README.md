@@ -26,8 +26,11 @@ project file, one preview, and the overlay is never "exported" by hand.
 ## Architecture
 
 ```
+  desktop app (Electron) ── starts and stops one daemon per open project
+        │  launcher → window
+        ▼
                       ┌──────────────── kuma daemon (Rust, axum) ────────────────┐
-  browser UI  ◄─WS/HTTP─►  project state · revisions · undo · jobs · templates    │
+  editor UI   ◄─WS/HTTP─►  project state · revisions · undo · jobs · templates    │
   (TS, Vite)          │       │                │                    │             │
                       │  kuma-mlt          kuma-overlay        preview engine     │
   Claude Code ◄─stdio─►  JSON → MLT XML    hyperframes bake     (C++ libmlt++)    │
@@ -35,6 +38,9 @@ project file, one preview, and the overlay is never "exported" by hand.
                       └───────┼──────────────────┼────────────────────┼───────────┘
                            melt (render)     Chrome headless      SDL2 audio clock
 ```
+
+The same UI runs in the desktop app and in a plain browser against `kuma serve`; the app
+adds a launcher, native menus and a file picker, and owns the daemon's lifetime.
 
 Same HTML, two consumers:
 
@@ -56,11 +62,24 @@ sudo apt install ffmpeg melt libmlt-dev libmlt++-dev libsdl2-dev libturbojpeg0-d
 Build:
 
 ```
+npm run rebuild                              # everything, in order, then `kuma doctor`
+npm test                                     # every suite: Rust, the desktop shell, the UI
+```
+
+Three of the artifacts kuma runs from are not in git — the `kuma` binary, `ui/dist` (which
+the daemon serves) and `app/dist` (the desktop shell) — so **run this after every pull**.
+A stale one fails far from its cause: an old binary writes projects the editor cannot
+open, an old `ui/dist` dies on the shape of a new one. Step by step, if you prefer:
+
+```
 npm install                                  # hyperframes + gsap
 cargo build --release
 cmake -S engine -B engine/build && cmake --build engine/build -j
 (cd ui && npm install && npm run build)
 ```
+
+The preview engine is the only optional piece; `npm run rebuild` reports it and carries on
+if its system libraries are missing.
 
 `cargo build --release` produces the `kuma` binary at `target/release/kuma` (it is the
 `crates/kuma-cli` crate). Either run it from there or install it on your `PATH`:
@@ -93,12 +112,47 @@ A project is a directory with `<name>.kuma.json` and your media:
 ```
 mkdir myvideo && cd myvideo
 kuma init --project myvideo.kuma.json --fps 30          # or 29.97, 30000/1001, --width 1080 --height 1920
-kuma add-asset media/screen.mp4
+kuma add-media media/screen.mp4
 kuma serve                                               # open http://127.0.0.1:7455 (--bind / KUMA_BIND to change)
 ```
 
 Drag bin entries onto the timeline, scrub, edit vars in the inspector, press **Render**.
 Output lands in `renders/`.
+
+### Desktop app
+
+`kuma serve` plus a browser tab is still the whole editor. The desktop app is the same UI
+in a window, with the things a tab cannot give you: a launcher, an application menu, a
+native file picker, and a daemon that starts and stops with the window.
+
+```
+npm run app                                  # installs its own deps on first run, builds, starts
+```
+
+It opens a **launcher**: recent projects on the right, *New project* and *Open project…*
+on the left. You can also drop a `.kuma.json` on the window, or pass one on the command
+line. *New project* asks for a name, a location, a resolution and a frame rate, then runs
+`kuma init` — so a project created here is identical to one created from the CLI, down to
+the `.mcp.json` that lets Claude Code join it.
+
+Opening a project starts a daemon for it and shows the editor. Closing the window stops
+that daemon; quitting stops all of them. Each project gets its own daemon and its own
+window, so several can be open at once. The first one takes `127.0.0.1:7455`, which is
+where `kuma mcp` looks — so Claude Code attaches to the project you have open without any
+configuration.
+
+The one daemon the app does *not* stop is one that was already serving that project file
+when you opened it. Two daemons writing one `.kuma.json` would each think they own it, and
+the one already there is usually a `kuma mcp` with a Claude Code session behind it, so the
+app shares it instead and leaves it running.
+
+The shell needs to find the `kuma` binary and the checkout. It looks for `KUMA_BIN`, then
+`target/release/kuma`, then `target/debug/kuma`, then `PATH`; and for the repository the
+same way `kuma` itself does (`KUMA_REPO`, else the nearest ancestor with
+`node_modules/hyperframes`). The launcher's footer says what it found and what is missing.
+
+Everything the app adds to the editor page sits behind one check in `ui/src/desktop.ts`,
+so the UI keeps working unchanged in an ordinary browser.
 
 ### Claude Code
 
@@ -219,6 +273,11 @@ project's `width`/`height`.
 
 ## Troubleshooting
 
+- **Just pulled? Run `npm run rebuild`.** The binary, `ui/dist` and `app/dist` are not in
+  git, so a pull leaves them behind, and each fails in a way that does not name the build
+  step: `kuma init` writing a project the editor refuses to open, or the editor window
+  failing to start with something like `t.tracks is not iterable`. The desktop app warns
+  about the first two and refuses to open a window against a stale `ui/dist`.
 - **Start with `kuma doctor --project <file>`** — it reports the binary, repo root, tools,
   engine, display, whether a daemon answers on the port (and for which project), and the
   MCP config.

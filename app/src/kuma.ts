@@ -107,9 +107,44 @@ export function resolveKuma(appDir: string): Kuma {
   return { bin, repo, version };
 }
 
+/**
+ * Whether the binary was built from a commit the checkout has since moved past.
+ *
+ * `build.rs` stamps the commit into `kuma --version` precisely so a stale binary is
+ * obvious, and a stale one is not a cosmetic problem: a binary predating the bin refactor
+ * writes projects in a format nothing here can open. Only a strict ancestor counts, so a
+ * binary built from an unrelated branch, a non-git install, or a commit newer than HEAD
+ * says nothing rather than crying wolf.
+ */
+function staleBinary(repo: string, version: string): string | null {
+  const stamped = /\(([0-9a-f]{7,40})\)/.exec(version)?.[1];
+  if (!stamped) return null;
+  const git = (args: string[]) => {
+    try {
+      return execFileSync("git", args, { cwd: repo, encoding: "utf8", timeout: 5_000, stdio: ["ignore", "pipe", "ignore"] }).trim();
+    } catch {
+      return null;
+    }
+  };
+  // Exits 0 only when `stamped` is a commit this repo has and HEAD can reach, which also
+  // covers "not a git checkout" and "commit we have never heard of".
+  try {
+    execFileSync("git", ["merge-base", "--is-ancestor", stamped, "HEAD"], { cwd: repo, timeout: 5_000, stdio: "ignore" });
+  } catch {
+    return null;
+  }
+  const behind = git(["rev-list", "--count", `${stamped}..HEAD`]);
+  if (!behind || behind === "0") return null;
+  return `the kuma binary is ${behind} commit${behind === "1" ? "" : "s"} behind this checkout — \`cargo build --release\` (an old binary writes projects this version cannot open)`;
+}
+
 /** What `kuma doctor` would warn about, checked cheaply so the launcher can show it. */
-export function repoWarnings(repo: string): string[] {
+export function repoWarnings(repo: string, version?: string): string[] {
   const out: string[] = [];
+  if (version) {
+    const stale = staleBinary(repo, version);
+    if (stale) out.push(stale);
+  }
   if (!isDir(path.join(repo, "ui", "dist"))) out.push("ui/dist is missing — run `npm run build` in ui/");
   if (!isFile(path.join(repo, "engine", "build", "kuma-preview"))) {
     out.push("the preview engine is not built — `cmake -S engine -B engine/build && cmake --build engine/build -j` (playback falls back to single frames without it)");

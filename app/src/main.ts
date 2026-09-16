@@ -350,7 +350,7 @@ function wireIpc() {
     version: app.getVersion(),
     kuma: kuma ? { bin: kuma.bin, repo: kuma.repo, version: kuma.version } : null,
     error: kumaError,
-    warnings: kuma ? repoWarnings(kuma.repo) : [],
+    warnings: kuma ? repoWarnings(kuma.repo, kuma.version) : [],
     defaultParent: app.getPath("home"),
   }));
 

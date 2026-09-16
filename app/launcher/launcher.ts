@@ -117,6 +117,11 @@ function renderSide() {
   envBox.appendChild(el("div", "", `kuma app ${info.version}`));
   if (info.kuma) {
     envBox.appendChild(el("div", "mono", info.kuma.version));
+    // Which binary, not just which version: the usual cause of a project the app cannot
+    // open is a `kuma` from somewhere other than the checkout you think you are running.
+    const where = el("div", "mono muted", shortPath(info.kuma.bin, 46));
+    where.title = info.kuma.bin;
+    envBox.appendChild(where);
     for (const w of info.warnings) envBox.appendChild(el("div", "warn", w));
   } else {
     envBox.appendChild(el("div", "bad", info.error ?? "kuma binary not found"));

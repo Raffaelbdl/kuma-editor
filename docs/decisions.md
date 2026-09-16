@@ -329,6 +329,24 @@ native file picker and the menu commands are behind it; in a browser tab the UI 
 what it was. `kuma serve` plus a browser has to keep working — it is what CI, a remote
 machine and `kuma mcp` all use.
 
+**The shell distrusts the binary it runs** — adopted, after it bit someone.
+
+`kuma init` is an external program, and the shell can be pointed at a `kuma` older than
+the checkout — a stale `target/release/kuma`, or one `cargo install`ed months ago. A
+binary from before the bin refactor writes a project with `tracks` on it and no `bin`,
+which nothing here can open. The first report of this was a new project that created its
+folder, failed to open, and then refused to be created again because the folder was in the
+way: three confusing symptoms for one cause.
+
+So `create` reads back what `kuma init` wrote and, if it cannot be opened, **removes the
+directory it made** — a folder that blocks a retry while being useless is worse than no
+folder — and says the binary is the problem. `checkOpenable` names the old format when it
+sees one rather than reporting "not a kuma project", which sends people to inspect a file
+that is fine for the version that wrote it. And the launcher's footer shows which binary
+was resolved and whether its commit is an ancestor of HEAD, which is what `build.rs`
+stamps the commit into `--version` for in the first place. Only a strict ancestor is
+reported, so a binary built from another branch or a non-git install stays quiet.
+
 Still open here: packaging (there is no `electron-builder` config, so the app runs from the
 checkout), remembering window size and position, and opening a second project from an
 editor window rather than going back to the launcher.

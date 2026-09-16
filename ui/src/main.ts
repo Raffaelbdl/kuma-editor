@@ -5,6 +5,7 @@ import { Library } from "./library";
 import { Preview } from "./preview";
 import { fmtTime, store, toast } from "./store";
 import { desktop, initDesktop, pickAndAddMedia } from "./desktop";
+import { askText } from "./modal";
 import { initTitlebar } from "./titlebar";
 import { addTrack, newSequence, Timeline } from "./timeline";
 import type { Clip, PatchOp, TrackKind } from "./types";
@@ -49,7 +50,7 @@ function topbar(preview: Preview): { render: () => void } {
     // Put the picker back where it was before acting: a cancelled prompt, or a refused
     // open, must not leave it showing the "+" sentinel.
     seqSel.value = store.state.sequence;
-    if (picked === "+") promptNewSequence();
+    if (picked === "+") promptNewSequence().catch((e) => toast((e as Error).message, "err"));
     else store.openSequence(picked);
   };
   const presets = el("select");
@@ -120,8 +121,8 @@ function togglePlay(preview: Preview) {
  * on the new start. A transition leaving the clip now leaves its right half.
  */
 async function promptNewSequence() {
-  const name = prompt("Name for the new sequence");
-  if (name?.trim()) await newSequence(name.trim());
+  const name = await askText({ title: "New sequence", label: "Name", placeholder: "Intro" });
+  if (name) await newSequence(name);
 }
 
 async function splitAtPlayhead() {

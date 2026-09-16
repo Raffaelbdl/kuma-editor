@@ -83,6 +83,9 @@ Chrome headless shell if hyperframes should not download one.
   when the window closes, but **attaches** to a daemon already serving that file rather
   than starting a rival writer — that one is usually a `kuma mcp`. The editor page is the
   same page a browser gets: everything the shell adds is behind `desktop()` in
-  `ui/src/desktop.ts` and absent in a tab. Do not make the UI require the shell.
+  `ui/src/desktop.ts` and absent in a tab. Do not make the UI require the shell — and
+  note the converse, which is easy to miss because it fails silently: Electron does not
+  implement `prompt`, `alert` or `confirm`, so UI code that calls them works in a browser
+  and throws in the app. Ask for text with `askText` in `ui/src/modal.ts`.
 - Do not add a dependency on `mlt-sys`, `ffmpeg-next` or `wgpu` without a reason written
   in the README; the PoC deliberately uses `melt`/`ffmpeg` as subprocesses.

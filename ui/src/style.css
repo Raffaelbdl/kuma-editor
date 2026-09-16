@@ -185,6 +185,15 @@ button.linkish:hover { text-decoration: underline; }
 .effect .head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; font-weight: 600; }
 .effect .head button { padding: 0 6px; font-size: 11px; }
 
+dialog.modal {
+  border: 1px solid var(--line); border-radius: 10px; background: var(--bg-2); color: var(--fg);
+  padding: 16px 18px; min-width: 320px; box-shadow: 0 16px 48px rgba(0, 0, 0, 0.5);
+}
+dialog.modal::backdrop { background: rgba(0, 0, 0, 0.5); }
+dialog.modal h3 { margin-top: 0; }
+dialog.modal .field { grid-template-columns: 60px 1fr; }
+.modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
+
 #toasts { position: fixed; right: 12px; bottom: 312px; display: flex; flex-direction: column; gap: 6px; z-index: 10; }
 .toast { background: var(--bg-3); border: 1px solid var(--line); border-left: 3px solid var(--accent); padding: 8px 10px; border-radius: 6px; max-width: 360px; font-size: 12px; }
 .toast.err { border-left-color: #e5484d; }

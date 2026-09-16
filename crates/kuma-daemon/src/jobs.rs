@@ -236,7 +236,13 @@ pub fn compile_xml(project: &Project, opts: &CompileOptions) -> anyhow::Result<S
 /// Compile to `.kuma/<name>.mlt`, replacing the file atomically: a melt or engine that
 /// is still reading the previous compile keeps its own (unlinked) copy.
 pub fn compile_project(state: &AppState, project: &Project, opts: &CompileOptions, name: &str) -> anyhow::Result<PathBuf> {
-    let xml = compile_xml(project, opts)?;
+    write_compiled(state, &compile_xml(project, opts)?, name)
+}
+
+/// Publish already-compiled XML as `.kuma/<name>.mlt`, replacing it atomically. Split from
+/// `compile_project` because the preview compiles first and only writes when the result
+/// differs from what the engine already holds.
+pub fn write_compiled(state: &AppState, xml: &str, name: &str) -> anyhow::Result<PathBuf> {
     let dir = state.config.cache_dir();
     std::fs::create_dir_all(&dir)?;
     let path = dir.join(format!("{name}.mlt"));

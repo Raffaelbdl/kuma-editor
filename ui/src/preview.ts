@@ -11,7 +11,7 @@
 import { api } from "./api";
 import { store, toast } from "./store";
 import type { Clip, Project } from "./types";
-import { binItem, isOverlayClip, isSequenceSource, reachableFrom, sequenceOf, transformAt } from "./types";
+import { binItem, isOverlayClip, transformAt } from "./types";
 
 interface OverlayView {
   clipId: string;
@@ -37,7 +37,6 @@ export class Preview {
   private lastRevision = -1;
   /** The sequence the stage is showing; opening another one rebuilds it like an edit. */
   private lastSequence = "";
-  private engineKey = "";
   /** Why the engine is unavailable, as reported by the daemon (empty when it runs). */
   private engineError = "";
   /** Timeline time of the last frame the engine sent while playing. */
@@ -213,13 +212,11 @@ export class Preview {
       this.lastRevision = revision;
       this.lastSequence = sequence;
       this.syncOverlays();
-      // Overlays are live DOM here, never part of the preview compile: an overlay-only
-      // edit (vars, a nudge) must not make the engine reload the whole timeline.
-      const key = engineKey(p, sequence);
-      if (key !== this.engineKey) {
-        this.engineKey = key;
-        this.reload();
-      }
+      // Ask on every edit and let the daemon decide. It compiles either way — cheap — and
+      // only hands the engine a new timeline when the document actually differs, so the
+      // client does not have to model what the compiler depends on. It used to, and got
+      // it wrong twice as the compiler grew.
+      this.reload();
     }
     if (playing && this.wsOk) {
       // The engine drives the playhead; a jump that did not come from it is a user seek.
@@ -300,28 +297,6 @@ export class Preview {
       applyEffects(v.iframe, c, playhead - c.start, p.width, p.height);
     }
   }
-}
-
-/** Everything the preview compile depends on, so an edit that cannot change the engine's
- *  picture does not make it reload the timeline.
- *
- *  Two things are outside it. Anything the open sequence does not reach: the daemon
- *  compiles `compile_order(open)` and nothing else, so an edit to a part you have not
- *  placed cannot show. And the open sequence's own overlay clips: those are live DOM and
- *  the compile skips them — unlike the overlays inside the sequences it nests, which are
- *  baked into the engine's picture and so must be in the key. */
-function engineKey(p: Project, sequence: string): string {
-  // The daemon compiles this sequence and the ones it nests, skipping the open sequence's
-  // own overlay clips because the UI draws those as live DOM. So the engine's picture is a
-  // function of exactly these tracks, and of the entries they place.
-  const tracks = [...reachableFrom(p, sequence)].flatMap((id) => {
-    const ts = sequenceOf(p, id)!.tracks;
-    return id === sequence ? ts.filter((t) => t.kind !== "overlay") : ts;
-  });
-  const placed = new Set(tracks.flatMap((t) => t.clips.map((c) => c.bin)));
-  // Sequences are in there already, as tracks.
-  const bin = Object.entries(p.bin).filter(([id, i]) => placed.has(id) && !isSequenceSource(i.source));
-  return JSON.stringify([sequence, p.fps, p.width, p.height, p.sample_rate, tracks, bin]);
 }
 
 /** Everything the overlay document is a function of: its injected `window.kuma`. The bin

@@ -143,6 +143,58 @@ picture. Now the nested ones can, so only the *open* sequence's overlay tracks a
 stripped, and an overlay entry is dropped only when nothing outside the open sequence
 uses it.
 
+**The daemon decides whether the engine needs a new timeline; the client never guesses** —
+adopted, after the client's guess was wrong twice.
+
+Reloading the engine means rebuilding its MLT graph, which is the visible hiccup, so an
+edit that cannot change the picture must not cause one. That decision used to live in the
+browser: `engineKey` hashed "everything the preview compile depends on" and only sent
+`reload` when it changed. Which meant restating, in TypeScript, what the Rust compiler
+reads — the root sequence, reachability through `compile_order`, that the open sequence's
+overlays are skipped while nested ones are baked, the profile fields, the entries those
+tracks place. Every one of those is a fact that lives in the compiler.
+
+It drifted as fast as it was written. Baking nested overlays made the key wrong (nested
+overlay edits would not reload); the fix after that excluded an overlay entry placed both
+on the open sequence and inside a nested one (its baked copy is in the picture, so it must
+reload). Two of three versions shipped wrong, and neither failure was visible — a stale
+preview looks like a preview.
+
+So the client stopped predicting and the daemon started comparing. `preview::reload`
+hashes the compiled XML — which already names every input, including the bake directories,
+whose names are themselves content hashes — and skips the `load` when it matches what the
+engine holds. `engineKey` is deleted. The guard is unchanged in effect; it moved to the
+side that is holding the answer.
+
+Measured before committing to it: a warm reload (bake-cache probe, compile, write, send)
+is ~2 ms against the ~0.5 ms every revision already spends serving `GET /api/project`, so
+asking on every edit is not a cost worth optimising. It is also *sharper* than the key
+was: `engineKey` serialized whole clip objects, so renaming a clip forced a rebuild; the
+document comparison does not, because a label never reaches the XML.
+
+Two things this needs to stay correct, both of them tested. Compiling must be
+deterministic, or the hash never matches and the guard silently does nothing — `bakes` and
+the transition-extension map are both `HashMap`s, so `compile.rs` has a test that the same
+project compiles byte-identically eight times running. And a restarted engine holds
+nothing, so the stored hash is cleared whenever one starts; `changed` is reported by
+counting loads rather than comparing hashes, because a fresh engine has to be handed the
+same document again.
+
+**Reloads are coalesced, not debounced** — adopted.
+A caller arriving while a compile is running sets a flag instead of queuing, and the
+running pass goes round once more; the extra pass re-reads the project, so the last thing
+compiled is always a state observed after the last edit. Fifty simultaneous requests cost
+ten compiles rather than fifty.
+
+Debouncing was considered and turned down. The UI already commits rather than streams —
+fields patch on `onchange`, drags patch on `pointerup` — so a human editing produces one
+patch per deliberate edit and there is no burst to collapse; a delay would only put
+latency between an edit and seeing it, which is the one thing a preview must not do.
+Bursts come from agents and from held-down undo, and those overlap in time, which is
+exactly what coalescing collapses. Cancelling an in-flight compile was also rejected:
+there is nothing to save in 2 ms of compiling, and mid-bake it would throw away a headless
+browser run that is seconds deep and probably still wanted.
+
 **Rejected: mapping a nested overlay's time up to the playhead and driving it live.** It
 is what "live everywhere" would need, and each step costs something. One sequence can be
 placed twice, so one overlay clip becomes two iframes and the view map stops being keyed

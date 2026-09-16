@@ -927,6 +927,50 @@ mod tests {
     }
 
 
+    /// The preview skips handing the engine a timeline when the project compiles to the
+    /// document it already holds, which is only sound if compiling is deterministic. It
+    /// would not be if any iteration order leaked into the output — `bakes` is a HashMap,
+    /// and so is the transition-extension map inside `compile_track`.
+    #[test]
+    fn compiling_the_same_project_twice_gives_the_same_document() {
+        let p = reference_like();
+        let mut opts = CompileOptions::new("/proj");
+        opts.bakes.insert("o1".into(), OverlayBake { resource: "/b/1/f_%06d.png".into(), is_still: false });
+        opts.bakes.insert("o2".into(), OverlayBake { resource: "/b/2/f_%06d.png".into(), is_still: true });
+        opts.bakes.insert("o3".into(), OverlayBake { resource: "/b/3/f_%06d.png".into(), is_still: false });
+        let first = compile(&p, &opts).unwrap();
+        for _ in 0..8 {
+            assert_eq!(compile(&p, &opts).unwrap(), first, "compile is not deterministic");
+        }
+    }
+
+    /// A project with several bakes, two lanes and a nested sequence — enough shapes that
+    /// an unstable iteration order would show up somewhere.
+    fn reference_like() -> Project {
+        project(json!({
+            "fps": 30,
+            "bin": {
+                "x": { "source": { "path": "x.mp4" } },
+                "tag": { "source": { "template": "location-tag" } },
+                "part": { "source": { "tracks": [
+                    { "id": "pv", "clips": [ { "id": "p1", "start": 0, "end": 6, "bin": "x" } ] },
+                    { "id": "po", "kind": "overlay", "clips": [ { "id": "o3", "start": 0, "end": 2, "bin": "tag" } ] }
+                ]}}
+            },
+            "tracks": [
+                { "id": "v1", "clips": [
+                    { "id": "a", "start": 0, "end": 5, "bin": "x" },
+                    { "id": "b", "start": 5, "end": 8, "bin": "x", "in": 2 },
+                    { "id": "s1", "start": 8, "end": 12, "bin": "part" }
+                ], "transitions": [ { "from": "a", "to": "b", "duration": 1.0 } ] },
+                { "id": "o1t", "kind": "overlay", "clips": [
+                    { "id": "o1", "start": 0, "end": 3, "bin": "tag" },
+                    { "id": "o2", "start": 3, "end": 5, "bin": "tag" }
+                ] }
+            ]
+        }))
+    }
+
     /// Muting a sequence clip has to silence it. A media clip mutes by not decoding its
     /// audio (`audio_index=-1`), which a wrapper playlist has no way to do — so without a
     /// filter the sound came through whenever another clip kept the track's mix alive.

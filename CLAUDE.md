@@ -62,6 +62,11 @@ Chrome headless shell if hyperframes should not download one.
   nests, which is what puts them in the preview at all; the two sets are disjoint, so none
   is drawn twice. Preview bakes are best effort — a template that will not bake costs that
   overlay, never the preview.
+- Clients ask for a preview reload on **every** edit and never decide whether one is
+  needed: `preview::reload` compiles, compares the document against what the engine holds,
+  and only then reloads it. Do not reintroduce a client-side model of what the compiler
+  depends on — that is what `engineKey` was, and it drifted twice. This makes the compiler
+  deterministic a requirement, not a nicety (`compile.rs` tests it).
 - Every MLT detail (inclusive in/out, `<blank length>`, background track, `qtblend`/`mix`
   transitions, A/B lanes for dissolves) stays in `crates/kuma-mlt/src/compile.rs`.
   `tests/fixtures/reference.mlt` is a golden file: regenerate with

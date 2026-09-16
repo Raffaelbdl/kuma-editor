@@ -488,8 +488,8 @@ async fn preview_reload(State(st): S, body: Option<Json<PreviewReload>>) -> ApiR
     if let Some(s) = body.and_then(|b| b.0.scale) {
         *lock(&st.preview.scale) = s.clamp(0.25, 1.0);
     }
-    let path = preview::reload(&st).await?;
-    Ok(Json(json!({ "mlt": path, "scale": *lock(&st.preview.scale) })))
+    let r = preview::reload(&st).await?;
+    Ok(Json(json!({ "mlt": r.path, "changed": r.changed, "scale": *lock(&st.preview.scale) })))
 }
 
 // ---------- overlay preview (live DOM) ----------

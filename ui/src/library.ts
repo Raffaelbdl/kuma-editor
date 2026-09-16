@@ -1,8 +1,12 @@
-// Two panels, two different things.
+// The left panel, in two tabs.
 //
-// The **bin** is what this project can place on a track: media files, configured overlays
-// and colours, all in one list. The **library** is where you shop — overlay templates on
-// disk, shared across projects. Adding one from the library mints a bin entry.
+// **Bin** is what this project can place on a track: media files, configured overlays,
+// colours and sequences, one row each. **Templates** is where you shop — overlay
+// templates on disk, shared across projects; adding one mints a bin entry.
+//
+// They are tabs rather than two stacked lists because they answer different questions
+// ("what is in this video" against "what could be"), and stacked, the second one pushed
+// the first out of sight as soon as a project had more than a few entries.
 
 import { api } from "./api";
 import { desktop, pickAndAddMedia } from "./desktop";
@@ -17,26 +21,33 @@ export class Library {
     store.select((s) => [s.project, s.templates, s.sequence], () => this.render());
   }
 
+  /** Which tab is showing. View state, so it lives here rather than in the store. */
+  private tab: "bin" | "templates" = "bin";
+
   private render() {
     const s = store.state;
     const p = s.project;
     this.host.innerHTML = "";
     if (!p) return;
 
-    const bin = el("h3", "", "Bin");
-    const tools = el("span");
-    tools.style.float = "right";
-    tools.append(button("thumbs", async () => { const r = await api.thumbs(); toast(`Thumbnail job #${r.job}`, "ok"); }, "Render thumbnails for templates and overlay entries"));
-    bin.appendChild(tools);
-    this.host.appendChild(bin);
+    const tabs = el("div", "tabs");
+    for (const [id, label] of [["bin", "Bin"], ["templates", "Templates"]] as const) {
+      const b = button(label, () => { this.tab = id; this.render(); });
+      b.className = `tab${this.tab === id ? " on" : ""}`;
+      tabs.appendChild(b);
+    }
+    this.host.appendChild(tabs);
+    if (this.tab === "bin") this.renderBin(p);
+    else this.renderTemplates();
+  }
 
+  private renderBin(p: Project) {
     const entries = Object.entries(p.bin);
-    if (!entries.length) this.host.appendChild(el("p", "muted", "Empty. Add media below, or an overlay from the library."));
+    if (!entries.length) this.host.appendChild(el("p", "muted", "Empty. Add media below, or an overlay from the Templates tab."));
     const list = el("div", "bin-list");
     for (const [id, item] of entries) list.appendChild(binRow(p, id, item));
     this.host.appendChild(list);
 
-    const addRow = el("div", "lib-add");
     const input = el("input");
     input.placeholder = "media/clip.mp4";
     const add = button("Add", async () => {
@@ -60,16 +71,27 @@ export class Library {
       browseRow.appendChild(browse);
       this.host.appendChild(browseRow);
     }
+    const addRow = el("div", "lib-add");
     addRow.append(input, add);
     this.host.appendChild(addRow);
+  }
 
-    const lib = el("h3", "", "Template library");
-    const reload = el("span");
-    reload.style.float = "right";
-    reload.appendChild(button("⟳", async () => { store.set({ templates: await api.reloadTemplates() }); }, "Rescan the template libraries"));
-    lib.appendChild(reload);
-    this.host.appendChild(lib);
-    for (const t of s.templates) {
+  private renderTemplates() {
+    const tools = el("div", "lib-add");
+    tools.append(
+      button("⟳ rescan", async () => { store.set({ templates: await api.reloadTemplates() }); }, "Rescan the template libraries"),
+      // Thumbnails are what this tab is for looking at, so the job that makes them lives
+      // here rather than over the bin, where it had nothing to do with anything on screen.
+      button("thumbnails", async () => { const r = await api.thumbs(); toast(`Thumbnail job #${r.job}`, "ok"); }, "Render thumbnails for every template and overlay entry"),
+    );
+    this.host.appendChild(tools);
+
+    const templates = store.state.templates;
+    if (!templates.length) {
+      this.host.appendChild(el("p", "muted", "No templates found. Run `kuma library` to install the starter set, or point KUMA_LIBRARY at a folder of them."));
+      return;
+    }
+    for (const t of templates) {
       const card = card2(t.manifest.name || t.id, "overlay", [
         ["desc", t.manifest.description],
         ["desc mono", Object.keys(t.manifest.vars).join(" · ")],

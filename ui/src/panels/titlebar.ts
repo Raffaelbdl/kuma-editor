@@ -8,8 +8,8 @@
 // submenu natively, so accelerator labels, separators and platform behaviour are the real
 // thing rather than an HTML imitation that drifts from the application menu.
 
-import { el } from "./dom";
-import type { DesktopBridge } from "./desktop";
+import { el } from "../dom";
+import type { DesktopBridge } from "../desktop";
 
 /** Anything interactive needs `no-drag`, or the window moves instead of the click landing. */
 function noDrag<T extends HTMLElement>(e: T): T {

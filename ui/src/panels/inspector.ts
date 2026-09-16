@@ -6,12 +6,12 @@
 // edits the thing itself — and every placement of it follows — while selecting a clip
 // edits only that placement. A clip has no name for the same reason; it has a label.
 
-import { api } from "./api";
-import { button, el, options } from "./dom";
-import { store, toast } from "./store";
-import type { BinItem, Clip, Effect, PatchOp, VarSpec } from "./types";
-import { placeBinItem } from "./timeline";
-import { binItem, binPath, canTimeWarp, expandPreset, isColorSource, isFileSource, isOverlaySource, isSequenceSource, isTimedMedia, placementsOf, seqDuration, wouldRecurse } from "./types";
+import { api } from "../api";
+import { button, el, options } from "../dom";
+import { store, toast } from "../store";
+import type { BinItem, Clip, Effect, PatchOp, VarSpec } from "../types";
+import { placeBinItem } from "../edits";
+import { binItem, binPath, canTimeWarp, expandPreset, isColorSource, isFileSource, isOverlaySource, isSequenceSource, isTimedMedia, placementsOf, seqDuration, wouldRecurse } from "../types";
 
 const presetsPromise = api.effectPresets().catch(() => []);
 

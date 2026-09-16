@@ -1,9 +1,10 @@
 // Timeline: tracks, clips (move/trim), transitions, playhead, zoom.
 
-import { button, el } from "./dom";
-import { store, toast } from "./store";
-import type { BinItem, Clip, PatchOp, Project, Track, TrackKind } from "./types";
-import { binItem, binPath, clipKind, isFileSource, isOverlaySource, isSequenceSource, isTimedMedia, itemKind, seqDuration, sequenceOf, wouldRecurse } from "./types";
+import { button, el } from "../dom";
+import { placeBinItem, addFromLibrary } from "../edits";
+import { store } from "../store";
+import type { Clip, PatchOp, Project, Track } from "../types";
+import { binItem, clipKind, isOverlaySource, isSequenceSource, isTimedMedia, seqDuration, sequenceOf } from "../types";
 
 const HEAD = 136;
 
@@ -247,117 +248,6 @@ export class Timeline {
     if (payload.bin) await placeBinItem(payload.bin, t, ti);
     else if (payload.template) await addFromLibrary(payload.template, t, ti);
   }
-}
-
-const TRACK_FOR: Record<string, TrackKind> = { overlay: "overlay", audio: "audio", video: "video", image: "video", color: "video", sequence: "video" };
-
-/** Place an existing bin entry at time `t` on track `ti`. Every way of placing something —
- *  a button, a drop — comes through here, so the one rule a placement can break is checked
- *  here rather than next to each gesture. */
-export async function placeBinItem(binId: string, t: number, ti = -1) {
-  const p = store.state.project!;
-  const item = p.bin[binId];
-  if (!item) return;
-  if (wouldRecurse(p, binId, store.state.sequence)) {
-    toast(`${item.name || binId} contains this sequence; placing it here would make a loop`, "err");
-    return;
-  }
-  const kind = TRACK_FOR[itemKind(item)];
-  const d = defaultDuration(item, p, binId);
-  const clip: Clip = { id: store.newId(kind === "overlay" ? "o" : "c"), start: t, end: t + d, bin: binId, in: 0, speed: 1, volume: 1, muted: false, effects: [], label: "" };
-  await place(clip, kind, ti, []);
-}
-
-/** Add a library template to the bin and place it, in one patch. */
-export async function addFromLibrary(templateId: string, t: number, ti = -1) {
-  const p = store.state.project!;
-  const tpl = store.state.templates.find((x) => x.id === templateId);
-  const binId = uniqueId(templateId, Object.keys(p.bin));
-  const item: BinItem = { name: tpl?.manifest.name || templateId, source: { template: templateId, vars: {} } };
-  const d = tpl?.manifest.duration_default ?? 4;
-  const clip: Clip = { id: store.newId("o"), start: t, end: t + d, bin: binId, in: 0, speed: 1, volume: 1, muted: false, effects: [], label: "" };
-  await place(clip, "overlay", ti, [{ op: "add", path: binPath(binId), value: item }]);
-}
-
-function defaultDuration(item: BinItem, p: Project, binId: string): number {
-  if (isFileSource(item.source)) return item.meta?.duration ?? 5;
-  // A sequence goes down at its own length, the way dragging in a clip does.
-  if (itemKind(item) === "sequence") return seqDuration(p, binId) || 4;
-  return 4;
-}
-
-/** `base`, or `base-2`, `base-3`… if taken. Bin ids allow letters, digits, `_` and `-`. */
-function uniqueId(base: string, taken: Iterable<string>): string {
-  const set = new Set(taken);
-  if (!set.has(base)) return base;
-  let n = 2;
-  while (set.has(`${base}-${n}`)) n++;
-  return `${base}-${n}`;
-}
-
-/** Append `clip` to the first track of `kind` in the open sequence (created if none
- *  exists), after `pre` ops. If the slot is taken the clip goes after the track's last
- *  clip instead. */
-async function place(clip: Clip, kind: TrackKind, ti: number, pre: PatchOp[]) {
-  const tracks = store.tracks;
-  if (ti < 0 || tracks[ti]?.kind !== kind) ti = tracks.findIndex((tr) => tr.kind === kind);
-  const ops: PatchOp[] = [...pre];
-  if (ti < 0) {
-    // No track of that kind yet (e.g. a project created by hand): add one, then the clip.
-    const { op, index } = newTrackOp(kind);
-    ti = index;
-    ops.push(op);
-    toast(`Added a ${kind} track`, "ok");
-  } else {
-    const track = tracks[ti];
-    if (track.clips.some((c) => clip.start < c.end && clip.end > c.start)) {
-      const endT = Math.max(0, ...track.clips.map((c) => c.end));
-      clip.end = endT + (clip.end - clip.start);
-      clip.start = endT;
-    }
-  }
-  ops.push({ op: "add", path: `${store.seqPath}/tracks/${ti}/clips/-`, value: clip });
-  const ok = await store.patch(ops, `add ${clip.id}`);
-  if (ok) store.selectItem("clip", clip.id);
-}
-
-/** Build the patch op that inserts a new empty track of `kind`. Tracks composite in array
- *  order, so a video track goes below the first overlay track and everything else on top
- *  (audio order does not matter). */
-function newTrack(kind: TrackKind, name?: string): Track {
-  const id = store.newTrackId(kind[0]);
-  return { id, kind, name: name ?? `${kind[0].toUpperCase()}${kind.slice(1)} ${id.slice(1)}`, muted: false, hidden: false, clips: [], transitions: [] };
-}
-
-function newTrackOp(kind: TrackKind): { op: PatchOp; index: number } {
-  const tracks = store.tracks;
-  const track = newTrack(kind);
-  const firstOverlay = tracks.findIndex((t) => t.kind === "overlay");
-  const index = kind === "video" && firstOverlay >= 0 ? firstOverlay : tracks.length;
-  return { op: { op: "add", path: `${store.seqPath}/tracks/${index}`, value: track }, index };
-}
-
-/** Add an empty sequence to the bin and open it. A sequence is just a bin entry, so this
- *  is one ordinary patch — and the new timeline starts with the same three tracks a new
- *  project does, because an empty one has nowhere to drop a clip. */
-export async function newSequence(name: string) {
-  const p = store.state.project!;
-  // Bin ids must match [A-Za-z_][A-Za-z0-9_-]*, so a leading digit takes an `s`.
-  const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").replace(/^(?=[0-9])/, "s");
-  const id = uniqueId(slug || "sequence", Object.keys(p.bin));
-  const value: BinItem = {
-    name,
-    source: { tracks: [newTrack("video", "Video"), newTrack("overlay", "Overlays"), newTrack("audio", "Audio")], markers: [] },
-  };
-  if (await store.patch([{ op: "add", path: binPath(id), value }], `add sequence ${id}`)) {
-    await store.openSequence(id);
-  }
-}
-
-/** Add an empty track from the UI. */
-export async function addTrack(kind: TrackKind) {
-  const { op } = newTrackOp(kind);
-  await store.patch([op], `add ${kind} track`);
 }
 
 function niceStep(zoom: number): number {

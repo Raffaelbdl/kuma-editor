@@ -8,10 +8,11 @@
 // This class subscribes to every state change on purpose: overlays must follow the
 // playhead frame by frame. It does no DOM rebuilding on that path.
 
-import { api } from "./api";
-import { store, toast } from "./store";
-import type { Clip, Project } from "./types";
-import { binItem, isOverlayClip, transformAt } from "./types";
+import { api } from "../api";
+import { Cmd, command } from "../commands";
+import { store, toast } from "../store";
+import type { Clip, Project } from "../types";
+import { binItem, isOverlayClip, transformAt } from "../types";
 
 interface OverlayView {
   clipId: string;
@@ -64,6 +65,11 @@ export class Preview {
     host.appendChild(this.stage);
     new ResizeObserver(() => this.layout()).observe(host);
     store.subscribe((s) => this.onState(s.playhead, s.playing, s.project?.revision ?? -1, s.sequence));
+    // The engine socket lives here, so the transport actions do too. Anything that wants
+    // them — the strip under the stage, a key, the application menu — asks by id.
+    command(Cmd.togglePlay, "Play/Pause", () => this.togglePlay());
+    command(Cmd.reloadPreview, "Reload Preview", () => this.reload());
+    command(Cmd.previewScale, "Preview Resolution", (scale) => this.setScale(Number(scale)));
     this.connect();
   }
 
@@ -195,6 +201,16 @@ export class Preview {
         this.draw(bmp);
       } catch { /* daemon busy or missing media */ }
     }, 250);
+  }
+
+  /** Flip between playing and paused, keeping the store's flag in step with the engine. */
+  togglePlay() {
+    if (store.state.playing) {
+      this.pause();
+      store.set({ playing: false });
+    } else if (this.play()) {
+      store.set({ playing: true });
+    }
   }
 
   /** Start playback; false (with a toast) when there is no engine to play on. */

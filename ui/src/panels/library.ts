@@ -8,13 +8,13 @@
 // ("what is in this video" against "what could be"), and stacked, the second one pushed
 // the first out of sight as soon as a project had more than a few entries.
 
-import { api } from "./api";
-import { desktop, pickAndAddMedia } from "./desktop";
-import { button, el } from "./dom";
-import { store, toast } from "./store";
-import { addFromLibrary } from "./timeline";
-import type { BinItem, Project } from "./types";
-import { isSequenceSource, itemKind } from "./types";
+import { api } from "../api";
+import { desktop, pickAndAddMedia } from "../desktop";
+import { button, el } from "../dom";
+import { store, toast } from "../store";
+import { addFromLibrary } from "../edits";
+import type { BinItem, Project } from "../types";
+import { isSequenceSource, itemKind } from "../types";
 
 export class Library {
   constructor(private host: HTMLElement) {

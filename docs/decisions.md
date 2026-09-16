@@ -591,6 +591,58 @@ Keyed by path, size and mtime the way the bake cache already works, staleness be
 impossible and the revision is never touched. Held back until flag-and-reload proves
 annoying, because the validator and the agent both read metadata today.
 
+
+## Regression tests for the things that are not Rust
+
+**Agreed, not built.** The suite covers the model, the compiler and the daemon well, and
+covers nothing that only goes wrong in a browser or in the shell. Three bugs reached the
+user in one sitting, all of them in that gap, none of them the kind a Rust test would have
+seen:
+
+- **Overlay transparency.** A `color-scheme: dark` on the editor's root stopped Chromium
+  compositing the overlay iframes: a template declares no colour scheme, so it is a
+  light-scheme document, and a light document is not allowed to show through a dark-scheme
+  embedder. The preview painted the template's white canvas where the video should be,
+  while the render stayed correct — the preview/render gap the live-DOM preview exists to
+  close. Nothing failed; it just looked wrong.
+- **Stale assets served from cache.** `ServeDir` sent no `Cache-Control` and no `ETag`, so
+  a browser invented a freshness lifetime and kept running a bundle from weeks earlier
+  after everything on disk had been rebuilt.
+- **The shell's own logic** — daemon lifecycle, attach-versus-spawn, stale-binary and
+  stale-`ui/dist` detection, the library fallback. All verified during development with
+  throwaway Node scripts that were never committed, which is the same as not being tested.
+
+Three tiers, cheapest first, because they are not equally hard:
+
+1. **Response headers, in Rust, today.** That `GET /` and `/api/project` carry
+   `Cache-Control` is an ordinary `axum` test against the router, no browser and no
+   daemon. The cache bug was the most expensive of the three to find and would have been
+   the cheapest to catch.
+2. **The shell, in `app/`.** `daemon.ts`, `projects.ts`, `kuma.ts` and `recents.ts` are
+   plain modules with no Electron import precisely so they can be driven directly. The
+   scripts written while debugging already assert the right things — attaching rather than
+   spawning a second writer for one project file, rolling back a project `kuma init` wrote
+   in an unreadable format, the staleness checks firing on an ancestor commit and staying
+   quiet on an unknown one. They need a runner and a home, not new ideas.
+3. **The composite, in a browser.** A fixture project with a colour clip under an overlay,
+   the editor loaded, and an assertion that the stage pixel is that colour and not white.
+   This is the tier that would have caught the transparency bug, and the only one needing
+   a browser — which is already a dependency: the baker drives Playwright's
+   `chromium_headless_shell`, and `HYPERFRAMES_BROWSER_PATH` already points at one. It
+   should skip when that browser is absent, the way the render and bake tests skip without
+   `melt` and `ffmpeg`, so a checkout without it still runs a green suite.
+
+The pixel assertions stay coarse on purpose — "this region is not white", "this region is
+the colour of the clip under it" — because the point is compositing, not appearance. A
+screenshot-diff suite over the whole editor would fail on every font and theme change and
+be turned off within a month.
+
+Worth saying plainly: tier 3 is the one that matters and the one most likely to be
+skipped, because the bug it catches is invisible rather than loud. The preview looking
+right *is* the product.
+
+---
+
 ## Still open
 
 Nested sequences are done and the editor is an application now, so this list is the whole

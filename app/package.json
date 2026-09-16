@@ -6,7 +6,7 @@
   "license": "MIT",
   "main": "dist/main.js",
   "scripts": {
-    "build": "tsc -p tsconfig.main.json && tsc -p tsconfig.launcher.json && node scripts/copy-assets.mjs",
+    "build": "node scripts/ensure-deps.mjs && tsc -p tsconfig.main.json && tsc -p tsconfig.launcher.json && node scripts/copy-assets.mjs",
     "start": "npm run build && electron .",
     "dev": "npm run build && electron . --inspect"
   },

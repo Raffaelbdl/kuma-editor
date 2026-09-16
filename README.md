@@ -66,7 +66,6 @@ npm install                                  # hyperframes + gsap
 cargo build --release
 cmake -S engine -B engine/build && cmake --build engine/build -j
 (cd ui && npm install && npm run build)
-(cd app && npm install && npm run build)     # the desktop shell (optional; see below)
 ```
 
 `cargo build --release` produces the `kuma` binary at `target/release/kuma` (it is the
@@ -114,8 +113,7 @@ in a window, with the things a tab cannot give you: a launcher, an application m
 native file picker, and a daemon that starts and stops with the window.
 
 ```
-(cd app && npm install)
-npm run app                                  # builds the shell and starts it
+npm run app                                  # installs its own deps on first run, builds, starts
 ```
 
 It opens a **launcher**: recent projects on the right, *New project* and *Open project…*

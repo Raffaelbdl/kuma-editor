@@ -347,6 +347,20 @@ was resolved and whether its commit is an ancestor of HEAD, which is what `build
 stamps the commit into `--version` for in the first place. Only a strict ancestor is
 reported, so a binary built from another branch or a non-git install stays quiet.
 
+The same reasoning covers `ui/dist`, which is not in git either and which the *daemon*
+serves. A build from before sequences became bin entries reads `project.tracks`, spreads
+it, and dies with `t.tracks is not iterable` before the editor draws anything — a message
+that names nothing a user could act on. That one is not a footer warning: the window is
+certain to be broken, so opening a project checks whether `ui/dist` is older than `ui/src`
+and asks first, with "Open anyway" kept because the check is an mtime heuristic and must
+never be a hard no.
+
+Three stale-artifact traps in a row (`app/dist`, the `kuma` binary, `ui/dist`) is a
+pattern, not bad luck: the shell is the one component that runs all three and is therefore
+the only place that can see the skew. `app/dist` it simply builds, since it owns it. The
+other two it refuses to paper over, because rebuilding a Rust binary or the daemon's own
+assets behind the user's back is not the shell's call.
+
 Still open here: packaging (there is no `electron-builder` config, so the app runs from the
 checkout), remembering window size and position, and opening a second project from an
 editor window rather than going back to the launcher.

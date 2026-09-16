@@ -17,7 +17,7 @@ import * as daemon from "./daemon";
 import type { Daemon } from "./daemon";
 import * as projects from "./projects";
 import { Recents, nameOf } from "./recents";
-import { Kuma, repoWarnings, resolveKuma } from "./kuma";
+import { Kuma, repoWarnings, resolveKuma, uiBuildProblem } from "./kuma";
 
 const APP_DIR = path.resolve(__dirname, "..");
 const LAUNCHER_ORIGIN = "kuma-app://launcher";
@@ -165,6 +165,11 @@ async function openProject(file: string, from?: BrowserWindow): Promise<void> {
   if (!kuma) throw new Error(kumaError ?? "kuma is not available");
 
   projects.checkOpenable(target);
+  // A stale or missing `ui/dist` is not a warning to read later: the editor window loads
+  // that bundle, and an old one fails on the shape of a newer project with an error that
+  // reads like a broken document. Say so before opening the window, not after.
+  const uiProblem = uiBuildProblem(kuma.repo);
+  if (uiProblem && !(await confirmStaleUi(uiProblem, from))) return;
   starting.add(target);
   try {
     const d = await daemon.start({
@@ -194,6 +199,22 @@ async function openProject(file: string, from?: BrowserWindow): Promise<void> {
   } finally {
     starting.delete(target);
   }
+}
+
+/** Offer to open anyway: the check is an mtime heuristic, so it must never be a hard no. */
+async function confirmStaleUi(problem: string, from?: BrowserWindow): Promise<boolean> {
+  const opts: Electron.MessageBoxOptions = {
+    type: "warning",
+    title: "The editor build is out of date",
+    message: "The editor would not load correctly.",
+    detail: `${problem}\n\nThe daemon serves ui/dist, and it is not checked into git, so pulling a branch leaves it behind.`,
+    buttons: ["Cancel", "Open anyway"],
+    defaultId: 0,
+    cancelId: 0,
+  };
+  const parent = from && !from.isDestroyed() ? from : (launcher ?? undefined);
+  const { response } = await (parent ? dialog.showMessageBox(parent, opts) : dialog.showMessageBox(opts));
+  return response === 1;
 }
 
 /** An owned daemon died on its own. Offer to bring it back rather than leaving a blank window. */

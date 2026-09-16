@@ -138,6 +138,43 @@ function staleBinary(repo: string, version: string): string | null {
   return `the kuma binary is ${behind} commit${behind === "1" ? "" : "s"} behind this checkout — \`cargo build --release\` (an old binary writes projects this version cannot open)`;
 }
 
+/** Newest mtime under `root`, or 0 if it does not exist. Directories are walked. */
+function newestMtime(root: string, depth = 6): number {
+  let stat;
+  try {
+    stat = fs.statSync(root);
+  } catch {
+    return 0;
+  }
+  if (!stat.isDirectory()) return stat.mtimeMs;
+  if (depth <= 0) return stat.mtimeMs;
+  let newest = 0;
+  for (const e of fs.readdirSync(root)) {
+    newest = Math.max(newest, newestMtime(path.join(root, e), depth - 1));
+  }
+  return newest;
+}
+
+/**
+ * Whether `ui/dist` predates the sources it is built from.
+ *
+ * The daemon serves `ui/dist` and it is not in git, so pulling a branch updates `ui/src`
+ * and leaves the build behind. The editor window then loads an old bundle against a new
+ * project and fails on the document's shape — which looks like a broken project, not a
+ * missing build step. mtimes are enough: a checkout touches the files it updates.
+ */
+export function uiBuildProblem(repo: string): string | null {
+  const dist = newestMtime(path.join(repo, "ui", "dist"));
+  if (!dist) return "ui/dist is missing — run `npm run build` in ui/";
+  const src = Math.max(
+    newestMtime(path.join(repo, "ui", "src")),
+    newestMtime(path.join(repo, "ui", "index.html")),
+    newestMtime(path.join(repo, "ui", "vite.config.ts")),
+    newestMtime(path.join(repo, "ui", "package.json")),
+  );
+  return src > dist ? "ui/dist is older than ui/src — `npm run build` in ui/ (the editor will fail to start against a newer project)" : null;
+}
+
 /** What `kuma doctor` would warn about, checked cheaply so the launcher can show it. */
 export function repoWarnings(repo: string, version?: string): string[] {
   const out: string[] = [];
@@ -145,7 +182,8 @@ export function repoWarnings(repo: string, version?: string): string[] {
     const stale = staleBinary(repo, version);
     if (stale) out.push(stale);
   }
-  if (!isDir(path.join(repo, "ui", "dist"))) out.push("ui/dist is missing — run `npm run build` in ui/");
+  const ui = uiBuildProblem(repo);
+  if (ui) out.push(ui);
   if (!isFile(path.join(repo, "engine", "build", "kuma-preview"))) {
     out.push("the preview engine is not built — `cmake -S engine -B engine/build && cmake --build engine/build -j` (playback falls back to single frames without it)");
   }

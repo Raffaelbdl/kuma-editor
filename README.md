@@ -26,8 +26,11 @@ project file, one preview, and the overlay is never "exported" by hand.
 ## Architecture
 
 ```
+  desktop app (Electron) ── starts and stops one daemon per open project
+        │  launcher → window
+        ▼
                       ┌──────────────── kuma daemon (Rust, axum) ────────────────┐
-  browser UI  ◄─WS/HTTP─►  project state · revisions · undo · jobs · templates    │
+  editor UI   ◄─WS/HTTP─►  project state · revisions · undo · jobs · templates    │
   (TS, Vite)          │       │                │                    │             │
                       │  kuma-mlt          kuma-overlay        preview engine     │
   Claude Code ◄─stdio─►  JSON → MLT XML    hyperframes bake     (C++ libmlt++)    │
@@ -35,6 +38,9 @@ project file, one preview, and the overlay is never "exported" by hand.
                       └───────┼──────────────────┼────────────────────┼───────────┘
                            melt (render)     Chrome headless      SDL2 audio clock
 ```
+
+The same UI runs in the desktop app and in a plain browser against `kuma serve`; the app
+adds a launcher, native menus and a file picker, and owns the daemon's lifetime.
 
 Same HTML, two consumers:
 
@@ -60,6 +66,7 @@ npm install                                  # hyperframes + gsap
 cargo build --release
 cmake -S engine -B engine/build && cmake --build engine/build -j
 (cd ui && npm install && npm run build)
+(cd app && npm install && npm run build)     # the desktop shell (optional; see below)
 ```
 
 `cargo build --release` produces the `kuma` binary at `target/release/kuma` (it is the
@@ -99,6 +106,42 @@ kuma serve                                               # open http://127.0.0.1
 
 Drag bin entries onto the timeline, scrub, edit vars in the inspector, press **Render**.
 Output lands in `renders/`.
+
+### Desktop app
+
+`kuma serve` plus a browser tab is still the whole editor. The desktop app is the same UI
+in a window, with the things a tab cannot give you: a launcher, an application menu, a
+native file picker, and a daemon that starts and stops with the window.
+
+```
+(cd app && npm install)
+npm run app                                  # builds the shell and starts it
+```
+
+It opens a **launcher**: recent projects on the right, *New project* and *Open project…*
+on the left. You can also drop a `.kuma.json` on the window, or pass one on the command
+line. *New project* asks for a name, a location, a resolution and a frame rate, then runs
+`kuma init` — so a project created here is identical to one created from the CLI, down to
+the `.mcp.json` that lets Claude Code join it.
+
+Opening a project starts a daemon for it and shows the editor. Closing the window stops
+that daemon; quitting stops all of them. Each project gets its own daemon and its own
+window, so several can be open at once. The first one takes `127.0.0.1:7455`, which is
+where `kuma mcp` looks — so Claude Code attaches to the project you have open without any
+configuration.
+
+The one daemon the app does *not* stop is one that was already serving that project file
+when you opened it. Two daemons writing one `.kuma.json` would each think they own it, and
+the one already there is usually a `kuma mcp` with a Claude Code session behind it, so the
+app shares it instead and leaves it running.
+
+The shell needs to find the `kuma` binary and the checkout. It looks for `KUMA_BIN`, then
+`target/release/kuma`, then `target/debug/kuma`, then `PATH`; and for the repository the
+same way `kuma` itself does (`KUMA_REPO`, else the nearest ancestor with
+`node_modules/hyperframes`). The launcher's footer says what it found and what is missing.
+
+Everything the app adds to the editor page sits behind one check in `ui/src/desktop.ts`,
+so the UI keeps working unchanged in an ordinary browser.
 
 ### Claude Code
 

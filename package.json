@@ -7,6 +7,8 @@
   "scripts": {
     "ui:dev": "npm --prefix ui run dev",
     "ui:build": "npm --prefix ui run build",
+    "app": "npm --prefix app run start",
+    "app:build": "npm --prefix app run build",
     "overlay:preview": "hyperframes preview overlays",
     "overlay:doctor": "hyperframes doctor"
   },

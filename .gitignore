@@ -5,6 +5,7 @@
 # Node
 node_modules/
 ui/dist/
+app/dist/
 .pnpm-store/
 
 # C++ engine build

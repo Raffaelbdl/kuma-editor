@@ -5,6 +5,7 @@
 // disk, shared across projects. Adding one from the library mints a bin entry.
 
 import { api } from "./api";
+import { desktop, pickAndAddMedia } from "./desktop";
 import { button, el } from "./dom";
 import { store, toast } from "./store";
 import { addFromLibrary, placeBinItem } from "./timeline";
@@ -47,6 +48,16 @@ export class Library {
         toast((e as Error).message, "err");
       }
     });
+    // In the desktop shell the native picker is the obvious way in, so it gets its own
+    // full-width row; the typed path stays for both, because it is the only way to
+    // reference a file outside the project.
+    if (desktop()) {
+      const browse = button("Browse…", () => void pickAndAddMedia(), "Add media files with the system file picker");
+      browse.style.flex = "1";
+      const browseRow = el("div", "lib-add");
+      browseRow.appendChild(browse);
+      this.host.appendChild(browseRow);
+    }
     addRow.append(input, add);
     this.host.appendChild(addRow);
 

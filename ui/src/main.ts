@@ -4,6 +4,7 @@ import { Inspector } from "./inspector";
 import { Library } from "./library";
 import { Preview } from "./preview";
 import { fmtTime, store, toast } from "./store";
+import { initDesktop, pickAndAddMedia } from "./desktop";
 import { addTrack, newSequence, Timeline } from "./timeline";
 import type { Clip, PatchOp, TrackKind } from "./types";
 import { binItem, isTimedMedia, sequenceIds, shiftEffect, trimEffect } from "./types";
@@ -14,12 +15,22 @@ async function main() {
   new Timeline(document.getElementById("timeline")!);
   new Inspector(document.getElementById("inspector")!);
   new Library(document.getElementById("library")!);
-  topbar(preview);
+  const { render } = topbar(preview);
   transport(preview);
   shortcuts(preview);
+  // In the desktop shell the application menu drives the same actions as the toolbar;
+  // in a browser this is a no-op and nothing above changes.
+  initDesktop({
+    undo: () => void store.undo(),
+    redo: () => void store.redo(),
+    render,
+    reloadPreview: () => preview.reload(),
+    newSequence: () => void promptNewSequence(),
+    addMedia: () => void pickAndAddMedia(),
+  });
 }
 
-function topbar(preview: Preview) {
+function topbar(preview: Preview): { render: () => void } {
   const host = document.getElementById("topbar")!;
   const name = el("span", "name");
   const rev = el("span", "muted mono");
@@ -39,9 +50,10 @@ function topbar(preview: Preview) {
   const presets = el("select");
   presets.style.width = "auto";
   api.presets().then((ps) => options(presets, ps.map((p) => ({ value: p.id, title: p.description }))));
-  const render = button("Render", async () => {
+  const doRender = async () => {
     try { const r = await api.render(presets.value); toast(`Render job #${r.job} started`, "ok"); } catch (e) { toast((e as Error).message, "err"); }
-  });
+  };
+  const render = button("Render", () => void doRender());
   render.className = "primary";
   const status = el("span", "status");
   host.append(name, seqSel, rev, button("Undo", () => store.undo()), button("Redo", () => store.redo()), el("span", "spacer"), presets, render, button("Reload preview", () => preview.reload()), status);
@@ -60,6 +72,7 @@ function topbar(preview: Preview) {
     const output = last?.ok && last.result && typeof last.result === "object" && "output" in last.result ? String((last.result as { output: unknown }).output) : "";
     status.textContent = running.length ? running.map(([id, j]) => `${j.kind} #${id} ${j.percent}% ${j.message}`).join(" · ") : output && `wrote ${output}`;
   });
+  return { render: () => void doRender() };
 }
 
 function transport(preview: Preview) {

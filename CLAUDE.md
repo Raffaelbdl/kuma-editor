@@ -19,6 +19,7 @@ crates/kuma-mcp       rmcp stdio MCP server proxying the daemon
 crates/kuma-cli       `kuma` binary: serve | mcp | render | bake | sample | library | …
 engine/               C++ libmlt++ preview engine (JPEG over stdout, SDL2-paced audio)
 ui/                   Vite + TypeScript editor (no framework)
+app/                  Electron shell: project launcher, windows, daemon lifecycle
 library/overlays/     starter overlay templates (folder = template) + `_vendor/{gsap.min.js,kuma.js,kuma.css}`
 library/presets/      starter effect presets (typed params + `$expr` substitution)
 ```
@@ -37,6 +38,7 @@ npm install && (cd ui && npm install && npm run build)
 kuma library                              # install library/ into ~/.local/share/kuma once
 kuma serve -p myvideo.kuma.json           # http://127.0.0.1:7455 (--bind / KUMA_BIND)
 kuma mcp -p myvideo.kuma.json             # stdio MCP; starts the daemon in-process if none is running
+(cd app && npm install) && npm run app    # the desktop app: launcher, then a window per project
 ```
 
 System deps (Debian/Ubuntu): `ffmpeg melt libmlt-dev libmlt++-dev libsdl2-dev libturbojpeg0-dev cmake xvfb`.
@@ -76,5 +78,10 @@ Chrome headless shell if hyperframes should not download one.
 - Alpha intermediates are PNG sequences (straight alpha). Assert `pix_fmt` on any encode.
 - All state lives in the daemon. The UI and MCP are thin clients; every mutation is a
   revision-checked JSON Patch that is validated atomically and undoable.
+- One project, one daemon. The desktop shell starts one per project it opens and kills it
+  when the window closes, but **attaches** to a daemon already serving that file rather
+  than starting a rival writer — that one is usually a `kuma mcp`. The editor page is the
+  same page a browser gets: everything the shell adds is behind `desktop()` in
+  `ui/src/desktop.ts` and absent in a tab. Do not make the UI require the shell.
 - Do not add a dependency on `mlt-sys`, `ffmpeg-next` or `wgpu` without a reason written
   in the README; the PoC deliberately uses `melt`/`ffmpeg` as subprocesses.

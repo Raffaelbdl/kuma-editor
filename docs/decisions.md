@@ -250,6 +250,91 @@ and is exactly right by construction.
 
 ---
 
+## Desktop shell
+
+The editor became an application: a launcher that opens or creates a project, and a window
+per project, with the daemon's lifetime tied to the window. `app/` is an Electron main
+process; the editor page inside the window is the existing UI, served by the daemon,
+unchanged.
+
+**Electron rather than Tauri** — adopted, against the grain of a Rust workspace.
+
+Tauri was the obvious choice and lost on one point. Its Linux webview is WebKitGTK, and
+the overlay baker drives **Chromium** (hyperframes on Playwright's
+`chromium_headless_shell`). The premise in the README is "same HTML, two consumers": live
+DOM while you scrub, baked alpha at export. Previewing in one engine and baking in another
+breaks that quietly — a blend mode, a font metric or a filter that differs shows up only
+after a bake, which is the slowest possible feedback loop. Electron is Chromium, so the
+scrub and the export agree by construction.
+
+What that cost: Tauri would have been ~10 MB against Electron's ~200 MB, and — the part
+that actually stings — `kuma-app` could have been a Rust binary calling
+`kuma_daemon::serve()` in-process, with no subprocess to supervise at all. The shell
+supervises `kuma serve` instead. Judged worth it, because overlay fidelity is the product
+and the binary size is not.
+
+Also weighed and rejected: **Chromium in `--app=` mode** driven by a `kuma app`
+subcommand. Right engine, almost no new machinery, but no native menus or dialogs, and a
+launcher window that spawns editor windows is awkward without a process that owns them.
+**Wry, Neutralino, Photino** are all system-webview, so they lose for Tauri's reason
+without Tauri's compensations.
+
+**One daemon per project, owned by the shell** — adopted.
+
+The alternative was one daemon taught to switch projects, which is what a "launcher plus
+editor" shape suggests. It was rejected: `AppState` is loaded from a project file and
+handed to the router as an `Arc`, and the preview engine, job list and undo stack all hang
+off it, so switching means making every handler read through an indirection and tearing
+down the engine on each swap. More importantly `kuma mcp` resolves a daemon *by the
+project it serves* — a daemon that changes projects underneath that check is a race with
+no good answer. A daemon per project needs no daemon change at all, and multiple open
+projects fall out of it.
+
+So the shell starts one, waits for `/api/health`, and stops it when the window closes;
+quitting stops all of them. A daemon that dies on its own raises a dialog with the tail of
+its output and an offer to restart, rather than leaving a blank window.
+
+**Attaching to a daemon already serving that project** — adopted, and it is the one
+exception to the rule above.
+
+Two daemons on one `.kuma.json` would both believe they are its single owner, which is the
+invariant everything else rests on. And a daemon already on that file is most likely a
+`kuma mcp` with a Claude Code session behind it. So the shell joins it, shares its state,
+and does **not** stop it when the window closes — it did not start it. Every daemon the
+shell started, it owns completely.
+
+**The first project takes 7455** — adopted.
+That is where `kuma mcp`, and so the `.mcp.json` that `kuma init` writes, looks. Opening a
+project there means an agent attaches to the window you have open with no configuration.
+Later projects take an ephemeral port; their agents get a private daemon, which `kuma mcp`
+already explains when it happens.
+
+**The launcher is a page in the shell, not a route in the editor UI** — adopted.
+The editor UI is served *by a daemon*, and a daemon always has exactly one project. There
+is no point in that page where "no project is open" is a reachable state, so a launcher
+route there would have to be served by something else anyway. It lives on a `kuma-app://`
+scheme rather than `file://`, so ES modules load and the CSP has a real origin to name.
+
+**Menu accelerators for the editor's own shortcuts** — rejected.
+Space, `S` and Ctrl+Z are bound in the page, where the handler can tell whether a text
+field has focus. An Electron menu accelerator fires regardless, so `S` would be stolen
+from every input in the inspector and Ctrl+Z would run a project undo while you are typing
+a label. The Project menu therefore carries those items with **no** accelerator, and the
+Edit menu keeps the native `undo`/`redo` roles, which are text editing and should stay
+that way.
+
+**Desktop features degrade rather than gate** — adopted.
+`ui/src/desktop.ts` exports `desktop()`, which returns the preload's bridge or `null`. The
+native file picker and the menu commands are behind it; in a browser tab the UI is exactly
+what it was. `kuma serve` plus a browser has to keep working — it is what CI, a remote
+machine and `kuma mcp` all use.
+
+Still open here: packaging (there is no `electron-builder` config, so the app runs from the
+checkout), remembering window size and position, and opening a second project from an
+editor window rather than going back to the launcher.
+
+---
+
 ## Project model
 
 **One bin holds everything placeable** — adopted.
@@ -451,8 +536,10 @@ annoying, because the validator and the agent both read metadata today.
 
 ## Still open
 
-Nested sequences are done, so this list is now the whole of what is next. The item it
-gained from that work comes first, because it is the part deliberately left out.
+Nested sequences are done and the editor is an application now, so this list is the whole
+of what is next on the *model and compiler*; the desktop shell's own loose ends are at the
+end of its section above. The item this list gained from the sequence work comes first,
+because it is the part deliberately left out.
 
 - **Speed on a sequence clip**, refused today. The mechanism is known to work (see the
   spike above): write the sub-sequence to its own `.mlt` in the cache and hand `timewarp`

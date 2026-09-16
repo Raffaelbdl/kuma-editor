@@ -1,0 +1,18 @@
+{
+  "name": "kuma-app",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Desktop shell for kuma: project launcher, window and daemon lifecycle",
+  "license": "MIT",
+  "main": "dist/main.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.main.json && tsc -p tsconfig.launcher.json && node scripts/copy-assets.mjs",
+    "start": "npm run build && electron .",
+    "dev": "npm run build && electron . --inspect"
+  },
+  "devDependencies": {
+    "@types/node": "22.10.2",
+    "electron": "33.3.1",
+    "typescript": "5.9.3"
+  }
+}

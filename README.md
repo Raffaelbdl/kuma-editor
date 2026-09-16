@@ -63,6 +63,7 @@ Build:
 
 ```
 npm run rebuild                              # everything, in order, then `kuma doctor`
+npm test                                     # every suite: Rust, the desktop shell, the UI
 ```
 
 Three of the artifacts kuma runs from are not in git — the `kuma` binary, `ui/dist` (which

@@ -12,7 +12,7 @@
     "app:build": "npm --prefix app run build",
     "overlay:preview": "hyperframes preview overlays",
     "overlay:doctor": "hyperframes doctor",
-    "test": "cargo test && npm --prefix app test && npm --prefix ui test",
+    "test": "bash scripts/test.sh",
     "app:test": "npm --prefix app test",
     "ui:test": "npm --prefix ui test"
   },

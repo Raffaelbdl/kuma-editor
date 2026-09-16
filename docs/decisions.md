@@ -183,8 +183,11 @@ same document again.
 **Reloads are coalesced, not debounced** — adopted.
 A caller arriving while a compile is running sets a flag instead of queuing, and the
 running pass goes round once more; the extra pass re-reads the project, so the last thing
-compiled is always a state observed after the last edit. Fifty simultaneous requests cost
-ten compiles rather than fifty.
+compiled is always a state observed after the last edit. Thirty-two simultaneous reloads
+cost two compiles — the pass that was running, plus one for everything that queued behind
+it, which is the whole of what the mechanism can collapse to. (Over HTTP the same burst
+measured ten, because the requests arrive spread out rather than together; that is arrival
+spread, not the coalescing falling short.)
 
 Debouncing was considered and turned down. The UI already commits rather than streams —
 fields patch on `onchange`, drags patch on `pointerup` — so a human editing produces one

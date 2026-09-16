@@ -56,6 +56,9 @@ pub struct PreviewHandle {
     /// same document again, and a caller whose work was done by a coalesced run still
     /// wants to hear that the engine was updated.
     loads: AtomicU64,
+    /// Compiles performed. Only diagnostic — it is how the coalescing is observed, here
+    /// and in `tests/preview.rs`.
+    pub compiles: AtomicU64,
     /// One compile at a time. Whoever holds this does the work; `pending` is how a caller
     /// that arrived mid-compile asks for one more pass.
     compiling: AsyncMutex<()>,
@@ -71,6 +74,7 @@ impl Default for PreviewHandle {
             scale: Mutex::new(0.5),
             loaded: Mutex::new(None),
             loads: AtomicU64::new(0),
+            compiles: AtomicU64::new(0),
             compiling: AsyncMutex::new(()),
             pending: AtomicBool::new(false),
         }
@@ -97,6 +101,13 @@ const MAX_FRAME_BYTES: usize = 64 << 20;
 impl PreviewHandle {
     pub fn get(&self) -> Option<Arc<Engine>> {
         lock(&self.inner).clone()
+    }
+
+    /// Forget the running engine, so the next use starts a fresh one. This is what the
+    /// reader task does when the process exits; having it here is also what a "restart the
+    /// preview" action would call.
+    pub fn forget(&self) {
+        *lock(&self.inner) = None;
     }
 
     pub fn engine_path(state: &AppState) -> PathBuf {
@@ -244,8 +255,10 @@ fn preview_path(state: &AppState) -> PathBuf {
 /// sequences it nests appear at all; its own are left unbaked, and therefore skipped, for
 /// the UI's live DOM.
 async fn compile_and_load(state: &Arc<AppState>) -> anyhow::Result<()> {
+    // First, because starting an engine clears what it is holding.
+    let engine = state.preview.ensure(state).await?;
     let st = state.clone();
-    let xml = tokio::task::spawn_blocking(move || {
+    let fresh = tokio::task::spawn_blocking(move || {
         let project = read(&st.project).clone();
         let scale = (*lock(&st.preview.scale)).clamp(0.25, 1.0);
         let even = |v: f64| ((v.round() as u32).max(2)) & !1;
@@ -257,27 +270,31 @@ async fn compile_and_load(state: &Arc<AppState>) -> anyhow::Result<()> {
         opts.bakes = crate::jobs::bake_for(&st, &project, &sequence, OverlayScope::Nested, None, &|_, _| {})?;
         opts.size = Some((w, h));
         opts.sequence = Some(sequence);
-        crate::jobs::compile_xml(&project, &opts)
+        let xml = crate::jobs::compile_xml(&project, &opts)?;
+        // The document is the whole input: profile, every producer, and the bake
+        // directories — whose names are themselves content hashes, so a template edited on
+        // disk changes this even though the project document did not.
+        let stamp = stamp(&xml);
+        st.preview.compiles.fetch_add(1, Ordering::SeqCst);
+        tracing::debug!("preview: compiled {} bytes, stamp {stamp:016x}", xml.len());
+        if *lock(&st.preview.loaded) == Some(stamp) {
+            return Ok(None);
+        }
+        Ok::<_, anyhow::Error>(Some((crate::jobs::write_compiled(&st, &xml, "preview")?, stamp)))
     })
     .await??;
-    // The document is the whole input: it carries the profile, every producer, and the
-    // bake directories — whose names are themselves content hashes, so a template edited
-    // on disk changes this even though the project document did not.
+    // Only once the engine has actually been told, so a failed send does not leave us
+    // believing it holds something it never received.
+    if let Some((path, stamp)) = fresh {
+        engine.send(&format!("load {}", path.display())).await?;
+        *lock(&state.preview.loaded) = Some(stamp);
+        state.preview.loads.fetch_add(1, Ordering::SeqCst);
+    }
+    Ok(())
+}
+
+fn stamp(xml: &str) -> u64 {
     let mut h = std::collections::hash_map::DefaultHasher::new();
     xml.hash(&mut h);
-    let stamp = h.finish();
-
-    tracing::debug!("preview: compiled {} bytes, stamp {stamp:016x}", xml.len());
-    // Before the comparison: starting an engine clears what it is holding.
-    let engine = state.preview.ensure(state).await?;
-    if *lock(&state.preview.loaded) == Some(stamp) {
-        return Ok(());
-    }
-    let path = preview_path(state);
-    let st = state.clone();
-    tokio::task::spawn_blocking(move || crate::jobs::write_compiled(&st, &xml, "preview")).await??;
-    engine.send(&format!("load {}", path.display())).await?;
-    *lock(&state.preview.loaded) = Some(stamp);
-    state.preview.loads.fetch_add(1, Ordering::SeqCst);
-    Ok(())
+    h.finish()
 }

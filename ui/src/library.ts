@@ -9,7 +9,7 @@ import { button, el } from "./dom";
 import { store, toast } from "./store";
 import { addFromLibrary, placeBinItem } from "./timeline";
 import type { BinItem, Project } from "./types";
-import { allClips, isFileSource, isOverlaySource, isSequenceSource, itemKind, seqDuration } from "./types";
+import { binPath, isFileSource, isOverlaySource, isSequenceSource, itemKind, placementsOf, seqDuration, wouldRecurse } from "./types";
 
 export class Library {
   constructor(private host: HTMLElement) {
@@ -94,10 +94,10 @@ function binCard(p: Project, id: string, item: BinItem): HTMLDivElement {
   const del = button("×", async () => {
     // Usage is counted across every sequence, not just the one on screen: an entry can be
     // placed on a timeline you are not looking at.
-    const used = allClips(p).filter(({ clip }) => clip.bin === id).length;
+    const used = placementsOf(p, id);
     if (used) { toast(`${id} is used by ${used} clip${used > 1 ? "s" : ""}`, "err"); return; }
     if (id === p.master) { toast("The master sequence cannot be removed", "err"); return; }
-    await store.patch([{ op: "remove", path: `/bin/${id}` }], `remove ${id}`);
+    await store.patch([{ op: "remove", path: binPath(id) }], `remove ${id}`);
   }, "Remove from the bin");
   const actions = [];
   // Opening a sequence is what "edit this part separately" means; placing it puts the
@@ -107,21 +107,14 @@ function binCard(p: Project, id: string, item: BinItem): HTMLDivElement {
     (open as HTMLButtonElement).disabled = id === store.state.sequence;
     actions.push(open);
   }
-  // A sequence cannot be placed on itself, directly or otherwise — the validator would
-  // refuse the patch, so do not offer it.
-  const wouldRecurse = isSequenceSource(item.source) && (id === store.state.sequence || reaches(p, id, store.state.sequence));
-  if (!wouldRecurse) actions.push(button("Add at playhead", () => placeBinItem(id, store.state.playhead)));
+  // A sequence cannot be placed on itself, directly or otherwise: don't offer the button.
+  // `placeBinItem` checks the same rule, for the drop path that has no button to hide.
+  if (!wouldRecurse(p, id, store.state.sequence)) {
+    actions.push(button("Add at playhead", () => placeBinItem(id, store.state.playhead)));
+  }
   actions.push(del);
   card.appendChild(actionRow(...actions));
   return card;
-}
-
-/** Does sequence `from` contain `target`, at any depth? Used to hide the placements that
- *  would make a sequence contain itself. Cycle-safe, though a valid project has none. */
-function reaches(p: Project, from: string, target: string, seen = new Set<string>()): boolean {
-  const src = p.bin[from]?.source;
-  if (!src || !isSequenceSource(src) || !seen.add(from)) return false;
-  return src.tracks.some((t) => t.clips.some((c) => c.bin === target || reaches(p, c.bin, target, seen)));
 }
 
 /** One draggable card. The payload is what a drop on the timeline receives. */

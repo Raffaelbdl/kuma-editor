@@ -171,16 +171,11 @@ async fn validate_project(State(st): S) -> Json<Value> {
     Json(json!({ "issues": issues, "duration": p.duration() }))
 }
 
-/// Which sequence is open for editing, and every sequence available to open. Session
-/// state: it is not in the document and does not survive a restart.
+/// Which sequence is open for editing. Session state: it is not in the document and does
+/// not survive a restart, which is exactly why it needs an endpoint of its own — what
+/// sequences exist, and how long each is, the client reads off the project it already has.
 async fn get_sequence(State(st): S) -> Json<Value> {
-    let p = read(&st.project);
-    let current = st.current_sequence();
-    let list: Vec<Value> = p
-        .sequences()
-        .map(|(id, seq)| json!({ "id": id, "name": p.bin[id].display_name(id), "duration": seq.duration(), "tracks": seq.tracks.len() }))
-        .collect();
-    Json(json!({ "current": current, "master": p.master, "sequences": list }))
+    Json(json!({ "current": st.current_sequence() }))
 }
 
 #[derive(Deserialize)]
@@ -368,9 +363,8 @@ async fn snapshot(State(st): S, Query(q): Query<SnapshotQuery>) -> Result<Respon
         count: 1,
         rect: None,
         width: q.width.or(Some(960)),
-        overlays: false,
+        overlays: jobs::OverlayScope::Nested,
         sequence: Some(st.current_sequence()),
-        nested_overlays_only: true,
     };
     let samples = blocking(move || jobs::sample_frames(&st, &req, &|_, _| {})).await??;
     let bytes = std::fs::read(&samples[0].path).map_err(|e| anyhow::anyhow!(e))?;

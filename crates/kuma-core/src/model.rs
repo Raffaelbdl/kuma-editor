@@ -143,6 +143,18 @@ impl Project {
         })
     }
 
+    /// The sequence a job should treat as its root: the one asked for, or the master.
+    /// Every entry point that takes an optional sequence resolves it here, so they cannot
+    /// drift on either the default or the wording of the refusal.
+    pub fn sequence_or_master(&self, id: Option<&str>) -> Result<&BinId, String> {
+        let wanted = id.unwrap_or(&self.master);
+        // Borrow the id out of the bin so the caller gets one that outlives its argument.
+        match self.bin.get_key_value(wanted) {
+            Some((id, item)) if item.is_sequence() => Ok(id),
+            _ => Err(format!("`{wanted}` is not a sequence in this project")),
+        }
+    }
+
     /// Every clip in the project, with the sequence it lives on. Cheap enough to walk:
     /// jobs that touch "every overlay clip" use this rather than knowing about nesting.
     pub fn all_clips(&self) -> impl Iterator<Item = (&BinId, &Track, &Clip)> {
@@ -170,47 +182,43 @@ impl Project {
     /// emit tractors in, so an outer sequence only ever references one already written.
     /// `Err` carries the reference chain that closes a cycle, ending on the repeat.
     pub fn compile_order(&self, root: &str) -> Result<Vec<BinId>, Vec<BinId>> {
-        let mut order = Vec::new();
-        let mut done: HashSet<&str> = HashSet::new();
-        let mut path: Vec<&str> = Vec::new();
-        self.walk_sequences(root, &mut order, &mut done, &mut path)?;
-        Ok(order)
+        let mut walk = SequenceWalk::default();
+        walk.visit(self, root)?;
+        Ok(walk.order)
     }
 
-    fn walk_sequences<'a>(&'a self, id: &'a str, order: &mut Vec<BinId>, done: &mut HashSet<&'a str>, path: &mut Vec<&'a str>) -> Result<(), Vec<BinId>> {
-        if done.contains(id) {
-            return Ok(());
-        }
-        if let Some(at) = path.iter().position(|p| *p == id) {
-            // The cycle itself, not the walk that found it: from the repeated id round to it.
-            return Err(path[at..].iter().chain([&id]).map(|s| s.to_string()).collect());
-        }
-        let Some(seq) = self.seq(id) else { return Ok(()) };
-        path.push(id);
-        for clip in seq.tracks.iter().flat_map(|t| t.clips.iter()) {
-            // Borrow the key out of the map so the recursion can hold it for `path`.
-            if let Some((child, _)) = self.bin.get_key_value(&clip.bin).filter(|(_, i)| i.is_sequence()) {
-                self.walk_sequences(child, order, done, path)?;
+    /// Refuse a bin in which any sequence contains itself, returning the ring that closes.
+    /// One walk for the whole bin rather than one per sequence: the visited set is shared,
+    /// so an entry reached from several roots is expanded once.
+    pub fn check_cycles(&self) -> Result<(), Vec<BinId>> {
+        let mut walk = SequenceWalk::default();
+        self.sequences().try_for_each(|(id, _)| walk.visit(self, id))
+    }
+
+    /// Whether a clip contributes audible sound: what decides if its track needs an audio
+    /// mix. Stated once here because the compiler asks the same question of the same clip,
+    /// and the two answers have to agree or a render comes out silent.
+    pub fn clip_has_audio(&self, clip: &Clip) -> bool {
+        !clip.muted
+            && match self.item(clip) {
+                Some(item) if item.is_sequence() => self.seq_has_audio(&clip.bin),
+                Some(item) => item.is_timed_media(),
+                None => false,
             }
-        }
-        path.pop();
-        done.insert(id);
-        order.push(id.to_string());
-        Ok(())
     }
 
-    /// Whether a sequence carries any audible sound, following nested sequences. Used to
-    /// decide if its track needs an audio mix transition. Cycle-safe.
+    /// Whether a sequence carries any audible sound, following nested sequences. Cycle-safe.
     pub fn seq_has_audio(&self, id: &str) -> bool {
-        fn walk(p: &Project, id: &str, seen: &mut HashSet<String>) -> bool {
-            if !seen.insert(id.to_string()) {
+        fn walk<'a>(p: &'a Project, id: &'a str, seen: &mut HashSet<&'a str>) -> bool {
+            if !seen.insert(id) {
                 return false;
             }
             let Some(seq) = p.seq(id) else { return false };
-            seq.tracks.iter().filter(|t| !t.muted).flat_map(|t| t.clips.iter()).filter(|c| !c.muted).any(|c| match p.item(c).map(|i| &i.source) {
-                Some(BinSource::Sequence(_)) => walk(p, &c.bin, seen),
-                Some(BinSource::File { kind, .. }) => *kind != MediaKind::Image,
-                _ => false,
+            seq.tracks.iter().filter(|t| !t.muted).flat_map(|t| t.clips.iter()).any(|c| match p.item(c) {
+                _ if c.muted => false,
+                Some(item) if item.is_sequence() => p.bin.get_key_value(&c.bin).is_some_and(|(id, _)| walk(p, id, seen)),
+                Some(item) => item.is_timed_media(),
+                None => false,
             })
         }
         walk(self, id, &mut HashSet::new())
@@ -224,6 +232,40 @@ impl Project {
     /// Lowest free `<prefix><n>` bin id.
     pub fn free_bin_id(&self, prefix: &str) -> BinId {
         (1..).map(|n| format!("{prefix}{n}")).find(|id| !self.bin.contains_key(id)).unwrap_or_default()
+    }
+}
+
+/// A depth-first walk of the sequence graph, shared by `compile_order` (one root, and the
+/// order is the answer) and `check_cycles` (every root, and only the failure is).
+#[derive(Default)]
+struct SequenceWalk {
+    /// Reachable sequences, innermost first.
+    order: Vec<BinId>,
+    done: HashSet<BinId>,
+    /// The chain currently being expanded; an id already on it closes a ring.
+    path: Vec<BinId>,
+}
+
+impl SequenceWalk {
+    fn visit(&mut self, p: &Project, id: &str) -> Result<(), Vec<BinId>> {
+        if self.done.contains(id) {
+            return Ok(());
+        }
+        if let Some(at) = self.path.iter().position(|p| p == id) {
+            // The ring itself, not the walk that found it: from the repeated id round to it.
+            return Err(self.path[at..].iter().cloned().chain([id.to_string()]).collect());
+        }
+        let Some(seq) = p.seq(id) else { return Ok(()) };
+        self.path.push(id.to_string());
+        for clip in seq.clips() {
+            if p.bin.get(&clip.bin).is_some_and(BinItem::is_sequence) {
+                self.visit(p, &clip.bin)?;
+            }
+        }
+        self.path.pop();
+        self.done.insert(id.to_string());
+        self.order.push(id.to_string());
+        Ok(())
     }
 }
 
@@ -308,9 +350,15 @@ pub struct Sequence {
 }
 
 impl Sequence {
+    /// Every clip on this timeline, in track order. The one place a timeline is walked,
+    /// so a new traversal does not spell the nesting out again.
+    pub fn clips(&self) -> impl Iterator<Item = &Clip> {
+        self.tracks.iter().flat_map(|t| t.clips.iter())
+    }
+
     /// Duration in seconds: the latest clip end across the sequence's tracks.
     pub fn duration(&self) -> f64 {
-        self.tracks.iter().flat_map(|t| t.clips.iter()).map(|c| c.end).fold(0.0, f64::max)
+        self.clips().map(|c| c.end).fold(0.0, f64::max)
     }
 }
 

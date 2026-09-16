@@ -18,10 +18,8 @@
 //!
 //! ## Nested sequences
 //!
-//! A sequence is a bin entry holding a timeline, and MLT nests natively: a sequence is a
-//! tractor and a tractor is a producer. Each sequence is emitted **once**, as
-//! `<tractor id="seq_<bin>">`, in dependency order so an outer one only ever references a
-//! tractor already written. A clip placing it is a wrapper playlist:
+//! MLT nests natively: a sequence is a tractor and a tractor is a producer. Each sequence
+//! is emitted **once**, innermost first, and a clip placing it is a wrapper playlist:
 //!
 //! ```text
 //! <tractor id="seq_part">…</tractor>              emitted once, however often it is used
@@ -31,19 +29,11 @@
 //! </playlist>
 //! ```
 //!
-//! The wrapper is what keeps one tractor shareable: filters hung on the tractor itself
-//! would apply to every placement of it, and a tractor per placement would duplicate the
-//! whole subtree — multiplicatively, once sequences nest. The lane playlist then cuts the
-//! wrapper at `0..len-1`, because a wrapper starts at its own zero.
-//!
-//! Two things a nested sequence does differently from the master:
-//!
-//! * its background track is **transparent** (`0x00000000`), not black, so the gaps in it
-//!   show the tracks underneath rather than painting over them. Only the master, which is
-//!   the bottom of the render, gets an opaque base.
-//! * `speed` is refused on a sequence clip by the validator: MLT's `timewarp` producer
-//!   takes a resource *path*, and handed a tractor id it fails to load and freezes on one
-//!   frame. See `docs/decisions.md`.
+//! The wrapper is what keeps one tractor shareable, and it starts at its own zero, so the
+//! lane cuts it at `0..len-1` — see [`Plan::entry`]. A nested sequence's background is
+//! transparent, not black, so its gaps show the tracks underneath; only the master gets an
+//! opaque base. Speed on a sequence clip is refused by the validator. `docs/decisions.md`
+//! records why each of those is the shape it is, and what was measured to settle it.
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
@@ -131,7 +121,6 @@ pub fn compile(project: &Project, opts: &CompileOptions) -> Result<String, Compi
         return Err(CompileError::Internal("empty timeline".into()));
     }
     let fps = project.fps;
-    let total = fps.length(duration);
 
     let (pw, ph) = opts.size.unwrap_or((project.width, project.height));
     let scale = pw as f64 / project.width as f64;
@@ -164,26 +153,29 @@ pub fn compile(project: &Project, opts: &CompileOptions) -> Result<String, Compi
         ],
     );
 
-    // `order` ends on the root, which becomes `main_tractor`; the rest are nested and get
-    // a transparent base so their gaps show whatever they were laid over.
+    // `order` ends on the root, which becomes `main_tractor`; the rest are nested.
     for id in &order {
         let seq = project.seq(id).ok_or_else(|| CompileError::Internal(format!("`{id}` is not a sequence")))?;
-        let is_root = id == &root;
-        let (tractor_id, seq_total) = if is_root { ("main_tractor".to_string(), total) } else { (format!("seq_{id}"), fps.length(seq.duration())) };
-        emit_sequence(&ctx, id, seq, &tractor_id, is_root, seq_total, &mut w)?;
+        emit_sequence(&ctx, id, seq, id == &root, &mut w)?;
     }
     w.close("mlt");
     Ok(w.finish())
 }
 
 /// One timeline: a background, its tracks' producers and playlists, then the tractor that
-/// composites them. `opaque` distinguishes the master (black base, the bottom of the
-/// render) from a nested sequence (transparent base, so it composites like any other clip).
-fn emit_sequence(ctx: &Ctx, seq_id: &str, seq: &Sequence, tractor_id: &str, opaque: bool, total: i64, w: &mut XmlWriter) -> Result<(), CompileError> {
-    let (bg, bg_pl) = if opaque { ("black".to_string(), "background".to_string()) } else { (format!("bg_{seq_id}"), format!("bgpl_{seq_id}")) };
+/// composites them. The root is the bottom of the render, so it gets an opaque black base
+/// and the name the document points at; a nested sequence gets a transparent one, so it
+/// composites over whatever it was laid on like any other clip.
+fn emit_sequence(ctx: &Ctx, seq_id: &str, seq: &Sequence, is_root: bool, w: &mut XmlWriter) -> Result<(), CompileError> {
+    let total = ctx.fps.length(seq.duration());
+    let (tractor_id, bg, bg_pl) = if is_root {
+        ("main_tractor".to_string(), "black".to_string(), "background".to_string())
+    } else {
+        (format!("seq_{seq_id}"), format!("bg_{seq_id}"), format!("bgpl_{seq_id}"))
+    };
     w.open("producer", &[("id", bg.clone()), ("in", "0".into()), ("out", (total - 1).to_string())]);
     w.property("mlt_service", "color");
-    w.property("resource", if opaque { "black" } else { "0x00000000" });
+    w.property("resource", if is_root { "black" } else { "0x00000000" });
     w.property("length", total.to_string());
     w.property("mlt_image_format", "rgba");
     w.close("producer");
@@ -198,7 +190,7 @@ fn emit_sequence(ctx: &Ctx, seq_id: &str, seq: &Sequence, tractor_id: &str, opaq
         }
     }
 
-    w.open("tractor", &[("id", tractor_id.to_string()), ("in", "0".into()), ("out", (total - 1).to_string())]);
+    w.open("tractor", &[("id", tractor_id), ("in", "0".into()), ("out", (total - 1).to_string())]);
     w.open("multitrack", &[]);
     w.empty("track", &[("producer", bg_pl)]);
     for ct in &compiled_tracks {
@@ -251,19 +243,6 @@ impl Ctx<'_> {
     fn item(&self, clip: &Clip) -> Result<&BinItem, CompileError> {
         self.project.item(clip).ok_or_else(|| CompileError::Internal(format!("clip `{}`: unknown bin entry `{}`", clip.id, clip.bin)))
     }
-
-    /// Whether this clip contributes sound, so its track needs an audio mix. A sequence
-    /// is asked what it contains rather than assumed silent.
-    fn has_audio(&self, clip: &Clip) -> Result<bool, CompileError> {
-        if clip.muted {
-            return Ok(false);
-        }
-        let item = self.item(clip)?;
-        Ok(match &item.source {
-            BinSource::Sequence(_) => self.project.seq_has_audio(&clip.bin),
-            _ => item.is_timed_media(),
-        })
-    }
 }
 
 struct CompiledTrack {
@@ -301,17 +280,24 @@ struct Plan<'a> {
     /// thing this clip plays.
     p_in: i64,
     p_out: i64,
-    /// What the *lane playlist* entry asks for, and the range this clip's filters span.
-    /// The same as `p_in`/`p_out` for an ordinary producer, which the lane cuts directly.
-    /// A sequence clip is a wrapper playlist that has already done the cut, and a wrapper
-    /// starts at its own zero, so this is `0..len-1` instead.
-    e_in: i64,
-    e_out: i64,
+    /// True when this clip is emitted as a wrapper playlist that has already made the cut
+    /// (a sequence placement), rather than a producer the lane cuts directly. A wrapper
+    /// starts at its own zero, which is the whole of what [`Plan::entry`] decides.
+    wrapped: bool,
     /// Frames added before/after the clip's own range for a dissolve. Effects are
     /// measured from the clip's own start, so keyframes are offset by `pre`.
     pre: i64,
     post: i64,
     producer_id: String,
+}
+
+impl Plan<'_> {
+    /// The range to ask this clip's element for: what the lane playlist's entry cuts, and
+    /// what its filters span. Derived rather than stored, so no site can reach for the
+    /// wrong one of two ranges that are the same length at different offsets.
+    fn entry(&self) -> (i64, i64) {
+        if self.wrapped { (0, self.p_out - self.p_in) } else { (self.p_in, self.p_out) }
+    }
 }
 
 fn compile_track(ctx: &Ctx, track: &Track, total: i64, w: &mut XmlWriter) -> Result<Option<CompiledTrack>, CompileError> {
@@ -333,8 +319,9 @@ fn compile_track(ctx: &Ctx, track: &Track, total: i64, w: &mut XmlWriter) -> Res
     let mut plans: Vec<Plan> = Vec::new();
     let mut prev_lane = 0usize;
     for (_, clip) in track.sorted_clips() {
+        let item = ctx.item(clip)?;
         // Overlays without a bake are skipped (they are live DOM in preview).
-        if ctx.item(clip)?.is_overlay() && !ctx.opts.bakes.contains_key(&clip.id) {
+        if item.is_overlay() && !ctx.opts.bakes.contains_key(&clip.id) {
             match ctx.opts.unbaked {
                 UnbakedPolicy::Skip => continue,
                 UnbakedPolicy::Error => return Err(CompileError::Unbaked(clip.id.clone())),
@@ -352,7 +339,7 @@ fn compile_track(ctx: &Ctx, track: &Track, total: i64, w: &mut XmlWriter) -> Res
         let len = tl_out - tl_in + 1;
 
         // Stills, colours and overlays are generated to fit and start at their own zero.
-        let (p_in, p_out) = if ctx.item(clip)?.is_timed_media() {
+        let (p_in, p_out) = if item.is_timed_media() {
             // Producer time is warped by the speed; the handle is already in source time,
             // so it is subtracted after the warp.
             let sin = fps.frame(clip.source_in / clip.speed.abs()) - e.before;
@@ -363,9 +350,8 @@ fn compile_track(ctx: &Ctx, track: &Track, total: i64, w: &mut XmlWriter) -> Res
         } else {
             (0, len - 1)
         };
-        let (e_in, e_out) = if ctx.item(clip)?.is_sequence() { (0, len - 1) } else { (p_in, p_out) };
         let producer_id = format!("clip_{}", clip.id);
-        plans.push(Plan { clip, lane, tl_in, tl_out, p_in, p_out, e_in, e_out, pre: e.before, post: e.after, producer_id });
+        plans.push(Plan { clip, lane, tl_in, tl_out, p_in, p_out, wrapped: item.is_sequence(), pre: e.before, post: e.after, producer_id });
     }
     if plans.is_empty() {
         return Ok(None);
@@ -376,7 +362,9 @@ fn compile_track(ctx: &Ctx, track: &Track, total: i64, w: &mut XmlWriter) -> Res
     let mut has_audio = false;
     for p in &plans {
         emit_clip_producer(ctx, p, w)?;
-        has_audio |= ctx.has_audio(p.clip)?;
+        // Short-circuit: one audible clip settles the track, and for a sequence clip the
+        // question costs a walk of everything it nests.
+        has_audio = has_audio || ctx.project.clip_has_audio(p.clip);
         for e in &p.clip.effects {
             if let Effect::Blend { mode } = e {
                 if *mode != BlendMode::Normal {
@@ -397,7 +385,8 @@ fn compile_track(ctx: &Ctx, track: &Track, total: i64, w: &mut XmlWriter) -> Res
         if p.tl_in > cursor[l] {
             lanes[l].push(Item::Blank(p.tl_in - cursor[l]));
         }
-        lanes[l].push(Item::Entry { producer: p.producer_id.clone(), in_: p.e_in, out: p.e_out });
+        let (in_, out) = p.entry();
+        lanes[l].push(Item::Entry { producer: p.producer_id.clone(), in_, out });
         cursor[l] = p.tl_out + 1;
     }
     let two_lanes = !lanes[1].is_empty();
@@ -546,7 +535,8 @@ fn emit_clip_producer(ctx: &Ctx, p: &Plan, w: &mut XmlWriter) -> Result<(), Comp
 fn emit_filters(ctx: &Ctx, p: &Plan, w: &mut XmlWriter) {
     let clip = p.clip;
     let fps = ctx.fps;
-    let len = p.e_out - p.e_in + 1;
+    let (f_in, f_out) = p.entry();
+    let len = f_out - f_in + 1;
     let n = std::cell::Cell::new(0usize);
     // Open a `<filter>` with a unique id over an explicit frame range; the caller adds
     // properties and closes it.
@@ -555,7 +545,7 @@ fn emit_filters(ctx: &Ctx, p: &Plan, w: &mut XmlWriter) {
         w.open("filter", &[("id", format!("{}_{name}{}", p.producer_id, n.get())), ("in", in_.to_string()), ("out", out.to_string())]);
         w.property("mlt_service", service);
     };
-    let open = |w: &mut XmlWriter, name: &str, service: &str| open_at(w, name, service, p.e_in, p.e_out);
+    let open = |w: &mut XmlWriter, name: &str, service: &str| open_at(w, name, service, f_in, f_out);
     // Keyframe positions are relative to the clip's own start, i.e. `pre` frames in.
     let at = |t: f64| (fps.frame(t) + p.pre).clamp(0, len - 1);
 
@@ -624,7 +614,7 @@ fn emit_filters(ctx: &Ctx, p: &Plan, w: &mut XmlWriter) {
             }
             Effect::Fade { fade_in, fade_out } => {
                 // Fades span the clip's own range, not the dissolve handles.
-                let (own_in, own_out) = (p.e_in + p.pre, p.e_out - p.post);
+                let (own_in, own_out) = (f_in + p.pre, f_out - p.post);
                 let own_len = own_out - own_in + 1;
                 if *fade_in > 0.0 {
                     let fi = fps.length(*fade_in).min(own_len);

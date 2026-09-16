@@ -115,7 +115,7 @@ pub fn validate(p: &Project, ctx: &ValidationContext) -> Vec<Issue> {
     // forever. Checked over the whole bin rather than only what the master reaches, so a
     // cycle is refused when it is built rather than when it is first placed. One report:
     // every entry on the ring would otherwise raise the same error.
-    if let Some(ring) = p.sequences().find_map(|(id, _)| p.compile_order(id).err()) {
+    if let Err(ring) = p.check_cycles() {
         issues.push(Issue::error(
             format!("/bin/{}/source/tracks", ring[0]),
             format!("sequence `{}` contains itself: {}", ring[0], ring.join(" → ")),
@@ -133,14 +133,14 @@ pub fn validate(p: &Project, ctx: &ValidationContext) -> Vec<Issue> {
     issues
 }
 
-fn check_sequence(
+fn check_sequence<'a>(
     issues: &mut Vec<Issue>,
-    p: &Project,
+    p: &'a Project,
     ctx: &ValidationContext,
     seq_id: &str,
-    seq: &Sequence,
-    track_ids: &mut HashSet<String>,
-    clip_ids: &mut HashSet<String>,
+    seq: &'a Sequence,
+    track_ids: &mut HashSet<&'a str>,
+    clip_ids: &mut HashSet<&'a str>,
 ) {
     let base = format!("/bin/{seq_id}/source");
     for (ti, t) in seq.tracks.iter().enumerate() {
@@ -200,16 +200,20 @@ fn check_sequence(
                     }
                     // An empty sequence compiles to nothing, so a clip placing one would
                     // silently be a gap. Say so where it is placed.
-                    if item.is_sequence() && p.seq_duration(&c.bin) <= 0.0 {
-                        issues.push(Issue::error(format!("{cp}/bin"), format!("sequence `{}` is empty; put a clip on it before placing it", c.bin)));
-                    } else if let Some(d) = source_duration(p, c) {
-                        let need = c.source_in + c.duration() * c.speed.abs();
-                        if need > d + 1e-6 {
-                            issues.push(Issue::warn(
-                                format!("{cp}/end"),
-                                format!("clip reads {need:.2}s of a {d:.2}s source; tail will be black/silent"),
-                            ));
+                    match source_duration(p, c) {
+                        Some(d) if d <= 0.0 && item.is_sequence() => {
+                            issues.push(Issue::error(format!("{cp}/bin"), format!("sequence `{}` is empty; put a clip on it before placing it", c.bin)))
                         }
+                        Some(d) => {
+                            let need = c.source_in + c.duration() * c.speed.abs();
+                            if need > d + 1e-6 {
+                                issues.push(Issue::warn(
+                                    format!("{cp}/end"),
+                                    format!("clip reads {need:.2}s of a {d:.2}s source; tail will be black/silent"),
+                                ));
+                            }
+                        }
+                        None => {}
                     }
                 }
             }
@@ -389,10 +393,10 @@ fn check_keyframes(issues: &mut Vec<Issue>, ep: &str, c: &Clip, times: impl Iter
     }
 }
 
-fn check_id(issues: &mut Vec<Issue>, seen: &mut HashSet<String>, id: &str, path: String, what: &str) {
+fn check_id<'a>(issues: &mut Vec<Issue>, seen: &mut HashSet<&'a str>, id: &'a str, path: String, what: &str) {
     if !is_valid_id(id) {
         issues.push(Issue::error(path, format!("{what} id `{id}` must match [A-Za-z_][A-Za-z0-9_-]*")));
-    } else if !seen.insert(id.to_string()) {
+    } else if !seen.insert(id) {
         issues.push(Issue::error(path, format!("duplicate {what} id `{id}`")));
     }
 }

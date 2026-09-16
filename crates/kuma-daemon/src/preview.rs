@@ -13,7 +13,7 @@
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-use kuma_mlt::UnbakedPolicy;
+use crate::jobs::OverlayScope;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, Command};
 use tokio::sync::{broadcast, Mutex as AsyncMutex};
@@ -182,14 +182,8 @@ pub fn has_bin(name: &str) -> bool {
 }
 
 /// Compile the open sequence for preview (at the preview scale) and (re)load it into the
-/// engine.
-///
-/// Overlays on the open sequence are left unbaked and therefore skipped: the UI drives
-/// them as live DOM over the engine's picture. Overlays inside the sequences it *nests*
-/// are baked in, because nothing drives those — their clip times are their own sequence's,
-/// not the playhead's. They are content you are not editing, so a bake is the right shape:
-/// keyed by content, it is a cache hit on every reload after the first and it warms the
-/// same entry the render will use.
+/// engine. [`OverlayScope::Nested`] is what makes the overlays of the sequences it nests
+/// appear at all; its own are left unbaked, and therefore skipped, for the UI's live DOM.
 pub async fn reload(state: &Arc<AppState>) -> anyhow::Result<PathBuf> {
     let st = state.clone();
     let path = tokio::task::spawn_blocking(move || {
@@ -200,8 +194,11 @@ pub async fn reload(state: &Arc<AppState>) -> anyhow::Result<PathBuf> {
         // The engine loads one compiled file, so editing a sub-sequence means previewing
         // that sub-sequence: it is compiled as the root, exactly as a render of it would be.
         let sequence = st.current_sequence();
-        let bakes = crate::jobs::bake_for_preview(&st, &project, &sequence);
-        crate::jobs::compile_project(&st, &project, bakes, "preview", UnbakedPolicy::Skip, Some((w, h)), Some(sequence))
+        let mut opts = crate::jobs::compile_options(&st);
+        opts.bakes = crate::jobs::bake_for(&st, &project, &sequence, OverlayScope::Nested, &|_, _| {})?;
+        opts.size = Some((w, h));
+        opts.sequence = Some(sequence);
+        crate::jobs::compile_project(&st, &project, &opts, "preview")
     })
     .await??;
     state.preview.ensure(state).await?.send(&format!("load {}", path.display())).await?;

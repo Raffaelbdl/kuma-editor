@@ -99,26 +99,65 @@ pub fn add_media(state: &AppState, path: &Path, id: Option<String>, base_revisio
     Ok((id, rev, warnings))
 }
 
-/// Bake every overlay clip in the project (cached). Returns bakes keyed by clip id.
-///
-/// Walks every sequence, not just the master: an overlay two levels down is still in the
-/// render, and clip ids are unique across the project so one flat map still addresses it.
-pub fn bake_all(state: &AppState, project: &Project, only: Option<&[String]>, progress: &dyn Fn(u8, &str)) -> anyhow::Result<HashMap<String, OverlayBake>> {
-    bake_clips(state, project, only, progress, false)
+/// Which overlays a compile carries bakes for. The three cases are exclusive, which is
+/// the point: `Nested` and the live DOM the editor draws partition the overlays between
+/// them, so none is ever drawn twice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(from = "OverlayScopeRepr")]
+pub enum OverlayScope {
+    /// Footage only.
+    None,
+    /// Only the overlays inside the sequences the root *nests*. What a preview of that
+    /// root wants: it cannot drive those as live DOM, because their clip times are their
+    /// own sequence's rather than the playhead's.
+    Nested,
+    /// Every overlay the root reaches, its own included — a render, or a sample the agent
+    /// is going to look at.
+    #[default]
+    All,
 }
 
-/// Overlay clips a preview of `root` needs baked: the ones inside the sequences it nests,
-/// but never `root`'s own. The editor drives those as live DOM and the compile skips them,
-/// which is what stops the same overlay being drawn twice.
+/// Wire form: the `overlays` field has always been a bool, and stays one for clients.
+/// `nested` is spellable but is for the daemon's own callers (the preview and the snapshot
+/// that stands in for it), which is why the MCP tool still documents a boolean.
+#[derive(Deserialize)]
+#[serde(untagged, rename_all = "snake_case")]
+enum OverlayScopeRepr {
+    Toggle(bool),
+    Named(OverlayScopeName),
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum OverlayScopeName {
+    None,
+    Nested,
+    All,
+}
+
+impl From<OverlayScopeRepr> for OverlayScope {
+    fn from(r: OverlayScopeRepr) -> Self {
+        match r {
+            OverlayScopeRepr::Toggle(true) => OverlayScope::All,
+            OverlayScopeRepr::Toggle(false) => OverlayScope::None,
+            OverlayScopeRepr::Named(OverlayScopeName::None) => OverlayScope::None,
+            OverlayScopeRepr::Named(OverlayScopeName::Nested) => OverlayScope::Nested,
+            OverlayScopeRepr::Named(OverlayScopeName::All) => OverlayScope::All,
+        }
+    }
+}
+
+/// Overlay clips in the sequences `root` reaches, on visible tracks. `nested_only` drops
+/// `root`'s own, leaving exactly the ones a preview of it cannot drive as live DOM.
 ///
-/// Only sequences `root` actually reaches, and only visible tracks: a bin full of
-/// unplaced sequences must not cost a bake on every preview reload.
-pub fn nested_overlay_clips(project: &Project, root: &str) -> Vec<String> {
+/// Reachability matters: a bin full of unplaced sequences must cost neither a bake on
+/// every preview reload nor a headless browser run on every render.
+fn overlay_clips(project: &Project, root: &str, nested_only: bool) -> Vec<String> {
     project
         .compile_order(root)
         .unwrap_or_default()
         .iter()
-        .filter(|id| id.as_str() != root)
+        .filter(|id| !(nested_only && id.as_str() == root))
         .filter_map(|id| project.seq(id))
         .flat_map(|s| s.tracks.iter().filter(|t| !t.hidden).flat_map(|t| t.clips.iter()))
         .filter(|c| project.item(c).is_some_and(kuma_core::BinItem::is_overlay))
@@ -126,89 +165,90 @@ pub fn nested_overlay_clips(project: &Project, root: &str) -> Vec<String> {
         .collect()
 }
 
-/// Bake what a preview of `root` needs, tolerating failures. A template that will not bake
-/// (or no hyperframes at all) costs you that overlay in the preview, never the preview
-/// itself — which used to be free, because overlays were skipped entirely.
-pub fn bake_for_preview(state: &AppState, project: &Project, root: &str) -> HashMap<String, OverlayBake> {
-    let ids = nested_overlay_clips(project, root);
-    if ids.is_empty() {
-        return HashMap::new();
+/// Bake the overlays `scope` asks for. `Nested` is best effort: a template that will not
+/// bake — or no hyperframes at all — costs you that overlay in the preview and never the
+/// preview itself, which used to be free because overlays were skipped entirely.
+pub fn bake_for(state: &AppState, project: &Project, root: &str, scope: OverlayScope, progress: &dyn Fn(u8, &str)) -> anyhow::Result<HashMap<String, OverlayBake>> {
+    match scope {
+        OverlayScope::None => Ok(HashMap::new()),
+        OverlayScope::Nested => Ok(bake_clips(state, project, &overlay_clips(project, root, true), progress, |e| tracing::warn!("preview: {e:#}"))),
+        OverlayScope::All => strict(|on_error| bake_clips(state, project, &overlay_clips(project, root, false), progress, on_error)),
     }
-    bake_clips(state, project, Some(&ids), &|_, _| {}, true).unwrap_or_default()
 }
 
-/// `tolerate` skips clips that fail to bake instead of failing the whole call.
+/// Bake the named overlay clips, or every one in the project when none are named. This is
+/// the explicit `bake` command, where "all" means the whole bin rather than what some
+/// timeline reaches — warming the cache for an entry you have not placed yet is the point.
+pub fn bake_all(state: &AppState, project: &Project, only: Option<&[String]>, progress: &dyn Fn(u8, &str)) -> anyhow::Result<HashMap<String, OverlayBake>> {
+    let ids: Vec<String> = project
+        .all_clips()
+        .filter(|(_, _, c)| project.item(c).is_some_and(kuma_core::BinItem::is_overlay))
+        .map(|(_, _, c)| c.id.clone())
+        .filter(|id| only.is_none_or(|o| o.contains(id)))
+        .collect();
+    strict(|on_error| bake_clips(state, project, &ids, progress, on_error))
+}
+
+/// Run a bake that must not lose an overlay: the first failure becomes the result.
+fn strict(
+    bake: impl FnOnce(&mut dyn FnMut(anyhow::Error)) -> HashMap<String, OverlayBake>,
+) -> anyhow::Result<HashMap<String, OverlayBake>> {
+    let mut failure = None;
+    let out = bake(&mut |e| {
+        failure.get_or_insert(e);
+    });
+    failure.map_or(Ok(out), Err)
+}
+
+/// Bake the named overlay clips (cached), handing each failure to `on_error`. Whether a
+/// failure is fatal is the caller's to decide — the loop itself does not care.
 fn bake_clips(
     state: &AppState,
     project: &Project,
-    only: Option<&[String]>,
+    ids: &[String],
     progress: &dyn Fn(u8, &str),
-    tolerate: bool,
-) -> anyhow::Result<HashMap<String, OverlayBake>> {
+    mut on_error: impl FnMut(anyhow::Error),
+) -> HashMap<String, OverlayBake> {
     let templates = read(&state.templates).loaded.clone();
-    let clips: Vec<_> = project
-        .all_clips()
-        .map(|(_, _, c)| c)
-        .filter(|c| project.item(c).is_some_and(kuma_core::BinItem::is_overlay))
-        .filter(|c| only.map(|o| o.iter().any(|id| id == &c.id)).unwrap_or(true))
-        .collect();
     let mut out = HashMap::new();
-    let n = clips.len().max(1);
-    for (i, clip) in clips.iter().enumerate() {
+    let n = ids.len().max(1);
+    for (i, id) in ids.iter().enumerate() {
+        let Some((_, _, clip)) = project.find_clip(id) else { continue };
         let Some(BinSource::Overlay { template: overlay, vars }) = project.item(clip).map(|i| &i.source) else { continue };
-        let found = templates.get(overlay).ok_or_else(|| anyhow::anyhow!("unknown template `{overlay}` for clip `{}`", clip.id));
-        let (dir, manifest) = match found {
-            Ok(t) => t,
-            Err(e) if tolerate => {
-                tracing::warn!("preview: {e:#}");
-                continue;
-            }
-            Err(e) => return Err(e),
+        let Some((dir, manifest)) = templates.get(overlay) else {
+            on_error(anyhow::anyhow!("unknown template `{overlay}` for clip `{id}`"));
+            continue;
         };
-        progress(((i * 100) / n) as u8, &format!("baking {} ({overlay})", clip.id));
+        progress(((i * 100) / n) as u8, &format!("baking {id} ({overlay})"));
         let req = BakeRequest { template_dir: dir, manifest, vars, fps: project.fps, width: project.width, height: project.height, duration: clip.duration(), speed: clip.speed };
-        match state.baker.bake(&req).map_err(|e| anyhow::anyhow!("bake `{}`: {e}", clip.id)) {
+        match state.baker.bake(&req) {
             Ok(r) => {
-                out.insert(clip.id.clone(), r.overlay_bake());
+                out.insert(id.clone(), r.overlay_bake());
             }
-            Err(e) if tolerate => tracing::warn!("preview: {e:#}"),
-            Err(e) => return Err(e),
+            Err(e) => on_error(anyhow::anyhow!("bake `{id}`: {e}")),
         }
     }
-    Ok(out)
+    out
 }
 
-/// Compile a project to MLT XML with the given bakes. `sequence` is the timeline to
-/// compile as the root; `None` means the master, which is what a render always wants.
-pub fn compile_xml(
-    state: &AppState,
-    project: &Project,
-    bakes: HashMap<String, OverlayBake>,
-    unbaked: UnbakedPolicy,
-    size: Option<(u32, u32)>,
-    sequence: Option<String>,
-) -> anyhow::Result<String> {
+/// Compile options pointed at this project's directories. Callers set what they need on
+/// it (`bakes`, `unbaked`, `size`, `sequence`) — a new compile knob is then a field rather
+/// than another parameter on every function between here and the caller.
+pub fn compile_options(state: &AppState) -> CompileOptions {
     let mut opts = CompileOptions::new(state.config.project_root());
     opts.cache_dir = state.config.cache_dir().join("cache");
-    opts.bakes = bakes;
-    opts.unbaked = unbaked;
-    opts.size = size;
-    opts.sequence = sequence;
-    Ok(compile(project, &opts)?)
+    opts
+}
+
+/// Compile a project to MLT XML.
+pub fn compile_xml(project: &Project, opts: &CompileOptions) -> anyhow::Result<String> {
+    Ok(compile(project, opts)?)
 }
 
 /// Compile to `.kuma/<name>.mlt`, replacing the file atomically: a melt or engine that
 /// is still reading the previous compile keeps its own (unlinked) copy.
-pub fn compile_project(
-    state: &AppState,
-    project: &Project,
-    bakes: HashMap<String, OverlayBake>,
-    name: &str,
-    unbaked: UnbakedPolicy,
-    size: Option<(u32, u32)>,
-    sequence: Option<String>,
-) -> anyhow::Result<PathBuf> {
-    let xml = compile_xml(state, project, bakes, unbaked, size, sequence)?;
+pub fn compile_project(state: &AppState, project: &Project, opts: &CompileOptions, name: &str) -> anyhow::Result<PathBuf> {
+    let xml = compile_xml(project, opts)?;
     let dir = state.config.cache_dir();
     std::fs::create_dir_all(&dir)?;
     let path = dir.join(format!("{name}.mlt"));
@@ -236,12 +276,12 @@ fn default_preset() -> String {
 pub fn render(state: &AppState, req: &RenderRequest, progress: &dyn Fn(u8, &str)) -> anyhow::Result<serde_json::Value> {
     let project = read(&state.project).clone();
     let preset = kuma_mlt::presets::find(&req.preset).ok_or_else(|| anyhow::anyhow!("unknown preset `{}`", req.preset))?;
-    let sequence = req.sequence.clone().unwrap_or_else(|| project.master.clone());
-    if project.seq(&sequence).is_none() {
-        anyhow::bail!("`{sequence}` is not a sequence in this project");
-    }
-    let bakes = bake_all(state, &project, None, &|p, m| progress(p / 2, m))?;
-    let mlt = compile_project(state, &project, bakes, "render", UnbakedPolicy::Error, None, Some(sequence.clone()))?;
+    let sequence = project.sequence_or_master(req.sequence.as_deref()).map_err(|e| anyhow::anyhow!(e))?.clone();
+    let mut opts = compile_options(state);
+    opts.bakes = bake_for(state, &project, &sequence, OverlayScope::All, &|p, m| progress(p / 2, m))?;
+    opts.unbaked = UnbakedPolicy::Error;
+    opts.sequence = Some(sequence.clone());
+    let mlt = compile_project(state, &project, &opts, "render")?;
     let output = req.output.clone().unwrap_or_else(|| {
         let name = if project.name.is_empty() { "kuma" } else { project.name.as_str() };
         let part = if sequence == project.master { String::new() } else { format!("-{sequence}") };
@@ -272,24 +312,16 @@ pub struct SampleRequest {
     /// Output width (keeps aspect). Defaults to 960 for full frames, native for crops.
     #[serde(default)]
     pub width: Option<u32>,
-    /// Include baked overlays (default true; slower on first call while bakes are created).
-    #[serde(default = "yes")]
-    pub overlays: bool,
+    /// Which overlays to include. Accepts `true`/`false` on the wire as it always has;
+    /// the preview's `nested` scope is for callers inside the daemon.
+    #[serde(default)]
+    pub overlays: OverlayScope,
     /// Sequence to sample. The master when absent.
     #[serde(default)]
     pub sequence: Option<String>,
-    /// Internal, never part of the JSON API: bake only the overlays inside *nested*
-    /// sequences, the way the engine preview does. The snapshot fallback sets it so the
-    /// two paths show the same picture — the open sequence's own overlays are live DOM
-    /// drawn over the top, and baking them too would double them.
-    #[serde(skip)]
-    pub nested_overlays_only: bool,
 }
 fn one_usize() -> usize {
     1
-}
-fn yes() -> bool {
-    true
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -304,37 +336,19 @@ pub struct Sample {
 /// two concurrent samples of the same frame never read a half-written PNG.
 pub fn sample_frames(state: &AppState, req: &SampleRequest, progress: &dyn Fn(u8, &str)) -> anyhow::Result<Vec<Sample>> {
     let project = read(&state.project).clone();
-    let sequence = req.sequence.clone().unwrap_or_else(|| project.master.clone());
-    if project.seq(&sequence).is_none() {
-        anyhow::bail!("`{sequence}` is not a sequence in this project");
-    }
+    let sequence = project.sequence_or_master(req.sequence.as_deref()).map_err(|e| anyhow::anyhow!(e))?.clone();
     let t1 = req.t1.unwrap_or(req.t0);
     let count = req.count.clamp(1, 32);
-    let bakes = if req.nested_overlays_only {
-        bake_for_preview(state, &project, &sequence)
-    } else if req.overlays {
-        // Skip overlays outside the sampled range — but only on the sequence being
-        // sampled, where clip times are the times asked for. A nested sequence's clips are
-        // in its own time, and one sequence can be placed more than once, so there is no
-        // single window to test them against: those are baked whatever the range.
-        let ids: Vec<String> = project
-            .all_clips()
-            .filter(|(seq, _, c)| {
-                project.item(c).is_some_and(kuma_core::BinItem::is_overlay) && (**seq != sequence || (c.end > req.t0 && c.start <= t1))
-            })
-            .map(|(_, _, c)| c.id.clone())
-            .collect();
-        bake_all(state, &project, Some(&ids), &|p, m| progress(p / 2, m))?
-    } else {
-        HashMap::new()
-    };
+    let bakes = bake_for(state, &project, &sequence, req.overlays, &|p, m| progress(p / 2, m))?;
     let out_dir = state.config.cache_dir().join("samples");
     std::fs::create_dir_all(&out_dir)?;
+    let mut opts = compile_options(state);
+    opts.bakes = bakes;
+    opts.sequence = Some(sequence.clone());
     // Overlay templates can change without a project revision (the agent edits the HTML),
     // so the bake keys are part of the frame cache key.
-    let bakes_used = !bakes.is_empty();
-    let bake_stamp = hash_str(&bakes.values().map(|b| b.resource.to_string_lossy().into_owned()).collect::<Vec<_>>().join("\n"));
-    let xml = compile_xml(state, &project, bakes, UnbakedPolicy::Skip, None, Some(sequence.clone()))?;
+    let bake_stamp = hash_str(&opts.bakes.values().map(|b| b.resource.to_string_lossy().into_owned()).collect::<Vec<_>>().join("\n"));
+    let xml = compile_xml(&project, &opts)?;
     let mlt_file = tempfile::Builder::new().prefix("sample-").suffix(".mlt").tempfile_in(state.config.cache_dir())?;
     std::fs::write(mlt_file.path(), xml)?;
     // Produce `target` through `f(tmp)` and publish it with a rename.
@@ -352,7 +366,7 @@ pub fn sample_frames(state: &AppState, req: &SampleRequest, progress: &dyn Fn(u8
         let t = if count == 1 { req.t0 } else { req.t0 + (t1 - req.t0) * i as f64 / (count - 1) as f64 };
         let frame = project.fps.frame(t);
         progress((50 + 50 * i / count) as u8, &format!("frame {frame}"));
-        let stamp = format!("{}_{sequence}_{}{}", project.revision, frame, if bakes_used { format!("o{bake_stamp}") } else { String::new() });
+        let stamp = format!("{}_{sequence}_{}{}", project.revision, frame, if opts.bakes.is_empty() { String::new() } else { format!("o{bake_stamp}") });
         let full = out_dir.join(format!("f{stamp}.png"));
         atomic(&full, &|tmp| Ok(kuma_mlt::melt::snapshot(mlt_file.path(), frame, tmp)?))?;
         let path = if req.rect.is_some() || req.width.is_some() {
@@ -411,8 +425,8 @@ mod tests {
 
     /// The preview bakes the overlays it cannot drive and nothing else. Its own are live
     /// DOM (baking them too would draw every overlay twice); a hidden track is not in the
-    /// picture; and a sequence sitting unplaced in the bin must not cost a bake on every
-    /// reload just for being there.
+    /// picture; and a sequence sitting unplaced in the bin must cost neither a bake on
+    /// every reload nor a browser run on every render, just for being there.
     #[test]
     fn a_preview_bakes_the_overlays_it_nests_and_no_others() {
         let p: Project = serde_json::from_value(json!({
@@ -430,8 +444,12 @@ mod tests {
             }
         }))
         .unwrap();
-        assert_eq!(nested_overlay_clips(&p, "main"), vec!["o_nested"]);
+        assert_eq!(overlay_clips(&p, "main", true), vec!["o_nested"]);
         // Open the inner sequence and the same overlay becomes live DOM instead.
-        assert!(nested_overlay_clips(&p, "inner").is_empty());
+        assert!(overlay_clips(&p, "inner", true).is_empty());
+        // A render of the master wants its own overlay as well — but still nothing from
+        // the sequence nobody placed, which would be a headless browser run for nothing.
+        // Innermost first, the order `compile_order` walks in.
+        assert_eq!(overlay_clips(&p, "main", false), vec!["o_nested", "o_own"]);
     }
 }

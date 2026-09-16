@@ -4,7 +4,7 @@ import { api } from "./api";
 import { button, el, options } from "./dom";
 import { store, toast } from "./store";
 import type { BinItem, Clip, Effect, PatchOp, VarSpec } from "./types";
-import { allClips, binItem, expandPreset, isFileSource, isOverlaySource, isSequenceSource, isTimedMedia, seqDuration } from "./types";
+import { binItem, binPath, canTimeWarp, expandPreset, isFileSource, isOverlaySource, isSequenceSource, isTimedMedia, placementsOf, seqDuration } from "./types";
 
 const presetsPromise = api.effectPresets().catch(() => []);
 
@@ -50,7 +50,7 @@ export class Inspector {
     this.host.appendChild(field("Start", numInput(clip.start, (v) => rep("/start", v, "start"), frame)));
     this.host.appendChild(field("End", numInput(clip.end, (v) => rep("/end", v, "end"), frame)));
     // MLT cannot time-warp a timeline, so the field would only ever be refused.
-    if (!item || !isSequenceSource(item.source)) {
+    if (canTimeWarp(item)) {
       this.host.appendChild(field("Speed", numInput(clip.speed, (v) => rep("/speed", v, "speed"), 0.05)));
     }
     if (isTimedMedia(item)) {
@@ -72,7 +72,7 @@ export class Inspector {
 
   /** The bin entry the clip plays. Editing here changes every placement of it. */
   private renderBinItem(id: string, item: BinItem) {
-    const bp = `/bin/${id}`;
+    const bp = binPath(id);
     const h = el("h3", "", "Bin entry ");
     h.appendChild(el("span", "mono muted", id));
     this.host.appendChild(h);
@@ -99,7 +99,7 @@ export class Inspector {
       this.host.appendChild(el("p", "muted", "Unknown template — is its library on the search path?"));
       return;
     }
-    const places = allClips(store.state.project!).filter(({ clip }) => clip.bin === id).length;
+    const places = placementsOf(store.state.project!, id);
     if (places > 1) this.host.appendChild(el("p", "muted", `Used by ${places} clips — these values apply to all of them.`));
     const vars = source.vars ?? {};
     const setVar = (k: string, v: unknown) => store.patch([{ op: "add", path: `${bp}/source/vars`, value: { ...vars, [k]: v } }], `var ${k}`);

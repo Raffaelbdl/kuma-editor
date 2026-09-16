@@ -11,7 +11,7 @@
 import { api } from "./api";
 import { store, toast } from "./store";
 import type { Clip, Project } from "./types";
-import { allClips, binItem, isOverlayClip, isSequenceSource, transformAt } from "./types";
+import { binItem, isOverlayClip, isOverlaySource, reachableFrom, sequenceOf, transformAt } from "./types";
 
 interface OverlayView {
   clipId: string;
@@ -305,24 +305,20 @@ export class Preview {
 /** Everything the preview compile depends on, so an edit that cannot change the engine's
  *  picture does not make it reload the timeline.
  *
- *  Only the *open* sequence's overlays are outside it: those are live DOM, and the compile
- *  skips them. Overlays inside nested sequences are baked into the engine's picture, so
- *  editing one has to reload it — which means keeping their tracks and their bin entries
- *  in the key, and dropping an overlay entry only when nothing but the open sequence
- *  uses it. */
+ *  Two things are outside it. Anything the open sequence does not reach: the daemon
+ *  compiles `compile_order(open)` and nothing else, so an edit to a part you have not
+ *  placed cannot show. And the open sequence's own overlay clips: those are live DOM and
+ *  the compile skips them — unlike the overlays inside the sequences it nests, which are
+ *  baked into the engine's picture and so must be in the key. */
 function engineKey(p: Project, sequence: string): string {
-  const usedElsewhere = new Set(allClips(p).filter(({ seq }) => seq !== sequence).map(({ clip }) => clip.bin));
-  const bin = Object.fromEntries(
-    Object.entries(p.bin)
-      .filter(([id, i]) => !("template" in i.source) || usedElsewhere.has(id))
-      .map(([id, i]) => [
-        id,
-        isSequenceSource(i.source) && id === sequence
-          ? { ...i, source: { ...i.source, tracks: i.source.tracks.filter((t) => t.kind !== "overlay") } }
-          : i,
-      ]),
+  const reached = reachableFrom(p, sequence);
+  const open = sequenceOf(p, sequence);
+  const placed = new Set([...reached].flatMap((id) => sequenceOf(p, id)!.tracks.flatMap((t) => t.clips.map((c) => c.bin))));
+  const bin = Object.entries(p.bin).filter(
+    // The open sequence goes in separately, with its live-DOM tracks left out.
+    ([id, i]) => id !== sequence && placed.has(id) && !(isOverlaySource(i.source) && open?.tracks.some((t) => t.clips.some((c) => c.bin === id))),
   );
-  return JSON.stringify([sequence, p.fps, p.width, p.height, p.sample_rate, bin]);
+  return JSON.stringify([sequence, p.fps, p.width, p.height, p.sample_rate, bin, open?.tracks.filter((t) => t.kind !== "overlay")]);
 }
 
 /** Everything the overlay document is a function of: its injected `window.kuma`. The bin

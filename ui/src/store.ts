@@ -1,6 +1,6 @@
 import { api, subscribeEvents } from "./api";
 import type { Clip, DaemonEvent, Job, PatchOp, Project, TemplateInfo, Track } from "./types";
-import { allClips, fpsValue, freeId, seqDuration, sequenceIds, sequenceOf } from "./types";
+import { allClips, fpsValue, freeId, seqDuration, seqPath, sequenceIds, sequenceOf } from "./types";
 
 export interface State {
   project: Project | null;
@@ -158,19 +158,28 @@ class Store {
 
   /** JSON pointer to the open sequence's timeline — the prefix for every track edit. */
   get seqPath(): string {
-    return `/bin/${pointerSegment(this.state.sequence)}/source`;
+    return seqPath(this.state.sequence);
   }
 
-  /** Find a clip anywhere in the project; ids are unique across every sequence. */
+  /** Find a clip anywhere in the project; ids are unique across every sequence. Stops at
+   *  the match rather than building the whole project's clip list: the preview calls this
+   *  for every visible overlay on every frame. */
   findClip(id: string | null): { seq: string; track: Track; ti: number; clip: Clip; ci: number } | null {
     const p = this.state.project;
     if (!p || !id) return null;
-    return allClips(p).find(({ clip }) => clip.id === id) ?? null;
+    for (const seq of sequenceIds(p)) {
+      const tracks = sequenceOf(p, seq)!.tracks;
+      for (let ti = 0; ti < tracks.length; ti++) {
+        const ci = tracks[ti].clips.findIndex((c) => c.id === id);
+        if (ci >= 0) return { seq, track: tracks[ti], ti, clip: tracks[ti].clips[ci], ci };
+      }
+    }
+    return null;
   }
 
   clipPath(id: string): string | null {
     const f = this.findClip(id);
-    return f ? `/bin/${pointerSegment(f.seq)}/source/tracks/${f.ti}/clips/${f.ci}` : null;
+    return f ? `${seqPath(f.seq)}/tracks/${f.ti}/clips/${f.ci}` : null;
   }
 
   /** A clip id free across the whole project: clip ids are global, not per sequence. */
@@ -197,11 +206,6 @@ class Store {
 }
 
 export const store = new Store();
-
-/** RFC 6901 escaping for a bin id used as a pointer segment. Bin ids are validated to
- *  `[A-Za-z_][A-Za-z0-9_-]*`, so this never fires — it is here so a pointer built from a
- *  daemon that loosens that rule cannot silently address the wrong entry. */
-export const pointerSegment = (id: string) => id.replace(/~/g, "~0").replace(/\//g, "~1");
 
 // ---- toasts ------------------------------------------------------------------
 

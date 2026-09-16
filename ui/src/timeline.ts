@@ -1,9 +1,9 @@
 // Timeline: tracks, clips (move/trim), transitions, playhead, zoom.
 
 import { button, el } from "./dom";
-import { pointerSegment, store, toast } from "./store";
+import { store, toast } from "./store";
 import type { BinItem, Clip, PatchOp, Project, Track, TrackKind } from "./types";
-import { binItem, clipKind, isFileSource, isOverlaySource, isTimedMedia, itemKind, seqDuration, sequenceOf } from "./types";
+import { binItem, binPath, clipKind, isFileSource, isOverlaySource, isSequenceSource, isTimedMedia, itemKind, seqDuration, sequenceOf, wouldRecurse } from "./types";
 
 const HEAD = 120;
 
@@ -50,7 +50,8 @@ export class Timeline {
     // Ruler
     const ruler = el("div", "tl-ruler");
     const step = niceStep(s.zoom);
-    for (let i = 0; i * step <= store.duration + 10; i++) {
+    const end = store.duration + 10;
+    for (let i = 0; i * step <= end; i++) {
       const t = i * step; // by index, so float drift never turns "3s" into "3.0"
       const tick = el("div", "tick", Number.isInteger(t) ? `${t}s` : t.toFixed(1));
       tick.style.left = `${this.x(t)}px`;
@@ -128,7 +129,7 @@ export class Timeline {
     const name = item ? item.name || c.bin : `? ${c.bin}`;
     // The template is worth showing only when the entry was not named after it.
     const template = item && isOverlaySource(item.source) && item.source.template !== name ? item.source.template : "";
-    const seq = item && "tracks" in item.source ? `sequence · ${seqDuration(p, c.bin).toFixed(1)}s` : "";
+    const seq = item && isSequenceSource(item.source) ? `sequence · ${seqDuration(p, c.bin).toFixed(1)}s` : "";
     const sub = c.speed !== 1 ? `${c.speed}×` : template || seq;
     box.title = `${c.id}  ${c.start.toFixed(2)}–${c.end.toFixed(2)}s`;
     const hl = el("div", "handle l");
@@ -249,11 +250,17 @@ export class Timeline {
 
 const TRACK_FOR: Record<string, TrackKind> = { overlay: "overlay", audio: "audio", video: "video", image: "video", color: "video", sequence: "video" };
 
-/** Place an existing bin entry at time `t` on track `ti`. */
+/** Place an existing bin entry at time `t` on track `ti`. Every way of placing something —
+ *  a button, a drop — comes through here, so the one rule a placement can break is checked
+ *  here rather than next to each gesture. */
 export async function placeBinItem(binId: string, t: number, ti = -1) {
   const p = store.state.project!;
   const item = p.bin[binId];
   if (!item) return;
+  if (wouldRecurse(p, binId, store.state.sequence)) {
+    toast(`${item.name || binId} contains this sequence; placing it here would make a loop`, "err");
+    return;
+  }
   const kind = TRACK_FOR[itemKind(item)];
   const d = defaultDuration(item, p, binId);
   const clip: Clip = { id: store.newId(kind === "overlay" ? "o" : "c"), start: t, end: t + d, bin: binId, in: 0, speed: 1, volume: 1, muted: false, effects: [], label: "" };
@@ -268,7 +275,7 @@ export async function addFromLibrary(templateId: string, t: number, ti = -1) {
   const item: BinItem = { name: tpl?.manifest.name || templateId, source: { template: templateId, vars: {} } };
   const d = tpl?.manifest.duration_default ?? 4;
   const clip: Clip = { id: store.newId("o"), start: t, end: t + d, bin: binId, in: 0, speed: 1, volume: 1, muted: false, effects: [], label: "" };
-  await place(clip, "overlay", ti, [{ op: "add", path: `/bin/${binId}`, value: item }]);
+  await place(clip, "overlay", ti, [{ op: "add", path: binPath(binId), value: item }]);
 }
 
 function defaultDuration(item: BinItem, p: Project, binId: string): number {
@@ -316,11 +323,14 @@ async function place(clip: Clip, kind: TrackKind, ti: number, pre: PatchOp[]) {
 /** Build the patch op that inserts a new empty track of `kind`. Tracks composite in array
  *  order, so a video track goes below the first overlay track and everything else on top
  *  (audio order does not matter). */
+function newTrack(kind: TrackKind, name?: string): Track {
+  const id = store.newTrackId(kind[0]);
+  return { id, kind, name: name ?? `${kind[0].toUpperCase()}${kind.slice(1)} ${id.slice(1)}`, muted: false, hidden: false, clips: [], transitions: [] };
+}
+
 function newTrackOp(kind: TrackKind): { op: PatchOp; index: number } {
   const tracks = store.tracks;
-  const id = store.newTrackId(kind[0]);
-  const name = `${kind[0].toUpperCase()}${kind.slice(1)} ${id.slice(1)}`;
-  const track: Track = { id, kind, name, muted: false, hidden: false, clips: [], transitions: [] };
+  const track = newTrack(kind);
   const firstOverlay = tracks.findIndex((t) => t.kind === "overlay");
   const index = kind === "video" && firstOverlay >= 0 ? firstOverlay : tracks.length;
   return { op: { op: "add", path: `${store.seqPath}/tracks/${index}`, value: track }, index };
@@ -335,14 +345,11 @@ export async function newSequence(name: string) {
     name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").replace(/^(?=[0-9])/, "s") || "sequence",
     Object.keys(p.bin),
   );
-  const track = (prefix: string, kind: TrackKind, label: string): Track => ({
-    id: store.newTrackId(prefix), kind, name: label, muted: false, hidden: false, clips: [], transitions: [],
-  });
   const value: BinItem = {
     name,
-    source: { tracks: [track("v", "video", "Video"), track("o", "overlay", "Overlays"), track("a", "audio", "Audio")], markers: [] },
+    source: { tracks: [newTrack("video", "Video"), newTrack("overlay", "Overlays"), newTrack("audio", "Audio")], markers: [] },
   };
-  if (await store.patch([{ op: "add", path: `/bin/${pointerSegment(id)}`, value }], `add sequence ${id}`)) {
+  if (await store.patch([{ op: "add", path: binPath(id), value }], `add sequence ${id}`)) {
     await store.openSequence(id);
   }
 }

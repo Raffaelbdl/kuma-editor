@@ -29,7 +29,12 @@ function topbar(preview: Preview) {
   seqSel.style.width = "auto";
   seqSel.title = "Sequence being edited (the preview follows it)";
   seqSel.onchange = () => {
-    if (seqSel.value === "+") { promptNewSequence(); } else { store.openSequence(seqSel.value); }
+    const picked = seqSel.value;
+    // Put the picker back where it was before acting: a cancelled prompt, or a refused
+    // open, must not leave it showing the "+" sentinel.
+    seqSel.value = store.state.sequence;
+    if (picked === "+") promptNewSequence();
+    else store.openSequence(picked);
   };
   const presets = el("select");
   presets.style.width = "auto";
@@ -40,15 +45,14 @@ function topbar(preview: Preview) {
   render.className = "primary";
   const status = el("span", "status");
   host.append(name, seqSel, rev, button("Undo", () => store.undo()), button("Redo", () => store.redo()), el("span", "spacer"), presets, render, button("Reload preview", () => preview.reload()), status);
+  // The picker rebuilds its options, so it gets its own subscription: job progress ticks
+  // many times a second and must not tear the dropdown down with it.
+  store.select((s) => [s.project, s.sequence], (s) => {
+    if (!s.project) return;
+    const entry = (id: string) => ({ value: id, label: `${s.project!.bin[id].name || id}${id === s.project!.master ? " (master)" : ""}` });
+    options(seqSel, [...sequenceIds(s.project).map(entry), { value: "+", label: "+ new sequence…" }], s.sequence);
+  });
   store.select((s) => [s.project, s.sequence, s.connected, s.jobs], (s) => {
-    if (s.project) {
-      const ids = sequenceIds(s.project);
-      options(
-        seqSel,
-        [...ids.map((id) => ({ value: id, label: `${s.project!.bin[id].name || id}${id === s.project!.master ? " (master)" : ""}` })), { value: "+", label: "+ new sequence…" }],
-        s.sequence,
-      );
-    }
     name.textContent = s.project?.name || "kuma";
     rev.textContent = s.project ? `r${s.project.revision}${s.connected ? "" : " · offline"}` : "";
     const running = Object.entries(s.jobs).filter(([, j]) => !j.done);
@@ -99,8 +103,6 @@ function togglePlay(preview: Preview) {
  */
 async function promptNewSequence() {
   const name = prompt("Name for the new sequence");
-  // Put the picker back on the open sequence: a cancelled prompt must not leave it on "+".
-  store.set({ ...store.state });
   if (name?.trim()) await newSequence(name.trim());
 }
 

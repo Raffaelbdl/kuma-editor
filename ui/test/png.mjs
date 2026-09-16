@@ -1,6 +1,5 @@
-// A minimal PNG reader, so the composite test can look at pixels without an image
-// library or ImageMagick. Handles what Chromium's `--screenshot` emits: 8-bit RGB or
-// RGBA, no interlacing.
+// A minimal PNG reader, so the composite test can look at pixels without an image library
+// or ImageMagick. Handles what Chromium's `--screenshot` emits: 8-bit RGB or RGBA.
 
 import zlib from "node:zlib";
 

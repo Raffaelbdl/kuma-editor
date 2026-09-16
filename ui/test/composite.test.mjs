@@ -1,17 +1,14 @@
-// Does the editor composite an overlay over the stage, or paint over it?
+// Does the editor composite an overlay over the stage, or paint over it? A dark
+// `color-scheme` on the root once stopped Chromium compositing the overlay iframes, so a
+// template's white canvas covered the video and nothing failed — only a real browser
+// drawing a real iframe can see that.
 //
-// The tier the decision record left open. It exists because two bugs got past everything
-// else: a dark `color-scheme` on the root stopped Chromium compositing the overlay
-// iframes, so a template's white canvas covered the video, and nothing failed — the
-// preview simply looked wrong. Only a real browser drawing a real iframe can see that.
+// The assertions are position-independent on purpose: half the overlay is red, so red
+// must reach the page and nothing on it may be white. Where the stage sits depends on the
+// window and the panel widths, and a test that had to know would break on every layout
+// change without ever finding a compositing fault.
 //
-// The assertions are deliberately position-independent: an overlay that is half red must
-// put red on the page, and nothing anywhere may be white. Where the stage sits depends on
-// the window, the letterboxing and the panel widths, and a test that had to know would
-// break on every layout change without ever finding a compositing fault.
-//
-// Skips, loudly, when the browser or `ui/dist` is missing — the way the render tests skip
-// without melt.
+// Skips, loudly, without a browser or `ui/dist` — as the render tests skip without melt.
 
 import { strict as assert } from "node:assert";
 import { after, before, describe, it } from "node:test";

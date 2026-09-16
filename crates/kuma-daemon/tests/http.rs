@@ -1,14 +1,9 @@
-//! What the daemon promises over HTTP, beyond the body: that nothing it serves may be
-//! reused without asking first.
+//! What the daemon promises over HTTP beyond the body: nothing it serves may be reused
+//! without asking first. Without a `Cache-Control` a browser invents a freshness lifetime
+//! from the file's age, so a rebuilt `ui/dist` had no effect on a window that had cached
+//! the old one — it kept running month-old JavaScript against a current daemon.
 //!
-//! This is here because the absence of it cost a user two rounds of misdiagnosis. With no
-//! `Cache-Control` and no `ETag` a browser invents a freshness lifetime from the file's
-//! age and serves the response without revalidating, so a rebuilt `ui/dist` had no effect
-//! on a window that had already cached the old one — it kept running month-old JavaScript
-//! against a current daemon and failed on the shape of a newer project.
-//!
-//! No browser and no engine needed: a raw request against the router is enough, which is
-//! what makes this the cheapest of the checks the project is missing.
+//! Needs no browser and no engine: a raw request against the router is enough.
 
 use std::io::Write as _;
 use std::sync::Arc;
@@ -55,12 +50,9 @@ async fn daemon() -> (Arc<AppState>, String, tempfile::TempDir) {
     (state, addr.to_string(), dir)
 }
 
-/// One HTTP/1.1 GET, returning the status line and the headers lowercased. Hand-rolled to
-/// keep the daemon's dependency list as it is for the sake of a test.
-///
-/// Reads only as far as the blank line that ends the headers: reading to EOF waits for the
-/// server to close, which it is under no obligation to do, and the test hangs instead of
-/// failing.
+/// One HTTP/1.1 GET: the status line and the headers, lowercased. Hand-rolled rather than
+/// adding a client crate for a test. Stops at the blank line ending the headers — reading
+/// to EOF waits for a close the server need not do, and hangs instead of failing.
 fn get(addr: &str, path: &str) -> (String, std::collections::HashMap<String, String>) {
     use std::io::Read as _;
     let mut s = std::net::TcpStream::connect(addr).unwrap();
@@ -89,8 +81,8 @@ fn get(addr: &str, path: &str) -> (String, std::collections::HashMap<String, Str
 #[tokio::test(flavor = "multi_thread")]
 async fn nothing_is_served_without_a_cache_control() {
     let (_state, addr, _dir) = daemon().await;
-    // The editor bundle, live project state, and a template file being authored: each was
-    // cacheable by heuristic before, and each is reloaded constantly.
+    // The bundle, live project state, and a template being authored: all reloaded
+    // constantly, all cacheable by heuristic before this.
     for path in ["/", "/api/project", "/api/health", "/overlays/probe/index.html"] {
         let (status, headers) = get(&addr, path);
         assert!(status.contains("200"), "{path}: {status}");

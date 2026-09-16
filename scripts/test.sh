@@ -1,12 +1,9 @@
 #!/usr/bin/env bash
-# Run every suite in the project and report what happened in all of them.
+# Every suite: the Rust model/compiler/daemon, the desktop shell, the editor.
 #
-# Three, because three languages: the Rust model, compiler and daemon; the desktop
-# shell's own decisions; and the editor, which needs a real browser to say anything about
-# compositing. They are run whatever the others do — a failure in one is not a reason to
-# leave you guessing about the rest — and the summary distinguishes a suite that failed
-# from one that skipped, because several of them skip on purpose when a tool is absent
-# (`melt`, `ffmpeg`, the preview engine, a browser) and a silent skip reads like a pass.
+# All three run whatever the others do, so one failure does not hide the rest. The summary
+# separates failed from skipped, because several skip on purpose when a tool is absent
+# (melt, ffmpeg, the preview engine, a browser) and a silent skip reads like a pass.
 
 set -uo pipefail
 

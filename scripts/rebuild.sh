@@ -1,15 +1,11 @@
 #!/usr/bin/env bash
-# Rebuild every artifact kuma runs from.
+# Rebuild every artifact kuma runs from, in dependency order, then run `kuma doctor`.
 #
-# There are five, and three of them are not in git: the `kuma` binary, `ui/dist` (which
-# the daemon serves) and `app/dist` (the desktop shell). Pulling a branch updates the
-# sources and leaves all three behind, and a stale one fails far from its cause — an old
-# binary writes projects the editor cannot open, an old `ui/dist` dies on the shape of a
-# new one. This rebuilds the lot in dependency order and then runs `kuma doctor`.
+# Three of them are not in git — the `kuma` binary, `ui/dist` and `app/dist` — so a pull
+# updates the sources and leaves them behind, and a stale one fails far from its cause.
 #
-# The preview engine is the one optional piece: without it the preview falls back to
-# single-frame snapshots, and it needs system libraries that may not be installed. It is
-# therefore allowed to fail without failing the rebuild. Everything else is required.
+# The preview engine is the one optional piece (it needs system libraries, and without it
+# the preview falls back to single frames), so it may fail without failing the rebuild.
 
 set -euo pipefail
 

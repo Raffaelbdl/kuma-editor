@@ -203,24 +203,28 @@ async function openProject(file: string, from?: BrowserWindow): Promise<void> {
   } catch (e) {
     // A project that cannot be opened stays in the list: the fix is usually elsewhere
     // (a missing binary, a busy port), not "forget this project".
-    const opts: Electron.MessageBoxOptions = {
+    await ask({
       type: "error",
       title: "Cannot open project",
       message: `Could not open ${path.basename(target)}`,
       detail: (e as Error).message,
       buttons: ["OK"],
-    };
-    const parent = from && !from.isDestroyed() ? from : (launcher ?? undefined);
-    await (parent ? dialog.showMessageBox(parent, opts) : dialog.showMessageBox(opts));
+    }, from);
     throw e;
   } finally {
     starting.delete(target);
   }
 }
 
+/** A modal on the window that prompted it, or on the launcher, or on nothing. */
+function ask(opts: Electron.MessageBoxOptions, from?: BrowserWindow) {
+  const parent = from && !from.isDestroyed() ? from : launcher;
+  return parent && !parent.isDestroyed() ? dialog.showMessageBox(parent, opts) : dialog.showMessageBox(opts);
+}
+
 /** Offer to open anyway: the check is an mtime heuristic, so it must never be a hard no. */
 async function confirmStaleUi(problem: string, from?: BrowserWindow): Promise<boolean> {
-  const opts: Electron.MessageBoxOptions = {
+  const { response } = await ask({
     type: "warning",
     title: "The editor build is out of date",
     message: "The editor would not load correctly.",
@@ -228,9 +232,7 @@ async function confirmStaleUi(problem: string, from?: BrowserWindow): Promise<bo
     buttons: ["Cancel", "Open anyway"],
     defaultId: 0,
     cancelId: 0,
-  };
-  const parent = from && !from.isDestroyed() ? from : (launcher ?? undefined);
-  const { response } = await (parent ? dialog.showMessageBox(parent, opts) : dialog.showMessageBox(opts));
+  }, from);
   return response === 1;
 }
 
@@ -452,17 +454,18 @@ function wireIpc() {
 
   // ---- editor-window calls ----
 
-  /** The daemon behind the window that called, so a renderer can only act on its own project. */
-  const daemonOf = (e: Electron.IpcMainInvokeEvent): Daemon => {
+  /** The editor window that called and the daemon behind it. Anything else throws, so a
+   *  renderer can only ever act on its own project — and past this point both are known
+   *  to exist, which is why nothing below re-checks them. */
+  const editorOf = (e: Electron.IpcMainInvokeEvent): { win: BrowserWindow; daemon: Daemon } => {
     const win = BrowserWindow.fromWebContents(e.sender);
-    const d = win ? editors.get(win) : undefined;
-    if (!d) throw new Error("not an editor window");
-    return d;
+    const daemon = win ? editors.get(win) : undefined;
+    if (!win || !daemon) throw new Error("not an editor window");
+    return { win, daemon };
   };
 
   ipcMain.handle("media:pick", async (e) => {
-    const d = daemonOf(e);
-    const win = BrowserWindow.fromWebContents(e.sender)!;
+    const { win, daemon: d } = editorOf(e);
     const r = await dialog.showOpenDialog(win, {
       title: "Add media",
       defaultPath: path.dirname(d.projectFile),
@@ -484,24 +487,21 @@ function wireIpc() {
 
   /** The top-level menu names the title bar draws. */
   ipcMain.handle("menu:labels", (e) => {
-    daemonOf(e);
+    editorOf(e);
     return topLevelLabels();
   });
 
   /** Drop one native submenu under its title-bar button. */
   ipcMain.handle("menu:popup", (e, label: string, x: number, y: number) => {
-    daemonOf(e);
-    const win = BrowserWindow.fromWebContents(e.sender);
+    const { win } = editorOf(e);
     const entry = menuTemplate.find((t) => t.label === label);
-    if (!win || !entry || !Array.isArray(entry.submenu)) return false;
+    if (!entry || !Array.isArray(entry.submenu)) return false;
     Menu.buildFromTemplate(entry.submenu).popup({ window: win, x: Math.round(x), y: Math.round(y) });
     return true;
   });
 
   ipcMain.handle("window:control", (e, action: string) => {
-    daemonOf(e);
-    const win = BrowserWindow.fromWebContents(e.sender);
-    if (!win) return null;
+    const { win } = editorOf(e);
     switch (action) {
       case "minimize": win.minimize(); break;
       // The button is a toggle, so it restores a window that is already maximized.
@@ -512,13 +512,12 @@ function wireIpc() {
   });
 
   ipcMain.handle("window:state", (e) => {
-    daemonOf(e);
-    const win = BrowserWindow.fromWebContents(e.sender);
-    return win ? { maximized: win.isMaximized(), fullScreen: win.isFullScreen() } : { maximized: false, fullScreen: false };
+    const { win } = editorOf(e);
+    return { maximized: win.isMaximized(), fullScreen: win.isFullScreen() };
   });
 
   ipcMain.handle("shell:reveal", (e, rel: string) => {
-    const d = daemonOf(e);
+    const { daemon: d } = editorOf(e);
     const root = path.dirname(d.projectFile);
     const target = path.resolve(root, rel || ".");
     // Never open a path outside the project from a page the daemon serves.

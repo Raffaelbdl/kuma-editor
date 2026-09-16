@@ -13,7 +13,16 @@
   --sans: Inter, system-ui, -apple-system, "Segoe UI", sans-serif;
 }
 * { box-sizing: border-box; }
+:root { color-scheme: dark; }
 html, body { height: 100%; margin: 0; background: var(--bg); color: var(--fg); font: 13px/1.45 var(--sans); overflow: hidden; }
+
+/* Same scrollbars as the editor, so the two windows match. */
+* { scrollbar-width: thin; scrollbar-color: var(--bg-3) transparent; }
+::-webkit-scrollbar { width: 11px; height: 11px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--bg-3); border: 3px solid transparent; background-clip: content-box; border-radius: 8px; }
+::-webkit-scrollbar-thumb:hover { background: var(--line); background-clip: content-box; }
+::-webkit-scrollbar-corner { background: transparent; }
 button, input, select { font: inherit; color: inherit; }
 button { background: var(--bg-3); border: 1px solid var(--line); border-radius: 6px; padding: 7px 12px; cursor: pointer; text-align: left; }
 button:hover:not(:disabled) { border-color: var(--fg-2); }

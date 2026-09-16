@@ -4,13 +4,18 @@ import { Inspector } from "./inspector";
 import { Library } from "./library";
 import { Preview } from "./preview";
 import { fmtTime, store, toast } from "./store";
-import { initDesktop, pickAndAddMedia } from "./desktop";
+import { desktop, initDesktop, pickAndAddMedia } from "./desktop";
+import { initTitlebar } from "./titlebar";
 import { addTrack, newSequence, Timeline } from "./timeline";
 import type { Clip, PatchOp, TrackKind } from "./types";
 import { binItem, isTimedMedia, sequenceIds, shiftEffect, trimEffect } from "./types";
 
 async function main() {
   await store.init();
+  // Before the panels: the title bar adds a row to the grid, and settling the layout once
+  // is tidier than having every panel measure itself and then measure again.
+  const app = desktop();
+  if (app) initTitlebar(app, store.state.project?.name || "kuma");
   const preview = new Preview(document.getElementById("preview")!);
   new Timeline(document.getElementById("timeline")!);
   new Inspector(document.getElementById("inspector")!);

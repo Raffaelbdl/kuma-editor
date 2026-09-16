@@ -138,6 +138,41 @@ function staleBinary(repo: string, version: string): string | null {
   return `the kuma binary is ${behind} commit${behind === "1" ? "" : "s"} behind this checkout — \`cargo build --release\` (an old binary writes projects this version cannot open)`;
 }
 
+/** The user library `kuma` itself would read, by the rule the README documents. */
+function userLibraryDir(): string | null {
+  const base = process.env.XDG_DATA_HOME || (process.env.HOME ? path.join(process.env.HOME, ".local", "share") : null);
+  return base ? path.join(base, "kuma") : null;
+}
+
+/**
+ * `KUMA_LIBRARY` to hand the daemon, or null to leave it alone.
+ *
+ * Overlay templates live in a user library, not in the checkout, so a daemon started with
+ * nothing installed loads zero templates: the library panel is empty, every overlay clip
+ * is refused, and a template that *is* found renders without `_vendor/kuma.css` and
+ * `_vendor/kuma.js` — it comes out blank, which reads as a broken template rather than a
+ * missing library. The checkout ships the starter set, so point at it.
+ *
+ * Only as a fallback, though. `KUMA_LIBRARY` entries outrank the user library, so always
+ * setting it would make the checkout's copy of a template shadow the one the user has
+ * installed and edited — and only inside the app, while a hand-run `kuma serve` kept
+ * using theirs. So: nothing if they set `KUMA_LIBRARY` themselves, and nothing if they
+ * have a library installed.
+ */
+export function libraryFallback(repo: string): string | null {
+  if (process.env.KUMA_LIBRARY) return null;
+  const user = userLibraryDir();
+  if (user && isDir(path.join(user, "overlays"))) {
+    try {
+      if (fs.readdirSync(path.join(user, "overlays")).length) return null;
+    } catch {
+      return null;
+    }
+  }
+  const shipped = path.join(repo, "library");
+  return isDir(path.join(shipped, "overlays")) ? shipped : null;
+}
+
 /** Newest mtime under `root`, or 0 if it does not exist. Directories are walked. */
 function newestMtime(root: string, depth = 6): number {
   let stat;

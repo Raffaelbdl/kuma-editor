@@ -32,4 +32,21 @@ contextBridge.exposeInMainWorld("kumaApp", {
     ipcRenderer.on("kuma:command", h);
     return () => ipcRenderer.off("kuma:command", h);
   },
+
+  // The window draws its own title bar, so the page needs the menu names, a way to drop
+  // the real (native) submenu under one, and the window buttons.
+  menuLabels: () => ipcRenderer.invoke("menu:labels"),
+  popupMenu: (label, x, y) => ipcRenderer.invoke("menu:popup", String(label), Number(x), Number(y)),
+  onMenuChanged: (fn) => {
+    const h = (_e, labels) => fn(labels);
+    ipcRenderer.on("kuma:menu", h);
+    return () => ipcRenderer.off("kuma:menu", h);
+  },
+  windowControl: (action) => ipcRenderer.invoke("window:control", String(action)),
+  windowState: () => ipcRenderer.invoke("window:state"),
+  onWindowState: (fn) => {
+    const h = (_e, state) => fn(state);
+    ipcRenderer.on("kuma:window-state", h);
+    return () => ipcRenderer.off("kuma:window-state", h);
+  },
 });

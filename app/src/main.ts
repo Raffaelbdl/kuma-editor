@@ -17,7 +17,7 @@ import * as daemon from "./daemon";
 import type { Daemon } from "./daemon";
 import * as projects from "./projects";
 import { Recents, nameOf } from "./recents";
-import { Kuma, repoWarnings, resolveKuma, uiBuildProblem } from "./kuma";
+import { Kuma, libraryFallback, repoWarnings, resolveKuma, uiBuildProblem } from "./kuma";
 
 const APP_DIR = path.resolve(__dirname, "..");
 const LAUNCHER_ORIGIN = "kuma-app://launcher";
@@ -28,6 +28,10 @@ let recents: Recents;
 let launcher: BrowserWindow | null = null;
 /** Every open editor window, and the daemon behind it. */
 const editors = new Map<BrowserWindow, Daemon>();
+/** The application menu as a template, so an editor window can pop one submenu of it.
+ *  The title bar is ours, but the menus that drop out of it stay native — they keep
+ *  accelerator labels, checkmarks and platform behaviour that HTML would only mimic. */
+let menuTemplate: MenuItemConstructorOptions[] = [];
 /** Projects with a start in flight, so a double click cannot open two daemons for one. */
 const starting = new Set<string>();
 let quitting = false;
@@ -103,6 +107,9 @@ function editorFor(d: Daemon): BrowserWindow {
     title: `${nameOf(d.projectFile)} — kuma`,
     backgroundColor: "#121317",
     show: false,
+    // The editor draws its own title bar, with the menu in it. The launcher keeps a
+    // normal frame: it has no menu, so there would be nothing to gain.
+    frame: false,
     webPreferences: {
       preload: path.join(APP_DIR, "preload", "editor.cjs"),
       contextIsolation: true,
@@ -120,6 +127,11 @@ function editorFor(d: Daemon): BrowserWindow {
   // The UI's <title> is just "kuma"; keep the project name in the title bar.
   win.on("page-title-updated", (e) => e.preventDefault());
   win.once("ready-to-show", () => win.show());
+  const sendState = () => win.webContents.send("kuma:window-state", { maximized: win.isMaximized(), fullScreen: win.isFullScreen() });
+  win.on("maximize", sendState);
+  win.on("unmaximize", sendState);
+  win.on("enter-full-screen", sendState);
+  win.on("leave-full-screen", sendState);
   // External links belong in the user's browser, never in a new chromeless window.
   win.webContents.setWindowOpenHandler(({ url }) => {
     if (/^https?:$/.test(new URL(url).protocol)) shell.openExternal(url);
@@ -342,8 +354,15 @@ function rebuildMenu() {
       ],
     },
   ];
+  menuTemplate = template;
+  // Registered even though no bar is drawn: this is what binds the accelerators.
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+  for (const win of editors.keys()) {
+    if (!win.isDestroyed()) win.webContents.send("kuma:menu", topLevelLabels());
+  }
 }
+
+const topLevelLabels = (): string[] => menuTemplate.map((t) => String(t.label ?? ""));
 
 // ---------------------------------------------------------------- flows
 
@@ -372,6 +391,9 @@ function wireIpc() {
     kuma: kuma ? { bin: kuma.bin, repo: kuma.repo, version: kuma.version } : null,
     error: kumaError,
     warnings: kuma ? repoWarnings(kuma.repo, kuma.version) : [],
+    // Reported rather than done quietly: which templates a project sees is not something
+    // the shell should change behind the user's back without saying so.
+    libraryFallback: kuma ? libraryFallback(kuma.repo) : null,
     defaultParent: app.getPath("home"),
   }));
 
@@ -446,6 +468,41 @@ function wireIpc() {
       const rel = path.relative(root, p);
       return rel && !rel.startsWith("..") && !path.isAbsolute(rel) ? rel : p;
     });
+  });
+
+  /** The top-level menu names the title bar draws. */
+  ipcMain.handle("menu:labels", (e) => {
+    daemonOf(e);
+    return topLevelLabels();
+  });
+
+  /** Drop one native submenu under its title-bar button. */
+  ipcMain.handle("menu:popup", (e, label: string, x: number, y: number) => {
+    daemonOf(e);
+    const win = BrowserWindow.fromWebContents(e.sender);
+    const entry = menuTemplate.find((t) => t.label === label);
+    if (!win || !entry || !Array.isArray(entry.submenu)) return false;
+    Menu.buildFromTemplate(entry.submenu).popup({ window: win, x: Math.round(x), y: Math.round(y) });
+    return true;
+  });
+
+  ipcMain.handle("window:control", (e, action: string) => {
+    daemonOf(e);
+    const win = BrowserWindow.fromWebContents(e.sender);
+    if (!win) return null;
+    switch (action) {
+      case "minimize": win.minimize(); break;
+      // The button is a toggle, so it restores a window that is already maximized.
+      case "maximize": win.isMaximized() ? win.unmaximize() : win.maximize(); break;
+      case "close": win.close(); break;
+    }
+    return { maximized: win.isDestroyed() ? false : win.isMaximized() };
+  });
+
+  ipcMain.handle("window:state", (e) => {
+    daemonOf(e);
+    const win = BrowserWindow.fromWebContents(e.sender);
+    return win ? { maximized: win.isMaximized(), fullScreen: win.isFullScreen() } : { maximized: false, fullScreen: false };
   });
 
   ipcMain.handle("shell:reveal", (e, rel: string) => {

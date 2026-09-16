@@ -16,6 +16,8 @@ interface AppInfo {
   kuma: { bin: string; repo: string; version: string } | null;
   error: string | null;
   warnings: string[];
+  /** Set when no template library is installed and the checkout's starter set is used. */
+  libraryFallback: string | null;
   defaultParent: string;
 }
 
@@ -122,6 +124,11 @@ function renderSide() {
     const where = el("div", "mono muted", shortPath(info.kuma.bin, 46));
     where.title = info.kuma.bin;
     envBox.appendChild(where);
+    if (info.libraryFallback) {
+      const note = el("div", "muted", `no template library installed — using the checkout's starter set (\`kuma library\` installs it properly)`);
+      note.title = info.libraryFallback;
+      envBox.appendChild(note);
+    }
     for (const w of info.warnings) envBox.appendChild(el("div", "warn", w));
   } else {
     envBox.appendChild(el("div", "bad", info.error ?? "kuma binary not found"));

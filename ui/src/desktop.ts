@@ -19,6 +19,14 @@ export interface DesktopBridge {
   reveal(relativePath?: string): Promise<string>;
   showLauncher(): Promise<void>;
   onCommand(fn: (name: string) => void): () => void;
+  /** Top-level application-menu names, for the window's own title bar. */
+  menuLabels(): Promise<string[]>;
+  /** Drop the real submenu under `label`, at viewport coordinates. Resolves when it closes. */
+  popupMenu(label: string, x: number, y: number): Promise<boolean>;
+  onMenuChanged(fn: (labels: string[]) => void): () => void;
+  windowControl(action: "minimize" | "maximize" | "close"): Promise<{ maximized: boolean } | null>;
+  windowState(): Promise<{ maximized: boolean; fullScreen: boolean }>;
+  onWindowState(fn: (s: { maximized: boolean; fullScreen: boolean }) => void): () => void;
 }
 
 /** The bridge, or null when this is an ordinary browser tab. */

@@ -42,6 +42,28 @@ fn reference_project_matches_golden_and_the_dtd() {
     }
 }
 
+/// Hiding is per track, applied on the tractor, so a hidden track's clips are still
+/// compiled and a hidden overlay still needs its bake. The daemon picks the bake set, and
+/// skipping hidden tracks there made every render of such a project fail.
+#[test]
+fn a_hidden_track_still_needs_its_overlays_baked() {
+    let p: Project = serde_json::from_value(serde_json::json!({
+        "fps": 30,
+        "bin": {
+            "tag": { "source": { "template": "location-tag" } },
+            "main": { "source": { "tracks": [{ "id": "o1", "kind": "overlay", "hidden": true, "clips": [
+                { "id": "oh", "start": 0, "end": 3, "bin": "tag" }
+            ]}]}}
+        }
+    }))
+    .unwrap();
+    let mut opts = CompileOptions::new("/proj");
+    opts.unbaked = UnbakedPolicy::Error;
+    assert!(matches!(compile(&p, &opts), Err(CompileError::Unbaked(id)) if id == "oh"));
+    opts.bakes.insert("oh".into(), bake("/proj/.kuma/bakes/x/frame_%06d.png", false));
+    assert!(compile(&p, &opts).unwrap().contains(r#"<producer id="clip_oh""#));
+}
+
 #[test]
 fn unbaked_overlays_skip_or_fail_by_policy() {
     let p = reference_project();

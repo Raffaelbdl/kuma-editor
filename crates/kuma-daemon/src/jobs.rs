@@ -125,32 +125,50 @@ impl From<bool> for OverlayScope {
     }
 }
 
-/// Overlay clips in the sequences `root` reaches, on visible tracks; `nested_only` drops
-/// `root`'s own. Reachability matters: a bin full of unplaced sequences must cost neither
-/// a bake on every preview reload nor a browser run on every render.
-fn overlay_clips(project: &Project, root: &str, nested_only: bool) -> Vec<String> {
+/// Overlay clips in the sequences `root` reaches; `nested_only` drops `root`'s own, and
+/// `within` keeps only those overlapping a time window — on `root` alone, where clip times
+/// are the times asked for. A nested sequence's clips are in its own time, and one
+/// sequence can be placed more than once, so there is no single window to test them
+/// against.
+///
+/// Reachability matters: a bin full of unplaced sequences must cost neither a bake on
+/// every preview reload nor a browser run on every render. A *hidden* track does not:
+/// the compiler still emits its clips (hiding is per track, on the tractor), so skipping
+/// their bakes would make a render fail with "overlay clip has no bake".
+fn overlay_clips(project: &Project, root: &str, nested_only: bool, within: Option<(f64, f64)>) -> Vec<String> {
     project
         .compile_order(root)
         .unwrap_or_default()
         .iter()
         .filter(|id| !(nested_only && id.as_str() == root))
-        .filter_map(|id| project.seq(id))
-        .flat_map(|s| s.tracks.iter().filter(|t| !t.hidden).flat_map(|t| t.clips.iter()))
-        .filter(|c| project.item(c).is_some_and(kuma_core::BinItem::is_overlay))
-        .map(|c| c.id.clone())
+        .filter_map(|id| Some((id.as_str() == root, project.seq(id)?)))
+        .flat_map(|(is_root, s)| s.clips().map(move |c| (is_root, c)))
+        .filter(|(is_root, c)| match within {
+            Some((t0, t1)) if *is_root => c.end > t0 && c.start <= t1,
+            _ => true,
+        })
+        .filter(|(_, c)| project.item(c).is_some_and(kuma_core::BinItem::is_overlay))
+        .map(|(_, c)| c.id.clone())
         .collect()
 }
 
 /// Bake the overlays `scope` asks for. `Nested` is best effort: a template that will not
 /// bake — or no hyperframes at all — costs you that overlay in the preview and never the
 /// preview itself, which used to be free because overlays were skipped entirely.
-pub fn bake_for(state: &AppState, project: &Project, root: &str, scope: OverlayScope, progress: &dyn Fn(u8, &str)) -> anyhow::Result<Bakes> {
+pub fn bake_for(
+    state: &AppState,
+    project: &Project,
+    root: &str,
+    scope: OverlayScope,
+    within: Option<(f64, f64)>,
+    progress: &dyn Fn(u8, &str),
+) -> anyhow::Result<Bakes> {
     let nested_only = match scope {
         OverlayScope::None => return Ok(Bakes::new()),
         OverlayScope::Nested => true,
         OverlayScope::All => false,
     };
-    let (out, errs) = bake_clips(state, project, &overlay_clips(project, root, nested_only), progress);
+    let (out, errs) = bake_clips(state, project, &overlay_clips(project, root, nested_only, within), progress);
     if !nested_only {
         return strict((out, errs));
     }
@@ -248,7 +266,7 @@ pub fn render(state: &AppState, req: &RenderRequest, progress: &dyn Fn(u8, &str)
     let preset = kuma_mlt::presets::find(&req.preset).ok_or_else(|| anyhow::anyhow!("unknown preset `{}`", req.preset))?;
     let sequence = project.sequence_or_master(req.sequence.as_deref()).map_err(|e| anyhow::anyhow!(e))?.clone();
     let mut opts = compile_options(state);
-    opts.bakes = bake_for(state, &project, &sequence, OverlayScope::All, &|p, m| progress(p / 2, m))?;
+    opts.bakes = bake_for(state, &project, &sequence, OverlayScope::All, None, &|p, m| progress(p / 2, m))?;
     opts.unbaked = UnbakedPolicy::Error;
     opts.sequence = Some(sequence.clone());
     let mlt = compile_project(state, &project, &opts, "render")?;
@@ -309,7 +327,9 @@ pub fn sample_frames(state: &AppState, req: &SampleRequest, progress: &dyn Fn(u8
     let sequence = project.sequence_or_master(req.sequence.as_deref()).map_err(|e| anyhow::anyhow!(e))?.clone();
     let t1 = req.t1.unwrap_or(req.t0);
     let count = req.count.clamp(1, 32);
-    let bakes = bake_for(state, &project, &sequence, req.overlays, &|p, m| progress(p / 2, m))?;
+    // Only the overlays this sample can actually show: one frame must not pay for a bake
+    // of every overlay on the timeline, nor fail because one somewhere else is broken.
+    let bakes = bake_for(state, &project, &sequence, req.overlays, Some((req.t0, t1)), &|p, m| progress(p / 2, m))?;
     let out_dir = state.config.cache_dir().join("samples");
     std::fs::create_dir_all(&out_dir)?;
     let mut opts = compile_options(state);
@@ -414,12 +434,37 @@ mod tests {
             }
         }))
         .unwrap();
-        assert_eq!(overlay_clips(&p, "main", true), vec!["o_nested"]);
-        // Open the inner sequence and the same overlay becomes live DOM instead.
-        assert!(overlay_clips(&p, "inner", true).is_empty());
+        // A hidden track is still compiled — hiding happens per track on the tractor — so
+        // its overlays still need bakes, or a render fails with "overlay clip has no bake".
+        assert_eq!(overlay_clips(&p, "main", true, None), vec!["o_nested", "o_hidden"]);
+        // Open the inner sequence and the same overlays become live DOM instead.
+        assert!(overlay_clips(&p, "inner", true, None).is_empty());
         // A render of the master wants its own overlay as well — but still nothing from
         // the sequence nobody placed, which would be a headless browser run for nothing.
         // Innermost first, the order `compile_order` walks in.
-        assert_eq!(overlay_clips(&p, "main", false), vec!["o_nested", "o_own"]);
+        assert_eq!(overlay_clips(&p, "main", false, None), vec!["o_nested", "o_hidden", "o_own"]);
+    }
+
+    /// Sampling one frame must not bake every overlay on the timeline. The window applies
+    /// to the sequence being sampled, whose clip times are the times asked for; a nested
+    /// sequence's are its own, and it may be placed more than once, so those are kept.
+    #[test]
+    fn a_time_window_narrows_the_root_but_not_what_it_nests() {
+        let p: Project = serde_json::from_value(json!({
+            "bin": {
+                "tag": { "source": { "template": "location-tag" } },
+                "inner": seq(json!([overlay_track("io1", false, json!([clip("o_nested", "tag")]))])),
+                "main": seq(json!([
+                    overlay_track("mo1", false, json!([
+                        { "id": "o_early", "start": 0, "end": 2, "bin": "tag" },
+                        { "id": "o_late", "start": 50, "end": 52, "bin": "tag" }
+                    ])),
+                    json!({ "id": "v1", "clips": [ clip("s1", "inner") ] })
+                ]))
+            }
+        }))
+        .unwrap();
+        assert_eq!(overlay_clips(&p, "main", false, Some((0.0, 1.0))), vec!["o_nested", "o_early"]);
+        assert_eq!(overlay_clips(&p, "main", false, Some((50.5, 51.0))), vec!["o_nested", "o_late"]);
     }
 }

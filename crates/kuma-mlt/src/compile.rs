@@ -497,6 +497,17 @@ fn emit_clip_producer(ctx: &Ctx, p: &Plan, w: &mut XmlWriter) -> Result<(), Comp
         BinSource::Sequence(_) => {
             w.open("playlist", &[("id", p.producer_id.clone())]);
             w.empty("entry", &[("producer", format!("seq_{}", clip.bin)), ("in", p.p_in.to_string()), ("out", p.p_out.to_string())]);
+            if clip.muted {
+                // A sequence has no decoder to switch off, the way `audio_index=-1` does
+                // for a media file, so muting one is a filter. `MUTE_DB` rather than the
+                // `db(0)` floor: that is -60 dB, which is quiet but audible against
+                // silence, and it has to stay where it is for volume ramps to interpolate.
+                let (e_in, e_out) = p.entry();
+                w.open("filter", &[("id", format!("{}_mute", p.producer_id)), ("in", e_in.to_string()), ("out", e_out.to_string())]);
+                w.property("mlt_service", "volume");
+                w.property("level", MUTE_DB.to_string());
+                w.close("filter");
+            }
             emit_filters(ctx, p, w);
             w.close("playlist");
         }
@@ -688,6 +699,11 @@ fn qt_mode(m: BlendMode) -> i32 {
         BlendMode::Exclusion => 23,
     }
 }
+
+/// Level for a muted clip: far enough below the `db` floor to reach digital silence.
+/// Measured — `volume` at -60 dB still reads -87 dB out of the encoder, -200 reads -91,
+/// which is the floor a fully silent file gives.
+const MUTE_DB: i32 = -200;
 
 fn db(gain: f64) -> f64 {
     if gain <= 0.001 {
@@ -908,6 +924,35 @@ mod tests {
         let xml = compile(&p, &opts).unwrap();
         assert!(xml.contains(r#"<producer id="clip_o_in""#), "{xml}");
         assert!(xml.find("clip_o_in") < xml.find(r#"<tractor id="seq_part""#), "inside the sequence it belongs to: {xml}");
+    }
+
+
+    /// Muting a sequence clip has to silence it. A media clip mutes by not decoding its
+    /// audio (`audio_index=-1`), which a wrapper playlist has no way to do — so without a
+    /// filter the sound came through whenever another clip kept the track's mix alive.
+    #[test]
+    fn a_muted_sequence_clip_is_silent() {
+        let p = project(json!({
+            "fps": 30,
+            "bin": {
+                "x": { "source": { "path": "x.mp4" } },
+                "part": { "source": { "tracks": [{ "id": "pv", "clips": [ { "id": "p1", "start": 0, "end": 6, "bin": "x" } ] }] } }
+            },
+            "tracks": [{ "id": "a1", "clips": [
+                { "id": "m1", "start": 0, "end": 2, "bin": "part", "muted": true },
+                { "id": "m2", "start": 2, "end": 4, "bin": "part" }
+            ]}]
+        }));
+        let xml = compile(&p, &CompileOptions::new("/proj")).unwrap();
+        let wrapper = |id: &str| {
+            let w = xml.split(&format!(r#"<playlist id="clip_{id}">"#)).nth(1).unwrap().to_string();
+            w[..w.find("</playlist>").unwrap()].to_string()
+        };
+        // The unmuted clip keeps the track's mix transition alive, which is the case that
+        // made the muted one audible.
+        assert!(xml.contains(r#"id="mix_a1""#), "{xml}");
+        assert!(wrapper("m1").contains(&format!("<property name=\"level\">{MUTE_DB}</property>")), "{}", wrapper("m1"));
+        assert!(!wrapper("m2").contains("volume"), "{}", wrapper("m2"));
     }
 
     /// Sound two levels down still needs an audio mix on the track carrying the sequence.

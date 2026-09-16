@@ -176,12 +176,18 @@ impl AppState {
             .collect()
     }
 
-    /// The sequence being edited. A chosen one that has since been deleted (or turned
-    /// into something that is not a sequence) falls back to the master rather than
-    /// failing every compile until someone notices.
+    /// The sequence being edited. A chosen one that has since been deleted (or turned into
+    /// something that is not a sequence) falls back to the master rather than failing every
+    /// compile until someone notices — and is *forgotten*, so that re-creating an id by
+    /// that name (an undo, an agent re-adding it) does not silently reopen it here while
+    /// every client is still showing the master.
     pub fn current_sequence(&self) -> kuma_core::BinId {
         let p = read(&self.project);
-        lock(&self.open_sequence).clone().filter(|id| p.seq(id).is_some()).unwrap_or_else(|| p.master.clone())
+        let mut open = lock(&self.open_sequence);
+        if open.as_deref().is_some_and(|id| p.seq(id).is_none()) {
+            *open = None;
+        }
+        open.clone().unwrap_or_else(|| p.master.clone())
     }
 
     /// Open a sequence for editing. `None` returns to following the master.

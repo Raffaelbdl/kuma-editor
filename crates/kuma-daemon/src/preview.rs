@@ -195,7 +195,7 @@ pub async fn reload(state: &Arc<AppState>) -> anyhow::Result<PathBuf> {
         // that sub-sequence: it is compiled as the root, exactly as a render of it would be.
         let sequence = st.current_sequence();
         let mut opts = crate::jobs::compile_options(&st);
-        opts.bakes = crate::jobs::bake_for(&st, &project, &sequence, OverlayScope::Nested, &|_, _| {})?;
+        opts.bakes = crate::jobs::bake_for(&st, &project, &sequence, OverlayScope::Nested, None, &|_, _| {})?;
         opts.size = Some((w, h));
         opts.sequence = Some(sequence);
         crate::jobs::compile_project(&st, &project, &opts, "preview")

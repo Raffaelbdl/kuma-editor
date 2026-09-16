@@ -62,8 +62,11 @@ export interface Project {
  *  Which sequences exist comes from the project, not from here. */
 export interface SequenceState { current: string }
 
+/** One subtitle line, seconds into the source, `end` exclusive. */
+export interface Cue { start: number; end: number; text: string }
+
 export interface VarSpec {
-  type: "string" | "text" | "number" | "color" | "boolean" | "enum" | "point";
+  type: "string" | "text" | "number" | "color" | "boolean" | "enum" | "point" | "cues";
   label?: string; description?: string; default: unknown; min?: number; max?: number; step?: number; options?: string[];
 }
 export interface TemplateManifest {

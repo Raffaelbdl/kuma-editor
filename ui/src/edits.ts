@@ -113,6 +113,14 @@ export async function newSequence(name: string) {
   }
 }
 
+/** Landscape ⇄ portrait: swap the frame's width and height. Everything else follows — the
+ *  compiler reads the profile off the project and templates size in `vh` — except
+ *  pixel-valued transforms, which stay where they were. */
+export async function swapOrientation() {
+  const p = store.state.project!;
+  await store.patch([{ op: "replace", path: "/width", value: p.height }, { op: "replace", path: "/height", value: p.width }], `${p.height}×${p.width}`);
+}
+
 /** Add an empty track from the UI. */
 export async function addTrack(kind: TrackKind) {
   const { op } = newTrackOp(kind);

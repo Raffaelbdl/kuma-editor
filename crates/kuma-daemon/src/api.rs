@@ -17,7 +17,7 @@ use serde_json::{json, Value};
 use tower_http::services::ServeDir;
 use tower_http::set_header::SetResponseHeaderLayer;
 
-use crate::jobs::{self, RenderRequest, SampleRequest};
+use crate::jobs::{self, RenderRequest, SampleRequest, TranscribeRequest};
 use crate::preview::{self, EngineEvent};
 use crate::state::{lock, read, AppState};
 
@@ -38,6 +38,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/presets/effects", get(effect_presets))
         .route("/api/media/probe", get(probe_media))
         .route("/api/bin", post(add_media))
+        .route("/api/transcribe", post(transcribe))
         .route("/api/bin/{id}/thumb.png", get(bin_thumb))
         .route("/api/presets", get(presets))
         .route("/api/render", post(render))
@@ -146,6 +147,7 @@ async fn health(State(st): S) -> Json<Value> {
         "preview_running": st.preview.get().is_some(),
         "sequence": st.current_sequence(),
         "preview_error": lock(&st.preview.last_error).clone(),
+        "whisper": st.transcriber.available().map(|m| json!(m)).unwrap_or_else(|e| json!({ "error": e })),
     }))
 }
 
@@ -329,6 +331,13 @@ async fn add_media(State(st): S, Json(req): Json<AddMedia>) -> ApiResult {
             Err(other) => ApiError::bad_request(format!("{other:#}")),
         })?;
     Ok(Json(json!({ "id": id, "revision": rev, "warnings": warnings })))
+}
+
+/// Speech to text on a media entry, as a job: whisper takes seconds to minutes. The
+/// result names the new `subtitles` bin entry.
+async fn transcribe(State(st): S, Json(req): Json<TranscribeRequest>) -> Json<Value> {
+    let s2 = st.clone();
+    Json(json!({ "job": jobs::spawn(st, "transcribe", move |progress| jobs::transcribe(&s2, &req, progress)) }))
 }
 
 // ---------- jobs ----------

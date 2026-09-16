@@ -59,6 +59,11 @@ System packages (Debian/Ubuntu):
 sudo apt install ffmpeg melt libmlt-dev libmlt++-dev libsdl2-dev libturbojpeg0-dev cmake xvfb
 ```
 
+Subtitles need a local speech-to-text model, [whisper.cpp](https://github.com/ggml-org/whisper.cpp):
+its `whisper-cli` on `PATH` (or `KUMA_WHISPER_BIN`) and a ggml model in
+`~/.local/share/kuma/models/` (or `KUMA_WHISPER_MODEL`), e.g. `ggml-base.en.bin` from the
+whisper.cpp model downloads. `kuma doctor` reports both.
+
 Build:
 
 ```
@@ -111,13 +116,27 @@ A project is a directory with `<name>.kuma.json` and your media:
 
 ```
 mkdir myvideo && cd myvideo
-kuma init --project myvideo.kuma.json --fps 30          # or 29.97, 30000/1001, --width 1080 --height 1920
+kuma init --project myvideo.kuma.json --fps 30          # or 29.97, 30000/1001; --width 1080 --height 1920 for a Short
 kuma add-media media/screen.mp4
 kuma serve                                               # open http://127.0.0.1:7455 (--bind / KUMA_BIND to change)
 ```
 
 Drag bin entries onto the timeline, scrub, edit vars in the inspector, press **Render**.
 Output lands in `renders/`.
+
+**Vertical.** Landscape or portrait is nothing but the project's `width`/`height`: the
+size button in the top bar (`1920×1080 ⇄`) swaps them, undoably, and the preview, the
+overlays and every export preset follow. Templates size in `vh`, so they need no edits;
+pixel-valued `transform` offsets are the one thing that stays put.
+
+**Subtitles.** Select a media entry in the bin and press **Transcribe → subtitles** (or
+`kuma transcribe <bin>`, or the `transcribe` tool). whisper.cpp runs locally and the result
+lands in the bin as a `subtitles` overlay entry — not attached to the media, so place it on
+an overlay track wherever you like. Its `cues` var is the transcript, `[{start, end,
+text}]` in source seconds; the inspector shows one row per cue, so a misheard word is
+fixed in place and the preview follows as you type. If the media clip is trimmed, set the
+entry's `offset` var to that clip's `in`. Cues are split on words to `max_chars` (24 by
+default), the short lines shorts use; 0 keeps whisper's own sentences.
 
 ### Desktop app
 
@@ -177,8 +196,8 @@ claude mcp add --scope user    kuma -- kuma mcp --project /abs/path.kuma.json  #
 `kuma mcp` starts the daemon in-process if none is running on the port, so the browser UI
 and the agent always share one state. Tools: `get_project`, `get_schema`, `apply_edits`,
 `undo`, `redo`, `validate_project`, `list_templates`, `template_guide`, `list_presets`,
-`add_media`, `probe_media`, **`sample_frames`**, `bake_overlay`, `render`, `job_status`,
-`health`. `template_guide` returns the overlay authoring contract
+`add_media`, `probe_media`, `transcribe`, **`sample_frames`**, `bake_overlay`, `render`,
+`job_status`, `health`. `template_guide` returns the overlay authoring contract
 (`library/overlays/CLAUDE.md`) so the agent can write templates into the library or the
 project.
 
@@ -190,6 +209,7 @@ kuma sample 12.0 14.0 --count 4 --rect 400,300,800,400
 kuma bake                                  # bake all overlay clips (cached by content)
 kuma compile > timeline.mlt                # inspect the MLT graph (or open it in Kdenlive)
 kuma render --sequence intro               # render one nested sequence instead of the master
+kuma transcribe screen --language en       # whisper.cpp → a `subtitles` entry `screen-subs` in the bin
 kuma validate | thumbs | library | doctor
 ```
 
@@ -251,8 +271,9 @@ A template is a folder `<library>/overlays/<id>/` with `index.html` + `template.
 manifest's typed vars become the properties panel, so templates are editable without an
 agent; the agent can author new ones because they are plain folders. Starter set
 (`library/overlays/`, installed by `kuma library`): `location-tag`, `lower-third`,
-`callout-arrow`, `label-pin`, `section-title`, `countdown`, `watermark` (static).
-Contract: `library/overlays/CLAUDE.md`.
+`callout-arrow`, `label-pin`, `section-title`, `countdown`, `watermark` (static),
+`subtitles` (a `cues` var: the transcript). Contract: `library/overlays/CLAUDE.md`. A library
+installed before a template existed picks it up with another `kuma library` (it only adds).
 
 Effect presets are `<library>/presets/*.json` (Ken Burns, zoom to region, vignette,
 picture-in-picture, dim) and expand to ordinary effects; `$expr` values may use the
@@ -297,6 +318,10 @@ project's `width`/`height`.
   stage's device-pixel width.
 - **No display** (SSH, CI) — MLT's Qt module needs X11; install `xvfb` and kuma wraps
   `melt`/the engine in `xvfb-run` automatically.
+- **"Transcribe" fails with "is not runnable" or "no whisper model"** — `kuma doctor`
+  shows what it looked for: `whisper-cli` on `PATH` (`KUMA_WHISPER_BIN`) and a ggml model in
+  `~/.local/share/kuma/models` (`KUMA_WHISPER_MODEL`). `GET /api/health` has the same under
+  `whisper`.
 - **A template is missing from the library panel** — `GET /api/health` lists
   `template_dirs` (where kuma looked) and `template_errors` (manifests that failed to load
   and why). No library at all: run `kuma library`.

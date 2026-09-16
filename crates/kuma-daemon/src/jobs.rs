@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 use kuma_core::template::Region;
 use kuma_core::{BinSource, Project};
 use kuma_mlt::{compile, CompileOptions, OverlayBake, RenderJob, UnbakedPolicy};
-use kuma_overlay::BakeRequest;
+use kuma_overlay::{BakeRequest, TranscribeOptions};
 use serde::{Deserialize, Serialize};
 
 use crate::state::{lock, read, AppState, Event};
@@ -93,10 +93,67 @@ pub fn add_media(state: &AppState, path: &Path, id: Option<String>, base_revisio
         source: kuma_core::BinSource::File { path: rel.to_string_lossy().into_owned(), kind: probe.kind, proxy: None },
         meta: Some(probe.meta),
     };
-    let pointer = format!("/bin/{}", id.replace('~', "~0").replace('/', "~1"));
-    let patch = vec![json_patch::PatchOperation::Add(json_patch::AddOperation { path: pointer.parse()?, value: serde_json::to_value(item)? })];
-    let (rev, warnings) = state.apply_patch(&patch, base_revision, origin)?;
+    let (rev, warnings) = state.apply_patch(&[add_bin_op(&id, serde_json::to_value(item)?)?], base_revision, origin)?;
     Ok((id, rev, warnings))
+}
+
+/// The template a transcript lands in. Its `cues` var is the transcript; the rest is looks.
+const SUBTITLES_TEMPLATE: &str = "subtitles";
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct TranscribeRequest {
+    /// The media entry to transcribe.
+    pub bin: String,
+    /// Id for the new subtitles entry. Defaults to `<bin>-subs`.
+    #[serde(default)]
+    pub id: Option<String>,
+    #[serde(flatten)]
+    pub options: TranscribeOptions,
+    #[serde(default)]
+    pub base_revision: Option<u64>,
+    #[serde(default = "default_origin")]
+    pub origin: String,
+}
+fn default_origin() -> String {
+    "ui".into()
+}
+
+/// Transcribe a media entry's audio and add the result to the bin as a `subtitles`
+/// overlay entry, cues in source seconds. It is not attached to the media: place it
+/// where you like, and set its `offset` var to the media clip's `in` if that is not 0.
+/// One patch, so it is revision-checked and one undo step like any other edit.
+pub fn transcribe(state: &AppState, req: &TranscribeRequest, progress: &dyn Fn(u8, &str)) -> anyhow::Result<serde_json::Value> {
+    let project = read(&state.project).clone();
+    let item = project.bin.get(&req.bin).ok_or_else(|| anyhow::anyhow!("no bin entry `{}`", req.bin))?;
+    let BinSource::File { path, .. } = &item.source else { anyhow::bail!("`{}` is not a media file", req.bin) };
+    if item.meta.as_ref().is_some_and(|m| !m.has_audio) {
+        anyhow::bail!("`{}` has no audio", req.bin);
+    }
+    if !read(&state.templates).loaded.contains_key(SUBTITLES_TEMPLATE) {
+        anyhow::bail!("the `{SUBTITLES_TEMPLATE}` template is not in any library; run `kuma library`");
+    }
+    let id = req.id.clone().unwrap_or_else(|| format!("{}-subs", req.bin));
+    if project.bin.contains_key(&id) {
+        anyhow::bail!("bin id `{id}` already exists (pass a different id)");
+    }
+    progress(5, "transcribing");
+    let media = resolve_path(state, Path::new(path));
+    let cues = state.transcriber.transcribe(&media, &state.config.cache_dir().join("transcripts"), &req.options).map_err(|e| anyhow::anyhow!(e))?;
+    progress(90, "adding to the bin");
+    let entry = kuma_core::BinItem {
+        name: format!("Subtitles: {}", item.display_name(&req.bin)),
+        source: BinSource::Overlay { template: SUBTITLES_TEMPLATE.into(), vars: [("cues".to_string(), serde_json::to_value(&cues)?)].into_iter().collect() },
+        meta: None,
+    };
+    let (rev, warnings) = state.apply_patch(&[add_bin_op(&id, serde_json::to_value(entry)?)?], req.base_revision, &req.origin)?;
+    Ok(serde_json::json!({ "bin": id, "cues": cues.len(), "revision": rev, "warnings": warnings }))
+}
+
+/// `add /bin/<id>`, the id escaped as a pointer segment so a bad one is refused by the
+/// validator rather than landing somewhere else.
+fn add_bin_op(id: &str, value: serde_json::Value) -> anyhow::Result<json_patch::PatchOperation> {
+    let pointer = format!("/bin/{}", id.replace('~', "~0").replace('/', "~1"));
+    Ok(json_patch::PatchOperation::Add(json_patch::AddOperation { path: pointer.parse()?, value }))
 }
 
 pub type Bakes = HashMap<String, OverlayBake>;

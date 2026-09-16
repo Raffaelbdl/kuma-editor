@@ -43,6 +43,12 @@ the editor's preview and are baked to alpha frames at export.
 
 To look at the footage, call `sample_frames` with a time range (and an optional pixel `rect`); it
 returns the composited frames as images plus their PNG paths.
+
+Subtitles: `transcribe` runs a local speech-to-text model (whisper.cpp) on a media entry and adds a
+`subtitles` overlay entry whose `cues` var is `[{start, end, text}, …]` in source seconds. Place it
+on an overlay track like any overlay; if the media clip is trimmed, set the entry's `offset` var to
+that clip's `in`. Fix a misheard word by patching the cue's `text`. Vertical (9:16) is only
+`width`/`height`: patch them to 1080×1920 (or swap them) and every preset renders portrait.
 "#;
 
 #[derive(Clone)]
@@ -172,6 +178,26 @@ pub struct AddMedia {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct Transcribe {
+    /// Bin id of the media entry (video or audio) to transcribe.
+    pub bin: String,
+    /// Bin id for the new subtitles entry. Defaults to `<bin>-subs`.
+    #[serde(default)]
+    pub id: Option<String>,
+    /// ISO 639-1 language code, or `auto` (default).
+    #[serde(default)]
+    pub language: Option<String>,
+    /// Longest cue in characters (default 24, split on words); 0 keeps whisper's own segments.
+    #[serde(default)]
+    pub max_chars: Option<u32>,
+    #[serde(default)]
+    pub base_revision: Option<u64>,
+    /// Seconds to wait for the model before returning the job id (default 600).
+    #[serde(default)]
+    pub wait_seconds: Option<u64>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct PathArg {
     pub path: String,
 }
@@ -237,6 +263,12 @@ impl KumaServer {
     #[tool(description = "Probe a media file and add it to the project bin. Returns the bin id to reference from a clip.")]
     async fn add_media(&self, Parameters(p): Parameters<AddMedia>) -> Result<CallToolResult, McpError> {
         self.post("/api/bin", &json!({ "path": p.path, "id": p.id, "base_revision": p.base_revision, "origin": "claude: add media" })).await
+    }
+
+    #[tool(description = "Transcribe a media entry's audio with a local whisper.cpp model and add the result to the bin as a `subtitles` overlay entry (cues in source seconds, editable as its `cues` var). Returns the new bin id; place it on an overlay track yourself.")]
+    async fn transcribe(&self, Parameters(p): Parameters<Transcribe>) -> Result<CallToolResult, McpError> {
+        let body = json!({ "bin": p.bin, "id": p.id, "language": p.language, "max_chars": p.max_chars, "base_revision": p.base_revision, "origin": "claude: transcribe" });
+        self.job("/api/transcribe", &body, Duration::from_secs(p.wait_seconds.unwrap_or(600))).await
     }
 
     #[tool(description = "Render exact composited frames of the timeline (through the real MLT graph, overlays included) and return them as images. Use a rect to zoom into a region. Pass `sequence` to look at a nested sequence instead of the master. Frames are also written as PNGs whose paths are returned.")]

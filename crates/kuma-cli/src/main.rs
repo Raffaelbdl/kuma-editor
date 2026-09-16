@@ -84,6 +84,20 @@ enum Cmd {
         #[arg(long)]
         id: Option<String>,
     },
+    /// Transcribe a media entry with whisper.cpp and add the subtitles to the bin.
+    Transcribe {
+        /// Bin id of the media entry.
+        bin: String,
+        /// Bin id for the subtitles entry (default `<bin>-subs`).
+        #[arg(long)]
+        id: Option<String>,
+        /// ISO 639-1 language code, or `auto`.
+        #[arg(long)]
+        language: Option<String>,
+        /// Longest cue in characters; 0 keeps whisper's own segments.
+        #[arg(long, default_value_t = 24)]
+        max_chars: u32,
+    },
     /// Create a new empty project file (and a project-scoped `.mcp.json` for Claude Code).
     Init {
         #[arg(long, default_value_t = 1920)]
@@ -243,6 +257,19 @@ async fn main() -> anyhow::Result<()> {
             };
             println!("added bin entry `{id}` (revision {rev})");
         }
+        Cmd::Transcribe { bin, id, language, max_chars } => {
+            let options = kuma_overlay::TranscribeOptions { language: language.clone(), max_chars: Some(*max_chars) };
+            let out = if let Some(url) = running_daemon(&cli).await {
+                let body = serde_json::json!({ "bin": bin, "id": id, "language": options.language, "max_chars": options.max_chars, "origin": "cli: transcribe" });
+                let v = kuma_mcp::client::Client::new(&url).post("/api/transcribe", &body).await?;
+                kuma_mcp::client::Client::new(&url).wait_job(v["job"].as_u64().unwrap_or_default(), std::time::Duration::from_secs(3600)).await?
+            } else {
+                let state = open(&cli)?;
+                let req = kuma_daemon::jobs::TranscribeRequest { bin: bin.clone(), id: id.clone(), options, base_revision: None, origin: "cli".into() };
+                tokio::task::spawn_blocking(move || kuma_daemon::jobs::transcribe(&state, &req, &|p, m| eprintln!("[{p:3}%] {m}"))).await??
+            };
+            println!("{}", serde_json::to_string_pretty(&out)?);
+        }
         Cmd::McpConfig { print } => {
             let path = absolute(&cli.project)?;
             let json = mcp_config_json(&path, &repo_root(&cli)?)?;
@@ -302,6 +329,8 @@ async fn doctor(cli: &Cli) -> anyhow::Result<()> {
     println!("ffprobe       {}", ok(kuma_overlay::media::ffprobe_available(), "ok", "apt install ffmpeg"));
     let baker = kuma_overlay::Baker::discover(&cfg.repo_root, PathBuf::new(), cfg.cache_dir().join("bakes"));
     println!("hyperframes   {}", baker.available().map(|v| format!("{v} ({})", baker.hyperframes.display())).unwrap_or_else(|e| format!("MISSING — npm install at the repo root ({e})")));
+    let stt = kuma_overlay::Transcriber::discover(default_library_dirs().remove(0).join("models"));
+    println!("whisper       {}", stt.available().map(|m| format!("{} with {}", stt.cli.display(), m.display())).unwrap_or_else(|e| format!("MISSING — {e}")));
     println!("browser       {}", baker.browser.as_ref().map(|p| p.display().to_string()).unwrap_or("not set — hyperframes will download Chrome headless shell on first bake".into()));
     let display = std::env::var_os("DISPLAY").is_some() || std::env::var_os("WAYLAND_DISPLAY").is_some();
     println!("display       {}", if display { "yes" } else if kuma_daemon::preview::has_bin("xvfb-run") { "none; xvfb-run available" } else { "NONE and no xvfb-run — melt/engine will fail (apt install xvfb)" });

@@ -1,4 +1,4 @@
-// The top bar: project, sequence picker, undo/redo, export preset, Render.
+// The top bar: project, sequence picker, frame size, undo/redo, export preset, Render.
 // Buttons run commands. Render is registered here rather than received, because the
 // preset it needs is a control in this bar.
 
@@ -25,6 +25,11 @@ export function mountTopbar(host: HTMLElement): void {
     else void store.openSequence(picked);
   };
 
+  // Landscape or portrait is nothing but the frame size, so the control that shows it is
+  // the control that flips it: one click swaps width and height.
+  const size = button("", () => run(Cmd.swapOrientation));
+  size.className = "mono";
+
   const presets = el("select");
   presets.style.width = "auto";
   void api.presets().then((ps) => options(presets, ps.map((p) => ({ value: p.id, title: p.description }))));
@@ -37,7 +42,7 @@ export function mountTopbar(host: HTMLElement): void {
   render.className = "primary";
   const status = el("span", "status");
   host.append(
-    name, seqSel, rev,
+    name, seqSel, rev, size,
     button("Undo", () => run(Cmd.undo)),
     button("Redo", () => run(Cmd.redo)),
     el("span", "spacer"),
@@ -55,6 +60,11 @@ export function mountTopbar(host: HTMLElement): void {
   });
   store.select((s) => [s.project, s.sequence, s.connected, s.jobs], (s) => {
     name.textContent = s.project?.name || "kuma";
+    if (s.project) {
+      const { width: w, height: h } = s.project;
+      size.textContent = `${w}×${h} ⇄`;
+      size.title = `Switch to ${h > w ? "landscape" : "portrait"} (${h}×${w})`;
+    }
     rev.textContent = s.project ? `r${s.project.revision}${s.connected ? "" : " · offline"}` : "";
     const running = Object.entries(s.jobs).filter(([, j]) => !j.done);
     const last = Object.values(s.jobs).at(-1);

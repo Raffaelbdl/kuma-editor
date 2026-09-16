@@ -196,6 +196,8 @@ button.linkish:hover { text-decoration: underline; }
 .field { display: grid; grid-template-columns: 90px 1fr; gap: 6px; align-items: center; margin-bottom: 6px; }
 .field label { color: var(--fg-2); font-size: 11px; }
 .field .row { display: flex; gap: 4px; }
+.cue-row { display: grid; grid-template-columns: 58px 58px 1fr auto; gap: 4px; margin-bottom: 4px; }
+.cue-row input[type="number"] { padding: 4px 2px; }
 .effect { border: 1px solid var(--line); border-radius: 6px; padding: 6px; margin-bottom: 6px; background: var(--bg-3); }
 .effect .head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; font-weight: 600; }
 .effect .head button { padding: 0 6px; font-size: 11px; }

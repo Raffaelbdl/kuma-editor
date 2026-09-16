@@ -8,7 +8,7 @@ use std::sync::{Mutex, PoisonError, RwLock};
 use kuma_core::edit::{self, EditError};
 use kuma_core::template::{TemplateError, TemplateManifest};
 use kuma_core::{Issue, Project, ValidationContext};
-use kuma_overlay::Baker;
+use kuma_overlay::{Baker, Transcriber};
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 
@@ -85,6 +85,9 @@ pub struct AppState {
     pub undo: Mutex<UndoStack>,
     pub templates: RwLock<Templates>,
     pub baker: Baker,
+    /// whisper.cpp, for the `transcribe` job. Discovered like the baker; absent is a job
+    /// error naming what to install, never a daemon that will not start.
+    pub transcriber: Transcriber,
     pub events: broadcast::Sender<Event>,
     pub jobs: crate::jobs::Jobs,
     pub preview: crate::preview::PreviewHandle,
@@ -125,6 +128,7 @@ impl AppState {
         // The shared `_vendor/` is the highest-precedence library that has one.
         let vendor_dir = config.all_template_dirs().iter().rev().map(|d| d.join("_vendor")).find(|d| d.is_dir()).unwrap_or_else(|| config.library_dirs[0].join("overlays/_vendor"));
         let baker = Baker::discover(&config.repo_root, vendor_dir, config.cache_dir().join("bakes"));
+        let transcriber = Transcriber::discover(config.library_dirs[0].join("models"));
         let (events, _) = broadcast::channel(256);
         let st = AppState {
             templates: RwLock::new(Templates { loaded: BTreeMap::new(), errors: Vec::new() }),
@@ -132,6 +136,7 @@ impl AppState {
             edit: Mutex::new(()),
             undo: Mutex::new(UndoStack { past: Vec::new(), future: Vec::new() }),
             baker,
+            transcriber,
             events,
             jobs: crate::jobs::Jobs::default(),
             preview: crate::preview::PreviewHandle::default(),

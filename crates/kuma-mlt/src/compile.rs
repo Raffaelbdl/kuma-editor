@@ -926,6 +926,20 @@ mod tests {
         assert!(xml.find("clip_o_in") < xml.find(r#"<tractor id="seq_part""#), "inside the sequence it belongs to: {xml}");
     }
 
+    /// Vertical is nothing but the frame size. Swapping `width`/`height` is what the
+    /// editor's orientation button does, so a portrait project must compile to a portrait
+    /// profile and a portrait background, and the preview's scale must follow the width.
+    #[test]
+    fn a_portrait_project_compiles_to_a_portrait_profile() {
+        let mut p = reference_like();
+        (p.width, p.height) = (1080, 1920);
+        let xml = compile(&p, &CompileOptions::new("/proj")).unwrap();
+        assert!(xml.contains(r#"width="1080" height="1920""#) && xml.contains(r#"display_aspect_num="1080" display_aspect_den="1920""#), "{xml}");
+        assert!(xml.contains("0=0 0 1080 1920") || xml.contains("1080x1920"), "the background must fill the portrait frame: {xml}");
+        let mut opts = CompileOptions::new("/proj");
+        opts.size = Some((540, 960));
+        assert!(compile(&p, &opts).unwrap().contains(r#"width="540" height="960""#));
+    }
 
     /// The preview skips handing the engine a timeline when the project compiles to the
     /// document it already holds, which is only sound if compiling is deterministic. It

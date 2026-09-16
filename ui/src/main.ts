@@ -3,7 +3,7 @@
 
 import { Cmd, command, run } from "./commands";
 import { desktop, initDesktop, pickAndAddMedia } from "./desktop";
-import { addTrack, deleteSelectedClip, promptNewSequence, splitAtPlayhead } from "./edits";
+import { addTrack, deleteSelectedClip, promptNewSequence, splitAtPlayhead, swapOrientation } from "./edits";
 import { Inspector } from "./panels/inspector";
 import { Library } from "./panels/library";
 import { Preview } from "./panels/preview";
@@ -20,6 +20,7 @@ function projectCommands() {
   command(Cmd.undo, "Undo", () => store.undo());
   command(Cmd.redo, "Redo", () => store.redo());
   command(Cmd.newSequence, "New Sequence…", () => promptNewSequence());
+  command(Cmd.swapOrientation, "Switch Orientation", () => swapOrientation());
   command(Cmd.addMedia, "Add Media…", () => pickAndAddMedia());
   command(Cmd.split, "Split at Playhead", () => splitAtPlayhead());
   command(Cmd.deleteClip, "Delete Clip", () => deleteSelectedClip());
@@ -51,6 +52,7 @@ async function main() {
     render: () => run(Cmd.render),
     reloadPreview: () => run(Cmd.reloadPreview),
     newSequence: () => run(Cmd.newSequence),
+    swapOrientation: () => run(Cmd.swapOrientation),
     addMedia: () => run(Cmd.addMedia),
   });
 }

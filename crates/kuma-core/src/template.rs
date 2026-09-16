@@ -57,6 +57,9 @@ pub enum VarType {
     Boolean,
     Enum,
     Point,
+    /// A list of timed lines, `[{ "start", "end", "text" }, …]` in seconds relative to
+    /// the clip start. What a subtitle template takes; the inspector edits it as rows.
+    Cues,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -210,6 +213,17 @@ impl VarSpec {
                     return Some("expected {x, y}".into());
                 }
             }
+            VarType::Cues => {
+                let Some(list) = v.as_array() else { return Some("expected a list of {start, end, text}".into()) };
+                for (i, cue) in list.iter().enumerate() {
+                    let time = |k: &str| cue.get(k).and_then(Value::as_f64).filter(|t| t.is_finite() && *t >= 0.0);
+                    match (time("start"), time("end"), cue.get("text").and_then(Value::as_str)) {
+                        (Some(start), Some(end), Some(_)) if start < end => {}
+                        (Some(_), Some(_), Some(_)) => return Some(format!("cue {i}: end must be after start")),
+                        _ => return Some(format!("cue {i}: expected {{start, end, text}} with times ≥ 0")),
+                    }
+                }
+            }
         }
         None
     }
@@ -276,6 +290,17 @@ mod tests {
         assert!(bad(json!({ "id": "t", "vars": { "n": { "type": "number", "default": "big" } } })).contains("default"));
         assert!(bad(json!({ "id": "t", "vars": { "n": { "type": "number", "default": 5, "max": 1 } } })).contains("max"));
         assert!(manifest().check().is_none());
+    }
+
+    #[test]
+    fn cues_are_a_list_of_timed_lines() {
+        let spec: VarSpec = serde_json::from_value(json!({ "type": "cues", "default": [] })).unwrap();
+        assert!(spec.check(&json!([{ "start": 0, "end": 1.5, "text": "hi" }, { "start": 1.5, "end": 2, "text": "" }])).is_none());
+        let bad = |v: Value| spec.check(&v).expect("should be rejected");
+        assert!(bad(json!("no")).contains("list"));
+        assert!(bad(json!([{ "start": 2, "end": 1, "text": "x" }])).contains("cue 0: end"));
+        assert!(bad(json!([{ "start": 0, "end": 1, "text": "x" }, { "start": -1, "end": 1, "text": "x" }])).contains("cue 1"));
+        assert!(bad(json!([{ "start": 0, "end": 1 }])).contains("text"));
     }
 
     /// A folder carrying a manifest but no markup used to load, resolve and validate

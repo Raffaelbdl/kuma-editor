@@ -45,6 +45,9 @@ npm run app                               # the desktop app: launcher, then a wi
 ```
 
 System deps (Debian/Ubuntu): `ffmpeg melt libmlt-dev libmlt++-dev libsdl2-dev libturbojpeg0-dev cmake xvfb`.
+Subtitles run whisper.cpp as a subprocess: `whisper-cli` on `PATH` (or `KUMA_WHISPER_BIN`) and a
+ggml model in `~/.local/share/kuma/models` (or `KUMA_WHISPER_MODEL`); tests stand a shell script
+in for it.
 Headless machines: MLT's Qt module needs a display; melt and the engine are wrapped in
 `xvfb-run -a` automatically when `DISPLAY` is unset. Set `HYPERFRAMES_BROWSER_PATH` to a
 Chrome headless shell if hyperframes should not download one.
@@ -78,6 +81,10 @@ Chrome headless shell if hyperframes should not download one.
   `UPDATE_GOLDEN=1 cargo test -p kuma-mlt` and read the diff.
 - Overlay bakes run hyperframes with **one worker**; multi-worker capture was measured
   to be non-deterministic on GSAP-driven transforms.
+- Subtitles are not a model concept: a transcript is the `cues` var of a `subtitles`
+  overlay entry, in source seconds, edited and baked like any other var. Portrait is not
+  one either: it is `width`/`height`, and nothing else in the model may depend on which
+  way round they are.
 - Alpha intermediates are PNG sequences (straight alpha). Assert `pix_fmt` on any encode.
 - All state lives in the daemon. The UI and MCP are thin clients; every mutation is a
   revision-checked JSON Patch that is validated atomically and undoable.

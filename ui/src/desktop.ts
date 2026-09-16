@@ -41,6 +41,7 @@ export interface Commands {
   render(): void;
   reloadPreview(): void;
   newSequence(): void;
+  swapOrientation(): void;
   addMedia(): void;
 }
 
@@ -54,6 +55,7 @@ export function initDesktop(commands: Commands): void {
       case "render": return commands.render();
       case "reload-preview": return commands.reloadPreview();
       case "new-sequence": return commands.newSequence();
+      case "swap-orientation": return commands.swapOrientation();
       case "add-media": return commands.addMedia();
     }
   });

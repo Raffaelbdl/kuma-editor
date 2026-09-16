@@ -250,6 +250,44 @@ and is exactly right by construction.
 
 ---
 
+## Subtitles and vertical
+
+**Subtitles are an overlay entry, not a model concept** — adopted.
+
+A transcript is the `cues` var (`[{start, end, text}]`, source seconds) of the `subtitles`
+template, so it is a bin entry like any configured overlay: placed on an overlay track,
+edited in the inspector (one row per cue, so a misheard word is fixed in place and the live
+preview follows), hashed into the bake key, undone as one step. The only model change is a
+`cues` var *type* — a list has no CSS custom property, so it reaches the template through
+`window.kuma.vars` alone, which the contract already allowed for arrays. The alternative, a
+fifth `BinSource` variant, would have touched the compiler, the validator, the bake, the
+thumbnail job and the UI for something that "HTML templates subsume title clips" already
+covers: a subtitle is a title with timing.
+
+**Not attached to the media** — adopted, as asked. Cues stay in source seconds and the
+entry carries an `offset` var for a trimmed media clip's `in`. The job takes a bin entry,
+never a clip, so the transcript reads the same over every clip of that media; attaching it
+to one placement would make trimming that clip silently shift the words.
+
+**whisper.cpp as a subprocess** — adopted, the way melt and ffmpeg are. `whisper-cli` on
+`PATH` (`KUMA_WHISPER_BIN`) and a ggml model in `~/.local/share/kuma/models`
+(`KUMA_WHISPER_MODEL`), discovered at daemon start like the baker; absent is a job error
+naming what to install, never a daemon that fails to start. ffmpeg extracts 16 kHz mono
+WAV first, `-oj` gives JSON with millisecond offsets, `-ml N -sow` splits segments on
+words to the short lines shorts use. Python `openai-whisper` and hosted APIs were passed
+over for now: whisper.cpp is the model people run on a laptop, and its JSON is the only
+shape the parser knows. The daemon test stands a shell script in for the binary, so the
+argument plumbing, the WAV step and the patch are exercised without a model.
+
+**Vertical is `width`/`height` and nothing else** — adopted. The compiler already read the
+profile off the project, presets carry no size, templates size in `vh`, and the stage
+letterboxes from the project size — so "switch orientation" is one button that swaps the
+two fields in a patch. A portrait *flag* was rejected: a second source of truth for the
+frame size that every reader would have to reconcile. The one thing a swap does not move
+is a pixel-valued `transform` offset, and that is documented rather than guessed at.
+
+---
+
 ## Desktop shell
 
 The editor became an application: a launcher that opens or creates a project, and a window

@@ -9,7 +9,7 @@
 import { api } from "../api";
 import { button, el, options } from "../dom";
 import { store, toast } from "../store";
-import type { BinItem, Clip, Effect, PatchOp, VarSpec } from "../types";
+import type { BinItem, Clip, Cue, Effect, PatchOp, VarSpec } from "../types";
 import { placeBinItem } from "../edits";
 import { binItem, binPath, canTimeWarp, expandPreset, isColorSource, isFileSource, isOverlaySource, isSequenceSource, isTimedMedia, placementsOf, seqDuration, wouldRecurse } from "../types";
 
@@ -112,6 +112,18 @@ export class Inspector {
     if (!wouldRecurse(p, id, store.state.sequence)) {
       actions.appendChild(button("Add at playhead", () => placeBinItem(id, store.state.playhead)));
     }
+    // Speech to text lands in the bin, not on the clip: the subtitles entry is placed
+    // like any overlay, and reads the same whichever clip of this media it sits over.
+    if (isFileSource(item.source) && item.source.kind !== "image" && item.meta?.has_audio !== false) {
+      actions.appendChild(button("Transcribe → subtitles", async () => {
+        try {
+          const r = await api.transcribe(id, p.revision);
+          toast(`Transcribe job #${r.job} started`, "ok");
+        } catch (e) {
+          toast((e as Error).message, "err");
+        }
+      }, "Run the local speech-to-text model and add a subtitles entry to the bin"));
+    }
     if (isSequenceSource(item.source)) {
       const open = button("Open", () => store.openSequence(id), "Edit its own timeline");
       (open as HTMLButtonElement).disabled = id === store.state.sequence;
@@ -175,7 +187,10 @@ export class Inspector {
     const setVar = (k: string, v: unknown) => store.patch([{ op: "add", path: `${bp}/source/vars`, value: { ...vars, [k]: v } }], `var ${k}`);
     for (const [k, spec] of Object.entries(tpl.manifest.vars)) {
       const cur = k in vars ? vars[k] : spec.default;
-      this.host.appendChild(field(spec.label ?? k, varInput(spec, cur, (v) => setVar(k, v))));
+      const input = varInput(spec, cur, (v) => setVar(k, v));
+      // A cue list is rows, not a value: it takes the panel's full width under a heading.
+      if (spec.type === "cues") this.host.append(el("h3", "", spec.label ?? k), input);
+      else this.host.appendChild(field(spec.label ?? k, input));
     }
   }
 
@@ -283,6 +298,26 @@ function jsonInput(value: unknown, onChange: (v: unknown) => void): HTMLTextArea
   return t;
 }
 
+/** Subtitle cues as editable rows — start, end, text, remove — plus a row to add one.
+ *  Every change commits the whole list, which is one var patch like any other. */
+function cuesInput(cues: Cue[], onChange: (v: Cue[]) => void): HTMLElement {
+  const wrap = el("div", "cues");
+  const commit = (i: number, patch: Partial<Cue> | null) => onChange(patch ? cues.map((c, j) => (j === i ? { ...c, ...patch } : c)) : cues.filter((_, j) => j !== i));
+  cues.forEach((c, i) => {
+    const row = el("div", "cue-row");
+    row.append(
+      numInput(c.start, (v) => commit(i, { start: v }), 0.01),
+      numInput(c.end, (v) => commit(i, { end: v }), 0.01),
+      textInput(c.text, (v) => commit(i, { text: v })),
+      button("×", () => commit(i, null), "Remove this cue"),
+    );
+    wrap.appendChild(row);
+  });
+  const last = cues.at(-1);
+  wrap.appendChild(button("+ cue", () => onChange([...cues, { start: last?.end ?? 0, end: (last?.end ?? 0) + 2, text: "" }])));
+  return wrap;
+}
+
 function varInput(spec: VarSpec, cur: unknown, onChange: (v: unknown) => void): HTMLElement {
   switch (spec.type) {
     case "number": {
@@ -330,6 +365,8 @@ function varInput(spec: VarSpec, cur: unknown, onChange: (v: unknown) => void): 
       t.onchange = () => onChange(t.value);
       return t;
     }
+    case "cues":
+      return cuesInput((Array.isArray(cur) ? cur : []) as Cue[], onChange);
     default:
       return textInput(String(cur ?? ""), onChange);
   }

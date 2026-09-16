@@ -1,12 +1,13 @@
 # kuma-editor — decision record
 
 Decisions taken during the review and bin refactor on `claude/happy-davinci-tspnqo`
-(commits `eede385` and `25849c1`). `docs/plan.md` is the original plan and predates
-these; where the two disagree, this file is later.
+(commits `eede385` and `25849c1`), and during nested sequences on
+`claude/fervent-hypatia-cpx7e6`. `docs/plan.md` is the original plan and predates both;
+where they disagree, this file is later.
 
 Status key: **adopted** is in the code, unless the entry says otherwise; **rejected** was
-considered and turned down; **superseded** was adopted earlier in the same session and
-then replaced; **deferred** is agreed direction, not yet built. Where a decision was to
+considered and turned down; **superseded** was adopted earlier and has since been
+replaced, and the entry says by what; **deferred** is agreed direction, not yet built. Where a decision was to
 *not* build something, the entry says so rather than implying an implementation.
 
 ---
@@ -109,6 +110,39 @@ the document through a plain `Mlt::Producer(profile, "xml", path)`.
 take an optional `sequence` and default to the master, which keeps MCP stateless: the
 agent says which timeline it means instead of depending on what the human has open.
 
+### What broke, and how it was found
+
+Four defects shipped in the first cut and were caught by a correctness review afterwards.
+Recorded because two of them came from the *cleanup* passes, and because the shape of the
+mistake repeats.
+
+1. **A hidden track's overlays stopped being baked, so those projects would not render.**
+   A `!t.hidden` filter was added to the bake selection as an optimisation. Hiding is per
+   track and applied on the tractor, so the compiler still emits the clips, and under
+   `UnbakedPolicy::Error` a render died with "overlay clip has no bake". *The compiler
+   decides what needs a bake; the daemon does not get to decide it is unnecessary* — now
+   pinned by a test in `tests/golden.rs`.
+2. **`muted` did nothing on a sequence clip.** A media clip mutes by not decoding its
+   audio (`audio_index=-1`); a wrapper playlist has no decoder to switch off, so the sound
+   came through whenever another clip kept the track's mix alive. It now carries a
+   `volume` filter at `MUTE_DB`. That constant is -200, not the `db()` floor of -60,
+   because -60 dB measures -87 out of the encoder against -91 for a silent file; the floor
+   itself stays at -60, since volume *ramps* interpolate through it.
+3. **`sample_frames` baked every overlay the sequence reaches**, having lost the
+   "intersecting the sampled range" filter in a refactor — so one frame paid for the whole
+   timeline, and because that path is strict, one broken template anywhere failed a sample
+   that would never have shown it.
+4. **A deleted open sequence was remembered.** The fallback to the master did not clear
+   the stored id, so re-creating that id — an undo, an agent adding it back — silently
+   reopened it on the daemon while every client still showed the master.
+
+The process lesson is worth more than the four fixes. Both quality passes explicitly left
+bugs aside ("that is what a correctness review is for"), and one of them introduced a
+regression that stopped renders working. *A refactor is not verified by the refactor
+passing review; run the correctness pass after it.* None of these four announced itself —
+a silent overlay and a stale preview both look exactly like working software, which is why
+they are worth tests rather than care.
+
 **Track and clip ids stay unique across the whole project**, not per sequence. They are
 MLT element ids in one compiled document and URL segments in one daemon, and keeping them
 global means `find_clip(id)`, the overlay preview routes and the bake map all work
@@ -133,9 +167,10 @@ a project with one nested overlay), and it warms the very entry the render then 
 
 Two things this had to not break. Baking is **best effort**: a template that will not bake,
 or no hyperframes installed at all, costs that one overlay in the preview and never the
-preview itself, which was free before. And the baked set is narrowed to sequences the open
-one actually reaches, skipping hidden tracks, so a bin full of unplaced sequences does not
-buy a bake on every reload.
+preview itself, which was free before. And the baked set is narrowed to the sequences the
+open one actually reaches, so a bin full of unplaced sequences does not buy a bake on every
+reload. Narrowing it by *visibility* as well was tried and was a mistake — see "What broke"
+above: the compiler emits a hidden track's clips, so skipping their bakes broke renders.
 
 The UI's engine key had to follow: overlay bin entries and overlay tracks used to be
 stripped from it wholesale, on the grounds that no overlay could change the engine's
@@ -179,6 +214,13 @@ project compiles byte-identically eight times running. And a restarted engine ho
 nothing, so the stored hash is cleared whenever one starts; `changed` is reported by
 counting loads rather than comparing hashes, because a fresh engine has to be handed the
 same document again.
+
+`crates/kuma-daemon/tests/preview.rs` is where those live, and it is the daemon's first
+test: it drives a real `AppState` and a real engine process, and skips with a message when
+the engine is not built, the way the render tests skip without melt. Its project is one
+colour clip, so it needs no media, ffmpeg, melt or hyperframes. The tests were
+mutation-checked rather than trusted for being green — making the reload never skip fails
+two of the three, which is the only evidence that a passing test is worth anything.
 
 **Reloads are coalesced, not debounced** — adopted.
 A caller arriving while a compile is running sets a flag instead of queuing, and the
@@ -290,7 +332,18 @@ showstopper of the review. The cut belongs to `<entry in out>` alone.
 **The golden MLT file is the regression oracle** — adopted.
 `tests/fixtures/reference.mlt` is regenerated with `UPDATE_GOLDEN=1` and the diff is read
 by hand. It earned its keep during the bin refactor: the compiled XML came out
-byte-identical, which is the proof that restructuring the model changed no pixels.
+byte-identical, which is the proof that restructuring the model changed no pixels. It did
+so again through nested sequences — the emitted document for the pre-existing tracks did
+not move by a byte while the compiler was restructured around them, and stayed still
+through two later refactors of the same code.
+
+**The DTD is a local copy with two fixes** — adopted.
+`tests/fixtures/mlt-xml.dtd` is not what MLT 7.22 ships. `properties` was declared as
+exactly one `property`, which no real document obeys, and `playlist` did not allow
+`filter` — although MLT attaches one to a playlist and honours its frame range, which is
+how Kdenlive carries track effects and how a nested sequence's placements carry their own.
+Both were measured before the DTD was relaxed, and the evidence is written beside the
+declarations. Prefer fixing the copy over emitting worse XML to satisfy it.
 
 ## Templates and presets as user assets
 
@@ -311,9 +364,12 @@ this is about browsing and organisation rather than capability.
 
 ## Preview
 
-**Engine reload is keyed on non-overlay state** — adopted.
-Overlays are live DOM in the editor and are skipped by the preview compile, so an
-overlay-only edit must not make the engine reload the whole timeline.
+**Engine reload is keyed on non-overlay state** — superseded, by "the daemon decides when
+the engine needs a new timeline" under *Nested sequences*.
+The rule itself still holds — an overlay-only edit on the open sequence must not reload
+the engine — but the client no longer works it out. The daemon compares the compiled
+document instead, which covers this case and the ones a client-side key kept getting
+wrong.
 
 **Overlay iframes are driven through the hyperframes player** — adopted.
 When the runtime's player is up, seeking goes through it, which is the same scrub path

@@ -420,9 +420,10 @@ mod tests {
     }
 
     /// The preview bakes the overlays it cannot drive and nothing else. Its own are live
-    /// DOM (baking them too would draw every overlay twice); a hidden track is not in the
-    /// picture; and a sequence sitting unplaced in the bin must cost neither a bake on
-    /// every reload nor a browser run on every render, just for being there.
+    /// DOM (baking them too would draw every overlay twice), and a sequence sitting
+    /// unplaced in the bin must cost neither a bake on every reload nor a browser run on
+    /// every render, just for being there. A hidden track's overlays *are* baked: the
+    /// compiler still emits them, so skipping those made renders fail.
     #[test]
     fn a_preview_bakes_the_overlays_it_nests_and_no_others() {
         let p: Project = serde_json::from_value(json!({

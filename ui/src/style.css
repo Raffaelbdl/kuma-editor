@@ -14,9 +14,13 @@
   --sans: Inter, system-ui, -apple-system, "Segoe UI", sans-serif;
 }
 * { box-sizing: border-box; }
-/* Tells the engine every built-in control is dark: native select popups, spinners,
-   checkboxes and the default scrollbars all follow it. */
-:root { color-scheme: dark; }
+/* Dark built-in controls — select popups, checkboxes, spinners.
+   **Not on :root.** A dark root makes every overlay iframe composite against an opaque
+   backdrop instead of staying transparent: Chromium will not let a light-scheme document
+   (which a template is, having no `color-scheme` of its own) show through a dark-scheme
+   embedder, so the preview paints the template's white canvas over the video. Scoped to
+   the controls that need it, the stage keeps compositing as it did. */
+button, input, select, textarea, option { color-scheme: dark; }
 html, body { height: 100%; margin: 0; background: var(--bg); color: var(--fg); font: 13px/1.4 var(--sans); }
 
 /* Scrollbars, themed. `scrollbar-*` is the standard property; the `::-webkit-` rules are
@@ -85,7 +89,10 @@ body.has-titlebar #titlebar {
 .stage canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
 .stage .overlay-layer { position: absolute; inset: 0; overflow: hidden; pointer-events: none; }
 .stage .ov { position: absolute; left: 0; top: 0; transform-origin: 0 0; }
-.stage .ov iframe { border: 0; background: transparent; display: block; }
+/* `color-scheme: normal` is load-bearing, not decoration: it keeps the embedder's scheme
+   matching the template's so Chromium composites the iframe transparently. Without it a
+   dark scheme anywhere above puts an opaque backdrop behind every overlay. */
+.stage .ov iframe { border: 0; background: transparent; display: block; color-scheme: normal; }
 .stage .badge { position: absolute; right: 8px; top: 8px; font: 11px var(--mono); color: var(--fg-2); background: rgba(0,0,0,0.5); padding: 2px 6px; border-radius: 4px; }
 
 #bottom { display: grid; grid-template-rows: 32px 1fr; border-top: 1px solid var(--line); background: var(--bg-2); min-height: 0; }

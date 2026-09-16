@@ -34,6 +34,14 @@ export class Preview {
   private wsOk = false;
   private snapshotTimer = 0;
   private lastSentSeek = -1;
+  /** A seek is out at the engine and has not been answered yet. */
+  private seekInFlight = false;
+  /** The newest position asked for while one was in flight; only the last survives. */
+  private pendingSeek: number | null = null;
+  private inFlightTimer = 0;
+  /** Arrival order of engine frames, so an out-of-order decode never draws backwards. */
+  private recvSeq = 0;
+  private drawnSeq = 0;
   private lastRevision = -1;
   /** The sequence the stage is showing; opening another one rebuilds it like an edit. */
   private lastSequence = "";
@@ -42,8 +50,6 @@ export class Preview {
   /** Timeline time of the last frame the engine sent while playing. */
   private engineT = -1;
   private lastFrame = -1;
-  /** Frame index of the last seek; frames from superseded seeks are dropped while paused. */
-  private wantFrame = -1;
 
   constructor(private host: HTMLElement) {
     this.stage = document.createElement("div");
@@ -74,12 +80,18 @@ export class Preview {
       }
       const buf = m.data as ArrayBuffer;
       const frame = Number(new DataView(buf).getBigInt64(0, true));
+      // Taken before the await: decoding is async and can finish out of order, so order
+      // of arrival — not of completion — decides which frame is the newer one.
+      const seq = ++this.recvSeq;
       const bmp = await createImageBitmap(new Blob([buf.slice(8)], { type: "image/jpeg" }));
-      // Decoding is async: a frame can finish after a later one. While playing never step
-      // back; while paused only the frame of the latest seek counts.
-      if (store.state.playing ? frame < this.lastFrame : frame !== this.wantFrame) { bmp.close(); return; }
+      if (seq < this.drawnSeq) { bmp.close(); return; }
+      this.drawnSeq = seq;
+      // While playing the engine streams in order; never step back over a late arrival.
+      if (store.state.playing && frame < this.lastFrame) { bmp.close(); return; }
       this.lastFrame = frame;
       this.draw(bmp);
+      // Paused, this frame answers the seek that asked for it: let the next one go.
+      if (!store.state.playing) this.seekAnswered();
       if (store.state.playing) {
         this.engineT = frame / store.fps;
         this.lastSentSeek = this.engineT;
@@ -88,6 +100,7 @@ export class Preview {
     };
     ws.onclose = () => {
       this.wsOk = false;
+      this.resetSeeks();
       this.badge.textContent = "snapshot (no engine)";
       if (store.state.playing) store.set({ playing: false });
       // A missing engine will not appear by itself: back off instead of respawning it every 3 s.
@@ -109,6 +122,7 @@ export class Preview {
       this.engineError = "";
       this.wsOk = true;
       this.lastFrame = -1;
+      this.resetSeeks();
       this.badge.textContent = `engine · ${Math.round((j.scale ?? 0.5) * 100)}%`;
       this.badge.title = "";
       this.sendSeek(store.state.playhead, true);
@@ -123,12 +137,47 @@ export class Preview {
     if (this.ws && this.ws.readyState === WebSocket.OPEN) this.ws.send(cmd);
   }
 
+  /**
+   * Ask for a frame at `t`.
+   *
+   * Scrubbing fires a seek per pointer move, which is far more than the engine can
+   * answer. Sending them all queued hundreds of renders and the stage sat on its last
+   * frame until the backlog drained — the drag looked dead while a click worked fine.
+   * So only one seek is ever out: later positions replace each other in `pendingSeek`,
+   * and the newest goes the moment a frame comes back. The engine is then always working
+   * on a position the pointer actually passed through, and the picture tracks the drag
+   * as closely as the engine can render.
+   */
   private sendSeek(t: number, force = false) {
     if (!force && Math.abs(t - this.lastSentSeek) < 1e-6) return;
     this.lastSentSeek = t;
-    this.wantFrame = Math.round(t * store.fps);
-    if (this.wsOk) this.send(`seek ${t.toFixed(4)}`);
-    else this.scheduleSnapshot(t);
+    if (!this.wsOk) { this.scheduleSnapshot(t); return; }
+    if (this.seekInFlight) { this.pendingSeek = t; return; }
+    this.dispatchSeek(t);
+  }
+
+  private dispatchSeek(t: number) {
+    this.seekInFlight = true;
+    this.pendingSeek = null;
+    this.send(`seek ${t.toFixed(4)}`);
+    clearTimeout(this.inFlightTimer);
+    // A seek that never produces a frame (a reload mid-flight, a dropped socket) must not
+    // wedge scrubbing for the rest of the session.
+    this.inFlightTimer = window.setTimeout(() => this.seekAnswered(), 1000);
+  }
+
+  /** A frame arrived, or we gave up waiting: release the slot and send the newest wanted. */
+  private seekAnswered() {
+    clearTimeout(this.inFlightTimer);
+    this.seekInFlight = false;
+    if (this.pendingSeek !== null) this.dispatchSeek(this.pendingSeek);
+  }
+
+  /** Forget anything outstanding — the frames it would produce are no longer wanted. */
+  private resetSeeks() {
+    clearTimeout(this.inFlightTimer);
+    this.seekInFlight = false;
+    this.pendingSeek = null;
   }
 
   private scheduleSnapshot(t: number) {
@@ -156,11 +205,14 @@ export class Preview {
     }
     this.lastFrame = -1;
     this.engineT = store.state.playhead;
+    // Playing streams frames unprompted; nothing is answering a seek any more.
+    this.resetSeeks();
     this.send("play");
     return true;
   }
   pause() {
     this.send("pause");
+    this.resetSeeks();
     // The next scrub back to this position must fetch a frame again.
     this.lastSentSeek = -1;
   }
@@ -176,6 +228,8 @@ export class Preview {
   reload() {
     if (!this.wsOk) return;
     this.send("reload");
+    // Whatever was in flight was for the old timeline.
+    this.resetSeeks();
     // The engine keeps playing through a reload; only a paused preview needs a fresh frame.
     setTimeout(() => { if (!store.state.playing) this.sendSeek(store.state.playhead, true); }, 300);
   }
@@ -223,6 +277,7 @@ export class Preview {
       if (Math.abs(playhead - this.engineT) > 1.5 / store.fps) {
         this.engineT = playhead;
         this.lastFrame = -1;
+        this.resetSeeks();
         this.send(`seek ${playhead.toFixed(4)}`);
         this.send("play");
       }

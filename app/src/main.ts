@@ -35,6 +35,8 @@ let menuTemplate: MenuItemConstructorOptions[] = [];
 /** Projects with a start in flight, so a double click cannot open two daemons for one. */
 const starting = new Set<string>();
 let quitting = false;
+/** True while a window is being replaced (a daemon restart), so its close is not an exit. */
+let reopening = false;
 
 // ---------------------------------------------------------------- launcher assets
 
@@ -149,7 +151,10 @@ function editorFor(d: Daemon): BrowserWindow {
     editors.delete(win);
     daemon.stop(d);
     rebuildMenu();
-    if (editors.size === 0 && !quitting) showLauncher();
+    // Closing the last project window ends the session. The launcher is somewhere you go
+    // deliberately — at startup, or File ▸ Project Launcher — not somewhere you are put
+    // back into on your way out, which turns quitting into two closes.
+    if (editors.size === 0 && !quitting && !reopening) app.quit();
   });
   win.loadURL(d.url);
   return win;
@@ -246,11 +251,18 @@ async function reportDaemonExit(dead: Daemon, code: number | null, signal: strin
   });
   editors.delete(win);
   if (response === 0) {
-    win.destroy();
-    await openProject(dead.projectFile).catch(() => showLauncher());
+    reopening = true;
+    try {
+      win.destroy();
+      await openProject(dead.projectFile);
+    } catch {
+      showLauncher();
+    } finally {
+      reopening = false;
+    }
   } else {
+    // They chose to close it; the dialog already said what happened.
     win.destroy();
-    if (editors.size === 0) showLauncher();
   }
 }
 

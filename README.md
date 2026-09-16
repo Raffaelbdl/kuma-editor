@@ -111,7 +111,7 @@ A project is a directory with `<name>.kuma.json` and your media:
 ```
 mkdir myvideo && cd myvideo
 kuma init --project myvideo.kuma.json --fps 30          # or 29.97, 30000/1001, --width 1080 --height 1920
-kuma add-asset media/screen.mp4
+kuma add-media media/screen.mp4
 kuma serve                                               # open http://127.0.0.1:7455 (--bind / KUMA_BIND to change)
 ```
 

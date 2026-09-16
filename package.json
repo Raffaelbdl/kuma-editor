@@ -12,8 +12,9 @@
     "app:build": "npm --prefix app run build",
     "overlay:preview": "hyperframes preview overlays",
     "overlay:doctor": "hyperframes doctor",
-    "test": "cargo test && npm --prefix app test && npm --prefix ui run build",
-    "app:test": "npm --prefix app test"
+    "test": "cargo test && npm --prefix app test && npm --prefix ui test",
+    "app:test": "npm --prefix app test",
+    "ui:test": "npm --prefix ui test"
   },
   "dependencies": {
     "gsap": "3.14.2",

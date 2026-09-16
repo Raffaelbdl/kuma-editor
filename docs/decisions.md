@@ -594,10 +594,10 @@ annoying, because the validator and the agent both read metadata today.
 
 ## Regression tests for the things that are not Rust
 
-**Agreed, not built.** The suite covers the model, the compiler and the daemon well, and
-covers nothing that only goes wrong in a browser or in the shell. Three bugs reached the
-user in one sitting, all of them in that gap, none of them the kind a Rust test would have
-seen:
+**Built.** The suite covered the model, the compiler and the daemon well, and covered
+nothing that only goes wrong in a browser or in the shell. Three bugs reached the user in
+one sitting, all of them in that gap, none of them the kind a Rust test would have seen —
+and each is now pinned by one of the tiers below:
 
 - **Overlay transparency.** A `color-scheme: dark` on the editor's root stopped Chromium
   compositing the overlay iframes: a template declares no colour scheme, so it is a
@@ -612,7 +612,7 @@ seen:
   stale-`ui/dist` detection, the library fallback. All verified during development with
   throwaway Node scripts that were never committed, which is the same as not being tested.
 
-Three tiers, cheapest first. **The first two are built**; the third is not.
+Three tiers, cheapest first. **All three are built.**
 
 1. **Response headers, in Rust — done** (`crates/kuma-daemon/tests/http.rs`). That
    everything the daemon serves carries `Cache-Control`, and that a handler asking for
@@ -627,12 +627,23 @@ Three tiers, cheapest first. **The first two are built**; the third is not.
    when `kuma init` writes something unreadable — including that the folder is rolled back
    so the name is free to retry, which is the bug as it was reported. A shell script
    stands in for a stale `kuma`, so no Rust build is involved.
-3. **The composite, in a browser — still open.** A fixture project with a colour clip
-   under an overlay, the editor loaded, and an assertion that the stage pixel is that
-   colour and not white. This is the tier that would have caught the transparency bug and
-   the `prompt` one, and the only one needing a browser — already a dependency, since the
-   baker drives Playwright's `chromium_headless_shell`. It should skip when that browser
-   is absent, the way the render and bake tests skip without `melt` and `ffmpeg`.
+3. **The composite, in a browser — done** (`ui/test/composite.test.mjs`). A fixture
+   project with a half-red, half-transparent overlay, the editor screenshotted by the
+   browser the baker already uses, and two assertions: the red reaches the page, and
+   nothing on it is white. Reintroducing the dark root turns the second into 106,323
+   near-white pixels against a threshold of 2,000, so it catches the bug with fifty times
+   the margin it needs.
+
+   Both assertions are **position-independent on purpose**. Where the stage sits depends
+   on the window, the letterboxing and the panel widths, and a test that had to know would
+   break on every layout change without ever finding a compositing fault. Counting colours
+   over the whole page does not care. The pair matters too: "nothing is white" alone would
+   also pass on a page where the overlay never loaded.
+
+   Pixels are read by a ~60-line PNG decoder (`ui/test/png.mjs`) over Node's `zlib`, which
+   is cheaper than depending on an image library or on ImageMagick being installed. It
+   skips when the browser or `ui/dist` is missing, the way the render tests skip without
+   melt.
 
 The pixel assertions stay coarse on purpose — "this region is not white", "this region is
 the colour of the clip under it" — because the point is compositing, not appearance. A

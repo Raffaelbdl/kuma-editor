@@ -34,7 +34,8 @@ starter set that `kuma library` installs. Tests point `KUMA_LIBRARY` (or the bak
 ```
 npm run rebuild                           # binary + ui/dist + app/dist + engine, then `kuma doctor`
 cargo build && cargo test                 # Rust; render/bake tests skip without melt/ffmpeg/hyperframes
-npm test                                  # the above, plus the shell's own tests (node --test, no Electron)
+npm test                                  # the above, plus the shell's and the UI's (node --test; the
+                                          # compositing test skips without a browser or ui/dist)
 cmake -S engine -B engine/build && cmake --build engine/build -j
 npm install && (cd ui && npm install && npm run build)
 kuma library                              # install library/ into ~/.local/share/kuma once

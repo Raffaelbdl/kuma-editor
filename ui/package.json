@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test": "npm run build && node --test test/*.test.mjs"
   },
   "devDependencies": {
     "typescript": "5.9.3",

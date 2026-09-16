@@ -42,21 +42,16 @@ const isFile = (p: string) => {
   }
 };
 
-/**
- * The repository root, by the same rule the daemon uses: `KUMA_REPO`, else the nearest
- * ancestor holding `node_modules/hyperframes`. `appDir` is this shell's own directory,
- * which in a checkout is `<repo>/app`.
- */
+/** The repository root, by the daemon's own rule: `KUMA_REPO`, else the nearest ancestor
+ *  holding `node_modules/hyperframes`. `appDir` is `<repo>/app` in a checkout. */
 export function findRepo(appDir: string): string | null {
   const env = process.env.KUMA_REPO;
   if (env && isDir(env)) return path.resolve(env);
   return ancestor(appDir, (d) => isDir(path.join(d, "node_modules", "hyperframes")));
 }
 
-/**
- * The `kuma` binary: `KUMA_BIN`, else the checkout's own build (release before debug, so
- * a stale debug build never shadows the one that was just released), else PATH.
- */
+/** The `kuma` binary: `KUMA_BIN`, else the checkout's build (release before debug, so a
+ *  stale debug build never shadows a fresh release), else PATH. */
 export function findBin(repo: string | null): string | null {
   const env = process.env.KUMA_BIN;
   if (env && isFile(env)) return path.resolve(env);
@@ -78,10 +73,7 @@ function onPath(name: string): string | null {
   return null;
 }
 
-/**
- * Resolve both, or explain what is missing in the terms the README uses — this is the
- * error the user sees before anything else works, so it has to say what to run.
- */
+/** Resolve both, or say what to run — this is the error seen before anything works. */
 export function resolveKuma(appDir: string): Kuma {
   const repo = findRepo(appDir);
   const bin = findBin(repo);
@@ -107,15 +99,10 @@ export function resolveKuma(appDir: string): Kuma {
   return { bin, repo, version };
 }
 
-/**
- * Whether the binary was built from a commit the checkout has since moved past.
- *
- * `build.rs` stamps the commit into `kuma --version` precisely so a stale binary is
- * obvious, and a stale one is not a cosmetic problem: a binary predating the bin refactor
- * writes projects in a format nothing here can open. Only a strict ancestor counts, so a
- * binary built from an unrelated branch, a non-git install, or a commit newer than HEAD
- * says nothing rather than crying wolf.
- */
+/** Whether the binary predates the checkout. `build.rs` stamps the commit into
+ *  `--version` for exactly this, and a binary older than the bin refactor writes projects
+ *  nothing here can open. Only a strict ancestor counts, so another branch, a non-git
+ *  install or a newer commit stays quiet rather than crying wolf. */
 function staleBinary(repo: string, version: string): string | null {
   const stamped = /\(([0-9a-f]{7,40})\)/.exec(version)?.[1];
   if (!stamped) return null;
@@ -147,17 +134,12 @@ function userLibraryDir(): string | null {
 /**
  * `KUMA_LIBRARY` to hand the daemon, or null to leave it alone.
  *
- * Overlay templates live in a user library, not in the checkout, so a daemon started with
- * nothing installed loads zero templates: the library panel is empty, every overlay clip
- * is refused, and a template that *is* found renders without `_vendor/kuma.css` and
- * `_vendor/kuma.js` — it comes out blank, which reads as a broken template rather than a
- * missing library. The checkout ships the starter set, so point at it.
+ * With no library installed a daemon loads zero templates, and one that *is* found
+ * renders without `_vendor/kuma.css` — blank, which reads as a broken template. The
+ * checkout ships the starter set, so point at it.
  *
- * Only as a fallback, though. `KUMA_LIBRARY` entries outrank the user library, so always
- * setting it would make the checkout's copy of a template shadow the one the user has
- * installed and edited — and only inside the app, while a hand-run `kuma serve` kept
- * using theirs. So: nothing if they set `KUMA_LIBRARY` themselves, and nothing if they
- * have a library installed.
+ * Only as a fallback: `KUMA_LIBRARY` outranks the user library, so setting it always
+ * would shadow templates they had installed and edited, and only inside the app.
  */
 export function libraryFallback(repo: string): string | null {
   if (process.env.KUMA_LIBRARY) return null;

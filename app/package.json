@@ -8,7 +8,8 @@
   "scripts": {
     "build": "node scripts/ensure-deps.mjs && tsc -p tsconfig.main.json && tsc -p tsconfig.launcher.json && node scripts/copy-assets.mjs",
     "start": "npm run build && electron .",
-    "dev": "npm run build && electron . --inspect"
+    "dev": "npm run build && electron . --inspect",
+    "test": "npm run build && node --test test/*.test.mjs"
   },
   "devDependencies": {
     "@types/node": "22.10.2",

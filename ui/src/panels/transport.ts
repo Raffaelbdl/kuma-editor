@@ -1,7 +1,5 @@
-// The transport strip under the preview: play, time, split, add track, preview quality,
-// zoom. Like the top bar it runs commands rather than holding references to the panels
-// that do the work — `+ track…` and the quality picker take an argument, which is why
-// they pass one to `run` instead of being separate commands per value.
+// The transport strip: play, time, split, add track, preview quality, zoom. Runs
+// commands; the two pickers pass their value as the command's argument.
 
 import { Cmd, run } from "../commands";
 import { button, el, options } from "../dom";

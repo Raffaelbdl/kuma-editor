@@ -1,9 +1,6 @@
-// Keyboard shortcuts, as a table of key to command.
-//
-// One list, so what a key does is answerable by reading it, and a key and a menu item
-// cannot drift apart — they name the same command. Anything typed into a field is left
-// alone; that check is why these are bound in the page and not as menu accelerators,
-// which fire regardless of what has focus.
+// Keyboard shortcuts, as a table of key to command — one list to read, and a key and a
+// menu item cannot drift because they name the same command. Bound in the page rather
+// than as menu accelerators so they can tell whether a field has focus.
 
 import { Cmd, run } from "./commands";
 import { store } from "./store";

@@ -1,9 +1,5 @@
 // Bootstrap: load the project, mount the panels, wire the surfaces that drive them.
-//
-// Nothing here knows how any panel works. Panels register what they can do as commands
-// (`commands.ts`); the top bar, the transport, the keyboard and — in the desktop shell —
-// the application menu all reach those by id. That is why this file does not hand a
-// `Preview` to three other functions any more.
+// Nothing here knows how a panel works — they meet through `commands.ts`.
 
 import { Cmd, command, run } from "./commands";
 import { desktop, initDesktop, pickAndAddMedia } from "./desktop";

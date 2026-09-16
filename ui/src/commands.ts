@@ -1,13 +1,8 @@
-// The editor's actions, in one place.
+// The editor's actions, in one place — Kdenlive's action collection.
 //
-// Kdenlive keeps its actions in a collection and lets the menus, the toolbars and the
-// shortcuts all refer to the same entry. Here the same three surfaces existed — a toolbar
-// button, an item in the desktop application menu, and a key — and each wired the action
-// its own way, so adding one meant touching three files and the `Preview` instance had to
-// be handed down to whichever function needed it.
-//
-// Now a panel registers what it can do when it mounts, and every surface looks it up by
-// id. Nothing has to hold a reference to the panel that does the work.
+// A panel registers what it can do when it mounts; the toolbar, the keyboard and the
+// desktop application menu each reach those by id. So an action is written once, and
+// nothing has to hold a reference to the panel that performs it.
 
 import { toast } from "./store";
 
@@ -33,11 +28,8 @@ export function label(id: string): string {
   return registry.get(id)?.label ?? id;
 }
 
-/**
- * Run a command by id. Unknown ids and failures become a toast rather than an unhandled
- * rejection — this is the path menus and keystrokes take, and a silent one is how
- * "+ new sequence…" managed to do nothing for a whole release.
- */
+/** Run a command. Unknown ids and failures toast: a silent one here is invisible, which
+ *  is how "+ new sequence…" came to do nothing at all. */
 export function run(id: string, arg?: unknown): void {
   const c = registry.get(id);
   if (!c) {

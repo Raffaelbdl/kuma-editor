@@ -1,9 +1,6 @@
-// The top bar: which project, which sequence, undo/redo, the export preset and Render.
-//
-// It owns almost no behaviour — the buttons run commands, so the same actions are
-// reachable from the application menu and from a keystroke without this file knowing that
-// either exists. The one thing it does own is the export preset, because the preset is a
-// control that lives here; so it registers Render rather than receiving it.
+// The top bar: project, sequence picker, undo/redo, export preset, Render.
+// Buttons run commands. Render is registered here rather than received, because the
+// preset it needs is a control in this bar.
 
 import { api } from "../api";
 import { Cmd, command, run } from "../commands";

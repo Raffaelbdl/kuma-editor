@@ -1,11 +1,10 @@
-// Daemon lifecycle. The shell owns every daemon it starts: it picks the port, waits for
-// health, restarts it on request and kills it when the window goes away or the app quits.
+// Daemon lifecycle. The shell owns every daemon it starts: port, health, restart, and
+// the kill when the window closes or the app quits.
 //
-// The one daemon it does **not** own is one that is already serving the same project
-// file. Two daemons writing one `.kuma.json` would both think they are its single owner,
-// which is the invariant the whole design rests on — and the process already there is
-// most likely a `kuma mcp` that Claude Code is talking to. So the shell attaches to it,
-// shares its state, and leaves it running when the window closes.
+// The one it does **not** own is a daemon already serving the same project file. Two
+// daemons writing one `.kuma.json` would each believe they own it — the invariant the
+// design rests on — and that one is usually a `kuma mcp`. So the shell attaches instead,
+// and leaves it running.
 
 import { ChildProcess, spawn } from "node:child_process";
 import net from "node:net";

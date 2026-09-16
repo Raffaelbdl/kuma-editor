@@ -1,13 +1,7 @@
-// Project edits that are not one panel's business.
-//
-// Placing a bin entry, adding a track, splitting a clip, minting a sequence: every one of
-// these is asked for from more than one place — a button, a drop, a menu item, a key — so
-// they live here rather than inside whichever panel happened to need them first. That is
-// also what keeps the panels from importing each other: the bin and the inspector both
-// place clips, and neither has to reach into the timeline to do it.
-//
-// Each one is a single revision-checked patch, and the rule a gesture can break is
-// checked here rather than beside each gesture.
+// Project edits that are no one panel's business: placing, splitting, adding a track,
+// minting a sequence. Each is asked for from several places, so each lives here as one
+// revision-checked patch with its rule checked once — and no panel has to import another
+// to place a clip.
 
 import { askText } from "./modal";
 import { store, toast } from "./store";

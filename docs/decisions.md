@@ -612,25 +612,27 @@ seen:
   stale-`ui/dist` detection, the library fallback. All verified during development with
   throwaway Node scripts that were never committed, which is the same as not being tested.
 
-Three tiers, cheapest first, because they are not equally hard:
+Three tiers, cheapest first. **The first two are built**; the third is not.
 
-1. **Response headers, in Rust, today.** That `GET /` and `/api/project` carry
-   `Cache-Control` is an ordinary `axum` test against the router, no browser and no
-   daemon. The cache bug was the most expensive of the three to find and would have been
-   the cheapest to catch.
-2. **The shell, in `app/`.** `daemon.ts`, `projects.ts`, `kuma.ts` and `recents.ts` are
-   plain modules with no Electron import precisely so they can be driven directly. The
-   scripts written while debugging already assert the right things — attaching rather than
-   spawning a second writer for one project file, rolling back a project `kuma init` wrote
-   in an unreadable format, the staleness checks firing on an ancestor commit and staying
-   quiet on an unknown one. They need a runner and a home, not new ideas.
-3. **The composite, in a browser.** A fixture project with a colour clip under an overlay,
-   the editor loaded, and an assertion that the stage pixel is that colour and not white.
-   This is the tier that would have caught the transparency bug, and the only one needing
-   a browser — which is already a dependency: the baker drives Playwright's
-   `chromium_headless_shell`, and `HYPERFRAMES_BROWSER_PATH` already points at one. It
-   should skip when that browser is absent, the way the render and bake tests skip without
-   `melt` and `ffmpeg`, so a checkout without it still runs a green suite.
+1. **Response headers, in Rust — done** (`crates/kuma-daemon/tests/http.rs`). That
+   everything the daemon serves carries `Cache-Control`, and that a handler asking for
+   `no-store` keeps it, against a daemon on a loopback port with a stand-in `ui/dist` and
+   a one-template library, so it needs nothing built and nothing installed. The request is
+   hand-rolled rather than adding a client crate for a test. Confirmed to fail with the
+   header removed. The cache bug was the most expensive of the three to find and is the
+   cheapest to catch.
+2. **The shell, in `app/` — done** (`app/test/`, `node --test`, no new dependency and no
+   Electron: those modules avoid importing it precisely so they can be driven directly).
+   18 cases over the library fallback's precedence, the staleness checks, and what happens
+   when `kuma init` writes something unreadable — including that the folder is rolled back
+   so the name is free to retry, which is the bug as it was reported. A shell script
+   stands in for a stale `kuma`, so no Rust build is involved.
+3. **The composite, in a browser — still open.** A fixture project with a colour clip
+   under an overlay, the editor loaded, and an assertion that the stage pixel is that
+   colour and not white. This is the tier that would have caught the transparency bug and
+   the `prompt` one, and the only one needing a browser — already a dependency, since the
+   baker drives Playwright's `chromium_headless_shell`. It should skip when that browser
+   is absent, the way the render and bake tests skip without `melt` and `ffmpeg`.
 
 The pixel assertions stay coarse on purpose — "this region is not white", "this region is
 the colour of the clip under it" — because the point is compositing, not appearance. A

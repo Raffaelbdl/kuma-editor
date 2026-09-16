@@ -347,6 +347,31 @@ was resolved and whether its commit is an ancestor of HEAD, which is what `build
 stamps the commit into `--version` for in the first place. Only a strict ancestor is
 reported, so a binary built from another branch or a non-git install stays quiet.
 
+**Nothing the daemon serves may be reused without revalidating** — adopted, after this
+turned out to be the real bug behind two rounds of misdiagnosis.
+
+`ServeDir` sent no `Cache-Control` and no `ETag`, only `Last-Modified`. A browser then
+falls back to *heuristic* freshness: it invents a lifetime from the file's age and serves
+the response without asking again. So an editor window that had cached `ui/dist` kept
+running that bundle after a correct rebuild — the files on disk were new, the daemon was
+new, and the window was executing month-old JavaScript. It reported `t.tracks is not
+iterable`, which reads exactly like a stale build, so the first two fixes chased staleness
+on disk and found nothing wrong with it.
+
+The router now adds `Cache-Control: no-cache` to every response, `if_not_present` so the
+handlers that chose `no-store` keep it. `no-cache` permits storing and requires
+revalidating, which on loopback is a 304. It covers more than the editor: a template being
+authored is reloaded constantly, a regenerated thumbnail keeps its URL, and API JSON is
+live state that was never safe to cache.
+
+A cache entry stored *before* this keeps its invented freshness, so the shell also clears
+its session cache at startup. Everything it loads is on loopback and worth nothing between
+runs.
+
+The lesson worth keeping: "the artifact on disk is current" and "the running program is
+that artifact" are different claims, and only the second one matters. Both earlier fixes
+checked the first.
+
 The same reasoning covers `ui/dist`, which is not in git either and which the *daemon*
 serves. A build from before sequences became bin entries reads `project.tracks`, spreads
 it, and dies with `t.tracks is not iterable` before the editor draws anything — a message

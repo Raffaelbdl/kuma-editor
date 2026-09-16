@@ -15,6 +15,7 @@ use kuma_core::{validate, BinSource, Project};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use tower_http::services::ServeDir;
+use tower_http::set_header::SetResponseHeaderLayer;
 
 use crate::jobs::{self, RenderRequest, SampleRequest};
 use crate::preview::{self, EngineEvent};
@@ -55,7 +56,20 @@ pub fn router(state: Arc<AppState>) -> Router {
     if ui.is_dir() {
         app = app.fallback_service(ServeDir::new(ui).append_index_html_on_directories(true));
     }
-    app.with_state(state)
+    // Nothing this daemon serves may be reused without asking first.
+    //
+    // Without a `Cache-Control` there is no `ETag` either, so a browser falls back to
+    // *heuristic* freshness: it invents a lifetime from `Last-Modified` and serves the
+    // response for as long as it likes without revalidating. For `ui/dist` that means a
+    // rebuilt editor has no effect on a window whose profile cached the old bundle — it
+    // keeps running it and fails on the shape of a newer project. The same applies to a
+    // template being authored, to a regenerated thumbnail that keeps its URL, and to API
+    // JSON, which is live state and was never safe to cache.
+    //
+    // `no-cache` still allows storing it; it only requires revalidation, which on
+    // loopback costs a 304. `if_not_present` so the handlers that say `no-store` (the
+    // overlay preview, snapshots) keep the stronger rule they chose.
+    app.layer(SetResponseHeaderLayer::if_not_present(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"))).with_state(state)
 }
 
 // ---------- errors ----------

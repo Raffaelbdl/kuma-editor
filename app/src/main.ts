@@ -8,7 +8,7 @@
 // assumes (`kuma mcp` finds a daemon by the project it serves), so opening a second
 // project starts a second daemon rather than teaching the first to switch.
 
-import { app, BrowserWindow, dialog, ipcMain, Menu, MenuItemConstructorOptions, net, protocol, shell } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, Menu, MenuItemConstructorOptions, net, protocol, session, shell } from "electron";
 import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -477,6 +477,12 @@ if (!app.requestSingleInstanceLock()) {
       kumaError = (e as Error).message;
     }
     recents = new Recents(app.getPath("userData"));
+    // Everything an editor window loads comes from a daemon on loopback, so there is
+    // nothing worth keeping between runs — and a cache entry stored before the daemon
+    // sent `Cache-Control` keeps its invented freshness, which is how a rebuilt
+    // `ui/dist` could go on being ignored by a window that had already cached the old
+    // one. Dropping it at startup costs a few milliseconds and closes that off.
+    session.defaultSession.clearCache().catch((e) => console.error("kuma: could not clear the cache:", e));
     serveLauncher();
     wireIpc();
     rebuildMenu();

@@ -32,13 +32,14 @@ starter set that `kuma library` installs. Tests point `KUMA_LIBRARY` (or the bak
 ## Commands
 
 ```
+npm run rebuild                           # binary + ui/dist + app/dist + engine, then `kuma doctor`
 cargo build && cargo test                 # Rust; render/bake tests skip without melt/ffmpeg/hyperframes
 cmake -S engine -B engine/build && cmake --build engine/build -j
 npm install && (cd ui && npm install && npm run build)
 kuma library                              # install library/ into ~/.local/share/kuma once
 kuma serve -p myvideo.kuma.json           # http://127.0.0.1:7455 (--bind / KUMA_BIND)
 kuma mcp -p myvideo.kuma.json             # stdio MCP; starts the daemon in-process if none is running
-(cd app && npm install) && npm run app    # the desktop app: launcher, then a window per project
+npm run app                               # the desktop app: launcher, then a window per project
 ```
 
 System deps (Debian/Ubuntu): `ffmpeg melt libmlt-dev libmlt++-dev libsdl2-dev libturbojpeg0-dev cmake xvfb`.

@@ -5,6 +5,7 @@
   "description": "Hybrid video editor: MLT-backed native timeline + HTML/CSS/TS overlays + MCP",
   "license": "MIT",
   "scripts": {
+    "rebuild": "bash scripts/rebuild.sh",
     "ui:dev": "npm --prefix ui run dev",
     "ui:build": "npm --prefix ui run build",
     "app": "npm --prefix app run start",

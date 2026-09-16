@@ -62,11 +62,23 @@ sudo apt install ffmpeg melt libmlt-dev libmlt++-dev libsdl2-dev libturbojpeg0-d
 Build:
 
 ```
+npm run rebuild                              # everything, in order, then `kuma doctor`
+```
+
+Three of the artifacts kuma runs from are not in git — the `kuma` binary, `ui/dist` (which
+the daemon serves) and `app/dist` (the desktop shell) — so **run this after every pull**.
+A stale one fails far from its cause: an old binary writes projects the editor cannot
+open, an old `ui/dist` dies on the shape of a new one. Step by step, if you prefer:
+
+```
 npm install                                  # hyperframes + gsap
 cargo build --release
 cmake -S engine -B engine/build && cmake --build engine/build -j
 (cd ui && npm install && npm run build)
 ```
+
+The preview engine is the only optional piece; `npm run rebuild` reports it and carries on
+if its system libraries are missing.
 
 `cargo build --release` produces the `kuma` binary at `target/release/kuma` (it is the
 `crates/kuma-cli` crate). Either run it from there or install it on your `PATH`:
@@ -260,6 +272,11 @@ project's `width`/`height`.
 
 ## Troubleshooting
 
+- **Just pulled? Run `npm run rebuild`.** The binary, `ui/dist` and `app/dist` are not in
+  git, so a pull leaves them behind, and each fails in a way that does not name the build
+  step: `kuma init` writing a project the editor refuses to open, or the editor window
+  failing to start with something like `t.tracks is not iterable`. The desktop app warns
+  about the first two and refuses to open a window against a stale `ui/dist`.
 - **Start with `kuma doctor --project <file>`** — it reports the binary, repo root, tools,
   engine, display, whether a daemon answers on the port (and for which project), and the
   MCP config.

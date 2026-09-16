@@ -2,13 +2,20 @@ import { api, subscribeEvents } from "./api";
 import type { Clip, DaemonEvent, Job, PatchOp, Project, TemplateInfo, Track } from "./types";
 import { allClips, fpsValue, freeId, seqDuration, seqPath, sequenceIds, sequenceOf } from "./types";
 
+/**
+ * What the inspector is showing. A clip and a bin entry are different things to inspect,
+ * which is the model's own split: what is shown lives on the entry, when it is shown
+ * lives on the clip. One selection addresses either, so the panel never has to guess.
+ */
+export type Selection = { kind: "clip"; id: string } | { kind: "bin"; id: string } | null;
+
 export interface State {
   project: Project | null;
   templates: TemplateInfo[];
   /** The sequence open for editing. The daemon owns this (the preview compiles it), so it
    *  is set through the API rather than locally. Empty until the first load. */
   sequence: string;
-  selection: string | null;
+  selection: Selection;
   playhead: number;
   playing: boolean;
   /** pixels per second */
@@ -101,7 +108,7 @@ class Store {
           // The open sequence can be deleted out from under us (undo, an agent edit); the
           // daemon falls back to the master and so do we, rather than showing nothing.
           const sequence = sequenceOf(project, this.state.sequence) ? this.state.sequence : project.master;
-          const selection = allClips(project).some((c) => c.id === this.state.selection) ? this.state.selection : null;
+          const selection = this.stillThere(project, this.state.selection);
           this.set({ project, sequence, selection });
         } while (this.refreshAgain);
       } catch (e) {
@@ -111,6 +118,24 @@ class Store {
       }
     })();
     return this.refreshing;
+  }
+
+  /** A selection survives a refresh only while the thing it names still exists. */
+  private stillThere(project: Project, sel: Selection): Selection {
+    if (!sel) return null;
+    if (sel.kind === "bin") return sel.id in project.bin ? sel : null;
+    return allClips(project).some((c) => c.id === sel.id) ? sel : null;
+  }
+
+  /** Point the inspector at a clip or a bin entry. (`select` above is the subscription
+   *  helper; this one is the selection, and they are deliberately not the same word.) */
+  selectItem(kind: "clip" | "bin", id: string) {
+    this.set({ selection: { kind, id } as Selection });
+  }
+
+  /** The selected clip, or null when a bin entry (or nothing) is selected. */
+  get selectedClip(): string | null {
+    return this.state.selection?.kind === "clip" ? this.state.selection.id : null;
   }
 
   async undo() { await api.undo(); await this.refresh(); }

@@ -19,7 +19,8 @@ export class Timeline {
     // playhead are cheap updates.
     store.select((s) => [s.project, s.sequence, s.zoom], () => this.render());
     store.select((s) => [s.selection], (s) => {
-      for (const c of this.root.querySelectorAll<HTMLElement>(".clip:not(.ghost)")) c.classList.toggle("selected", c.dataset.id === s.selection);
+      const sel = s.selection?.kind === "clip" ? s.selection.id : null;
+      for (const c of this.root.querySelectorAll<HTMLElement>(".clip:not(.ghost)")) c.classList.toggle("selected", c.dataset.id === sel);
     });
     store.select((s) => [s.playhead], (s) => this.movePlayhead(s.playhead));
     host.addEventListener("wheel", (e) => {
@@ -121,7 +122,7 @@ export class Timeline {
 
   private clipEl(p: Project, t: Track, ti: number, c: Clip): HTMLDivElement {
     const w = Math.max(4, (c.end - c.start) * store.state.zoom);
-    const box = el("div", `clip ${clipKind(p, c, t)}${store.state.selection === c.id ? " selected" : ""}${w < 24 ? " tiny" : ""}`);
+    const box = el("div", `clip ${clipKind(p, c, t)}${store.selectedClip === c.id ? " selected" : ""}${w < 24 ? " tiny" : ""}`);
     box.dataset.id = c.id;
     box.style.left = `${this.x(c.start) - HEAD}px`;
     box.style.width = `${w}px`;
@@ -139,7 +140,7 @@ export class Timeline {
       e.stopPropagation();
       const kind = e.target === hl ? "trim-l" : e.target === hr ? "trim-r" : "move";
       this.beginDrag(e, kind, c, ti, box);
-      store.set({ selection: c.id });
+      store.selectItem("clip", c.id);
     });
     return box;
   }
@@ -317,7 +318,7 @@ async function place(clip: Clip, kind: TrackKind, ti: number, pre: PatchOp[]) {
   }
   ops.push({ op: "add", path: `${store.seqPath}/tracks/${ti}/clips/-`, value: clip });
   const ok = await store.patch(ops, `add ${clip.id}`);
-  if (ok) store.set({ selection: clip.id });
+  if (ok) store.selectItem("clip", clip.id);
 }
 
 /** Build the patch op that inserts a new empty track of `kind`. Tracks composite in array

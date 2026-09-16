@@ -142,6 +142,7 @@ export const fpsValue = (f: Fps) => f.num / f.den;
 export const isOverlaySource = (s: BinSource): s is { template: string; vars?: Record<string, unknown> } => "template" in s;
 export const isFileSource = (s: BinSource): s is { path: string; kind: MediaKind; proxy?: string | null } => "path" in s;
 export const isSequenceSource = (s: BinSource): s is Sequence => "tracks" in s;
+export const isColorSource = (s: BinSource): s is { color: string } => "color" in s;
 
 /** What a bin entry is, for badges and track placement. */
 export type ItemKind = "overlay" | "video" | "audio" | "image" | "color" | "sequence";

@@ -125,7 +125,7 @@ async function promptNewSequence() {
 }
 
 async function splitAtPlayhead() {
-  const f = store.findClip(store.state.selection);
+  const f = store.findClip(store.selectedClip);
   const t = store.state.playhead;
   if (!f || t <= f.clip.start || t >= f.clip.end) { toast("Select a clip under the playhead to split", ""); return; }
   const c = f.clip;
@@ -154,9 +154,12 @@ function shortcuts(preview: Preview) {
     else if (e.key === "Home") store.seek(0);
     else if (e.key === "End") store.seek(store.duration);
     else if (e.key.toLowerCase() === "s" && !mod && !e.altKey) splitAtPlayhead();
-    else if ((e.key === "Delete" || e.key === "Backspace") && store.state.selection) {
-      const path = store.clipPath(store.state.selection);
-      if (path) await store.patch([{ op: "remove", path }], `delete ${store.state.selection}`);
+    else if ((e.key === "Delete" || e.key === "Backspace") && store.selectedClip) {
+      // Only clips. Removing a bin entry throws away what every placement of it plays,
+      // so it stays a deliberate button in the inspector rather than a keystroke.
+      const id = store.selectedClip;
+      const path = store.clipPath(id);
+      if (path) await store.patch([{ op: "remove", path }], `delete ${id}`);
     } else if (mod && e.key.toLowerCase() === "z") {
       e.preventDefault();
       await (e.shiftKey ? store.redo() : store.undo());

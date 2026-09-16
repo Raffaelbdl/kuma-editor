@@ -130,6 +130,26 @@ body.has-titlebar #titlebar {
 .tl-marker { position: absolute; top: 22px; bottom: 0; border-left: 1px dashed var(--sel); z-index: 1; pointer-events: none; }
 .tl-xfade { position: absolute; top: 2px; height: 10px; background: repeating-linear-gradient(45deg, var(--sel), var(--sel) 2px, transparent 2px, transparent 5px); opacity: 0.8; border-radius: 3px; z-index: 1; }
 
+/* The bin is a list, not a stack of cards: one line per entry, name and kind. Detail
+   lives in the inspector, which is where selecting a row sends it. */
+.bin-list { display: flex; flex-direction: column; gap: 1px; margin-bottom: 8px; }
+.bin-row {
+  display: flex; align-items: center; gap: 8px; padding: 4px 6px; border-radius: 4px;
+  cursor: grab; border: 1px solid transparent; user-select: none;
+}
+.bin-row:hover { background: var(--bg-3); }
+.bin-row.selected { background: var(--bg-3); border-color: var(--fg-2); }
+/* The sequence you are editing, marked the way the topbar picker marks it. */
+.bin-row.open .bin-name { color: var(--sel); }
+.bin-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.insp-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
+.insp-thumb { width: 100%; border-radius: 4px; margin: 6px 0; background: repeating-conic-gradient(#333 0 25%, #444 0 50%) 0 0 / 12px 12px; }
+.tiny { font-size: 11px; margin: 2px 0 8px; }
+/* Navigation, not an edit: it moves the panel to the entry this clip plays. */
+button.linkish { background: none; border: 0; padding: 0; color: var(--sel); text-align: left; }
+button.linkish:hover { text-decoration: underline; }
+
 .lib-item { border: 1px solid var(--line); border-radius: 8px; padding: 8px; margin-bottom: 8px; background: var(--bg-3); cursor: grab; }
 .lib-item:hover { border-color: var(--fg-2); }
 .lib-item .title { font-weight: 600; }

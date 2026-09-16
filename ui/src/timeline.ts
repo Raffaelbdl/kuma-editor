@@ -5,7 +5,7 @@ import { store, toast } from "./store";
 import type { BinItem, Clip, PatchOp, Project, Track, TrackKind } from "./types";
 import { binItem, binPath, clipKind, isFileSource, isOverlaySource, isSequenceSource, isTimedMedia, itemKind, seqDuration, sequenceOf, wouldRecurse } from "./types";
 
-const HEAD = 120;
+const HEAD = 136;
 
 export class Timeline {
   private root: HTMLDivElement;
@@ -90,8 +90,8 @@ export class Timeline {
     const row = el("div", `tl-track ${t.kind}`);
     row.dataset.ti = String(ti);
     const head = el("div", "tl-head");
-    const label = el("div");
-    label.append(el("div", "kind", t.kind), el("div", "", t.name || t.id));
+    const label = el("div", "label");
+    label.append(el("div", "kind", t.kind), el("div", "tname", t.name || t.id));
     const toggles = el("div", "toggles");
     const toggle = (text: string, on: boolean, field: "muted" | "hidden") => {
       const b = button(text, () => store.patch([{ op: "replace", path: `${store.seqPath}/tracks/${ti}/${field}`, value: !on }], `${field} ${t.id}`), field === "muted" ? "Mute" : "Hide");

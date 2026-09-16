@@ -107,12 +107,27 @@ body.has-titlebar #titlebar {
 .tl-track { position: relative; height: 48px; border-bottom: 1px solid var(--line); }
 .tl-track.overlay { height: 40px; }
 .tl-track.audio { height: 36px; }
-.tl-head { position: sticky; left: 0; width: 120px; height: 100%; background: var(--bg-2); border-right: 1px solid var(--line); z-index: 2; padding: 4px 6px; font-size: 11px; display: flex; flex-direction: column; justify-content: space-between; }
-.tl-head .kind { color: var(--fg-2); text-transform: uppercase; font-size: 9px; letter-spacing: 0.06em; }
-.tl-head .toggles { display: flex; gap: 4px; }
+/* Kind and name stacked, toggles beside them — not underneath. Stacked all three, the
+   buttons fell outside a 36px audio track and were clipped. Beside, the head needs the
+   height of the label alone and fits every track kind. */
+.tl-head {
+  position: sticky; left: 0; width: 136px; height: 100%; z-index: 2;
+  background: var(--bg-2); border-right: 1px solid var(--line);
+  padding: 3px 6px; font-size: 11px;
+  display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 0 6px;
+  /* The kind's own colour, the same one the bin badge and its clips carry. */
+  border-left: 3px solid var(--kind, var(--line));
+}
+.tl-track.video .tl-head { --kind: var(--video); }
+.tl-track.overlay .tl-head { --kind: var(--overlay); }
+.tl-track.audio .tl-head { --kind: var(--audio); }
+.tl-head .label { min-width: 0; }
+.tl-head .kind { color: var(--kind, var(--fg-2)); text-transform: uppercase; font-size: 9px; letter-spacing: 0.06em; }
+.tl-head .tname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tl-head .toggles { display: flex; gap: 3px; }
 .tl-head .toggles button { padding: 0 5px; font-size: 10px; line-height: 16px; }
 .tl-head .toggles button.on { background: var(--accent); border-color: var(--accent); color: #fff; }
-.tl-lane { position: absolute; left: 120px; top: 0; right: 0; height: 100%; }
+.tl-lane { position: absolute; left: 136px; top: 0; right: 0; height: 100%; }
 .clip { position: absolute; top: 4px; bottom: 4px; border-radius: 5px; background: var(--video); border: 1px solid rgba(255,255,255,0.15); overflow: hidden; cursor: grab; padding: 3px 8px; font-size: 11px; white-space: nowrap; }
 .clip.overlay { background: var(--overlay); }
 .clip.audio { background: var(--audio); }

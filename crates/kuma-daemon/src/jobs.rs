@@ -99,59 +99,35 @@ pub fn add_media(state: &AppState, path: &Path, id: Option<String>, base_revisio
     Ok((id, rev, warnings))
 }
 
-/// Which overlays a compile carries bakes for. The three cases are exclusive, which is
-/// the point: `Nested` and the live DOM the editor draws partition the overlays between
-/// them, so none is ever drawn twice.
+pub type Bakes = HashMap<String, OverlayBake>;
+
+/// Which overlays a compile carries bakes for. `Nested` and the live DOM the editor draws
+/// partition the overlays between them, so none is ever drawn twice.
+///
+/// On the wire this is the bool it always was — `Nested` is for the daemon's own callers
+/// (the preview, and the snapshot that stands in for it), not for clients.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
-#[serde(from = "OverlayScopeRepr")]
+#[serde(from = "bool")]
 pub enum OverlayScope {
     /// Footage only.
     None,
-    /// Only the overlays inside the sequences the root *nests*. What a preview of that
-    /// root wants: it cannot drive those as live DOM, because their clip times are their
-    /// own sequence's rather than the playhead's.
+    /// Only the overlays inside the sequences the root *nests* — the ones a preview of
+    /// that root cannot drive as live DOM, their clip times being their own sequence's.
     Nested,
-    /// Every overlay the root reaches, its own included — a render, or a sample the agent
-    /// is going to look at.
+    /// Every overlay the root reaches, its own included.
     #[default]
     All,
 }
 
-/// Wire form: the `overlays` field has always been a bool, and stays one for clients.
-/// `nested` is spellable but is for the daemon's own callers (the preview and the snapshot
-/// that stands in for it), which is why the MCP tool still documents a boolean.
-#[derive(Deserialize)]
-#[serde(untagged, rename_all = "snake_case")]
-enum OverlayScopeRepr {
-    Toggle(bool),
-    Named(OverlayScopeName),
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "snake_case")]
-enum OverlayScopeName {
-    None,
-    Nested,
-    All,
-}
-
-impl From<OverlayScopeRepr> for OverlayScope {
-    fn from(r: OverlayScopeRepr) -> Self {
-        match r {
-            OverlayScopeRepr::Toggle(true) => OverlayScope::All,
-            OverlayScopeRepr::Toggle(false) => OverlayScope::None,
-            OverlayScopeRepr::Named(OverlayScopeName::None) => OverlayScope::None,
-            OverlayScopeRepr::Named(OverlayScopeName::Nested) => OverlayScope::Nested,
-            OverlayScopeRepr::Named(OverlayScopeName::All) => OverlayScope::All,
-        }
+impl From<bool> for OverlayScope {
+    fn from(on: bool) -> Self {
+        if on { OverlayScope::All } else { OverlayScope::None }
     }
 }
 
-/// Overlay clips in the sequences `root` reaches, on visible tracks. `nested_only` drops
-/// `root`'s own, leaving exactly the ones a preview of it cannot drive as live DOM.
-///
-/// Reachability matters: a bin full of unplaced sequences must cost neither a bake on
-/// every preview reload nor a headless browser run on every render.
+/// Overlay clips in the sequences `root` reaches, on visible tracks; `nested_only` drops
+/// `root`'s own. Reachability matters: a bin full of unplaced sequences must cost neither
+/// a bake on every preview reload nor a browser run on every render.
 fn overlay_clips(project: &Project, root: &str, nested_only: bool) -> Vec<String> {
     project
         .compile_order(root)
@@ -168,55 +144,49 @@ fn overlay_clips(project: &Project, root: &str, nested_only: bool) -> Vec<String
 /// Bake the overlays `scope` asks for. `Nested` is best effort: a template that will not
 /// bake — or no hyperframes at all — costs you that overlay in the preview and never the
 /// preview itself, which used to be free because overlays were skipped entirely.
-pub fn bake_for(state: &AppState, project: &Project, root: &str, scope: OverlayScope, progress: &dyn Fn(u8, &str)) -> anyhow::Result<HashMap<String, OverlayBake>> {
-    match scope {
-        OverlayScope::None => Ok(HashMap::new()),
-        OverlayScope::Nested => Ok(bake_clips(state, project, &overlay_clips(project, root, true), progress, |e| tracing::warn!("preview: {e:#}"))),
-        OverlayScope::All => strict(|on_error| bake_clips(state, project, &overlay_clips(project, root, false), progress, on_error)),
+pub fn bake_for(state: &AppState, project: &Project, root: &str, scope: OverlayScope, progress: &dyn Fn(u8, &str)) -> anyhow::Result<Bakes> {
+    let nested_only = match scope {
+        OverlayScope::None => return Ok(Bakes::new()),
+        OverlayScope::Nested => true,
+        OverlayScope::All => false,
+    };
+    let (out, errs) = bake_clips(state, project, &overlay_clips(project, root, nested_only), progress);
+    if !nested_only {
+        return strict((out, errs));
     }
+    errs.iter().for_each(|e| tracing::warn!("preview: {e:#}"));
+    Ok(out)
 }
 
 /// Bake the named overlay clips, or every one in the project when none are named. This is
 /// the explicit `bake` command, where "all" means the whole bin rather than what some
 /// timeline reaches — warming the cache for an entry you have not placed yet is the point.
-pub fn bake_all(state: &AppState, project: &Project, only: Option<&[String]>, progress: &dyn Fn(u8, &str)) -> anyhow::Result<HashMap<String, OverlayBake>> {
+pub fn bake_all(state: &AppState, project: &Project, only: Option<&[String]>, progress: &dyn Fn(u8, &str)) -> anyhow::Result<Bakes> {
     let ids: Vec<String> = project
         .all_clips()
         .filter(|(_, _, c)| project.item(c).is_some_and(kuma_core::BinItem::is_overlay))
         .map(|(_, _, c)| c.id.clone())
         .filter(|id| only.is_none_or(|o| o.contains(id)))
         .collect();
-    strict(|on_error| bake_clips(state, project, &ids, progress, on_error))
+    strict(bake_clips(state, project, &ids, progress))
 }
 
-/// Run a bake that must not lose an overlay: the first failure becomes the result.
-fn strict(
-    bake: impl FnOnce(&mut dyn FnMut(anyhow::Error)) -> HashMap<String, OverlayBake>,
-) -> anyhow::Result<HashMap<String, OverlayBake>> {
-    let mut failure = None;
-    let out = bake(&mut |e| {
-        failure.get_or_insert(e);
-    });
-    failure.map_or(Ok(out), Err)
+/// A bake that must not lose an overlay: the first failure becomes the result.
+fn strict((out, errs): (Bakes, Vec<anyhow::Error>)) -> anyhow::Result<Bakes> {
+    errs.into_iter().next().map_or(Ok(out), Err)
 }
 
-/// Bake the named overlay clips (cached), handing each failure to `on_error`. Whether a
-/// failure is fatal is the caller's to decide — the loop itself does not care.
-fn bake_clips(
-    state: &AppState,
-    project: &Project,
-    ids: &[String],
-    progress: &dyn Fn(u8, &str),
-    mut on_error: impl FnMut(anyhow::Error),
-) -> HashMap<String, OverlayBake> {
+/// Bake the named overlay clips (cached), returning what succeeded and what did not.
+/// Whether a failure is fatal is the caller's to decide — the loop does not care.
+fn bake_clips(state: &AppState, project: &Project, ids: &[String], progress: &dyn Fn(u8, &str)) -> (Bakes, Vec<anyhow::Error>) {
     let templates = read(&state.templates).loaded.clone();
-    let mut out = HashMap::new();
+    let (mut out, mut errs) = (Bakes::new(), Vec::new());
     let n = ids.len().max(1);
     for (i, id) in ids.iter().enumerate() {
         let Some((_, _, clip)) = project.find_clip(id) else { continue };
         let Some(BinSource::Overlay { template: overlay, vars }) = project.item(clip).map(|i| &i.source) else { continue };
         let Some((dir, manifest)) = templates.get(overlay) else {
-            on_error(anyhow::anyhow!("unknown template `{overlay}` for clip `{id}`"));
+            errs.push(anyhow::anyhow!("unknown template `{overlay}` for clip `{id}`"));
             continue;
         };
         progress(((i * 100) / n) as u8, &format!("baking {id} ({overlay})"));
@@ -225,10 +195,10 @@ fn bake_clips(
             Ok(r) => {
                 out.insert(id.clone(), r.overlay_bake());
             }
-            Err(e) => on_error(anyhow::anyhow!("bake `{id}`: {e}")),
+            Err(e) => errs.push(anyhow::anyhow!("bake `{id}`: {e}")),
         }
     }
-    out
+    (out, errs)
 }
 
 /// Compile options pointed at this project's directories. Callers set what they need on

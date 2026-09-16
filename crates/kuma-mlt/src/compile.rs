@@ -173,12 +173,8 @@ fn emit_sequence(ctx: &Ctx, seq_id: &str, seq: &Sequence, is_root: bool, w: &mut
     } else {
         (format!("seq_{seq_id}"), format!("bg_{seq_id}"), format!("bgpl_{seq_id}"))
     };
-    w.open("producer", &[("id", bg.clone()), ("in", "0".into()), ("out", (total - 1).to_string())]);
-    w.property("mlt_service", "color");
-    w.property("resource", if is_root { "black" } else { "0x00000000" });
-    w.property("length", total.to_string());
-    w.property("mlt_image_format", "rgba");
-    w.close("producer");
+    let span = [("id", bg.clone()), ("in", "0".into()), ("out", (total - 1).to_string())];
+    emit_color(w, &span, if is_root { "black" } else { "0x00000000" }, total, |_| {});
     w.open("playlist", &[("id", bg_pl.clone())]);
     w.empty("entry", &[("producer", bg), ("in", "0".into()), ("out", (total - 1).to_string())]);
     w.close("playlist");
@@ -202,24 +198,23 @@ fn emit_sequence(ctx: &Ctx, seq_id: &str, seq: &Sequence, is_root: bool, w: &mut
     }
     w.close("multitrack");
     for (i, ct) in compiled_tracks.iter().enumerate() {
-        let b = (i + 1).to_string();
-        if ct.has_audio {
-            w.open("transition", &[("id", format!("mix_{}", ct.id))]);
-            w.property("mlt_service", "mix");
+        // Every track composites against track 0, the background, for the whole timeline.
+        let against_background = |w: &mut XmlWriter, prefix: &str, service: &str| {
+            w.open("transition", &[("id", format!("{prefix}_{}", ct.id))]);
+            w.property("mlt_service", service);
             w.property("a_track", "0");
-            w.property("b_track", &b);
+            w.property("b_track", (i + 1).to_string());
             w.property("always_active", "1");
+        };
+        if ct.has_audio {
+            against_background(w, "mix", "mix");
             w.property("sum", "1");
             w.close("transition");
         }
         if ct.has_video {
-            w.open("transition", &[("id", format!("comp_{}", ct.id))]);
-            w.property("mlt_service", "qtblend");
-            w.property("a_track", "0");
-            w.property("b_track", &b);
-            w.property("always_active", "1");
+            against_background(w, "comp", "qtblend");
             if !ct.blends.is_empty() {
-                w.property("compositing", &blend_anim(&ct.blends, total));
+                w.property("compositing", blend_anim(&ct.blends, total));
             }
             w.close("transition");
         }
@@ -495,15 +490,7 @@ fn emit_clip_producer(ctx: &Ctx, p: &Plan, w: &mut XmlWriter) -> Result<(), Comp
             emit_filters(ctx, p, w);
             w.close(tag);
         }
-        BinSource::Color { color } => {
-            w.open("producer", &base);
-            w.property("mlt_service", "color");
-            w.property("resource", mlt_color(color));
-            w.property("length", len.to_string());
-            w.property("mlt_image_format", "rgba");
-            emit_filters(ctx, p, w);
-            w.close("producer");
-        }
+        BinSource::Color { color } => emit_color(w, &base, &mlt_color(color), len, |w| emit_filters(ctx, p, w)),
         // A sequence is already a producer (its tractor), emitted once for the whole
         // document. This placement is a playlist that cuts it and hangs its own filters,
         // so a second placement of the same sequence is unaffected by them.
@@ -530,6 +517,17 @@ fn emit_clip_producer(ctx: &Ctx, p: &Plan, w: &mut XmlWriter) -> Result<(), Comp
         }
     }
     Ok(())
+}
+
+/// A `color` producer with an alpha channel: a sequence's background, or a colour clip.
+fn emit_color(w: &mut XmlWriter, attrs: &[(&str, String)], resource: &str, length: i64, body: impl FnOnce(&mut XmlWriter)) {
+    w.open("producer", attrs);
+    w.property("mlt_service", "color");
+    w.property("resource", resource);
+    w.property("length", length.to_string());
+    w.property("mlt_image_format", "rgba");
+    body(w);
+    w.close("producer");
 }
 
 fn emit_filters(ctx: &Ctx, p: &Plan, w: &mut XmlWriter) {

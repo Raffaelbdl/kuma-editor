@@ -168,42 +168,36 @@ export function seqDuration(p: Project, id: string): number {
   return seq ? Math.max(0, ...seq.tracks.flatMap((t) => t.clips.map((c) => c.end))) : 0;
 }
 
-/** Every clip in the project with the sequence it sits on. Clip ids are unique across all
- *  of them, which is what lets anything address a clip by id alone.
- *
- *  This materialises one wrapper per clip in the project, so it is for whole-project
- *  questions ("how many clips place this entry"), never for a lookup — see `findClip`. */
-export function allClips(p: Project): { seq: string; track: Track; ti: number; clip: Clip; ci: number }[] {
-  return sequenceIds(p).flatMap((seq) =>
-    sequenceOf(p, seq)!.tracks.flatMap((track, ti) => track.clips.map((clip, ci) => ({ seq, track, ti, clip, ci }))),
-  );
-}
+/** Every clip in the project, whichever sequence it sits on. Ids are unique across all of
+ *  them, which is what lets anything address a clip by id alone — but this walks the whole
+ *  project, so it is for whole-project questions, never a lookup (see `store.findClip`). */
+export const allClips = (p: Project): Clip[] => sequenceIds(p).flatMap((id) => sequenceOf(p, id)!.tracks.flatMap((t) => t.clips));
 
-/** How many clips place this bin entry, across every sequence. The delete guard and the
- *  "used by N clips" hint are the same question and must stay the same answer. */
-export const placementsOf = (p: Project, binId: string): number =>
-  allClips(p).filter(({ clip }) => clip.bin === binId).length;
+/** How many clips place this bin entry. The delete guard and the "used by N clips" hint
+ *  are the same question and must stay the same answer. */
+export const placementsOf = (p: Project, binId: string): number => allClips(p).filter((c) => c.bin === binId).length;
 
 /** The sequences reachable from `id`, itself included — what a compile of it would touch,
  *  and therefore the only part of the project that can change its picture. Cycle-safe. */
 export function reachableFrom(p: Project, id: string, seen = new Set<string>()): Set<string> {
-  if (!sequenceOf(p, id) || seen.has(id)) return seen;
+  const seq = sequenceOf(p, id);
+  if (!seq || seen.has(id)) return seen;
   seen.add(id);
-  for (const c of sequenceOf(p, id)!.tracks.flatMap((t) => t.clips)) reachableFrom(p, c.bin, seen);
+  for (const t of seq.tracks) for (const c of t.clips) reachableFrom(p, c.bin, seen);
   return seen;
 }
 
 /** Would placing `binId` on sequence `seqId` make a sequence contain itself? The validator
- *  refuses such a patch either way; this is so the UI does not offer the gesture. */
+ *  refuses the patch either way; this is so the UI does not offer the gesture. */
 export const wouldRecurse = (p: Project, binId: string, seqId: string): boolean => reachableFrom(p, binId).has(seqId);
 
-/** True when a clip placing this entry could be given a speed. MLT cannot time-warp a
- *  timeline, which the validator enforces; this is the same rule for the inspector. */
+/** True when a clip placing this entry could be given a speed: MLT cannot time-warp a
+ *  timeline. The validator enforces it; this is the same rule for the inspector. */
 export const canTimeWarp = (item: BinItem | undefined): boolean => !item || itemKind(item) !== "sequence";
 
-/** JSON pointers into the document. Bin ids are validated to `[A-Za-z_][A-Za-z0-9_-]*`, so
- *  the escaping never fires — it is here so that every pointer is built one way and a
- *  daemon that ever loosens that rule cannot silently address a different entry. */
+/** JSON pointers into the document. Bin ids are validated to `[A-Za-z_][A-Za-z0-9_-]*` so
+ *  the escaping never fires; it is here so every pointer is built one way, and a daemon
+ *  that ever loosens that rule cannot silently address a different entry. */
 const segment = (id: string) => id.replace(/~/g, "~0").replace(/\//g, "~1");
 export const binPath = (binId: string) => `/bin/${segment(binId)}`;
 export const seqPath = (seqId: string) => `${binPath(seqId)}/source`;

@@ -341,10 +341,9 @@ function newTrackOp(kind: TrackKind): { op: PatchOp; index: number } {
  *  project does, because an empty one has nowhere to drop a clip. */
 export async function newSequence(name: string) {
   const p = store.state.project!;
-  const id = uniqueId(
-    name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").replace(/^(?=[0-9])/, "s") || "sequence",
-    Object.keys(p.bin),
-  );
+  // Bin ids must match [A-Za-z_][A-Za-z0-9_-]*, so a leading digit takes an `s`.
+  const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").replace(/^(?=[0-9])/, "s");
+  const id = uniqueId(slug || "sequence", Object.keys(p.bin));
   const value: BinItem = {
     name,
     source: { tracks: [newTrack("video", "Video"), newTrack("overlay", "Overlays"), newTrack("audio", "Audio")], markers: [] },

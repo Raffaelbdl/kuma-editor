@@ -11,7 +11,7 @@
 import { api } from "./api";
 import { store, toast } from "./store";
 import type { Clip, Project } from "./types";
-import { binItem, isOverlayClip, isOverlaySource, reachableFrom, sequenceOf, transformAt } from "./types";
+import { binItem, isOverlayClip, isSequenceSource, reachableFrom, sequenceOf, transformAt } from "./types";
 
 interface OverlayView {
   clipId: string;
@@ -311,14 +311,17 @@ export class Preview {
  *  the compile skips them — unlike the overlays inside the sequences it nests, which are
  *  baked into the engine's picture and so must be in the key. */
 function engineKey(p: Project, sequence: string): string {
-  const reached = reachableFrom(p, sequence);
-  const open = sequenceOf(p, sequence);
-  const placed = new Set([...reached].flatMap((id) => sequenceOf(p, id)!.tracks.flatMap((t) => t.clips.map((c) => c.bin))));
-  const bin = Object.entries(p.bin).filter(
-    // The open sequence goes in separately, with its live-DOM tracks left out.
-    ([id, i]) => id !== sequence && placed.has(id) && !(isOverlaySource(i.source) && open?.tracks.some((t) => t.clips.some((c) => c.bin === id))),
-  );
-  return JSON.stringify([sequence, p.fps, p.width, p.height, p.sample_rate, bin, open?.tracks.filter((t) => t.kind !== "overlay")]);
+  // The daemon compiles this sequence and the ones it nests, skipping the open sequence's
+  // own overlay clips because the UI draws those as live DOM. So the engine's picture is a
+  // function of exactly these tracks, and of the entries they place.
+  const tracks = [...reachableFrom(p, sequence)].flatMap((id) => {
+    const ts = sequenceOf(p, id)!.tracks;
+    return id === sequence ? ts.filter((t) => t.kind !== "overlay") : ts;
+  });
+  const placed = new Set(tracks.flatMap((t) => t.clips.map((c) => c.bin)));
+  // Sequences are in there already, as tracks.
+  const bin = Object.entries(p.bin).filter(([id, i]) => placed.has(id) && !isSequenceSource(i.source));
+  return JSON.stringify([sequence, p.fps, p.width, p.height, p.sample_rate, tracks, bin]);
 }
 
 /** Everything the overlay document is a function of: its injected `window.kuma`. The bin

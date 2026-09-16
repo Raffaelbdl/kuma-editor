@@ -101,7 +101,7 @@ class Store {
           // The open sequence can be deleted out from under us (undo, an agent edit); the
           // daemon falls back to the master and so do we, rather than showing nothing.
           const sequence = sequenceOf(project, this.state.sequence) ? this.state.sequence : project.master;
-          const selection = allClips(project).some(({ clip }) => clip.id === this.state.selection) ? this.state.selection : null;
+          const selection = allClips(project).some((c) => c.id === this.state.selection) ? this.state.selection : null;
           this.set({ project, sequence, selection });
         } while (this.refreshAgain);
       } catch (e) {
@@ -184,7 +184,7 @@ class Store {
 
   /** A clip id free across the whole project: clip ids are global, not per sequence. */
   newId(prefix: string): string {
-    return freeId(prefix, allClips(this.state.project!).map(({ clip }) => clip.id));
+    return freeId(prefix, allClips(this.state.project!).map((c) => c.id));
   }
 
   /** A track id free across the whole project, for the same reason. */

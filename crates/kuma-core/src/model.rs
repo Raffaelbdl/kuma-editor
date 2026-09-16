@@ -257,10 +257,10 @@ impl SequenceWalk {
         }
         let Some(seq) = p.seq(id) else { return Ok(()) };
         self.path.push(id.to_string());
+        // Visiting a clip that plays something other than a sequence is a no-op, so the
+        // walk does not need to know which clips are which.
         for clip in seq.clips() {
-            if p.bin.get(&clip.bin).is_some_and(BinItem::is_sequence) {
-                self.visit(p, &clip.bin)?;
-            }
+            self.visit(p, &clip.bin)?;
         }
         self.path.pop();
         self.done.insert(id.to_string());

@@ -45,7 +45,8 @@ To look at the footage, call `sample_frames` with a time range (and an optional 
 returns the composited frames as images plus their PNG paths.
 
 Subtitles: `transcribe` runs a local speech-to-text model (whisper.cpp) and adds a `subtitles`
-overlay entry whose `cues` var is `[{start, end, text}, …]` in source seconds, listed under the media
+overlay entry whose `cues` var is `[{start, end, text}, …]` in source seconds, one cue per word (the
+template groups them by its `words_per_line` var and can stress the word being said), listed under the media
 (`parent`). Given a `clip`, it also places the subtitles over that clip, aligned; given a `bin`, the
 entry is yours to place (set its `offset` var to a trimmed clip's `in`). Fix a misheard word by
 patching the cue's `text`. `parent` on a bin entry is organisation only: the entry it is listed under
@@ -195,7 +196,7 @@ pub struct Transcribe {
     /// ISO 639-1 language code, or `auto` (default).
     #[serde(default)]
     pub language: Option<String>,
-    /// Longest cue in characters (default 24, split on words); 0 keeps whisper's own segments.
+    /// Longest cue in characters. Default 1: one cue per word, which the `subtitles` template groups into lines itself; 0 keeps whisper's own sentences.
     #[serde(default)]
     pub max_chars: Option<u32>,
     #[serde(default)]

@@ -8,14 +8,15 @@
     <style>
       .subs { position: absolute; left: calc(var(--var-at-x) * 100%); top: calc(var(--var-at-y) * 100%);
               transform: translate(-50%, -50%); width: 88%; display: grid; place-items: center; }
-      /* Every cue sits in the same grid cell; the timeline shows one at a time. */
-      .cue { grid-area: 1 / 1; max-width: 100%; text-align: center; opacity: 0; will-change: transform, opacity;
-             font: 800 calc(4 * var(--u)) / 1.15 "Segoe UI", system-ui, sans-serif; color: var(--var-color);
-             padding: calc(0.6 * var(--u)) calc(1.4 * var(--u)); border-radius: calc(0.8 * var(--u)); }
-      .box .cue { background: color-mix(in srgb, var(--var-background) 82%, transparent); }
-      .outline .cue { -webkit-text-stroke: calc(0.22 * var(--u)) var(--var-background); paint-order: stroke fill; }
-      .outline .cue, .plain .cue { text-shadow: 0 calc(0.15 * var(--u)) calc(0.6 * var(--u)) rgba(0, 0, 0, 0.6); }
-      .upper .cue { text-transform: uppercase; }
+      /* Every line sits in the same grid cell; the timeline shows one at a time. */
+      .line { grid-area: 1 / 1; max-width: 100%; text-align: center; opacity: 0; will-change: transform, opacity;
+              font: 800 calc(4 * var(--u)) / 1.15 "Segoe UI", system-ui, sans-serif; color: var(--var-color);
+              padding: calc(0.6 * var(--u)) calc(1.4 * var(--u)); border-radius: calc(0.8 * var(--u)); }
+      .word { display: inline-block; will-change: transform, color; }
+      .box .line { background: color-mix(in srgb, var(--var-background) 82%, transparent); }
+      .outline .line { -webkit-text-stroke: calc(0.22 * var(--u)) var(--var-background); paint-order: stroke fill; }
+      .outline .line, .plain .line { text-shadow: 0 calc(0.15 * var(--u)) calc(0.6 * var(--u)) rgba(0, 0, 0, 0.6); }
+      .upper .line { text-transform: uppercase; }
     </style>
   </head>
   <body>
@@ -24,27 +25,62 @@
     </div>
     <script>
       const { vars, duration, timeline } = kumaTemplate({
-        cues: [{ start: 0.2, end: 1.6, text: "Subtitles go here" }, { start: 1.8, end: 3.6, text: "one line at a time" }],
-        offset: 0, at: { x: 0.5, y: 0.78 }, size: 1, color: "#ffffff", background: "#111111", style: "box", uppercase: false,
+        cues: [{ start: 0.2, end: 0.6, text: "Subtitles" }, { start: 0.6, end: 0.9, text: "go" }, { start: 0.9, end: 1.4, text: "here," },
+               { start: 1.6, end: 1.9, text: "a" }, { start: 1.9, end: 2.3, text: "few" }, { start: 2.3, end: 2.7, text: "words" },
+               { start: 2.7, end: 2.9, text: "at" }, { start: 2.9, end: 3.0, text: "a" }, { start: 3.0, end: 3.6, text: "time" }],
+        words_per_line: 3, stress: "color", offset: 0, at: { x: 0.5, y: 0.78 }, size: 1,
+        color: "#ffffff", accent: "#ffd400", background: "#111111", style: "box", uppercase: false,
       });
       const subs = document.getElementById("subs");
       subs.classList.add(vars.style);
       subs.classList.toggle("upper", !!vars.uppercase);
 
-      // One paused timeline, a pop-in at each cue's start and a cut at its end, in clip
-      // time (source time minus the offset). Cues outside the clip are not even mounted.
+      // Cues in clip time (source time minus the offset), then grouped into lines: a line
+      // takes `words_per_line` cues, or fewer when the speech pauses for longer than GAP.
+      // A line stays up until the next one starts when the gap between them is short, so
+      // the text never blinks between words.
+      const GAP = 0.8;
+      const per = Math.max(1, Math.round(vars.words_per_line));
+      const words = (vars.cues || []).map((c) => ({ start: c.start - vars.offset, end: c.end - vars.offset, text: c.text }))
+        .filter((w) => w.end > 0 && w.start < duration && w.end > w.start);
+      const lines = [];
+      for (const w of words) {
+        const line = lines[lines.length - 1];
+        if (!line || line.words.length >= per || w.start - line.end > GAP) lines.push({ words: [w], start: w.start, end: w.end });
+        else { line.words.push(w); line.end = w.end; }
+      }
+
       const tl = timeline();
-      for (const cue of vars.cues || []) {
-        const start = Math.max(0, cue.start - vars.offset), end = Math.min(duration, cue.end - vars.offset);
-        if (!(end > start)) continue;
+      lines.forEach((line, i) => {
         const el = document.createElement("div");
-        el.className = "cue";
-        el.textContent = cue.text;
+        el.className = "line";
+        const spans = line.words.map((w, j) => {
+          const s = document.createElement("span");
+          s.className = "word";
+          s.textContent = w.text;
+          if (j) el.append(" ");
+          el.appendChild(s);
+          return s;
+        });
         subs.appendChild(el);
+        const next = lines[i + 1];
+        const start = Math.max(0, line.start);
+        const end = Math.min(duration, next && next.start - line.end < GAP ? next.start : line.end);
         tl.fromTo(el, { opacity: 0, scale: 0.85 }, { opacity: 1, scale: 1, duration: Math.min(0.12, end - start), ease: "back.out(2)" }, start);
         tl.set(el, { opacity: 0 }, end);
-      }
-      // Span the whole clip, so a seek past the last cue lands on an empty stage.
+        // The word being said: its colour (and a pop) for exactly its own window.
+        if (vars.stress !== "none") {
+          line.words.forEach((w, j) => {
+            const at = Math.max(start, w.start), until = Math.min(end, w.end);
+            // `immediateRender: false`, or GSAP paints the from-state at load and every
+            // word not yet said shows in the accent colour.
+            if (vars.stress === "pop") tl.fromTo(spans[j], { scale: 0.9, color: vars.accent }, { scale: 1.12, duration: Math.min(0.12, until - at), ease: "back.out(3)", immediateRender: false }, at);
+            else tl.set(spans[j], { color: vars.accent }, at);
+            tl.set(spans[j], { color: vars.color, scale: 1 }, until);
+          });
+        }
+      });
+      // Span the whole clip, so a seek past the last line lands on an empty stage.
       tl.to({}, { duration: 0 }, duration);
     </script>
   </body>

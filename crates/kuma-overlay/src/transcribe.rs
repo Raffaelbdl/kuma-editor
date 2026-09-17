@@ -26,8 +26,9 @@ pub struct TranscribeOptions {
     #[serde(default)]
     pub language: Option<String>,
     /// Longest cue in characters: whisper re-splits its segments on word boundaries to
-    /// fit, which is what turns sentences into the two-to-four-word lines shorts use.
-    /// `0` keeps whisper's own segments. Default 24.
+    /// fit. The default, `1`, is one cue per word — the finest timing whisper gives, and
+    /// the form a template can group into lines of any length. `0` keeps whisper's own
+    /// segments (sentences); anything else, lines of about that many characters.
     #[serde(default)]
     pub max_chars: Option<u32>,
 }
@@ -85,7 +86,7 @@ impl Transcriber {
 
         let mut cmd = Command::new(&self.cli);
         cmd.args(["-m", &arg(model), "-f", &arg(&wav), "-oj", "-of", &arg(&base), "-np", "-l", opts.language.as_deref().unwrap_or("auto")]);
-        let max_chars = opts.max_chars.unwrap_or(24);
+        let max_chars = opts.max_chars.unwrap_or(1);
         if max_chars > 0 {
             cmd.args(["-ml", &max_chars.to_string(), "-sow"]);
         }

@@ -97,8 +97,8 @@ enum Cmd {
         /// ISO 639-1 language code, or `auto`.
         #[arg(long)]
         language: Option<String>,
-        /// Longest cue in characters; 0 keeps whisper's own segments.
-        #[arg(long, default_value_t = 24)]
+        /// Longest cue in characters: 1 (the default) is one cue per word, 0 keeps whisper's own sentences.
+        #[arg(long, default_value_t = 1)]
         max_chars: u32,
     },
     /// Create a new empty project file (and a project-scoped `.mcp.json` for Claude Code).

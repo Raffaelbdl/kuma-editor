@@ -138,10 +138,14 @@ clip of it is placed over the one you selected, aligned: same start, end and spe
 entry's `offset` set to the clip's `in`, so the cues land on the words. It goes on the
 first overlay track with room there, else on a new one. The same button on a media entry
 in the bin makes the entry alone, for you to place. Its `cues` var is the transcript,
-`[{start, end, text}]` in source seconds; the inspector shows one row per cue, so a
-misheard word is fixed in place and the preview follows as you type. Cues are split on
-words to `max_chars` (24 by default), the short lines shorts use; 0 keeps whisper's own
-sentences.
+`[{start, end, text}]` in source seconds, **one cue per word**: the finest timing whisper
+gives, and the form any template can group as it likes. The shipped template groups them
+by `words_per_line` and can stress the word being said (`stress`: colour or a pop, in the
+`accent` colour), so the karaoke style is one var away and line length is editable live.
+The inspector shows one row per cue, so a misheard word is fixed in place and the preview
+follows as you type. `max_chars` on the job asks whisper for lines of that many characters
+instead, or 0 for its own sentences; those cues are already lines, so set `words_per_line`
+to 1.
 
 ### Desktop app
 

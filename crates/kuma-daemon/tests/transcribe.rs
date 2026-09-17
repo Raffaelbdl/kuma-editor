@@ -14,7 +14,8 @@ use serde_json::json;
 
 const FAKE_WHISPER: &str = r#"#!/bin/sh
 # Stand-in for whisper-cli: answers the `--help` probe, refuses a missing WAV, and writes
-# a fixed transcript where `-of` says.
+# a fixed transcript where `-of` says. Records its arguments next to it.
+printf '%s\n' "$@" > "$0.args"
 while [ $# -gt 0 ]; do
   case "$1" in --help) exit 0 ;; -of) base=$2; shift ;; -f) [ -f "$2" ] || exit 3; shift ;; esac
   shift
@@ -53,6 +54,8 @@ fn a_transcript_becomes_an_editable_subtitles_entry() {
     assert_eq!(out["bin"], "talk-subs");
     assert_eq!(out["cues"], 2, "the blank-audio marker is not a cue");
     assert_eq!(out["placed"], false);
+    let args = std::fs::read_to_string(fake.with_extension("args")).unwrap();
+    assert!(args.contains("-ml\n1\n-sow"), "the default is one cue per word: {args}");
 
     let p = state.project.read().unwrap().clone();
     let BinSource::Overlay { template, vars } = &p.bin["talk-subs"].source else { panic!("not an overlay entry") };

@@ -295,6 +295,17 @@ field: a move renumbers the siblings 0..n in one patch with the `parent` change,
 step. The validator refuses a dangling or circular parent, which is also what
 stops removing a media entry while its transcript is listed under it.
 
+**Cues are words; lines are the template's** — adopted, replacing a first cut that asked
+whisper for 24-character lines. Grouping is presentation, and at transcription time it is
+baked in at the one moment that cannot be revisited without re-running the model: from
+words any line length follows, from lines the words are gone. The text is identical either
+way (`-ml` is post-processing on the decoded tokens), and so is a line's timing, since any
+`-ml` above 0 already places its cuts with whisper's token-level timestamps; only a
+per-word highlight exposes their jitter, which is inherent to karaoke from any transcriber.
+So the job defaults to `-ml 1 -sow`, the template takes `words_per_line` and a `stress`
+mode, and `max_chars` stays for whoever wants whisper's own grouping. The cost is a longer
+cue list in the inspector, one row per word.
+
 **whisper.cpp as a subprocess** — adopted, the way melt and ffmpeg are. `whisper-cli` on
 `PATH` (`KUMA_WHISPER_BIN`) and a ggml model in `~/.local/share/kuma/models`
 (`KUMA_WHISPER_MODEL`), discovered at daemon start like the baker; absent is a job error

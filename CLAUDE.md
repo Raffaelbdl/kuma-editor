@@ -66,6 +66,11 @@ Chrome headless shell if hyperframes should not download one.
   tractor however often it is placed; each placement is a wrapper playlist carrying its own
   cut and filters, and a nested sequence's background is transparent. The daemon holds the
   open sequence as session state — never in the document.
+- The centre of the editor is tabbed: the sequence monitor, and one tab per overlay entry
+  open in the **workbench** (`ui/src/panels/workbench.ts`). The workbench edits an entry,
+  never a placement — it creates no clip, moves no playhead, and its length and frame are
+  view state, not document values. Vars stay in the inspector: an entry has one editor for
+  what it is, and it is not this panel.
 - Overlays are live DOM on the sequence you have open and **baked** in the sequences it
   nests, which is what puts them in the preview at all; the two sets are disjoint, so none
   is drawn twice. Preview bakes are best effort — a template that will not bake costs that

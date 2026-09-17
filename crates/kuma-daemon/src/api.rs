@@ -51,6 +51,8 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/preview/reload", post(preview_reload))
         .route("/overlay-preview/{clip}", get(overlay_preview))
         .route("/overlay-preview/{clip}/{*rest}", get(overlay_file))
+        .route("/overlay-entry/{id}", get(overlay_entry))
+        .route("/overlay-entry/{id}/{*rest}", get(overlay_entry_file))
         .route("/overlays/{id}/{*rest}", get(overlay_static))
         .route("/vendor/{*rest}", get(vendor));
     let ui = state.config.repo_root.join("ui/dist");
@@ -519,6 +521,11 @@ async fn preview_reload(State(st): S, body: Option<Json<PreviewReload>>) -> ApiR
 
 /// Serve a template instance with kuma's contract injected and the hyperframes runtime
 /// preloaded, so the UI can drive it with `seek(t)`.
+///
+/// There are two ways in because an overlay is addressable twice over, exactly as the bin
+/// splits it: a **clip** is a placement and is what decides how long the thing runs, while
+/// the **entry** is what is shown and exists before anything places it — which is what the
+/// overlay workbench iterates on. Both end in the same contract.
 async fn overlay_preview(State(st): S, Path(clip): Path<String>) -> Result<Response, ApiError> {
     let project = read(&st.project).clone();
     let (_, _, c) = project.find_clip(&clip).ok_or(ApiError::not_found("no such clip"))?;
@@ -526,20 +533,82 @@ async fn overlay_preview(State(st): S, Path(clip): Path<String>) -> Result<Respo
     let Some(BinSource::Overlay { template, vars }) = project.item(c).map(|i| &i.source) else {
         return Err(ApiError::bad_request("not an overlay clip"));
     };
+    // Clip ids are validated to be URL-safe.
+    let base = format!("/overlay-preview/{}/", c.id);
+    overlay_document(&st, &project, template, vars, c.duration() * c.speed.abs(), c.speed, Some(&c.id), &base, None)
+}
+
+#[derive(Deserialize)]
+struct EntryPreview {
+    /// How long to render the entry for. An entry has no length of its own — a clip is
+    /// what gives it one — so the workbench says which length it is looking at, and
+    /// without one the template's own default applies.
+    #[serde(default)]
+    duration: Option<f64>,
+    /// The frame to render into, when it is not the project's. A template is required to
+    /// look right at 1920×1080 and 1080×1920 alike, so the workbench can ask for a frame
+    /// the project is not in — which changes nothing about the project.
+    #[serde(default)]
+    width: Option<u32>,
+    #[serde(default)]
+    height: Option<u32>,
+}
+
+/// An overlay **bin entry**, previewed with no placement: the workbench edits what an
+/// entry is, and that is editable before any clip plays it.
+async fn overlay_entry(State(st): S, Path(id): Path<String>, Query(q): Query<EntryPreview>) -> Result<Response, ApiError> {
+    let project = read(&st.project).clone();
+    let (template, vars) = overlay_entry_source(&project, &id)?;
+    let default = {
+        let templates = read(&st.templates);
+        templates.loaded.get(template).ok_or(ApiError::not_found("unknown template"))?.1.duration_default
+    };
+    // A length from the query is a view, not a document value, so it is clamped rather
+    // than validated: nothing is stored and a silly number costs only this one render.
+    let duration = q.duration.filter(|d| d.is_finite() && *d > 0.0).map(|d| d.clamp(0.05, 3600.0)).unwrap_or(default);
+    let frame = (q.width.unwrap_or(project.width).clamp(16, 16384), q.height.unwrap_or(project.height).clamp(16, 16384));
+    // Bin ids are validated to be URL-safe.
+    let base = format!("/overlay-entry/{id}/");
+    overlay_document(&st, &project, template, vars, duration, 1.0, None, &base, Some(frame))
+}
+
+/// The template and vars of an overlay entry, or why it is not one.
+fn overlay_entry_source<'a>(project: &'a Project, id: &str) -> Result<(&'a String, &'a serde_json::Map<String, Value>), ApiError> {
+    let item = project.bin.get(id).ok_or(ApiError::not_found("no such bin entry"))?;
+    match &item.source {
+        BinSource::Overlay { template, vars } => Ok((template, vars)),
+        _ => Err(ApiError::bad_request("not an overlay entry")),
+    }
+}
+
+/// The template's markup with kuma's contract injected — the one place the live preview's
+/// document is built, whichever of the two routes above asked for it.
+fn overlay_document(
+    st: &AppState,
+    project: &Project,
+    template: &str,
+    vars: &serde_json::Map<String, Value>,
+    duration: f64,
+    speed: f64,
+    clip: Option<&str>,
+    base: &str,
+    // The frame to render into; the project's own unless the caller is looking at another.
+    frame: Option<(u32, u32)>,
+) -> Result<Response, ApiError> {
     let templates = read(&st.templates);
     let (dir, manifest) = templates.loaded.get(template).ok_or(ApiError::not_found("unknown template"))?;
     let html = std::fs::read_to_string(dir.join("index.html")).map_err(|e| anyhow::anyhow!(e))?;
-    // Clip ids are validated to be URL-safe.
-    let head_extra = format!("<base href=\"/overlay-preview/{}/\">\n<script src=\"/vendor/hyperframe.runtime.iife.js\"></script>\n", c.id);
+    let head_extra = format!("<base href=\"{base}\">\n<script src=\"/vendor/hyperframe.runtime.iife.js\"></script>\n");
+    let (width, height) = frame.unwrap_or((project.width, project.height));
     let out = kuma_overlay::Contract {
         vars: &manifest.resolve_vars(vars),
         fps: project.fps,
-        width: project.width,
-        height: project.height,
-        duration: c.duration() * c.speed.abs(),
-        speed: c.speed,
+        width,
+        height,
+        duration,
+        speed,
         bake: false,
-        clip: Some(&c.id),
+        clip,
         head_extra: &head_extra,
     }
     .apply(&html);
@@ -553,6 +622,13 @@ async fn overlay_file(State(st): S, Path((clip, rest)): Path<(String, String)>) 
     let Some(BinSource::Overlay { template, .. }) = project.item(c).map(|i| &i.source) else {
         return Err(ApiError::bad_request("not an overlay clip"));
     };
+    serve_template_file(&st, template, &rest)
+}
+
+/// Files referenced by a previewed overlay entry, resolved against its template dir.
+async fn overlay_entry_file(State(st): S, Path((id, rest)): Path<(String, String)>) -> Result<Response, ApiError> {
+    let project = read(&st.project).clone();
+    let (template, _) = overlay_entry_source(&project, &id)?;
     serve_template_file(&st, template, &rest)
 }
 

@@ -10,7 +10,8 @@
 
 import { api } from "../api";
 import { Cmd, command } from "../commands";
-import { store, toast } from "../store";
+import { seekOverlay } from "../overlay";
+import { SEQUENCE_TAB, store, toast } from "../store";
 import type { Clip, Project } from "../types";
 import { binItem, isOverlayClip, transformAt } from "../types";
 
@@ -65,6 +66,9 @@ export class Preview {
     host.appendChild(this.stage);
     new ResizeObserver(() => this.layout()).observe(host);
     store.subscribe((s) => this.onState(s.playhead, s.playing, s.project?.revision ?? -1, s.sequence));
+    // A monitor nobody is looking at does not play: leaving the tab stops the engine
+    // rather than leaving it streaming frames into a hidden canvas.
+    store.select((s) => [s.tab], (s) => { if (s.tab !== SEQUENCE_TAB && s.playing) this.togglePlay(); });
     // The engine socket lives here, so the transport actions do too. Anything that wants
     // them — the strip under the stage, a key, the application menu — asks by id.
     command(Cmd.togglePlay, "Play/Pause", () => this.togglePlay());
@@ -256,6 +260,9 @@ export class Preview {
     const p = store.state.project;
     if (!p) return;
     const hw = this.host.clientWidth - 24, hh = this.host.clientHeight - 24;
+    // Hidden behind another tab: there is nothing to fit into, and sizing the stage to
+    // zero would only have to be undone. The observer fires again when it comes back.
+    if (hw <= 0 || hh <= 0) return;
     const s = Math.min(hw / p.width, hh / p.height);
     const w = Math.floor(p.width * s), h = Math.floor(p.height * s);
     this.stage.style.width = `${w}px`;
@@ -363,7 +370,7 @@ export class Preview {
       const t = c.speed < 0 ? (c.end - c.start) * Math.abs(c.speed) - local : local;
       if (Math.abs(t - v.lastT) > 1e-4) {
         v.lastT = t;
-        seekFrame(v, t);
+        seekOverlay(v.iframe, t);
       }
       applyEffects(v.iframe, c, playhead - c.start, p.width, p.height);
     }
@@ -374,22 +381,6 @@ export class Preview {
  *  entry carries the template and its vars; the clip decides how long it runs. */
 function contentKey(p: Project, c: Clip): string {
   return JSON.stringify([binItem(p, c)?.source, c.speed, c.end - c.start, p.width, p.height, p.fps]);
-}
-
-/**
- * Seek the overlay document to `t` seconds. The hyperframes runtime's player scrubs
- * every registered GSAP timeline plus Web Animations (CSS keyframes/transitions) exactly
- * as the bake does; until it is up, drive those directly.
- */
-function seekFrame(v: OverlayView, t: number) {
-  type Timeline = { pause?: () => void; time?: (t: number) => void; seek?: (t: number) => void };
-  const win = v.iframe.contentWindow as (Window & { __player?: { renderSeek?: (t: number) => void }; __timelines?: Record<string, Timeline> }) | null;
-  if (!win) return;
-  try {
-    if (win.__player?.renderSeek) { win.__player.renderSeek(t); return; }
-    for (const tl of Object.values(win.__timelines ?? {})) { tl.pause?.(); if (tl.time) tl.time(t); else tl.seek?.(t); }
-    for (const a of win.document.getAnimations()) { a.pause(); a.currentTime = t * 1000; }
-  } catch { /* cross-origin or not ready */ }
 }
 
 /** Approximate MLT-side effects with CSS on the overlay iframe (see the header comment). */

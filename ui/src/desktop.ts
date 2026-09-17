@@ -43,6 +43,7 @@ const MENU: Record<string, string> = {
   "render": Cmd.render,
   "reload-preview": Cmd.reloadPreview,
   "new-sequence": Cmd.newSequence,
+  "new-overlay": Cmd.newOverlay,
   "swap-orientation": Cmd.swapOrientation,
   "add-media": Cmd.addMedia,
 };

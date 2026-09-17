@@ -1,6 +1,6 @@
 import { api, subscribeEvents } from "./api";
 import type { Clip, DaemonEvent, Job, PatchOp, Project, TemplateInfo, Track } from "./types";
-import { allClips, fpsValue, freeId, seqDuration, seqPath, sequenceIds, sequenceOf } from "./types";
+import { allClips, fpsValue, freeId, isOverlaySource, seqDuration, seqPath, sequenceIds, sequenceOf } from "./types";
 
 /**
  * What the inspector is showing. A clip and a bin entry are different things to inspect,
@@ -8,6 +8,11 @@ import { allClips, fpsValue, freeId, seqDuration, seqPath, sequenceIds, sequence
  * lives on the clip. One selection addresses either, so the panel never has to guess.
  */
 export type Selection = { kind: "clip"; id: string } | { kind: "bin"; id: string } | null;
+
+/** The tab that shows the sequence being edited. Not a bin id — ids must match
+ *  `[A-Za-z_][A-Za-z0-9_-]*`, so the empty string can never name an entry and the two
+ *  kinds of tab cannot collide. */
+export const SEQUENCE_TAB = "";
 
 export interface State {
   project: Project | null;
@@ -20,6 +25,11 @@ export interface State {
   playing: boolean;
   /** pixels per second */
   zoom: number;
+  /** Which editor the centre shows: `SEQUENCE_TAB` for the sequence monitor, else the bin
+   *  id of an overlay entry open in the workbench. View state, like the selection. */
+  tab: string;
+  /** Overlay entries open as tabs, oldest first. */
+  overlays: string[];
   connected: boolean;
   jobs: Record<number, Job>;
 }
@@ -27,7 +37,7 @@ export interface State {
 type Listener = (s: State) => void;
 
 class Store {
-  state: State = { project: null, templates: [], sequence: "", selection: null, playhead: 0, playing: false, zoom: 60, connected: false, jobs: {} };
+  state: State = { project: null, templates: [], sequence: "", selection: null, playhead: 0, playing: false, zoom: 60, tab: SEQUENCE_TAB, overlays: [], connected: false, jobs: {} };
   private listeners = new Set<Listener>();
   private refreshing: Promise<void> | null = null;
   private refreshAgain = false;
@@ -73,7 +83,8 @@ class Store {
     if (id === this.state.sequence) return;
     try {
       const { current } = await api.openSequence(id);
-      this.set({ sequence: current, selection: null, playhead: 0 });
+      // Opening a timeline is asking to look at it: the monitor comes forward with it.
+      this.set({ sequence: current, selection: null, playhead: 0, tab: SEQUENCE_TAB });
     } catch (e) {
       toast((e as Error).message, "err");
     }
@@ -109,7 +120,11 @@ class Store {
           // daemon falls back to the master and so do we, rather than showing nothing.
           const sequence = sequenceOf(project, this.state.sequence) ? this.state.sequence : project.master;
           const selection = this.stillThere(project, this.state.selection);
-          this.set({ project, sequence, selection });
+          // An entry open in the workbench can be removed out from under us (undo, an
+          // agent edit) exactly as the open sequence can: its tab goes with it.
+          const overlays = this.state.overlays.filter((id) => isOverlayEntry(project, id));
+          const tab = overlays.includes(this.state.tab) ? this.state.tab : SEQUENCE_TAB;
+          this.set({ project, sequence, selection, overlays, tab });
         } while (this.refreshAgain);
       } catch (e) {
         toast(`Cannot reload the project: ${(e as Error).message}`, "err");
@@ -125,6 +140,34 @@ class Store {
     if (!sel) return null;
     if (sel.kind === "bin") return sel.id in project.bin ? sel : null;
     return allClips(project).some((c) => c.id === sel.id) ? sel : null;
+  }
+
+  /**
+   * Open an overlay entry in the workbench and bring its tab forward. Selecting it too is
+   * the point rather than a courtesy: the inspector is where a bin entry's vars are
+   * edited, and the workbench deliberately does not grow a second copy of them.
+   */
+  openOverlay(id: string) {
+    if (!isOverlayEntry(this.state.project, id)) {
+      toast(`${id} is not an overlay entry`, "err");
+      return;
+    }
+    const overlays = this.state.overlays.includes(id) ? this.state.overlays : [...this.state.overlays, id];
+    this.set({ overlays, tab: id, selection: { kind: "bin", id } });
+  }
+
+  /** Close a workbench tab. Only the tab: the entry stays in the bin, where it is the
+   *  thing every clip plays. */
+  closeOverlay(id: string) {
+    const overlays = this.state.overlays.filter((x) => x !== id);
+    const tab = this.state.tab === id ? overlays.at(-1) ?? SEQUENCE_TAB : this.state.tab;
+    this.set({ overlays, tab });
+  }
+
+  /** Show one of the open tabs (`SEQUENCE_TAB` for the sequence monitor). */
+  showTab(tab: string) {
+    if (tab !== SEQUENCE_TAB && !this.state.overlays.includes(tab)) return;
+    this.set({ tab, ...(tab === SEQUENCE_TAB ? {} : { selection: { kind: "bin", id: tab } as Selection }) });
   }
 
   /** Point the inspector at a clip or a bin entry. (`select` above is the subscription
@@ -231,6 +274,10 @@ class Store {
 }
 
 export const store = new Store();
+
+/** An entry the workbench can open: one that exists and is an overlay. */
+export const isOverlayEntry = (p: Project | null, id: string): boolean =>
+  !!p && !!p.bin[id] && isOverlaySource(p.bin[id].source);
 
 // ---- toasts ------------------------------------------------------------------
 

@@ -3,16 +3,18 @@
 
 import { Cmd, command } from "./commands";
 import { desktop, initDesktop, pickAndAddMedia } from "./desktop";
-import { addTrack, deleteSelectedClip, promptNewSequence, splitAtPlayhead, swapOrientation, transcribe } from "./edits";
+import { addTrack, deleteSelectedClip, promptNewOverlay, promptNewSequence, splitAtPlayhead, swapOrientation, transcribe } from "./edits";
 import { Inspector } from "./panels/inspector";
 import { Library } from "./panels/library";
 import { Preview } from "./panels/preview";
+import { mountTabs } from "./panels/tabs";
 import { mountTopbar } from "./panels/topbar";
 import { mountTransport } from "./panels/transport";
 import { installShortcuts } from "./shortcuts";
 import { store, toast } from "./store";
 import { Timeline } from "./panels/timeline";
 import { initTitlebar } from "./panels/titlebar";
+import { Workbench } from "./panels/workbench";
 import type { TrackKind } from "./types";
 
 /** Actions that belong to the document rather than to any one panel. */
@@ -20,6 +22,7 @@ function projectCommands() {
   command(Cmd.undo, "Undo", () => store.undo());
   command(Cmd.redo, "Redo", () => store.redo());
   command(Cmd.newSequence, "New Sequence…", () => promptNewSequence());
+  command(Cmd.newOverlay, "New Overlay…", () => promptNewOverlay());
   command(Cmd.swapOrientation, "Switch Orientation", () => swapOrientation());
   command(Cmd.transcribe, "Transcribe → Subtitles", () => transcribe());
   command(Cmd.addMedia, "Add Media…", () => pickAndAddMedia());
@@ -38,6 +41,8 @@ async function main() {
   projectCommands();
   // `Preview` registers the transport and reload commands as it mounts.
   new Preview(document.getElementById("preview")!);
+  new Workbench(document.getElementById("workbench")!);
+  mountTabs(document.getElementById("editor-tabs")!);
   new Timeline(document.getElementById("timeline")!);
   new Inspector(document.getElementById("inspector")!);
   new Library(document.getElementById("library")!);

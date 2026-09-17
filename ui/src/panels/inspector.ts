@@ -124,6 +124,12 @@ export class Inspector {
       (open as HTMLButtonElement).disabled = id === store.state.sequence;
       actions.appendChild(open);
     }
+    // The same gesture for the other kind of entry that has an editor of its own.
+    if (isOverlaySource(item.source)) {
+      const open = button("Open", () => store.openOverlay(id), "Iterate on it in the overlay workbench");
+      (open as HTMLButtonElement).disabled = id === store.state.tab;
+      actions.appendChild(open);
+    }
     const remove = button("Remove from bin", () => {
       if (places) return toast(`${id} is placed by ${plural(places, "clip")}`, "err");
       const kids = childrenOf(p, id).length;

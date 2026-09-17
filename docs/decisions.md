@@ -631,6 +631,71 @@ the first disables playback.
 Without an audio device, SDL's dummy driver still paces the callback in real time, so
 playback is always audio-paced and the alternate clock path was dead code.
 
+## Editor tabs and the overlay workbench
+
+**The centre of the window is tabbed** — adopted. One tab is the sequence being edited
+(the engine's picture with that sequence's overlays live on top); every other tab is one
+overlay entry open in a workbench. Kdenlive tabs its monitors for the same reason: a
+timeline is not the only thing worth looking at, and the thing you are making is not
+always in it yet.
+
+The occasion was overlays. An overlay entry could only be seen by placing a clip of it and
+scrubbing the timeline to where that clip happened to be — so *creating* an overlay was
+stuck behind *deciding where it plays*, two decisions that have nothing to do with each
+other. Worse, iterating on one meant leaving a placement lying around in the middle of a
+cut you were not editing.
+
+**A tab is an editor, not a document** — adopted. `state.tab` is the empty string for the
+sequence monitor and a bin id otherwise; ids must match `[A-Za-z_][A-Za-z0-9_-]*`, so the
+sentinel cannot collide with an entry. `state.overlays` is which workbench tabs are open,
+pruned on every refresh exactly as the open sequence is, because an agent edit or an undo
+can remove the entry a tab is showing.
+
+**One tab per *open sequence*, Kdenlive's timeline tabs** — not built. The daemon holds
+the open sequence as session state and the preview compiles that one timeline, so a second
+sequence tab would either be a lie or a second engine. The topbar picker already switches
+it, and opening a sequence now brings the monitor tab forward with it.
+
+**The workbench edits the entry, never a placement** — adopted. It creates no clip, moves
+no playhead and reads none: the length under the stage and the frame beside it are view
+state, not document values, and the entry model has no field for either (a clip is what
+gives an overlay a length). `Place at playhead` is the one thing that writes, and it uses
+that length so what you were looking at is what lands.
+
+**Vars stay in the inspector** — adopted; a properties panel inside the workbench was
+rejected. A bin entry has one editor for what it is, and duplicating the var controls
+would mean keeping two generated forms in step for no new ability. Opening an entry
+selects it, which is what puts its vars on the right.
+
+**Previewing an unplaced entry is a route, not a synthetic clip** — adopted.
+`/overlay-entry/{id}` renders the same contract as `/overlay-preview/{clip}` with the
+length from the query and no clip id. The alternative — minting a hidden clip so the
+existing route would work — would have put a placement in the document that the user never
+asked for, and undo would have had to know it was not real.
+
+`?width=`/`?height=` render it into another frame. The template contract *requires* a
+template to look right at 1920×1080 and 1080×1920 alike, and before this the only way to
+check was to flip the whole project. Clamped rather than validated, because nothing is
+stored: a silly number costs one render.
+
+**Playing an overlay here is `requestAnimationFrame`, not MLT** — adopted. The document is
+already loaded and an overlay is a pure function of time, so playback is a seek per
+animation frame and needs no engine — which also means it works on a machine where the
+preview engine does not build. It loops, because deciding whether an animation is right
+never happens on one viewing.
+
+**The monitor you are not looking at stops playing** — adopted. Leaving the sequence tab
+while the engine is streaming pauses it rather than decoding JPEGs into a hidden canvas.
+
+**The timeline stays visible under the workbench** — adopted. The tabs are over the centre
+only, as Kdenlive's monitor tabs are, so `Place at playhead` has somewhere visible to land
+and the tracks do not disappear and reappear as you flip.
+
+Still open here: the workbench shows the overlay as the template renders it, not as the
+compiler will composite it — there is no clip, so there are no clip effects to approximate
+and no bake to compare against (`sample_frames` is still the way to see the exact result).
+Template *markup* is still edited outside the editor; `Reload` is the loop, not an editor.
+
 ## Thumbnails
 
 **A thumbnail belongs to the configured entry** — adopted.

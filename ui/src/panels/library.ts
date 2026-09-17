@@ -13,13 +13,13 @@ import { api } from "../api";
 import { desktop, pickAndAddMedia } from "../desktop";
 import { button, dragPayload, el, row, setDragPayload } from "../dom";
 import { startJob, store, toast } from "../store";
-import { addFromLibrary, moveBinItem, promptNewFolder } from "../edits";
+import { addFromLibrary, moveBinItem, promptNewFolder, promptNewOverlay } from "../edits";
 import type { BinItem, Project } from "../types";
-import { childrenMap, isFolderSource, isSequenceSource, itemKind, parentOf } from "../types";
+import { childrenMap, isFolderSource, isOverlaySource, isSequenceSource, itemKind, parentOf } from "../types";
 
 export class Library {
   constructor(private host: HTMLElement) {
-    store.select((s) => [s.project, s.templates, s.sequence], () => this.render());
+    store.select((s) => [s.project, s.templates, s.sequence, s.tab], () => this.render());
   }
 
   /** Which tab is showing, and which entries are folded. View state, so it lives here
@@ -112,7 +112,12 @@ export class Library {
         ["desc mono", Object.keys(t.manifest.vars).join(" · ")],
       ], t.id);
       if (t.has_thumb) prependThumb(card, `/overlays/${encodeURIComponent(t.id)}/thumb.png`);
-      card.appendChild(row("actions", button("Add to bin", () => addFromLibrary(t.id, store.state.playhead))));
+      // Two different decisions, so two buttons: one puts it in the video now, the other
+      // opens it in the workbench to be made right first and placed when it is.
+      card.appendChild(row("actions",
+        button("Open in workbench", () => void promptNewOverlay(t.id), "Add a configured overlay to the bin and iterate on it — nothing is placed"),
+        button("Place on timeline", () => addFromLibrary(t.id, store.state.playhead), "Add it to the bin and place a clip of it at the playhead"),
+      ));
       this.host.appendChild(card);
     }
   }
@@ -128,14 +133,17 @@ export class Library {
 function binRow(p: Project, id: string, item: BinItem, caret: HTMLElement | undefined, siblings: [string, BinItem][]): HTMLDivElement {
   const kind = itemKind(item);
   const entry = el("div", `bin-row${store.state.selection?.kind === "bin" && store.state.selection.id === id ? " selected" : ""}`);
-  if (id === store.state.sequence) entry.classList.add("open");
+  // The row of whatever the centre is showing, timeline or workbench, is marked open.
+  if (id === store.state.sequence || id === store.state.tab) entry.classList.add("open");
   entry.draggable = true;
   entry.title = item.name || id;
   // Every row has the caret slot, so names line up whether or not there is one to show.
   entry.append(caret ?? el("span", "caret"), el("span", "bin-name", item.name || id), el("span", `badge-kind ${kind}`, kind));
   entry.onclick = () => store.selectItem("bin", id);
-  // A sequence is a timeline; opening it is what double-clicking one means everywhere.
+  // Double-clicking opens the thing in its own editor, whatever kind of thing it is: a
+  // sequence is a timeline, an overlay is a composition on the workbench.
   if (isSequenceSource(item.source)) entry.ondblclick = () => store.openSequence(id);
+  if (isOverlaySource(item.source)) entry.ondblclick = () => store.openOverlay(id);
   entry.ondragstart = (e) => setDragPayload(e, { bin: id });
   // A drop on the row's upper or lower part reorders around it; the middle of a folder
   // row drops into the folder. Any entry can be a parent, but only a folder is offered

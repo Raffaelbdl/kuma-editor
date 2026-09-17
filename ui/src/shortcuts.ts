@@ -3,7 +3,7 @@
 // than as menu accelerators so they can tell whether a field has focus.
 
 import { Cmd, run } from "./commands";
-import { store } from "./store";
+import { SEQUENCE_TAB, store } from "./store";
 
 /** Matched top to bottom; the first whose `when` passes wins. */
 interface Binding {
@@ -16,8 +16,15 @@ interface Binding {
 
 const mod = (e: KeyboardEvent) => e.ctrlKey || e.metaKey;
 const frame = () => 1 / store.fps;
+/** The overlay workbench is on screen, and has its own clock. */
+const onOverlay = () => store.state.tab !== SEQUENCE_TAB;
 
 const BINDINGS: Binding[] = [
+  // Transport means the surface you are looking at: on the workbench it is that overlay's
+  // own time, not the sequence's. Everything below here is the same key on the timeline.
+  { when: (e) => e.code === "Space" && onOverlay(), action: Cmd.overlayTogglePlay, preventDefault: true },
+  { when: (e) => e.key === "ArrowLeft" && onOverlay(), action: (e) => run(Cmd.overlayStep, e.shiftKey ? -store.fps : -1) },
+  { when: (e) => e.key === "ArrowRight" && onOverlay(), action: (e) => run(Cmd.overlayStep, e.shiftKey ? store.fps : 1) },
   { when: (e) => e.code === "Space", action: Cmd.togglePlay, preventDefault: true },
   { when: (e) => e.key === "ArrowLeft", action: (e) => store.seek(store.state.playhead - (e.shiftKey ? 1 : frame())) },
   { when: (e) => e.key === "ArrowRight", action: (e) => store.seek(store.state.playhead + (e.shiftKey ? 1 : frame())) },

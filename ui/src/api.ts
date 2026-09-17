@@ -37,6 +37,11 @@ export const api = {
     json<{ job: number }>("/api/transcribe", { method: "POST", body: JSON.stringify({ ...req, origin: "ui: transcribe" }) }),
   render: (preset: string) => json<{ job: number }>("/api/render", { method: "POST", body: JSON.stringify({ preset }) }),
   previewReload: (scale?: number) => json<{ mlt: string; scale: number }>("/api/preview/reload", { method: "POST", body: JSON.stringify(scale === undefined ? {} : { scale }) }),
+  /** The live document for an overlay **bin entry**, at the length and in the frame the
+   *  workbench is looking at. No clip: an entry is editable before anything places it.
+   *  `rev` only defeats the browser cache when the iframe is recreated. */
+  overlayEntryUrl: (id: string, duration: number, width: number, height: number, rev: number) =>
+    `/overlay-entry/${encodeURIComponent(id)}?duration=${duration.toFixed(3)}&width=${width}&height=${height}&rev=${rev}`,
   snapshotUrl: (t: number, width = 960) => `/api/snapshot?t=${t.toFixed(3)}&width=${width}&_=${Date.now()}`,
 };
 

@@ -78,6 +78,35 @@ fn get(addr: &str, path: &str) -> (String, std::collections::HashMap<String, Str
     (status, headers)
 }
 
+/// The headers plus the body, read by `content-length` — exactly, so it never waits on a
+/// close the server need not do (see `get`).
+fn get_body(addr: &str, path: &str) -> (String, String) {
+    use std::io::Read as _;
+    let mut s = std::net::TcpStream::connect(addr).unwrap();
+    s.set_read_timeout(Some(std::time::Duration::from_secs(10))).unwrap();
+    write!(s, "GET {path} HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n").unwrap();
+    let mut head = Vec::new();
+    let mut byte = [0u8; 1];
+    while !head.ends_with(b"\r\n\r\n") {
+        match s.read(&mut byte) {
+            Ok(0) => break,
+            Ok(_) => head.push(byte[0]),
+            Err(e) => panic!("{path}: reading the response headers: {e}"),
+        }
+    }
+    let head = String::from_utf8_lossy(&head).into_owned();
+    let status = head.lines().next().unwrap_or_default().to_string();
+    let len: usize = head
+        .lines()
+        .filter_map(|l| l.split_once(':'))
+        .find(|(k, _)| k.trim().eq_ignore_ascii_case("content-length"))
+        .and_then(|(_, v)| v.trim().parse().ok())
+        .unwrap_or(0);
+    let mut body = vec![0u8; len];
+    s.read_exact(&mut body).unwrap_or_else(|e| panic!("{path}: reading {len} bytes of body: {e}"));
+    (status, String::from_utf8_lossy(&body).into_owned())
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn nothing_is_served_without_a_cache_control() {
     let (_state, addr, _dir) = daemon().await;
@@ -102,4 +131,30 @@ async fn a_handler_that_says_no_store_keeps_it() {
     let (status, headers) = get(&addr, "/overlay-preview/o1c1");
     assert!(status.contains("200"), "{status}");
     assert_eq!(headers.get("cache-control").map(String::as_str), Some("no-store"), "{headers:?}");
+}
+
+/// The overlay workbench iterates on a bin **entry**, which exists before any clip places
+/// it — so previewing one must not need a clip, and the length it is looking at comes
+/// from the request rather than from a placement.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_overlay_entry_previews_without_a_placement() {
+    let (_state, addr, _dir) = daemon().await;
+    let (status, headers) = get(&addr, "/overlay-entry/tag");
+    assert!(status.contains("200"), "{status}");
+    // Live DOM being iterated on: the same "never reuse this" the clip route promises.
+    assert_eq!(headers.get("cache-control").map(String::as_str), Some("no-store"), "{headers:?}");
+
+    let (_, body) = get_body(&addr, "/overlay-entry/tag?duration=3");
+    assert!(body.contains("\"duration\":3.0"), "the requested length did not reach the contract: {body}");
+    // A template must look right in either orientation, so the workbench can ask for a
+    // frame the project is not in. Nothing about the project changes with it.
+    let (_, body) = get_body(&addr, "/overlay-entry/tag?width=1080&height=1920");
+    assert!(body.contains("\"width\":1080") && body.contains("\"height\":1920"), "the requested frame did not reach the contract: {body}");
+
+    // Nothing else may be reachable through it: the base href and the file route are the
+    // template's folder, and only an overlay entry has one.
+    let (status, _) = get(&addr, "/overlay-entry/main");
+    assert!(status.contains("400"), "a sequence entry is not an overlay: {status}");
+    let (status, _) = get(&addr, "/overlay-entry/nope");
+    assert!(status.contains("404"), "{status}");
 }

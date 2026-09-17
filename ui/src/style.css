@@ -85,7 +85,58 @@ body.has-titlebar #titlebar {
 #main { display: grid; grid-template-columns: 240px 1fr 300px; min-height: 0; }
 #library, #inspector { background: var(--bg-2); border-right: 1px solid var(--line); overflow: auto; padding: 8px 10px; }
 #inspector { border-right: 0; border-left: 1px solid var(--line); }
+
+/* The centre is one editor at a time: the tab strip, then the editors stacked in one
+   grid cell so switching costs nothing and neither is rebuilt. `[hidden]` needs saying
+   out loud — both panels set a `display`, which would otherwise win over it. */
+#center { display: grid; grid-template-rows: 30px minmax(0, 1fr); min-width: 0; min-height: 0; }
+#stages { display: grid; min-width: 0; min-height: 0; }
+#preview, #workbench { grid-area: 1 / 1; min-width: 0; min-height: 0; }
+#preview[hidden], #workbench[hidden] { display: none; }
 #preview { display: flex; align-items: center; justify-content: center; background: #000; position: relative; overflow: hidden; }
+
+#editor-tabs { display: flex; align-items: stretch; gap: 2px; padding: 0 6px; background: var(--bg-2); border-bottom: 1px solid var(--line); overflow-x: auto; overflow-y: hidden; }
+.etab {
+  display: flex; align-items: center; gap: 6px; padding: 0 8px; cursor: pointer;
+  color: var(--fg-2); white-space: nowrap; border-bottom: 2px solid transparent;
+}
+.etab:hover { background: var(--bg-3); }
+.etab.on { color: var(--fg); background: var(--bg-3); border-bottom-color: var(--accent); }
+.etab .etab-name { max-width: 180px; overflow: hidden; text-overflow: ellipsis; }
+.etab .x { background: none; border: 0; padding: 0 2px; color: var(--fg-2); line-height: 1; }
+.etab .x:hover { color: var(--fg); }
+.etab-add { align-self: center; margin-left: 4px; padding: 2px 8px; background: none; color: var(--fg-2); }
+.etab-add:hover { color: var(--fg); }
+
+/* The overlay workbench: head, stage, transport — and nothing of the timeline. */
+#workbench { grid-template-rows: auto minmax(0, 1fr) auto auto; background: var(--bg-2); }
+#workbench:not([hidden]) { display: grid; }
+/* Wrapping rather than clipping: the centre column is as narrow as the window makes it,
+   and a control that has slid out of view is a control nobody finds. */
+.wb-head, .wb-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 6px 10px; }
+.wb-head { border-bottom: 1px solid var(--line); }
+.wb-foot { border-top: 1px solid var(--line); }
+.wb-head .spacer { flex: 1; }
+.wb-title { font-weight: 600; }
+.wb-foot .time { min-width: 120px; }
+.wb-foot .wb-scrub { flex: 1 1 120px; min-width: 60px; }
+.wb-foot input[type="number"] { width: 70px; }
+.wb-hint { margin: 0; padding: 0 10px 8px; }
+.wb-hint:empty { display: none; }
+.wb-stage-host { position: relative; display: grid; place-items: center; overflow: hidden; background: #0b0c0f; }
+.wb-stage { position: relative; overflow: hidden; box-shadow: 0 0 0 1px var(--line); }
+.wb-backdrop { position: absolute; inset: 0; }
+/* Alpha reads as a checkerboard, as it does everywhere else: what the overlay does not
+   cover is what a video would show through. */
+.wb-backdrop.alpha {
+  background-color: #1b1d23;
+  background-image: conic-gradient(#262a33 25%, #1b1d23 0 50%, #262a33 0 75%, #1b1d23 0);
+  background-size: 24px 24px;
+}
+.wb-backdrop.dark, .wb-backdrop.frame { background: #000; }
+.wb-backdrop.light { background: #fff; }
+.wb-frame { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.wb-holder { position: absolute; left: 0; top: 0; transform-origin: 0 0; }
 
 .stage { position: relative; background: #000; box-shadow: 0 0 0 1px var(--line); }
 .stage canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
@@ -93,8 +144,10 @@ body.has-titlebar #titlebar {
 .stage .ov { position: absolute; left: 0; top: 0; transform-origin: 0 0; }
 /* `color-scheme: normal` is load-bearing, not decoration: it keeps the embedder's scheme
    matching the template's so Chromium composites the iframe transparently. Without it a
-   dark scheme anywhere above puts an opaque backdrop behind every overlay. */
-.stage .ov iframe { border: 0; background: transparent; display: block; color-scheme: normal; }
+   dark scheme anywhere above puts an opaque backdrop behind every overlay.
+   Both surfaces that embed a template are named here rather than in two rules, so the
+   workbench cannot lose transparency while the stage keeps it. */
+.stage .ov iframe, .wb-holder iframe { border: 0; background: transparent; display: block; color-scheme: normal; }
 .stage .badge { position: absolute; right: 8px; top: 8px; font: 11px var(--mono); color: var(--fg-2); background: rgba(0,0,0,0.5); padding: 2px 6px; border-radius: 4px; }
 
 #bottom { display: grid; grid-template-rows: 32px 1fr; border-top: 1px solid var(--line); background: var(--bg-2); min-height: 0; }

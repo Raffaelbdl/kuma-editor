@@ -14,7 +14,15 @@
       <header id="topbar"></header>
       <main id="main">
         <aside id="library"></aside>
-        <section id="preview"></section>
+        <!-- The centre is tabbed: the sequence monitor, and an overlay workbench per
+             overlay entry being iterated on. One is shown at a time; both stay mounted. -->
+        <section id="center">
+          <nav id="editor-tabs"></nav>
+          <div id="stages">
+            <section id="preview"></section>
+            <section id="workbench"></section>
+          </div>
+        </section>
         <aside id="inspector"></aside>
       </main>
       <footer id="bottom">

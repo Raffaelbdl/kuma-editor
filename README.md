@@ -124,7 +124,27 @@ kuma serve                                               # open http://127.0.0.1
 ```
 
 Drag bin entries onto the timeline, scrub, edit vars in the inspector, press **Render**.
-Output lands in `renders/`.
+Output lands in `renders/`. Overlays are iterated on in their own tab — see *The overlay
+workbench* below — rather than by scrubbing the timeline to where they happen to be.
+
+**The overlay workbench.** The centre of the window is tabbed, Kdenlive style: one tab is
+the sequence being edited — the engine's picture with that sequence's overlays live on top
+— and every other tab is one **overlay entry**, open on its own. `+ overlay` (or the
+Templates tab's *Open in workbench*, or double-clicking an overlay in the bin, or **New
+Overlay…** in the Project menu) mints a configured overlay and opens it there **without
+placing it**: creating an overlay and deciding where it plays are two decisions, and the
+workbench is for the first one.
+
+Inside it the overlay runs on its own clock — play, scrub and frame-step with `Space` and
+the arrows, looping, with no relation to the timeline's playhead — over a backdrop you
+pick (alpha as a checkerboard, dark, light, or the sequence's frame at the playhead), at a
+length you set, and in another frame if you want one: `9:16` renders it at 1080×1920
+without touching the project, which is how you check the responsiveness the template
+contract asks for. Its vars are edited where every bin entry is edited, in the inspector
+on the right. **Reload** rescans the template libraries and rebuilds the document, so a
+template being written in an editor is one click from being on screen; **Duplicate** forks
+the entry so a variant costs nothing; **Place at playhead** puts a clip of it on the open
+sequence at that length, when it is ready.
 
 **Vertical.** Landscape or portrait is nothing but the project's `width`/`height`: the
 size button in the top bar (`1920×1080 ⇄`) swaps them, undoably, and the preview, the

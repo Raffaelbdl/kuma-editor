@@ -19,6 +19,8 @@ use sha2::{Digest, Sha256};
 const GENERATED: &[&str] = &["thumb.png", "preview.webp"];
 /// The only entry file hyperframes renders.
 const ENTRY: &str = "index.html";
+/// Frame rate of the library previews (`thumb.png` is their frame at t = 1 s).
+const PREVIEW_FPS: i64 = 12;
 
 #[derive(Debug, Clone)]
 pub struct BakeRequest<'a> {
@@ -286,14 +288,33 @@ impl Baker {
     /// own `thumb.png` (manifest defaults) and for a bin entry's thumbnail, which shows
     /// that entry's actual configuration.
     pub fn thumbnail(&self, template_dir: &Path, manifest: &TemplateManifest, vars: &Map<String, Value>, out: &Path) -> Result<(), BakeError> {
-        // Three frames at 2 fps over 1.5 s: the last one sits at t = 1.0 s.
-        let req = BakeRequest { template_dir, manifest, vars, fps: Fps::new(2, 1), width: 480, height: 270, duration: 1.5, speed: 1.0 };
-        let r = self.bake(&req)?;
+        // The same bake the moving preview is cut from, so the two cost one render and
+        // share a cache entry; the still is its frame at t = 1 s, after most entrances
+        // have settled.
+        let r = self.bake(&Self::preview_request(template_dir, manifest, vars))?;
         if let Some(dir) = out.parent() {
             std::fs::create_dir_all(dir)?;
         }
-        std::fs::copy(r.dir.join("frames").join(frame_name(r.frames)), out)?;
+        let at_one_second = (PREVIEW_FPS + 1).min(r.frames);
+        std::fs::copy(r.dir.join("frames").join(frame_name(at_one_second)), out)?;
         Ok(())
+    }
+
+    /// The one bake both previews are cut from: 12 fps, 480×270, the first seconds. Enough
+    /// to see the entrance and the first beat of the loop; the exit is anchored to a
+    /// length this preview does not have, so showing it would be a lie anyway. A still
+    /// template renders one frame of it.
+    fn preview_request<'a>(template_dir: &'a Path, manifest: &'a TemplateManifest, vars: &'a Map<String, Value>) -> BakeRequest<'a> {
+        BakeRequest {
+            template_dir,
+            manifest,
+            vars,
+            fps: Fps::new(PREVIEW_FPS as u32, 1),
+            width: 480,
+            height: 270,
+            duration: manifest.duration_default.min(3.0).max(1.0),
+            speed: 1.0,
+        }
     }
 
     /// Bake a **moving** preview of a template instance: an animated WebP with alpha,
@@ -309,31 +330,19 @@ impl Baker {
     /// background, not on black. A still template renders one frame and the result is a
     /// one-frame WebP, which is simply a picture.
     pub fn preview(&self, template_dir: &Path, manifest: &TemplateManifest, vars: &Map<String, Value>, out: &Path) -> Result<(), BakeError> {
-        const FPS: i64 = 12;
-        // Enough to see the entrance and the first beat of the loop; the exit is anchored
-        // to a length this preview does not have, so showing it would be a lie anyway.
-        let duration = manifest.duration_default.min(3.0).max(1.0);
-        let req = BakeRequest {
-            template_dir,
-            manifest,
-            vars,
-            fps: Fps::new(FPS as u32, 1),
-            width: 480,
-            height: 270,
-            duration,
-            speed: 1.0,
-        };
-        let r = self.bake(&req)?;
+        let r = self.bake(&Self::preview_request(template_dir, manifest, vars))?;
         if let Some(dir) = out.parent() {
             std::fs::create_dir_all(dir)?;
         }
         let frames = r.dir.join("frames").join("frame_%06d.png");
         let tmp = out.with_extension("webp.tmp");
-        // `-loop 0` is the animation's own loop, forever; `yuva420p` keeps the alpha.
+        // `-loop 0` is the animation's own loop, forever; `yuva420p` keeps the alpha. No
+        // frame-rate mode flag: `-fps_mode` only exists from ffmpeg 5.1, Ubuntu 22.04
+        // ships 4.4, and an image sequence with `-framerate` needs none.
         let args: Vec<String> = [
-            "-framerate", &FPS.to_string(), "-i", &frames.to_string_lossy(),
+            "-framerate", &PREVIEW_FPS.to_string(), "-i", &frames.to_string_lossy(),
             "-vcodec", "libwebp", "-lossless", "0", "-q:v", "70", "-compression_level", "4",
-            "-loop", "0", "-pix_fmt", "yuva420p", "-an", "-fps_mode", "passthrough",
+            "-loop", "0", "-pix_fmt", "yuva420p", "-an",
             // Named, because the file is written under a `.tmp` suffix and ffmpeg would
             // otherwise have to guess the format from an extension that is not there.
             "-f", "webp",

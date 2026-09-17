@@ -296,7 +296,9 @@ async fn main() -> anyhow::Result<()> {
             // The project's own `overlays/` is where a one-off for this video belongs and
             // is last on the search path; `--library` is for one meant to be reused.
             let dir = if *library {
-                state.config.library_dirs.last().cloned().unwrap_or_else(|| state.config.project_root()).join("overlays")
+                // The user library is the first search path entry — the one `kuma library`
+                // installs into — not whatever `KUMA_LIBRARY` appended last.
+                default_library_dirs().remove(0).join("overlays")
             } else {
                 state.config.project_root().join("overlays")
             };

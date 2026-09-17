@@ -245,14 +245,20 @@ async fn new_template(State(st): S, Path(id): Path<String>, body: Option<Json<Ne
     let dir = st.config.project_root().join("overlays");
     let out = kuma_overlay::new_template(&dir, &id, &req.name, &req.description).map_err(ApiError::bad_request)?;
     st.reload_templates();
-    let report = jobs::lint_template(&st, &id).map_err(|e| ApiError::bad_request(format!("{e:#}")))?;
-    Ok(Json(json!({ "id": id, "dir": out, "lint": report })))
+    // The scaffold is on disk from here on, so this is a success whatever the check
+    // says: a failed check is reported beside the folder, not instead of it, or a retry
+    // would be refused for a template the caller was never told exists.
+    let lint = blocking({ let st = st.clone(); let id = id.clone(); move || jobs::lint_template(&st, &id) }).await?;
+    Ok(Json(match lint {
+        Ok(report) => json!({ "id": id, "dir": out, "lint": report }),
+        Err(e) => json!({ "id": id, "dir": out, "lint": Value::Null, "lint_error": format!("{e:#}") }),
+    }))
 }
 
 /// Check a template against the contract before a bake proves it the slow way. Reads
 /// only: nothing is rendered and nothing is written.
 async fn lint_template(State(st): S, Path(id): Path<String>) -> ApiResult {
-    let report = jobs::lint_template(&st, &id).map_err(|e| ApiError::bad_request(format!("{e:#}")))?;
+    let report = blocking(move || jobs::lint_template(&st, &id)).await?.map_err(|e| ApiError::bad_request(format!("{e:#}")))?;
     Ok(Json(json!(report)))
 }
 

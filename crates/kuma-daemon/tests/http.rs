@@ -39,9 +39,12 @@ async fn daemon() -> (Arc<AppState>, String, tempfile::TempDir) {
     // Without one, a scaffold is (rightly) told its `_vendor/…` files are missing.
     let vendor = dir.path().join("library/overlays/_vendor");
     std::fs::create_dir_all(&vendor).unwrap();
-    for f in ["gsap.min.js", "kuma.js", "kuma.css"] {
+    for f in ["gsap.min.js", "kuma.js"] {
         std::fs::write(vendor.join(f), "").unwrap();
     }
+    // The real `kuma.css` is what turns the `size` var into `--u`; a stub that did not
+    // read `--var-size` would make the scaffold's `size` look unused, which it is not.
+    std::fs::write(vendor.join("kuma.css"), ":root { --u: calc(1vh * var(--var-size, 1)); }").unwrap();
 
     let ui = dir.path().join("repo/ui/dist");
     std::fs::create_dir_all(&ui).unwrap();

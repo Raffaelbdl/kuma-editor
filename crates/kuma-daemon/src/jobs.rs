@@ -379,18 +379,17 @@ fn bake_clips(state: &AppState, project: &Project, ids: &[String], progress: &dy
     (out, errs)
 }
 
-/// Compile options pointed at this project's directories. Callers set what they need on
-/// it (`bakes`, `unbaked`, `size`, `sequence`) — a new compile knob is then a field rather
-/// than another parameter on every function between here and the caller.
 /// Lint one template at the project's frame and rate, so a rule that depends on either
-/// judges the size the video is actually in.
+/// judges the size the video is actually in. Blocking: it stages a copy and runs a
+/// subprocess, so callers on the runtime go through `spawn_blocking`.
 pub fn lint_template(state: &AppState, id: &str) -> anyhow::Result<kuma_overlay::LintReport> {
     let project = read(&state.project).clone();
-    let templates = read(&state.templates);
-    let (dir, manifest) = templates.loaded.get(id).ok_or_else(|| anyhow::anyhow!("unknown template `{id}`"))?;
+    // Cloned out rather than borrowed: the lock must not be held across the subprocess,
+    // or a template rescan waits on a linter.
+    let (dir, manifest) = read(&state.templates).loaded.get(id).cloned().ok_or_else(|| anyhow::anyhow!("unknown template `{id}`"))?;
     let req = kuma_overlay::BakeRequest {
-        template_dir: dir,
-        manifest,
+        template_dir: &dir,
+        manifest: &manifest,
         vars: &serde_json::Map::new(),
         fps: project.fps,
         width: project.width,
@@ -401,6 +400,9 @@ pub fn lint_template(state: &AppState, id: &str) -> anyhow::Result<kuma_overlay:
     Ok(state.baker.lint(&req)?)
 }
 
+/// Compile options pointed at this project's directories. Callers set what they need on
+/// it (`bakes`, `unbaked`, `size`, `sequence`) — a new compile knob is then a field rather
+/// than another parameter on every function between here and the caller.
 pub fn compile_options(state: &AppState) -> CompileOptions {
     let mut opts = CompileOptions::new(state.config.project_root());
     opts.cache_dir = state.config.cache_dir().join("cache");

@@ -124,6 +124,17 @@ impl Baker {
 fn contract_findings(html: &str, manifest: &TemplateManifest, dir: &Path) -> Vec<Finding> {
     let mut out = Vec::new();
     let scripts = script_text(html);
+    // The staged document carries kuma's own injection: `window.kuma = …` and a
+    // `:root { --var-<name>: … }` for every var in the manifest. The var rules read the
+    // template's markup, not that — or every declared var would look read. Its own
+    // linked stylesheets are part of what it reads, though: `_vendor/kuma.css` is what
+    // turns `size` into `--u`, so a template that only sizes in `--u` still uses `size`.
+    let mut own = without_injection(html);
+    for href in local_refs(html).into_iter().filter(|h| h.ends_with(".css")) {
+        if let Ok(css) = std::fs::read_to_string(dir.join(&href)) {
+            own.push_str(&css);
+        }
+    }
 
     if !html.contains("data-composition-id") {
         out.push(Finding::error(
@@ -132,10 +143,11 @@ fn contract_findings(html: &str, manifest: &TemplateManifest, dir: &Path) -> Vec
             "give the root `data-composition-id=\"main\"` with `data-start`, `data-duration`, `data-width` and `data-height`",
         ));
     }
-    // A timeline is registered either directly or through `kumaTemplate().timeline()`;
-    // without one the renderer waits for a timeline that never comes, so the template has
-    // to say so instead.
-    let has_timeline = scripts.contains("__timelines") || scripts.contains("timeline()") || scripts.contains("timeline(");
+    // A timeline is *registered* either on `window.__timelines` or through the
+    // `timeline()` that `kumaTemplate` hands out (which does that registration). A bare
+    // `gsap.timeline()` is neither: the renderer waits 45 s for a registration that never
+    // comes, which is the failure this rule exists to name.
+    let has_timeline = registers_timeline(&scripts);
     if !has_timeline && !html.contains("data-no-timeline") {
         out.push(Finding::error(
             "no_timeline",
@@ -158,18 +170,18 @@ fn contract_findings(html: &str, manifest: &TemplateManifest, dir: &Path) -> Vec
     // Vars: the manifest is what the inspector shows and what the injection resolves, so
     // a var used but not declared arrives as `undefined` and one declared but unused is a
     // control that does nothing.
-    for name in used_vars(html) {
+    for name in used_vars(&own) {
         if !manifest.vars.contains_key(&name) {
             out.push(Finding::error("unknown_var", format!("`{name}` is read but not declared in template.json"), "declare it under `vars` with a type and a default, or stop reading it"));
         }
     }
-    let used = used_vars(html);
+    let used = used_vars(&own);
     for name in manifest.vars.keys() {
         if !used.contains(name) {
             out.push(Finding::warn("unused_var", format!("`{name}` is declared in template.json but never read"), "read it as `vars.<name>` or `var(--var-<name>)`, or remove it from the manifest"));
         }
     }
-    if has_timeline && !scripts.contains("duration") {
+    if has_timeline && !reads_duration(&scripts) {
         out.push(Finding::warn(
             "duration_not_read",
             "the animation never reads `duration`",
@@ -185,6 +197,44 @@ fn contract_findings(html: &str, manifest: &TemplateManifest, dir: &Path) -> Vec
         }
     }
     out
+}
+
+/// The template's own markup: the staged document with kuma's injected script and var
+/// declarations cut out again.
+fn without_injection(html: &str) -> String {
+    let mut out = html.to_string();
+    for (open, close) in [("<script id=\"kuma-inject\">", "</script>"), ("<style id=\"kuma-vars\">", "</style>")] {
+        if let Some(a) = out.find(open) {
+            if let Some(b) = out[a..].find(close) {
+                out.replace_range(a..a + b + close.len(), "");
+            }
+        }
+    }
+    out
+}
+
+/// True when the scripts register a timeline the renderer can find: on
+/// `window.__timelines` themselves, or through `kumaTemplate`'s `timeline()`, which does
+/// it for them. `gsap.timeline(…)` alone registers nothing.
+fn registers_timeline(scripts: &str) -> bool {
+    let own = scripts.replace("gsap.timeline(", "");
+    own.contains("__timelines") || (own.contains("kumaTemplate(") && own.contains("timeline("))
+}
+
+/// True when the scripts read the clip's real length: `duration` as a value from
+/// `kumaTemplate` or `window.kuma`, not the `duration:` every tween carries.
+fn reads_duration(scripts: &str) -> bool {
+    // Drop the object-key spelling, then look for the word.
+    let mut own = scripts.to_string();
+    while let Some(i) = own.find("duration") {
+        let after = own[i + 8..].trim_start();
+        if after.starts_with(':') {
+            own.replace_range(i..i + 8, " ");
+        } else {
+            return true;
+        }
+    }
+    false
 }
 
 /// Everything inside `<script>` tags, comments removed — where the rules about behaviour
@@ -315,7 +365,14 @@ fn local_refs(html: &str) -> Vec<String> {
 fn hyperframes_lint(bin: &Path, dir: &Path) -> Result<Vec<Finding>, String> {
     let out = Command::new(bin).arg("lint").arg(dir).output().map_err(|e| format!("{}: {e}", bin.display()))?;
     let text = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
-    Ok(parse_hyperframes(&text))
+    let findings = parse_hyperframes(&text);
+    // It exits non-zero when it finds errors, which is fine; non-zero with nothing found
+    // is a linter that did not run (no such subcommand, a crash), and that must land in
+    // `renderer_skipped` rather than read as a pass.
+    if !out.status.success() && findings.is_empty() {
+        return Err(format!("hyperframes lint failed: {}", text.trim()));
+    }
+    Ok(findings)
 }
 
 /// Its output is a human report: `✗ code: message` / `⚠ code: message`, each optionally
@@ -414,6 +471,37 @@ mod tests {
 
         let missing = r#"<div data-composition-id="main" data-no-timeline></div><img src="logo.png">"#;
         assert!(codes(missing, &manifest(&[])).contains(&"missing_asset".to_string()));
+    }
+
+    /// `gsap.timeline()` on its own registers nothing; the 45-second bake timeout is exactly
+    /// this template. And `duration: 0.45` on a tween is not a read of the clip's length.
+    #[test]
+    fn a_bare_gsap_timeline_and_a_tween_duration_do_not_count() {
+        let dir = tempfile::tempdir().unwrap();
+        let bare = r##"<div data-composition-id="main"></div><script>const tl = gsap.timeline({ paused: true }); tl.to("#x", { opacity: 0, duration: 0.3 }, 3.65);</script>"##;
+        let codes: Vec<String> = contract_findings(bare, &manifest(&[]), dir.path()).into_iter().map(|f| f.code).collect();
+        assert!(codes.contains(&"no_timeline".to_string()), "{codes:?}");
+
+        let registered = r##"<div data-composition-id="main"></div><script>const { timeline } = kumaTemplate({}); const tl = timeline(); tl.to("#x", { opacity: 0, duration: 0.3 }, 3.65);</script>"##;
+        let codes: Vec<String> = contract_findings(registered, &manifest(&[]), dir.path()).into_iter().map(|f| f.code).collect();
+        assert!(!codes.contains(&"no_timeline".to_string()), "{codes:?}");
+        assert!(codes.contains(&"duration_not_read".to_string()), "a hard-coded exit passed: {codes:?}");
+
+        let reads = r##"<div data-composition-id="main"></div><script>const { duration, timeline } = kumaTemplate({}); const tl = timeline(); tl.to("#x", { opacity: 0, duration: 0.3 }, duration - 0.3);</script>"##;
+        let codes: Vec<String> = contract_findings(reads, &manifest(&[]), dir.path()).into_iter().map(|f| f.code).collect();
+        assert!(!codes.contains(&"duration_not_read".to_string()), "{codes:?}");
+    }
+
+    /// The staged document declares every var in `:root`; that is kuma's doing, not the
+    /// template's, and must not make an unused var look used.
+    #[test]
+    fn injected_declarations_do_not_count_as_reads() {
+        let dir = tempfile::tempdir().unwrap();
+        let staged = r#"<html><head><script id="kuma-inject">window.kuma = { vars: { size: 1 } };</script>
+          <style id="kuma-vars">:root { --var-size: 1; }</style></head>
+          <body><div data-composition-id="main" data-no-timeline></div></body></html>"#;
+        let codes: Vec<String> = contract_findings(staged, &manifest(&["size"]), dir.path()).into_iter().map(|f| f.code).collect();
+        assert!(codes.contains(&"unused_var".to_string()), "{codes:?}");
     }
 
     /// A comment is not code. The scaffold warns about `Date.now()` in a comment, and a

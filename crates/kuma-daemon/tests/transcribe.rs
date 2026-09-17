@@ -21,6 +21,13 @@ while [ $# -gt 0 ]; do
   shift
 done
 [ -n "$base" ] || exit 4
+# Armed by the test, this blocks until released, so "the document changed while the model
+# ran" is a fact rather than a matter of timing.
+if [ -f "$0.wait" ]; then
+  printf 'started\n' > "$0.started"
+  n=0
+  while [ ! -f "$0.go" ] && [ $n -lt 400 ]; do sleep 0.05; n=$((n+1)); done
+fi
 # whisper reports its own progress on stderr as it works.
 printf 'whisper_print_progress_callback: progress =  40%%\n' >&2
 printf 'whisper_print_progress_callback: progress = 100%%\n' >&2
@@ -52,7 +59,7 @@ fn a_transcript_becomes_an_editable_subtitles_entry() {
     let state = Arc::new(AppState::load(config).unwrap());
     jobs::add_media(&state, &media, None, None, "test").unwrap();
 
-    let req = TranscribeRequest { bin: Some("talk".into()), clip: None, id: None, replace: false, options: Default::default(), base_revision: None, origin: "test".into() };
+    let req = TranscribeRequest { bin: Some("talk".into()), clip: None, id: None, replace: false, options: Default::default(), origin: "test".into() };
     // Whisper is minutes of work on a real recording, so the job must report its
     // percentage while it runs rather than jumping from "started" to "done".
     let seen = std::sync::Mutex::new(Vec::<u8>::new());
@@ -72,7 +79,8 @@ fn a_transcript_becomes_an_editable_subtitles_entry() {
     assert_eq!(p.children(Some("talk")).len(), 1);
     assert_eq!(vars["cues"], json!([{ "start": 0.0, "end": 0.9, "text": "Hello" }, { "start": 2.0, "end": 2.8, "text": "world" }]));
     assert!(kuma_core::validate(&p, &state.validation_context()).is_empty(), "the entry validates against the real template");
-    assert!(jobs::transcribe(&state, &req, &|_, _| {}).unwrap_err().to_string().contains("already exists"), "a second run must not rebind the entry");
+    let named = TranscribeRequest { id: Some("talk-subs".into()), ..req.clone() };
+    assert!(jobs::transcribe(&state, &named, &|_, _| {}).unwrap_err().to_string().contains("already exists"), "naming an entry that is there is refused");
     assert!(jobs::transcribe(&state, &TranscribeRequest { id: Some("talk".into()), replace: true, ..req.clone() }, &|_, _| {}).unwrap_err().to_string().contains("not an overlay"),
         "`replace` overwrites a transcript, never some other entry");
 
@@ -144,5 +152,29 @@ fn a_transcript_becomes_an_editable_subtitles_entry() {
     let subs = serde_json::to_value(&p.bin["talk-subs"]).unwrap();
     assert_eq!(subs["source"]["vars"]["style"], "outline", "the entry's own styling survives");
     assert_eq!(subs["source"]["vars"]["cues"][0]["text"], "Hello");
+    assert!(kuma_core::validate(&p, &state.validation_context()).is_empty());
+
+    // The model runs for minutes and the document is edited while it does, so nothing
+    // about where the words go may be decided before they exist. Both of these used to
+    // bite: an unrelated edit threw the whole transcription away on a stale
+    // `base_revision`, and an entry created at the name it had picked was silently
+    // overwritten, because a JSON Patch `add` replaces a member that is already there.
+    std::fs::write(fake.with_extension("wait"), "").unwrap();
+    let (s2, req2) = (state.clone(), req.clone());
+    let running = std::thread::spawn(move || jobs::transcribe(&s2, &req2, &|_, _| {}));
+    let started = fake.with_extension("started");
+    while !started.is_file() {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    edit(json!({ "op": "replace", "path": "/bin/talk/name", "value": "Renamed mid-transcription" })).unwrap();
+    edit(json!({ "op": "add", "path": "/bin/talk-subs-3", "value": { "name": "Someone else's work", "source": { "color": "#ff0000" } } })).unwrap();
+    std::fs::write(fake.with_extension("go"), "").unwrap();
+
+    let out = running.join().unwrap().unwrap();
+    assert_eq!(out["bin"], "talk-subs-4", "the name is minted with the words in hand, after `talk-subs-3` was taken");
+    let p = state.project.read().unwrap().clone();
+    assert_eq!(p.bin["talk-subs-3"].name, "Someone else's work", "the entry that took the name is untouched");
+    assert_eq!(p.bin["talk"].name, "Renamed mid-transcription", "and the unrelated edit stands");
+    assert_eq!(p.bin["talk-subs-4"].parent.as_deref(), Some("talk"));
     assert!(kuma_core::validate(&p, &state.validation_context()).is_empty());
 }

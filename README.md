@@ -136,7 +136,10 @@ pixel-valued `transform` offsets are the one thing that stays put.
 it, or force one, and your choice is remembered for next time — and, when that media has
 been transcribed before, offers to **replace** that transcript: the same entry keeps its
 styling and where it is placed, and only the words change. Leave it unticked for a second
-transcript beside the first. whisper.cpp runs locally, the
+transcript beside the first, which is also what a second `kuma transcribe` does: an
+unnamed transcript is named when its words are in (`<bin>-subs`, then `<bin>-subs-2`…), so
+runs never collide and an edit made while the model works cannot cost you the
+transcription. whisper.cpp runs locally, the
 transcript lands in the bin as a `subtitles` overlay entry listed under its media, and a
 clip of it is placed over the one you selected, aligned: same start, end and speed, and the
 entry's `offset` set to the clip's `in`, so the cues land on the words. It goes on the

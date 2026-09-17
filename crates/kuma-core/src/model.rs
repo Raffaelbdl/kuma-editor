@@ -231,9 +231,13 @@ impl Project {
         self.bin.get(&clip.bin)
     }
 
-    /// Lowest free `<prefix><n>` bin id.
-    pub fn free_bin_id(&self, prefix: &str) -> BinId {
-        (1..).map(|n| format!("{prefix}{n}")).find(|id| !self.bin.contains_key(id)).unwrap_or_default()
+    /// `base` if it is free, else `base-2`, `base-3`… — the shape the editor names bin
+    /// entries in, so a minted id reads like one someone typed.
+    pub fn free_bin_id(&self, base: &str) -> BinId {
+        std::iter::once(base.to_string())
+            .chain((2..).map(|n| format!("{base}-{n}")))
+            .find(|id| !self.bin.contains_key(id))
+            .unwrap_or_default()
     }
 
     /// Lowest free `<prefix><n>` track or clip id — one namespace, the whole project.
@@ -782,6 +786,17 @@ mod tests {
         };
         assert!(mk(false).seq_has_audio("main"), "sound two levels down still needs a mix");
         assert!(!mk(true).seq_has_audio("main"), "a muted track inside carries nothing out");
+    }
+
+    #[test]
+    fn a_minted_bin_id_reads_like_a_typed_one() {
+        let p: Project = serde_json::from_value(json!({ "bin": {
+            "talk-subs": { "source": { "color": "#000" } },
+            "talk-subs-2": { "source": { "color": "#000" } }
+        } }))
+        .unwrap();
+        assert_eq!(p.free_bin_id("talk-subs"), "talk-subs-3");
+        assert_eq!(p.free_bin_id("other"), "other");
     }
 
     #[test]

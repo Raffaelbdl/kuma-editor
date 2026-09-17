@@ -30,9 +30,11 @@ export const api = {
     json<{ id: string; revision: number }>("/api/bin", { method: "POST", body: JSON.stringify({ path, base_revision, origin: "ui: add media" }) }),
   /** Speech to text. From a `bin` entry the result is added unplaced; from a `clip` it is
    *  placed over that clip, aligned. `replace` overwrites the transcript of an entry that
-   *  already exists instead of refusing, keeping its styling and where it is placed. */
-  transcribe: (req: ({ bin: string } | { clip: string }) & { id?: string; language?: string; replace?: boolean }, base_revision: number) =>
-    json<{ job: number }>("/api/transcribe", { method: "POST", body: JSON.stringify({ ...req, base_revision, origin: "ui: transcribe" }) }),
+   *  already exists instead of refusing, keeping its styling and where it is placed. No
+   *  `base_revision`: the model runs for minutes, and the daemon composes the patch
+   *  against the project as it is when the words are in. */
+  transcribe: (req: ({ bin: string } | { clip: string }) & { id?: string; language?: string; replace?: boolean }) =>
+    json<{ job: number }>("/api/transcribe", { method: "POST", body: JSON.stringify({ ...req, origin: "ui: transcribe" }) }),
   render: (preset: string) => json<{ job: number }>("/api/render", { method: "POST", body: JSON.stringify({ preset }) }),
   previewReload: (scale?: number) => json<{ mlt: string; scale: number }>("/api/preview/reload", { method: "POST", body: JSON.stringify(scale === undefined ? {} : { scale }) }),
   snapshotUrl: (t: number, width = 960) => `/api/snapshot?t=${t.toFixed(3)}&width=${width}&_=${Date.now()}`,

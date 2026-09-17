@@ -188,11 +188,10 @@ export async function transcribe() {
   saveLanguage(language.value);
 
   const replacing = !!existing && replace.checked;
-  // Naming the entry is only needed to say *which* transcript: the one being replaced, or
-  // a free id beside it. A first transcript is the daemon's to name.
-  const id = !existing ? undefined : replacing ? existing[0] : uniqueId(existing[0], Object.keys(p.bin));
+  // An id is only needed to name the entry being replaced; a new transcript is the
+  // daemon's to name, once the words are in and nothing can take the name meanwhile.
   const what = clip ? { clip: clip.id } : { bin: binId };
-  await startJob("Transcribe", () => api.transcribe({ ...what, id, language: language.value, replace: replacing }, p.revision));
+  await startJob("Transcribe", () => api.transcribe({ ...what, id: replacing ? existing![0] : undefined, language: language.value, replace: replacing }));
 }
 
 /** Landscape ⇄ portrait: swap the frame's width and height. Everything else follows — the

@@ -306,6 +306,25 @@ So the job defaults to `-ml 1 -sow`, the template takes `words_per_line` and a `
 mode, and `max_chars` stays for whoever wants whisper's own grouping. The cost is a longer
 cue list in the inspector, one row per word.
 
+**Where the words go is decided when they exist, not before** — adopted, after both
+failures were reproduced against a running daemon. The job used to snapshot the project,
+check the id, run the model for minutes, then patch from that snapshot. With a
+`base_revision` — what the editor sent — any unrelated edit meanwhile refused the patch
+and threw the transcription away (renaming one entry three seconds in was enough). Without
+one, the id check was minutes stale and a JSON Patch `add` on a name taken in the meantime
+*replaces* that member, so someone else's entry was silently overwritten and the job
+reported success.
+
+So the model still runs outside every lock, but nothing about where its words land is
+settled until they are in hand: `AppState::apply_built` composes the patch against the
+live project under the edit lock, and the id, the entry to replace, the overlay track and
+the clip id are all resolved there. An unnamed transcript *mints* its name then
+(`<bin>-subs`, then `<bin>-subs-2`…), which is why a second run now adds a second
+transcript rather than colliding; naming an `id` is how you mean one entry, and `replace`
+is the only way to overwrite it. `base_revision` is gone from this job: over minutes it
+only ever meant "nobody touched anything", and a transcript depends on nothing in the
+document but the entry it lands on.
+
 **Re-running replaces the words, not the entry** — adopted. A second transcript of the
 same media used to be refused outright ("bin id already exists"), which is right by
 default — it would overwrite work — but it left correcting a bad language or a bad model

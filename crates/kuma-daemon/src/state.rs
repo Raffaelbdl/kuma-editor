@@ -256,6 +256,20 @@ impl AppState {
         self.edit(origin, |p| edit::apply_patch(p, base, patch, &self.validation_context()))
     }
 
+    /// Compose a patch *from the project as it is now* and apply it, both under the edit
+    /// lock. For work that takes minutes before it knows what to write — a transcription —
+    /// where deciding against a snapshot taken at the start would race every edit made
+    /// meanwhile. `build` must stay cheap: it runs with the lock held.
+    pub fn apply_built<T>(&self, origin: &str, build: impl FnOnce(&Project) -> anyhow::Result<(Vec<json_patch::PatchOperation>, T)>) -> anyhow::Result<(T, u64, Vec<Issue>)> {
+        let mut carried = None;
+        let (rev, warnings) = self.edit(origin, |p| {
+            let (ops, value) = build(p).map_err(|e| EditError::Patch(format!("{e:#}")))?;
+            carried = Some(value);
+            edit::apply_patch(p, None, &ops, &self.validation_context())
+        })?;
+        Ok((carried.expect("build ran"), rev, warnings))
+    }
+
     /// Undo/redo swap whole snapshots; the revision keeps increasing so clients never
     /// confuse an undone state with an older one. `Ok(None)` means nothing to undo/redo.
     pub fn undo(&self) -> anyhow::Result<Option<u64>> {

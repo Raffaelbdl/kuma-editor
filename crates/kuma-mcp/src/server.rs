@@ -205,8 +205,6 @@ pub struct Transcribe {
     /// Longest cue in characters. Default 1: one cue per word, which the `subtitles` template groups into lines itself; 0 keeps whisper's own sentences.
     #[serde(default)]
     pub max_chars: Option<u32>,
-    #[serde(default)]
-    pub base_revision: Option<u64>,
     /// Seconds to wait for the model before returning the job id (default 600).
     #[serde(default)]
     pub wait_seconds: Option<u64>,
@@ -280,9 +278,9 @@ impl KumaServer {
         self.post("/api/bin", &json!({ "path": p.path, "id": p.id, "base_revision": p.base_revision, "origin": "claude: add media" })).await
     }
 
-    #[tool(description = "Transcribe media audio with a local whisper.cpp model into a `subtitles` overlay entry (cues in source seconds, editable as its `cues` var), listed under the media. Pass `clip` to place it over that clip, aligned, on an overlay track; pass `bin` for the entry alone.")]
+    #[tool(description = "Transcribe media audio with a local whisper.cpp model into a `subtitles` overlay entry (cues in source seconds, editable as its `cues` var), listed under the media. Pass `clip` to place it over that clip, aligned, on an overlay track; pass `bin` for the entry alone. The new entry's id is minted when the words are in and returned as `bin`; it takes no base_revision, since the model runs for minutes and the patch is composed against the project as it is when it lands.")]
     async fn transcribe(&self, Parameters(p): Parameters<Transcribe>) -> Result<CallToolResult, McpError> {
-        let body = json!({ "bin": p.bin, "clip": p.clip, "id": p.id, "replace": p.replace.unwrap_or(false), "language": p.language, "max_chars": p.max_chars, "base_revision": p.base_revision, "origin": "claude: transcribe" });
+        let body = json!({ "bin": p.bin, "clip": p.clip, "id": p.id, "replace": p.replace.unwrap_or(false), "language": p.language, "max_chars": p.max_chars, "origin": "claude: transcribe" });
         self.job("/api/transcribe", &body, Duration::from_secs(p.wait_seconds.unwrap_or(600))).await
     }
 

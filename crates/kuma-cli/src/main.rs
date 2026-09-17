@@ -91,10 +91,12 @@ enum Cmd {
         /// Or a clip id: place the subtitles over that clip, aligned.
         #[arg(long, conflicts_with = "bin")]
         clip: Option<String>,
-        /// Bin id for the subtitles entry (default `<bin>-subs`).
+        /// Bin id for the subtitles entry. Left out, one is minted (`<bin>-subs`, then
+        /// `<bin>-subs-2`…), so running twice adds a second transcript.
         #[arg(long)]
         id: Option<String>,
-        /// Overwrite an existing entry's transcript, keeping its styling and placement.
+        /// Overwrite the transcript that is there (`--id`, else `<bin>-subs`), keeping its
+        /// styling and placement.
         #[arg(long)]
         replace: bool,
         /// ISO 639-1 language code, or `auto`.
@@ -271,7 +273,7 @@ async fn main() -> anyhow::Result<()> {
                 kuma_mcp::client::Client::new(&url).wait_job(v["job"].as_u64().unwrap_or_default(), std::time::Duration::from_secs(3600)).await?
             } else {
                 let state = open(&cli)?;
-                let req = kuma_daemon::jobs::TranscribeRequest { bin: bin.clone(), clip: clip.clone(), id: id.clone(), replace: *replace, options, base_revision: None, origin: "cli".into() };
+                let req = kuma_daemon::jobs::TranscribeRequest { bin: bin.clone(), clip: clip.clone(), id: id.clone(), replace: *replace, options, origin: "cli".into() };
                 tokio::task::spawn_blocking(move || kuma_daemon::jobs::transcribe(&state, &req, &|p, m| eprintln!("[{p:3}%] {m}"))).await??
             };
             println!("{}", serde_json::to_string_pretty(&out)?);

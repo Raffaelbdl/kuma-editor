@@ -183,9 +183,14 @@ export class Inspector {
     // whose look is the point, so it moves here rather than being dropped. Absent until
     // the `thumbs` job has run, and it removes itself when there is nothing to show.
     const thumb = el("img", "insp-thumb");
-    thumb.src = `/api/bin/${encodeURIComponent(id)}/thumb.png`;
+    // The entry's own moving preview when the `thumbs` job has made one, its still
+    // otherwise, and nothing at all until then.
+    thumb.src = `/api/bin/${encodeURIComponent(id)}/preview.webp`;
     thumb.alt = "";
-    thumb.onerror = () => thumb.remove();
+    thumb.onerror = () => {
+      if (thumb.src.endsWith("preview.webp")) thumb.src = `/api/bin/${encodeURIComponent(id)}/thumb.png`;
+      else thumb.remove();
+    };
     this.host.appendChild(thumb);
 
     const vars = source.vars ?? {};

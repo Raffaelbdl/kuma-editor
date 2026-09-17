@@ -111,7 +111,11 @@ export class Library {
         ["desc", t.manifest.description],
         ["desc mono", Object.keys(t.manifest.vars).join(" · ")],
       ], t.id);
-      if (t.has_thumb) prependThumb(card, `/overlays/${encodeURIComponent(t.id)}/thumb.png`);
+      // The moving one when the job has made it, the still otherwise: an overlay is an
+      // animation, and the frame a still picks is the least informative moment of it.
+      if (t.has_preview || t.has_thumb) {
+        prependThumb(card, `/overlays/${encodeURIComponent(t.id)}/${t.has_preview ? "preview.webp" : "thumb.png"}`);
+      }
       // Two different decisions, so two buttons: one puts it in the video now, the other
       // opens it in the workbench to be made right first and placed when it is.
       card.appendChild(row("actions",

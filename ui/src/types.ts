@@ -76,7 +76,7 @@ export interface TemplateManifest {
   id: string; name: string; description: string; duration_default: number; static: boolean;
   vars: Record<string, VarSpec>; tags: string[];
 }
-export interface TemplateInfo { id: string; manifest: TemplateManifest; has_thumb: boolean }
+export interface TemplateInfo { id: string; manifest: TemplateManifest; has_thumb: boolean; has_preview: boolean }
 
 /** What `check` says about a template: the contract's own rules plus hyperframes'. */
 export interface Finding { level: "error" | "warning"; code: string; message: string; fix?: string }

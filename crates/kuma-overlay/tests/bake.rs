@@ -98,3 +98,37 @@ fn bakes_location_tag_with_alpha_and_caches() {
     assert_eq!(rgba_at(&still.resource, 10, 10)[3], 0);
     assert!(rgba_at(&still.resource, 1920 - 60, 1080 - 50)[3] > 60, "watermark chip expected at bottom-right");
 }
+
+/// The library's moving preview: animated, and still transparent. A single-frame WebP
+/// would be a thumbnail with extra steps, and one without alpha would sit on the editor's
+/// dark panels as a black rectangle — both have to be checked in the file, because both
+/// look fine to the encoder.
+#[test]
+fn previews_a_template_as_an_animated_webp_with_alpha() {
+    let root = repo_root();
+    let tmp = tempfile::tempdir().unwrap();
+    let baker = Baker::discover(&root, root.join("library/overlays/_vendor"), tmp.path().join("cache"));
+    if baker.available().is_err() || (baker.browser.is_none() && std::env::var_os("KUMA_ALLOW_BROWSER_DOWNLOAD").is_none()) {
+        eprintln!("hyperframes or a browser is unavailable; skipping preview test");
+        return;
+    }
+    if std::process::Command::new("ffmpeg").arg("-version").output().is_err() {
+        eprintln!("ffmpeg unavailable; skipping preview test");
+        return;
+    }
+    let dir = root.join("library/overlays/location-tag");
+    let manifest = TemplateManifest::load(&dir).unwrap();
+    let out = tmp.path().join("preview.webp");
+    baker.preview(&dir, &manifest, &Map::new(), &out).expect("preview encoded");
+
+    let bytes = std::fs::read(&out).unwrap();
+    assert_eq!(&bytes[..4], b"RIFF");
+    assert_eq!(&bytes[8..12], b"WEBP");
+    let count = |tag: &[u8]| bytes.windows(4).filter(|w| *w == tag).count();
+    // ANMF is one animation frame; ALPH is that frame's alpha.
+    assert!(count(b"ANIM") >= 1, "not an animated WebP");
+    assert!(count(b"ANMF") > 10, "only {} frames — the preview is barely moving", count(b"ANMF"));
+    assert!(count(b"ALPH") > 10, "frames carry no alpha: the preview would be a black rectangle");
+    // Nothing was left behind mid-write.
+    assert!(!out.with_extension("webp.tmp").exists());
+}

@@ -112,6 +112,7 @@ clash. The repository ships a starter set under `library/`; install it once:
 
 ```
 kuma library                                 # copies library/{overlays,presets} → ~/.local/share/kuma (--force to overwrite)
+kuma thumbs                                  # a still and a moving preview (animated WebP, alpha) per template and overlay entry
 ```
 
 A project is a directory with `<name>.kuma.json` and your media:
@@ -328,7 +329,10 @@ not per sequence. The full schema: `GET /api/schema` or the `get_schema` tool.
 
 A template is a folder `<library>/overlays/<id>/` with `index.html` + `template.json`. The
 manifest's typed vars become the properties panel, so templates are editable without an
-agent; the agent can author new ones because they are plain folders. Starter set
+agent; the agent can author new ones because they are plain folders. The **thumbnails** button in the Templates tab (or `kuma thumbs`) renders each template
+twice: a still, and a moving preview — an animated WebP with alpha, the first seconds
+looping — which is what the browser and the inspector show. An overlay is an animation,
+and a still can only pick one moment out of it. Starter set
 (`library/overlays/`, installed by `kuma library`): `location-tag`, `lower-third`,
 `callout-arrow`, `label-pin`, `section-title`, `countdown`, `watermark` (static),
 `subtitles` (a `cues` var: the transcript). Contract: `library/overlays/CLAUDE.md`. A library

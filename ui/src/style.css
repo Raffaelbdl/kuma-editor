@@ -37,6 +37,8 @@ button { background: var(--bg-3); border: 1px solid var(--line); border-radius: 
 button:hover { border-color: var(--fg-2); }
 button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
 input, select, textarea { background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; width: 100%; }
+/* A tick is its own size: full width would leave it floating in the middle of the field. */
+input[type="checkbox"] { width: auto; justify-self: start; }
 input[type="color"] { padding: 0; height: 26px; }
 input[type="checkbox"] { width: auto; }
 textarea { font-family: var(--mono); font-size: 12px; min-height: 80px; resize: vertical; }
@@ -211,11 +213,12 @@ button.linkish:hover { text-decoration: underline; }
 
 dialog.modal {
   border: 1px solid var(--line); border-radius: 10px; background: var(--bg-2); color: var(--fg);
-  padding: 16px 18px; min-width: 320px; box-shadow: 0 16px 48px rgba(0, 0, 0, 0.5);
+  padding: 16px 18px; min-width: 320px; max-width: min(440px, 90vw); box-shadow: 0 16px 48px rgba(0, 0, 0, 0.5);
 }
 dialog.modal::backdrop { background: rgba(0, 0, 0, 0.5); }
 dialog.modal h3 { margin-top: 0; }
-dialog.modal .field { grid-template-columns: 60px 1fr; }
+dialog.modal .field { grid-template-columns: 70px 1fr; }
+dialog.modal p { margin-bottom: 10px; }
 .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
 
 #toasts { position: fixed; right: 12px; bottom: 312px; display: flex; flex-direction: column; gap: 6px; z-index: 10; }

@@ -49,7 +49,7 @@ fn a_transcript_becomes_an_editable_subtitles_entry() {
     let state = Arc::new(AppState::load(config).unwrap());
     jobs::add_media(&state, &media, None, None, "test").unwrap();
 
-    let req = TranscribeRequest { bin: Some("talk".into()), clip: None, id: None, options: Default::default(), base_revision: None, origin: "test".into() };
+    let req = TranscribeRequest { bin: Some("talk".into()), clip: None, id: None, replace: false, options: Default::default(), base_revision: None, origin: "test".into() };
     let out = jobs::transcribe(&state, &req, &|_, _| {}).unwrap();
     assert_eq!(out["bin"], "talk-subs");
     assert_eq!(out["cues"], 2, "the blank-audio marker is not a cue");
@@ -65,6 +65,8 @@ fn a_transcript_becomes_an_editable_subtitles_entry() {
     assert_eq!(vars["cues"], json!([{ "start": 0.0, "end": 0.9, "text": "Hello" }, { "start": 2.0, "end": 2.8, "text": "world" }]));
     assert!(kuma_core::validate(&p, &state.validation_context()).is_empty(), "the entry validates against the real template");
     assert!(jobs::transcribe(&state, &req, &|_, _| {}).unwrap_err().to_string().contains("already exists"), "a second run must not rebind the entry");
+    assert!(jobs::transcribe(&state, &TranscribeRequest { id: Some("talk".into()), replace: true, ..req.clone() }, &|_, _| {}).unwrap_err().to_string().contains("not an overlay"),
+        "`replace` overwrites a transcript, never some other entry");
 
     // Fixing a misheard word is one var patch, and the validator still reads the cues.
     let edit = |op: serde_json::Value| state.apply_patch(&serde_json::from_value::<Vec<json_patch::PatchOperation>>(json!([op])).unwrap(), None, "test");
@@ -112,5 +114,27 @@ fn a_transcript_becomes_an_editable_subtitles_entry() {
     assert_eq!(tracks.len(), before + 1, "no overlay track had room at {}–{}, so one was added", placed.start, placed.end);
     let last = tracks.last().unwrap();
     assert_eq!((last.kind, last.name.as_str(), last.clips[0].bin.as_str()), (kuma_core::TrackKind::Overlay, "Subtitles", "talk-subs-2"));
+    assert!(kuma_core::validate(&p, &state.validation_context()).is_empty());
+
+    // Re-running with `replace` overwrites the words in place: the same entry, its
+    // styling, and the clip the first run placed all survive, and the language asked for
+    // reaches whisper.
+    edit(json!({ "op": "add", "path": "/bin/talk-subs/source/vars/style", "value": "outline" })).unwrap();
+    let before = state.project.read().unwrap().clone();
+    let french = TranscribeRequest {
+        replace: true,
+        options: kuma_overlay::TranscribeOptions { language: Some("fr".into()), ..Default::default() },
+        ..from_clip.clone()
+    };
+    let out = jobs::transcribe(&state, &french, &|_, _| {}).unwrap();
+    assert_eq!((out["bin"].as_str(), out["replaced"].as_bool(), out["placed"].as_bool()), (Some("talk-subs"), Some(true), Some(false)));
+    let args = std::fs::read_to_string(fake.with_extension("args")).unwrap();
+    assert!(args.contains("-l\nfr"), "the language is forced, not detected: {args}");
+    let p = state.project.read().unwrap().clone();
+    assert_eq!(p.bin.len(), before.bin.len(), "a replacement is not a second entry");
+    assert_eq!(p.all_clips().count(), before.all_clips().count(), "nor a second clip");
+    let subs = serde_json::to_value(&p.bin["talk-subs"]).unwrap();
+    assert_eq!(subs["source"]["vars"]["style"], "outline", "the entry's own styling survives");
+    assert_eq!(subs["source"]["vars"]["cues"][0]["text"], "Hello");
     assert!(kuma_core::validate(&p, &state.validation_context()).is_empty());
 }

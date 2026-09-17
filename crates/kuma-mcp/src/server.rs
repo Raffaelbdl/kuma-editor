@@ -49,7 +49,9 @@ overlay entry whose `cues` var is `[{start, end, text}, …]` in source seconds,
 template groups them by its `words_per_line` var and can stress the word being said), listed under the media
 (`parent`). Given a `clip`, it also places the subtitles over that clip, aligned; given a `bin`, the
 entry is yours to place (set its `offset` var to a trimmed clip's `in`). Fix a misheard word by
-patching the cue's `text`. `parent` on a bin entry is organisation only: the entry it is listed under
+patching the cue's `text`; re-transcribe with `replace` to overwrite the words in place and keep the
+entry's styling and placement, and with `language` (an ISO 639-1 code) to force the language rather
+than detect it. `parent` on a bin entry is organisation only: the entry it is listed under
 in the browser, which can be any entry or a folder (`{"source": {"folder": true}}`, never placeable);
 `order` sorts siblings there (ordered ones first, the rest by id).
 Vertical (9:16) is only
@@ -190,9 +192,13 @@ pub struct Transcribe {
     /// Or a clip id: transcribe what it plays and place the subtitles over it, aligned. One of the two.
     #[serde(default)]
     pub clip: Option<String>,
-    /// Bin id for the new subtitles entry. Defaults to `<bin>-subs`.
+    /// Bin id for the subtitles entry. Defaults to `<bin>-subs`.
     #[serde(default)]
     pub id: Option<String>,
+    /// Overwrite the transcript of an entry that already exists (keeping its styling and
+    /// its placement) instead of failing. Re-running otherwise refuses.
+    #[serde(default)]
+    pub replace: Option<bool>,
     /// ISO 639-1 language code, or `auto` (default).
     #[serde(default)]
     pub language: Option<String>,
@@ -276,7 +282,7 @@ impl KumaServer {
 
     #[tool(description = "Transcribe media audio with a local whisper.cpp model into a `subtitles` overlay entry (cues in source seconds, editable as its `cues` var), listed under the media. Pass `clip` to place it over that clip, aligned, on an overlay track; pass `bin` for the entry alone.")]
     async fn transcribe(&self, Parameters(p): Parameters<Transcribe>) -> Result<CallToolResult, McpError> {
-        let body = json!({ "bin": p.bin, "clip": p.clip, "id": p.id, "language": p.language, "max_chars": p.max_chars, "base_revision": p.base_revision, "origin": "claude: transcribe" });
+        let body = json!({ "bin": p.bin, "clip": p.clip, "id": p.id, "replace": p.replace.unwrap_or(false), "language": p.language, "max_chars": p.max_chars, "base_revision": p.base_revision, "origin": "claude: transcribe" });
         self.job("/api/transcribe", &body, Duration::from_secs(p.wait_seconds.unwrap_or(600))).await
     }
 

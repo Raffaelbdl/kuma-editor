@@ -22,6 +22,14 @@ export function row(className: string, ...kids: (HTMLElement | string)[]): HTMLD
   return r;
 }
 
+export function checkbox(checked: boolean, onChange?: (v: boolean) => void): HTMLInputElement {
+  const c = el("input");
+  c.type = "checkbox";
+  c.checked = checked;
+  if (onChange) c.onchange = () => onChange(c.checked);
+  return c;
+}
+
 /** `3 clips`, `1 entry`, `2 entries`. */
 export const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 

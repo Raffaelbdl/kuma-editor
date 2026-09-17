@@ -306,6 +306,17 @@ So the job defaults to `-ml 1 -sow`, the template takes `words_per_line` and a `
 mode, and `max_chars` stays for whoever wants whisper's own grouping. The cost is a longer
 cue list in the inspector, one row per word.
 
+**Re-running replaces the words, not the entry** — adopted. A second transcript of the
+same media used to be refused outright ("bin id already exists"), which is right by
+default — it would overwrite work — but it left correcting a bad language or a bad model
+with no move but deleting the entry, and with it the styling, the placement and any
+template an agent had pointed it at. So `replace` patches `cues` (and `offset`, which
+follows the clip it is aligned to) and nothing else, and places a clip only when the entry
+is on no timeline yet. The editor asks before doing it, and offers a second entry beside
+the first as the alternative; the language sits in the same dialog, since forcing it is
+the other thing only a person can answer, and it is remembered because a person's videos
+are usually in one language.
+
 **whisper.cpp as a subprocess** — adopted, the way melt and ffmpeg are. `whisper-cli` on
 `PATH` (`KUMA_WHISPER_BIN`) and a ggml model in `~/.local/share/kuma/models`
 (`KUMA_WHISPER_MODEL`), discovered at daemon start like the baker; absent is a job error

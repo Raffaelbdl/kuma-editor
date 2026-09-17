@@ -132,7 +132,11 @@ overlays and every export preset follow. Templates size in `vh`, so they need no
 pixel-valued `transform` offsets are the one thing that stays put.
 
 **Subtitles.** Select a clip and press **Transcribe → subtitles** (or `kuma transcribe
---clip <id>`, or the `transcribe` tool with `clip`). whisper.cpp runs locally, the
+--clip <id>`, or the `transcribe` tool with `clip`). A dialog asks the **language** — detect
+it, or force one, and your choice is remembered for next time — and, when that media has
+been transcribed before, offers to **replace** that transcript: the same entry keeps its
+styling and where it is placed, and only the words change. Leave it unticked for a second
+transcript beside the first. whisper.cpp runs locally, the
 transcript lands in the bin as a `subtitles` overlay entry listed under its media, and a
 clip of it is placed over the one you selected, aligned: same start, end and speed, and the
 entry's `offset` set to the clip's `in`, so the cues land on the words. It goes on the
@@ -218,8 +222,8 @@ kuma sample 12.0 14.0 --count 4 --rect 400,300,800,400
 kuma bake                                  # bake all overlay clips (cached by content)
 kuma compile > timeline.mlt                # inspect the MLT graph (or open it in Kdenlive)
 kuma render --sequence intro               # render one nested sequence instead of the master
-kuma transcribe --clip c1 --language en    # whisper.cpp → `subtitles` entry under the media, placed over clip c1
-kuma transcribe screen                     # the entry alone, listed under `screen`, unplaced
+kuma transcribe --clip c1 --language fr    # whisper.cpp → `subtitles` entry under the media, placed over clip c1
+kuma transcribe screen --replace           # re-transcribe in place: same entry, styling and placement, new words
 kuma validate | thumbs | library | doctor
 ```
 

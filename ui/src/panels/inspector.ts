@@ -8,7 +8,7 @@
 
 import { api } from "../api";
 import { Cmd, run } from "../commands";
-import { button, el, options, plural, row, selectInput } from "../dom";
+import { button, checkbox, el, options, plural, row, selectInput } from "../dom";
 import { store, toast } from "../store";
 import type { BinItem, Clip, Cue, Effect, PatchOp, Project, VarSpec } from "../types";
 import { moveBinItem, placeBinItem } from "../edits";
@@ -68,9 +68,7 @@ export class Inspector {
     if (isTimedMedia(item)) {
       this.host.appendChild(field("Source in", numInput(clip.in ?? 0, (v) => rep("/in", v, "in"), frame)));
       this.host.appendChild(field("Volume", numInput(clip.volume, (v) => rep("/volume", v, "volume"), 0.05)));
-      const m = el("input"); m.type = "checkbox"; m.checked = clip.muted;
-      m.onchange = () => rep("/muted", m.checked, "mute");
-      this.host.appendChild(field("Muted", m));
+      this.host.appendChild(field("Muted", checkbox(clip.muted, (v) => void rep("/muted", v, "mute"))));
     }
     this.host.appendChild(field("Label", textInput(clip.label, (v) => rep("/label", v, "label"))));
 
@@ -328,13 +326,8 @@ function varInput(spec: VarSpec, cur: unknown, onChange: (v: unknown) => void): 
       c.onchange = () => onChange(c.value);
       return c;
     }
-    case "boolean": {
-      const b = el("input");
-      b.type = "checkbox";
-      b.checked = Boolean(cur);
-      b.onchange = () => onChange(b.checked);
-      return b;
-    }
+    case "boolean":
+      return checkbox(Boolean(cur), onChange);
     case "enum":
       return selectInput((spec.options ?? []).map((value) => ({ value })), String(cur), onChange);
     case "point": {

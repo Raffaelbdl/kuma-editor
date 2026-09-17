@@ -4,10 +4,11 @@
 // to place a clip.
 
 import { api } from "./api";
-import { askText } from "./modal";
+import { checkbox, selectInput } from "./dom";
+import { askForm, askText } from "./modal";
 import { startJob, store, toast } from "./store";
 import type { BinItem, BinSource, Clip, PatchOp, Project, Track, TrackKind } from "./types";
-import { binItem, binPath, childrenOf, isFileSource, isTimedMedia, itemKind, orientation, parentOf, seqDuration, shiftEffect, trackFor, trimEffect, wouldNest, wouldRecurse } from "./types";
+import { binItem, binPath, childrenOf, hasAudio, isFileSource, isOverlaySource, isTimedMedia, itemKind, orientation, parentOf, seqDuration, shiftEffect, trackFor, trimEffect, wouldNest, wouldRecurse } from "./types";
 
 /** Place an existing bin entry at time `t` on track `ti`. Every way of placing something —
  *  a button, a drop — comes through here, so the one rule a placement can break is checked
@@ -142,14 +143,56 @@ export async function moveBinItem(id: string, parent: string | null, before: str
   if (ops.length) await store.patch(ops, `move ${id}`);
 }
 
-/** Speech to text for the selection. From a clip the subtitles are placed over it,
- *  aligned (the daemon copies its start, end and speed, and sets the entry's offset to
- *  its `in`); from a bin entry they are listed under it, unplaced. */
+/** Languages offered for a transcript: whisper takes an ISO 639-1 code, or detects one.
+ *  The choice is remembered, because a person's videos are usually in one language. */
+const LANGUAGES: [string, string][] = [
+  ["auto", "Detect"], ["ar", "Arabic"], ["zh", "Chinese"], ["nl", "Dutch"], ["en", "English"], ["fr", "French"],
+  ["de", "German"], ["hi", "Hindi"], ["it", "Italian"], ["ja", "Japanese"], ["ko", "Korean"], ["pl", "Polish"],
+  ["pt", "Portuguese"], ["ru", "Russian"], ["es", "Spanish"], ["sv", "Swedish"], ["tr", "Turkish"],
+];
+const LANGUAGE_KEY = "kuma.transcribe.language";
+// A private window has no storage and throws on access, which must not cost the dialog.
+const savedLanguage = (): string => { try { return localStorage.getItem(LANGUAGE_KEY) ?? "auto"; } catch { return "auto"; } };
+const saveLanguage = (v: string) => { try { localStorage.setItem(LANGUAGE_KEY, v); } catch { /* no storage */ } };
+
+/**
+ * Speech to text for the selection. From a clip the subtitles are placed over it, aligned
+ * (the daemon copies its start, end and speed, and sets the entry's offset to its `in`);
+ * from a bin entry they are listed under it, unplaced.
+ *
+ * The dialog asks the two things only a person can answer: which language to force, and —
+ * when this media has been transcribed before — whether to overwrite that transcript or
+ * keep it and add another.
+ */
 export async function transcribe() {
+  const p = store.state.project!;
   const sel = store.state.selection;
-  const what = sel?.kind === "clip" ? { clip: sel.id } : sel?.kind === "bin" ? { bin: sel.id } : null;
-  if (!what) { toast("Select a clip or a media entry to transcribe", ""); return; }
-  await startJob("Transcribe", () => api.transcribe(what, store.state.project!.revision));
+  const clip = sel?.kind === "clip" ? store.findClip(sel.id)?.clip : undefined;
+  const binId = clip?.bin ?? (sel?.kind === "bin" ? sel.id : null);
+  if (!binId || !hasAudio(p.bin[binId])) { toast("Select a clip or a media entry to transcribe", ""); return; }
+  // An entry listed under this media that carries cues is already a transcript of it,
+  // whatever template it has since been pointed at.
+  const existing = childrenOf(p, binId).find(([, i]) => isOverlaySource(i.source) && "cues" in (i.source.vars ?? {}));
+
+  const language = selectInput(LANGUAGES.map(([value, label]) => ({ value, label })), savedLanguage(), () => {});
+  const replace = checkbox(true);
+  const rows = [{ label: "Language", input: language as HTMLElement }];
+  if (existing) rows.push({ label: "Replace", input: replace });
+  const ok = await askForm({
+    title: "Transcribe → subtitles",
+    note: existing && `${existing[1].name || existing[0]} already holds a transcript of this media. Replacing changes only the words, keeping its styling and where it is placed; leave it unticked to add a second transcript.`,
+    rows,
+    ok: "Transcribe",
+  });
+  if (!ok) return;
+  saveLanguage(language.value);
+
+  const replacing = !!existing && replace.checked;
+  // Naming the entry is only needed to say *which* transcript: the one being replaced, or
+  // a free id beside it. A first transcript is the daemon's to name.
+  const id = !existing ? undefined : replacing ? existing[0] : uniqueId(existing[0], Object.keys(p.bin));
+  const what = clip ? { clip: clip.id } : { bin: binId };
+  await startJob("Transcribe", () => api.transcribe({ ...what, id, language: language.value, replace: replacing }, p.revision));
 }
 
 /** Landscape ⇄ portrait: swap the frame's width and height. Everything else follows — the

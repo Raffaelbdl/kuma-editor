@@ -8,7 +8,7 @@ use std::sync::{Mutex, PoisonError, RwLock};
 use kuma_core::edit::{self, EditError};
 use kuma_core::template::{TemplateError, TemplateManifest};
 use kuma_core::{Issue, Project, ValidationContext};
-use kuma_overlay::Baker;
+use kuma_overlay::{Baker, Transcriber};
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 
@@ -85,6 +85,9 @@ pub struct AppState {
     pub undo: Mutex<UndoStack>,
     pub templates: RwLock<Templates>,
     pub baker: Baker,
+    /// whisper.cpp, for the `transcribe` job. Discovered like the baker; absent is a job
+    /// error naming what to install, never a daemon that will not start.
+    pub transcriber: Transcriber,
     pub events: broadcast::Sender<Event>,
     pub jobs: crate::jobs::Jobs,
     pub preview: crate::preview::PreviewHandle,
@@ -125,6 +128,7 @@ impl AppState {
         // The shared `_vendor/` is the highest-precedence library that has one.
         let vendor_dir = config.all_template_dirs().iter().rev().map(|d| d.join("_vendor")).find(|d| d.is_dir()).unwrap_or_else(|| config.library_dirs[0].join("overlays/_vendor"));
         let baker = Baker::discover(&config.repo_root, vendor_dir, config.cache_dir().join("bakes"));
+        let transcriber = Transcriber::discover(&config.repo_root, config.library_dirs[0].join("models"));
         let (events, _) = broadcast::channel(256);
         let st = AppState {
             templates: RwLock::new(Templates { loaded: BTreeMap::new(), errors: Vec::new() }),
@@ -132,6 +136,7 @@ impl AppState {
             edit: Mutex::new(()),
             undo: Mutex::new(UndoStack { past: Vec::new(), future: Vec::new() }),
             baker,
+            transcriber,
             events,
             jobs: crate::jobs::Jobs::default(),
             preview: crate::preview::PreviewHandle::default(),
@@ -249,6 +254,20 @@ impl AppState {
 
     pub fn apply_patch(&self, patch: &[json_patch::PatchOperation], base: Option<u64>, origin: &str) -> Result<(u64, Vec<Issue>), EditError> {
         self.edit(origin, |p| edit::apply_patch(p, base, patch, &self.validation_context()))
+    }
+
+    /// Compose a patch *from the project as it is now* and apply it, both under the edit
+    /// lock. For work that takes minutes before it knows what to write — a transcription —
+    /// where deciding against a snapshot taken at the start would race every edit made
+    /// meanwhile. `build` must stay cheap: it runs with the lock held.
+    pub fn apply_built<T>(&self, origin: &str, build: impl FnOnce(&Project) -> anyhow::Result<(Vec<json_patch::PatchOperation>, T)>) -> anyhow::Result<(T, u64, Vec<Issue>)> {
+        let mut carried = None;
+        let (rev, warnings) = self.edit(origin, |p| {
+            let (ops, value) = build(p).map_err(|e| EditError::Patch(format!("{e:#}")))?;
+            carried = Some(value);
+            edit::apply_patch(p, None, &ops, &self.validation_context())
+        })?;
+        Ok((carried.expect("build ran"), rev, warnings))
     }
 
     /// Undo/redo swap whole snapshots; the revision keeps increasing so clients never

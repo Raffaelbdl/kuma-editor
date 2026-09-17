@@ -1,0 +1,20 @@
+{
+  "id": "subtitles",
+  "name": "Subtitles",
+  "description": "Timed words, grouped into lines: the transcript a `transcribe` job writes (one cue per word), or cues typed by hand. Cue times are seconds into the source; `offset` is where the clip starts in it.",
+  "duration_default": 10.0,
+  "tags": ["subtitles", "captions", "shorts", "karaoke"],
+  "vars": {
+    "cues":           { "type": "cues",    "default": [ { "start": 0.2, "end": 0.6, "text": "Subtitles" }, { "start": 0.6, "end": 0.9, "text": "go" }, { "start": 0.9, "end": 1.4, "text": "here," }, { "start": 1.6, "end": 1.9, "text": "a" }, { "start": 1.9, "end": 2.3, "text": "few" }, { "start": 2.3, "end": 2.7, "text": "words" }, { "start": 2.7, "end": 2.9, "text": "at" }, { "start": 2.9, "end": 3.0, "text": "a" }, { "start": 3.0, "end": 3.6, "text": "time" } ], "label": "Cues" },
+    "words_per_line": { "type": "number",  "default": 3, "min": 1, "max": 8, "step": 1, "label": "Words per line", "description": "Cues per line. A transcript is one cue per word; for cues that are already lines, use 1." },
+    "stress":         { "type": "enum",    "options": ["none", "color", "pop"], "default": "color", "label": "Stress the word being said" },
+    "offset":         { "type": "number",  "default": 0, "min": 0, "max": 3600, "step": 0.01, "label": "Source offset (s)", "description": "Source seconds at the clip's first frame — the media clip's `in`." },
+    "at":             { "type": "point",   "default": { "x": 0.5, "y": 0.78 }, "label": "Position (fraction)" },
+    "size":           { "type": "number",  "default": 1, "min": 0.5, "max": 2.5, "step": 0.1, "label": "Size" },
+    "color":          { "type": "color",   "default": "#ffffff", "label": "Text" },
+    "accent":         { "type": "color",   "default": "#ffd400", "label": "Stressed word" },
+    "background":     { "type": "color",   "default": "#111111", "label": "Box / stroke" },
+    "style":          { "type": "enum",    "options": ["box", "outline", "plain"], "default": "box", "label": "Style" },
+    "uppercase":      { "type": "boolean", "default": false, "label": "Uppercase" }
+  }
+}

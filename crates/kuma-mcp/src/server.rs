@@ -43,6 +43,19 @@ the editor's preview and are baked to alpha frames at export.
 
 To look at the footage, call `sample_frames` with a time range (and an optional pixel `rect`); it
 returns the composited frames as images plus their PNG paths.
+
+Subtitles: `transcribe` runs a local speech-to-text model (whisper.cpp) and adds a `subtitles`
+overlay entry whose `cues` var is `[{start, end, text}, …]` in source seconds, one cue per word (the
+template groups them by its `words_per_line` var and can stress the word being said), listed under the media
+(`parent`). Given a `clip`, it also places the subtitles over that clip, aligned; given a `bin`, the
+entry is yours to place (set its `offset` var to a trimmed clip's `in`). Fix a misheard word by
+patching the cue's `text`; re-transcribe with `replace` to overwrite the words in place and keep the
+entry's styling and placement, and with `language` (an ISO 639-1 code) to force the language rather
+than detect it. `parent` on a bin entry is organisation only: the entry it is listed under
+in the browser, which can be any entry or a folder (`{"source": {"folder": true}}`, never placeable);
+`order` sorts siblings there (ordered ones first, the rest by id).
+Vertical (9:16) is only
+`width`/`height`: patch them to 1080×1920 (or swap them) and every preset renders portrait.
 "#;
 
 #[derive(Clone)]
@@ -172,6 +185,32 @@ pub struct AddMedia {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct Transcribe {
+    /// Bin id of the media entry (video or audio) to transcribe: the result is added to the bin, unplaced.
+    #[serde(default)]
+    pub bin: Option<String>,
+    /// Or a clip id: transcribe what it plays and place the subtitles over it, aligned. One of the two.
+    #[serde(default)]
+    pub clip: Option<String>,
+    /// Bin id for the subtitles entry. Defaults to `<bin>-subs`.
+    #[serde(default)]
+    pub id: Option<String>,
+    /// Overwrite the transcript of an entry that already exists (keeping its styling and
+    /// its placement) instead of failing. Re-running otherwise refuses.
+    #[serde(default)]
+    pub replace: Option<bool>,
+    /// ISO 639-1 language code, or `auto` (default).
+    #[serde(default)]
+    pub language: Option<String>,
+    /// Longest cue in characters. Default 1: one cue per word, which the `subtitles` template groups into lines itself; 0 keeps whisper's own sentences.
+    #[serde(default)]
+    pub max_chars: Option<u32>,
+    /// Seconds to wait for the model before returning the job id (default 600).
+    #[serde(default)]
+    pub wait_seconds: Option<u64>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct PathArg {
     pub path: String,
 }
@@ -237,6 +276,12 @@ impl KumaServer {
     #[tool(description = "Probe a media file and add it to the project bin. Returns the bin id to reference from a clip.")]
     async fn add_media(&self, Parameters(p): Parameters<AddMedia>) -> Result<CallToolResult, McpError> {
         self.post("/api/bin", &json!({ "path": p.path, "id": p.id, "base_revision": p.base_revision, "origin": "claude: add media" })).await
+    }
+
+    #[tool(description = "Transcribe media audio with a local whisper.cpp model into a `subtitles` overlay entry (cues in source seconds, editable as its `cues` var), listed under the media. Pass `clip` to place it over that clip, aligned, on an overlay track; pass `bin` for the entry alone. The new entry's id is minted when the words are in and returned as `bin`; it takes no base_revision, since the model runs for minutes and the patch is composed against the project as it is when it lands.")]
+    async fn transcribe(&self, Parameters(p): Parameters<Transcribe>) -> Result<CallToolResult, McpError> {
+        let body = json!({ "bin": p.bin, "clip": p.clip, "id": p.id, "replace": p.replace.unwrap_or(false), "language": p.language, "max_chars": p.max_chars, "origin": "claude: transcribe" });
+        self.job("/api/transcribe", &body, Duration::from_secs(p.wait_seconds.unwrap_or(600))).await
     }
 
     #[tool(description = "Render exact composited frames of the timeline (through the real MLT graph, overlays included) and return them as images. Use a rect to zoom into a region. Pass `sequence` to look at a nested sequence instead of the master. Frames are also written as PNGs whose paths are returned.")]

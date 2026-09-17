@@ -10,7 +10,9 @@
 pub mod bake;
 pub mod inject;
 pub mod media;
+pub mod transcribe;
 
 pub use bake::{BakeError, BakeRequest, Baker, BakeResult};
 pub use inject::Contract;
 pub use media::{probe, Probe};
+pub use transcribe::{Cue, TranscribeOptions, Transcriber};

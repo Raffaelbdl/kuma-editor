@@ -8,11 +8,48 @@ export function el<K extends keyof HTMLElementTagNameMap>(tag: K, className = ""
   return e;
 }
 
-export function button(label: string, onClick: () => void, title = ""): HTMLButtonElement {
-  const b = el("button", "", label);
+export function button(label: string, onClick: () => void, title = "", className = ""): HTMLButtonElement {
+  const b = el("button", className, label);
   b.onclick = onClick;
   if (title) b.title = title;
   return b;
+}
+
+/** A div of `className` holding `kids` — the one-line "put these in a row". */
+export function row(className: string, ...kids: (HTMLElement | string)[]): HTMLDivElement {
+  const r = el("div", className);
+  r.append(...kids);
+  return r;
+}
+
+export function checkbox(checked: boolean, onChange?: (v: boolean) => void): HTMLInputElement {
+  const c = el("input");
+  c.type = "checkbox";
+  c.checked = checked;
+  if (onChange) c.onchange = () => onChange(c.checked);
+  return c;
+}
+
+/** `3 clips`, `1 entry`, `2 entries`. */
+export const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
+
+/** A `<select>` with its change handler, the way `numInput`/`textInput` wrap theirs. */
+export function selectInput(items: { value: string; label?: string; title?: string }[], selected: string | undefined, onChange: (v: string) => void, placeholder?: string): HTMLSelectElement {
+  const s = el("select");
+  options(s, items, selected, placeholder);
+  s.onchange = () => onChange(s.value);
+  return s;
+}
+
+/** The one drag payload the editor uses: a bin entry, or a template not yet in the bin. */
+export interface DragPayload { bin?: string; template?: string }
+const DRAG_TYPE = "application/x-kuma";
+export function setDragPayload(e: DragEvent, payload: DragPayload): void {
+  e.dataTransfer?.setData(DRAG_TYPE, JSON.stringify(payload));
+}
+export function dragPayload(e: DragEvent): DragPayload | null {
+  const data = e.dataTransfer?.getData(DRAG_TYPE);
+  try { return data ? (JSON.parse(data) as DragPayload) : null; } catch { return null; }
 }
 
 /** Fill a `<select>` with options (value, label, tooltip); keeps a leading placeholder if given. */

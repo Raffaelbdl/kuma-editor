@@ -1,9 +1,9 @@
 // Bootstrap: load the project, mount the panels, wire the surfaces that drive them.
 // Nothing here knows how a panel works — they meet through `commands.ts`.
 
-import { Cmd, command, run } from "./commands";
+import { Cmd, command } from "./commands";
 import { desktop, initDesktop, pickAndAddMedia } from "./desktop";
-import { addTrack, deleteSelectedClip, promptNewSequence, splitAtPlayhead } from "./edits";
+import { addTrack, deleteSelectedClip, promptNewSequence, splitAtPlayhead, swapOrientation, transcribe } from "./edits";
 import { Inspector } from "./panels/inspector";
 import { Library } from "./panels/library";
 import { Preview } from "./panels/preview";
@@ -20,6 +20,8 @@ function projectCommands() {
   command(Cmd.undo, "Undo", () => store.undo());
   command(Cmd.redo, "Redo", () => store.redo());
   command(Cmd.newSequence, "New Sequence…", () => promptNewSequence());
+  command(Cmd.swapOrientation, "Switch Orientation", () => swapOrientation());
+  command(Cmd.transcribe, "Transcribe → Subtitles", () => transcribe());
   command(Cmd.addMedia, "Add Media…", () => pickAndAddMedia());
   command(Cmd.split, "Split at Playhead", () => splitAtPlayhead());
   command(Cmd.deleteClip, "Delete Clip", () => deleteSelectedClip());
@@ -45,14 +47,7 @@ async function main() {
 
   // The desktop application menu drives the same commands as the toolbar; in a browser
   // this is a no-op and nothing above changes.
-  initDesktop({
-    undo: () => run(Cmd.undo),
-    redo: () => run(Cmd.redo),
-    render: () => run(Cmd.render),
-    reloadPreview: () => run(Cmd.reloadPreview),
-    newSequence: () => run(Cmd.newSequence),
-    addMedia: () => run(Cmd.addMedia),
-  });
+  initDesktop();
 }
 
 main().catch((e) => {

@@ -51,6 +51,8 @@ export const Cmd = {
   redo: "project.redo",
   render: "project.render",
   newSequence: "project.new-sequence",
+  swapOrientation: "project.swap-orientation",
+  transcribe: "project.transcribe",
   addMedia: "project.add-media",
   reloadPreview: "preview.reload",
   togglePlay: "preview.toggle-play",

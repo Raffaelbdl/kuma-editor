@@ -7,11 +7,12 @@
 // edits only that placement. A clip has no name for the same reason; it has a label.
 
 import { api } from "../api";
-import { button, el, options } from "../dom";
+import { Cmd, run } from "../commands";
+import { button, checkbox, el, options, plural, row, selectInput } from "../dom";
 import { store, toast } from "../store";
-import type { BinItem, Clip, Effect, PatchOp, VarSpec } from "../types";
-import { placeBinItem } from "../edits";
-import { binItem, binPath, canTimeWarp, expandPreset, isColorSource, isFileSource, isOverlaySource, isSequenceSource, isTimedMedia, placementsOf, seqDuration, wouldRecurse } from "../types";
+import type { BinItem, Clip, Cue, Effect, PatchOp, Project, VarSpec } from "../types";
+import { moveBinItem, placeBinItem } from "../edits";
+import { binItem, binPath, canPlace, canTimeWarp, childrenOf, expandPreset, hasAudio, isColorSource, isFileSource, isFolderSource, isOverlaySource, isSequenceSource, isTimedMedia, placementsOf, seqDuration, wouldNest } from "../types";
 
 const presetsPromise = api.effectPresets().catch(() => []);
 
@@ -67,9 +68,7 @@ export class Inspector {
     if (isTimedMedia(item)) {
       this.host.appendChild(field("Source in", numInput(clip.in ?? 0, (v) => rep("/in", v, "in"), frame)));
       this.host.appendChild(field("Volume", numInput(clip.volume, (v) => rep("/volume", v, "volume"), 0.05)));
-      const m = el("input"); m.type = "checkbox"; m.checked = clip.muted;
-      m.onchange = () => rep("/muted", m.checked, "mute");
-      this.host.appendChild(field("Muted", m));
+      this.host.appendChild(field("Muted", checkbox(clip.muted, (v) => void rep("/muted", v, "mute"))));
     }
     this.host.appendChild(field("Label", textInput(clip.label, (v) => rep("/label", v, "label"))));
 
@@ -82,9 +81,11 @@ export class Inspector {
     }
     this.renderEffects(clip, path);
 
-    const del = button("Delete clip", () => store.patch([{ op: "remove", path }], `delete ${clip.id}`));
-    del.style.marginTop = "12px";
-    this.host.appendChild(del);
+    const actions = el("div", "insp-actions");
+    // The command reads the selection: from a clip the subtitles land over it, aligned.
+    if (hasAudio(item)) actions.appendChild(button("Transcribe → subtitles", () => run(Cmd.transcribe), "Transcribe the audio and place aligned subtitles over this clip"));
+    actions.appendChild(button("Delete clip", () => store.patch([{ op: "remove", path }], `delete ${clip.id}`)));
+    this.host.appendChild(actions);
   }
 
   /**
@@ -102,23 +103,31 @@ export class Inspector {
     this.host.appendChild(h);
 
     const places = placementsOf(p, id);
-    this.host.appendChild(el("p", "muted tiny", places === 0 ? "Not placed on any timeline yet." : `Placed by ${places} clip${places > 1 ? "s" : ""} — these apply to all of them.`));
+    this.host.appendChild(el("p", "muted tiny", places === 0 ? "Not placed on any timeline yet." : `Placed by ${plural(places, "clip")} — these apply to all of them.`));
+    // Where it is listed: any folder, or wherever it already is (a transcript under its
+    // media), never inside itself.
+    const choices = Object.entries(p.bin).filter(([pid, i]) => (isFolderSource(i.source) || pid === item.parent) && !wouldNest(p, id, pid));
+    this.host.appendChild(field("Under", selectInput(choices.map(([pid, i]) => ({ value: pid, label: i.name || pid })), item.parent, (v) => void moveBinItem(id, v || null, null), "(top level)")));
 
     this.host.appendChild(field("Name", textInput(item.name, (v) => store.patch([{ op: "replace", path: `${bp}/name`, value: v }], `name ${id}`))));
-    this.renderSource(id, item, bp);
+    this.renderSource(p, id, item, bp);
 
     const actions = el("div", "insp-actions");
-    // A sequence cannot be placed on itself, directly or through another.
-    if (!wouldRecurse(p, id, store.state.sequence)) {
+    if (canPlace(p, id, store.state.sequence)) {
       actions.appendChild(button("Add at playhead", () => placeBinItem(id, store.state.playhead)));
     }
+    // From the entry the subtitles are listed under it and left for you to place; to get
+    // them aligned on the timeline, transcribe from a clip instead.
+    if (hasAudio(item)) actions.appendChild(button("Transcribe → subtitles", () => run(Cmd.transcribe), "Run the local speech-to-text model and add a subtitles entry under this one"));
     if (isSequenceSource(item.source)) {
       const open = button("Open", () => store.openSequence(id), "Edit its own timeline");
       (open as HTMLButtonElement).disabled = id === store.state.sequence;
       actions.appendChild(open);
     }
     const remove = button("Remove from bin", () => {
-      if (places) return toast(`${id} is placed by ${places} clip${places > 1 ? "s" : ""}`, "err");
+      if (places) return toast(`${id} is placed by ${plural(places, "clip")}`, "err");
+      const kids = childrenOf(p, id).length;
+      if (kids) return toast(`${id} has ${plural(kids, "entry", "entries")} listed under it`, "err");
       if (id === p.master) return toast("The master sequence cannot be removed", "err");
       void store.patch([{ op: "remove", path: bp }], `remove ${id}`);
     });
@@ -128,7 +137,7 @@ export class Inspector {
   }
 
   /** The `source` half of an entry — the part that differs per kind. */
-  private renderSource(id: string, item: BinItem, bp: string) {
+  private renderSource(p: Project, id: string, item: BinItem, bp: string) {
     if (isFileSource(item.source)) {
       this.host.appendChild(field("Path", textInput(item.source.path, (v) => store.patch([{ op: "replace", path: `${bp}/source/path`, value: v }], `path ${id}`))));
       const m = item.meta;
@@ -144,12 +153,14 @@ export class Inspector {
       this.host.appendChild(field("Colour", c));
       return;
     }
+    if (isFolderSource(item.source)) {
+      this.host.appendChild(field("Contents", el("div", "mono muted", plural(childrenOf(p, id).length, "entry", "entries"))));
+      return;
+    }
     if (isSequenceSource(item.source)) {
-      const p = store.state.project!;
-      const n = item.source.tracks.length;
       const clips = item.source.tracks.reduce((a, t) => a + t.clips.length, 0);
       this.host.appendChild(field("Length", el("div", "mono muted", `${seqDuration(p, id).toFixed(2)}s`)));
-      this.host.appendChild(field("Contents", el("div", "mono muted", `${n} track${n === 1 ? "" : "s"} · ${clips} clip${clips === 1 ? "" : "s"}`)));
+      this.host.appendChild(field("Contents", el("div", "mono muted", `${plural(item.source.tracks.length, "track")} · ${plural(clips, "clip")}`)));
       if (id === p.master) this.host.appendChild(el("p", "muted tiny", "This is the master — it is what renders."));
       return;
     }
@@ -192,12 +203,7 @@ export class Inspector {
       const defaults = spec.add as unknown as Record<string, unknown>;
       const cur = (key: string) => rec[key] ?? defaults[key];
       for (const [key, step] of spec.num ?? []) box.appendChild(field(key, numInput(Number(cur(key)), (v) => set(key, v), step)));
-      for (const [key, choices] of spec.enum ?? []) {
-        const sel = el("select");
-        options(sel, choices.map((value) => ({ value })), String(cur(key)));
-        sel.onchange = () => set(key, sel.value);
-        box.appendChild(field(key, sel));
-      }
+      for (const [key, choices] of spec.enum ?? []) box.appendChild(field(key, selectInput(choices.map((value) => ({ value })), String(cur(key)), (v) => set(key, v))));
       for (const key of spec.text ?? []) box.appendChild(field(key, textInput(String(cur(key) ?? ""), (v) => set(key, v))));
       for (const key of spec.json ?? []) box.appendChild(field(key, jsonInput(cur(key) ?? null, (v) => set(key, v))));
       this.host.appendChild(box);
@@ -247,11 +253,7 @@ export class Inspector {
 // ---- inputs --------------------------------------------------------------------
 
 /** A button that reads as a link: it navigates the panel rather than changing anything. */
-function linkButton(label: string, onClick: () => void, title = ""): HTMLButtonElement {
-  const b = button(label, onClick, title);
-  b.className = "linkish";
-  return b;
-}
+const linkButton = (label: string, onClick: () => void, title = "") => button(label, onClick, title, "linkish");
 
 function field(label: string, input: HTMLElement): HTMLDivElement {
   const row = el("div", "field");
@@ -277,10 +279,29 @@ function textInput(value: string, onChange: (v: string) => void): HTMLInputEleme
 }
 
 function jsonInput(value: unknown, onChange: (v: unknown) => void): HTMLTextAreaElement {
-  const t = el("textarea");
+  const t = el("textarea", "wide");
   t.value = JSON.stringify(value, null, 1);
   t.onchange = () => { try { onChange(JSON.parse(t.value)); t.style.borderColor = ""; } catch { t.style.borderColor = "#e5484d"; } };
   return t;
+}
+
+/** Subtitle cues as editable rows — start, end, text, remove — plus a row to add one.
+ *  Every change commits the whole list, which is one var patch like any other. */
+function cuesInput(cues: Cue[], onChange: (v: Cue[]) => void): HTMLElement {
+  const wrap = el("div", "cues wide");
+  const change = (i: number, patch: Partial<Cue>) => onChange(cues.map((c, j) => (j === i ? { ...c, ...patch } : c)));
+  const drop = (i: number) => onChange(cues.filter((_, j) => j !== i));
+  cues.forEach((c, i) => {
+    wrap.appendChild(row("cue-row",
+      numInput(c.start, (v) => change(i, { start: v }), 0.01),
+      numInput(c.end, (v) => change(i, { end: v }), 0.01),
+      textInput(c.text, (v) => change(i, { text: v })),
+      button("×", () => drop(i), "Remove this cue"),
+    ));
+  });
+  const end = cues.at(-1)?.end ?? 0;
+  wrap.appendChild(button("+ cue", () => onChange([...cues, { start: end, end: end + 2, text: "" }])));
+  return wrap;
 }
 
 function varInput(spec: VarSpec, cur: unknown, onChange: (v: unknown) => void): HTMLElement {
@@ -305,19 +326,10 @@ function varInput(spec: VarSpec, cur: unknown, onChange: (v: unknown) => void): 
       c.onchange = () => onChange(c.value);
       return c;
     }
-    case "boolean": {
-      const b = el("input");
-      b.type = "checkbox";
-      b.checked = Boolean(cur);
-      b.onchange = () => onChange(b.checked);
-      return b;
-    }
-    case "enum": {
-      const s = el("select");
-      options(s, (spec.options ?? []).map((value) => ({ value })), String(cur));
-      s.onchange = () => onChange(s.value);
-      return s;
-    }
+    case "boolean":
+      return checkbox(Boolean(cur), onChange);
+    case "enum":
+      return selectInput((spec.options ?? []).map((value) => ({ value })), String(cur), onChange);
     case "point": {
       const p = (cur ?? { x: 0.5, y: 0.5 }) as { x: number; y: number };
       const wrap = el("div", "row");
@@ -325,11 +337,13 @@ function varInput(spec: VarSpec, cur: unknown, onChange: (v: unknown) => void): 
       return wrap;
     }
     case "text": {
-      const t = el("textarea");
+      const t = el("textarea", "wide");
       t.value = String(cur ?? "");
       t.onchange = () => onChange(t.value);
       return t;
     }
+    case "cues":
+      return cuesInput((Array.isArray(cur) ? cur : []) as Cue[], onChange);
     default:
       return textInput(String(cur ?? ""), onChange);
   }

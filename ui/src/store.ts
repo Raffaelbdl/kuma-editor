@@ -243,6 +243,17 @@ export function toast(text: string, kind: "ok" | "err" | "" = "", ms = 3500) {
   setTimeout(() => el.remove(), ms);
 }
 
+/** Start a background job and say so. Its outcome arrives as a job event and, for jobs
+ *  that edit, as a project change; nothing here waits for it. */
+export async function startJob(label: string, start: () => Promise<{ job: number }>): Promise<void> {
+  try {
+    const r = await start();
+    toast(`${label} job #${r.job} started`, "ok");
+  } catch (e) {
+    toast((e as Error).message, "err");
+  }
+}
+
 /** `mm:ss.ff`, computed from whole frames so the frame field never reaches `fps`. */
 export const fmtTime = (t: number, fps: number) => {
   const frames = Math.max(0, Math.round(t * fps));

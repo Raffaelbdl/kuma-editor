@@ -1,12 +1,12 @@
-// The top bar: project, sequence picker, undo/redo, export preset, Render.
+// The top bar: project, sequence picker, frame size, undo/redo, export preset, Render.
 // Buttons run commands. Render is registered here rather than received, because the
 // preset it needs is a control in this bar.
 
 import { api } from "../api";
 import { Cmd, command, run } from "../commands";
 import { button, el, options } from "../dom";
-import { store, toast } from "../store";
-import { sequenceIds } from "../types";
+import { startJob, store } from "../store";
+import { orientation, sequenceIds } from "../types";
 
 export function mountTopbar(host: HTMLElement): void {
   const name = el("span", "name");
@@ -25,19 +25,19 @@ export function mountTopbar(host: HTMLElement): void {
     else void store.openSequence(picked);
   };
 
+  // Landscape or portrait is nothing but the frame size, so the control that shows it is
+  // the control that flips it: one click swaps width and height.
+  const size = button("", () => run(Cmd.swapOrientation), "", "mono");
+
   const presets = el("select");
   presets.style.width = "auto";
   void api.presets().then((ps) => options(presets, ps.map((p) => ({ value: p.id, title: p.description }))));
-  command(Cmd.render, "Render", async () => {
-    const r = await api.render(presets.value);
-    toast(`Render job #${r.job} started`, "ok");
-  });
+  command(Cmd.render, "Render", () => startJob("Render", () => api.render(presets.value)));
 
-  const render = button("Render", () => run(Cmd.render));
-  render.className = "primary";
+  const render = button("Render", () => run(Cmd.render), "", "primary");
   const status = el("span", "status");
   host.append(
-    name, seqSel, rev,
+    name, seqSel, rev, size,
     button("Undo", () => run(Cmd.undo)),
     button("Redo", () => run(Cmd.redo)),
     el("span", "spacer"),
@@ -52,6 +52,9 @@ export function mountTopbar(host: HTMLElement): void {
     if (!s.project) return;
     const entry = (id: string) => ({ value: id, label: `${s.project!.bin[id].name || id}${id === s.project!.master ? " (master)" : ""}` });
     options(seqSel, [...sequenceIds(s.project).map(entry), { value: "+", label: "+ new sequence…" }], s.sequence);
+    const { width, height } = s.project;
+    size.textContent = `${width}×${height} ⇄`;
+    size.title = `Switch to ${orientation({ width: height, height: width })} (${height}×${width})`;
   });
   store.select((s) => [s.project, s.sequence, s.connected, s.jobs], (s) => {
     name.textContent = s.project?.name || "kuma";

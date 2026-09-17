@@ -17,10 +17,13 @@ export type BinSource =
   | { path: string; kind: MediaKind; proxy?: string | null }
   | { template: string; vars?: Record<string, unknown> }
   | { color: string }
+  | { folder: true }
   | Sequence;
 
-/** One entry in the project bin: media, a configured overlay, a colour, or a sequence. */
-export interface BinItem { name: string; source: BinSource; meta?: MediaMeta | null }
+/** One entry in the project bin: media, a configured overlay, a colour, a sequence or a
+ *  folder. `parent` is where it is listed in the browser (a transcript under its media);
+ *  absent means the top level, and nothing about rendering reads it. */
+export interface BinItem { name: string; source: BinSource; meta?: MediaMeta | null; parent?: string; order?: number }
 
 export type TrackKind = "video" | "audio" | "overlay";
 
@@ -62,8 +65,11 @@ export interface Project {
  *  Which sequences exist comes from the project, not from here. */
 export interface SequenceState { current: string }
 
+/** One subtitle line, seconds into the source, `end` exclusive. */
+export interface Cue { start: number; end: number; text: string }
+
 export interface VarSpec {
-  type: "string" | "text" | "number" | "color" | "boolean" | "enum" | "point";
+  type: "string" | "text" | "number" | "color" | "boolean" | "enum" | "point" | "cues";
   label?: string; description?: string; default: unknown; min?: number; max?: number; step?: number; options?: string[];
 }
 export interface TemplateManifest {
@@ -143,12 +149,14 @@ export const isOverlaySource = (s: BinSource): s is { template: string; vars?: R
 export const isFileSource = (s: BinSource): s is { path: string; kind: MediaKind; proxy?: string | null } => "path" in s;
 export const isSequenceSource = (s: BinSource): s is Sequence => "tracks" in s;
 export const isColorSource = (s: BinSource): s is { color: string } => "color" in s;
+export const isFolderSource = (s: BinSource): s is { folder: true } => "folder" in s;
 
 /** What a bin entry is, for badges and track placement. */
-export type ItemKind = "overlay" | "video" | "audio" | "image" | "color" | "sequence";
+export type ItemKind = "overlay" | "video" | "audio" | "image" | "color" | "sequence" | "folder";
 export function itemKind(item: BinItem): ItemKind {
   if (isOverlaySource(item.source)) return "overlay";
   if (isSequenceSource(item.source)) return "sequence";
+  if (isFolderSource(item.source)) return "folder";
   return isFileSource(item.source) ? item.source.kind : "color";
 }
 
@@ -174,6 +182,42 @@ export function seqDuration(p: Project, id: string): number {
  *  project, so it is for whole-project questions, never a lookup (see `store.findClip`). */
 export const allClips = (p: Project): Clip[] => sequenceIds(p).flatMap((id) => sequenceOf(p, id)!.tracks.flatMap((t) => t.clips));
 
+// ---- the parent relation, defined once, the way the sequence relation is below ----
+
+/** The bin grouped by parent, each group in browser order: entries with an `order`
+ *  first, by it, then the rest by id (the document's own order). A parent that is not in
+ *  the bin (mid-edit) counts as the top level, so nothing is ever lost from the tree. */
+export function childrenMap(p: Project): Map<string | null, [string, BinItem][]> {
+  const m = new Map<string | null, [string, BinItem][]>();
+  for (const [id, item] of Object.entries(p.bin)) {
+    const parent = item.parent && item.parent in p.bin ? item.parent : null;
+    (m.get(parent) ?? m.set(parent, []).get(parent)!).push([id, item]);
+  }
+  for (const group of m.values()) group.sort(([, a], [, b]) => (a.order ?? Infinity) - (b.order ?? Infinity));
+  return m;
+}
+
+/** The parent an entry is listed under, as the tree resolves it. */
+export const parentOf = (p: Project, id: string): string | null => {
+  const parent = p.bin[id]?.parent;
+  return parent && parent in p.bin ? parent : null;
+};
+
+/** Entries listed directly under `parent` (`null` for the top level). */
+export const childrenOf = (p: Project, parent: string | null): [string, BinItem][] => childrenMap(p).get(parent) ?? [];
+
+/** The entries above `id`, nearest first. Cycle-safe, like `reachableFrom`. */
+export function ancestorsOf(p: Project, id: string): Set<string> {
+  const seen = new Set<string>();
+  for (let at = p.bin[id]?.parent; at && !seen.has(at); at = p.bin[at]?.parent) seen.add(at);
+  return seen;
+}
+
+/** Would listing `id` under `parent` put it inside itself? The validator refuses the
+ *  ring; this is the same rule so the gesture is never offered. */
+export const wouldNest = (p: Project, id: string, parent: string | null): boolean =>
+  parent !== null && (parent === id || ancestorsOf(p, parent).has(id));
+
 /** How many clips place this bin entry. The delete guard and the "used by N clips" hint
  *  are the same question and must stay the same answer. */
 export const placementsOf = (p: Project, binId: string): number => allClips(p).filter((c) => c.bin === binId).length;
@@ -191,6 +235,17 @@ export function reachableFrom(p: Project, id: string, seen = new Set<string>()):
 /** Would placing `binId` on sequence `seqId` make a sequence contain itself? The validator
  *  refuses the patch either way; this is so the UI does not offer the gesture. */
 export const wouldRecurse = (p: Project, binId: string, seqId: string): boolean => reachableFrom(p, binId).has(seqId);
+
+/** The track an entry goes on when placed, or `null` for one that cannot be placed. One
+ *  table, keyed over every kind, so a new kind is a compile error here rather than a
+ *  guard somewhere else. */
+const TRACK_FOR: Record<ItemKind, TrackKind | null> = { overlay: "overlay", audio: "audio", video: "video", image: "video", color: "video", sequence: "video", folder: null };
+export const trackFor = (item: BinItem): TrackKind | null => TRACK_FOR[itemKind(item)];
+
+/** Whether `binId` can go on sequence `seqId` at all: something a track takes, and not a
+ *  sequence that would contain itself. */
+export const canPlace = (p: Project, binId: string, seqId: string): boolean =>
+  !!p.bin[binId] && !!trackFor(p.bin[binId]) && !wouldRecurse(p, binId, seqId);
 
 /** True when a clip placing this entry could be given a speed: MLT cannot time-warp a
  *  timeline. The validator enforces it; this is the same rule for the inspector. */
@@ -211,6 +266,14 @@ export const isOverlayClip = (p: Project, c: Clip): boolean => !!binItem(p, c) &
  *  into; a still, a colour and an overlay are generated to fit the clip. */
 export const isTimedMedia = (item: BinItem | undefined): boolean =>
   !!item && ["video", "audio", "sequence"].includes(itemKind(item));
+
+/** A media entry whose audio can be transcribed: what the probe said, and the daemon's
+ *  own rule when nothing was probed (it tries). */
+export const hasAudio = (item: BinItem | undefined): boolean =>
+  !!item && isFileSource(item.source) && (item.meta?.has_audio ?? true);
+
+/** Which way round the frame is. Nothing but its size decides it. */
+export const orientation = (p: { width: number; height: number }) => (p.height > p.width ? "portrait" : "landscape");
 
 /** The track lane a clip is drawn in. */
 export type ClipKind = "overlay" | "video" | "audio" | "color" | "sequence";

@@ -106,6 +106,8 @@ impl Project {
                 markers: Vec::new(),
             }),
             meta: None,
+            parent: None,
+            order: None,
         };
         Project {
             name: name.into(),
@@ -229,9 +231,27 @@ impl Project {
         self.bin.get(&clip.bin)
     }
 
-    /// Lowest free `<prefix><n>` bin id.
-    pub fn free_bin_id(&self, prefix: &str) -> BinId {
-        (1..).map(|n| format!("{prefix}{n}")).find(|id| !self.bin.contains_key(id)).unwrap_or_default()
+    /// `base` if it is free, else `base-2`, `base-3`… — the shape the editor names bin
+    /// entries in, so a minted id reads like one someone typed.
+    pub fn free_bin_id(&self, base: &str) -> BinId {
+        std::iter::once(base.to_string())
+            .chain((2..).map(|n| format!("{base}-{n}")))
+            .find(|id| !self.bin.contains_key(id))
+            .unwrap_or_default()
+    }
+
+    /// Lowest free `<prefix><n>` track or clip id — one namespace, the whole project.
+    pub fn free_track_or_clip_id(&self, prefix: &str) -> String {
+        let taken: HashSet<&str> = self.sequences().flat_map(|(_, s)| s.tracks.iter().flat_map(|t| std::iter::once(t.id.as_str()).chain(t.clips.iter().map(|c| c.id.as_str())))).collect();
+        (1..).map(|n| format!("{prefix}{n}")).find(|id| !taken.contains(id.as_str())).unwrap_or_default()
+    }
+
+    /// Entries listed directly under `parent` (`None` for the top level), in browser
+    /// order: by `order` where set, then by id.
+    pub fn children(&self, parent: Option<&str>) -> Vec<(&BinId, &BinItem)> {
+        let mut v: Vec<_> = self.bin.iter().filter(|(_, i)| i.parent.as_deref() == parent).collect();
+        v.sort_by_key(|(id, i)| (i.order.unwrap_or(u32::MAX), *id));
+        v
     }
 }
 
@@ -299,6 +319,16 @@ pub struct BinItem {
     /// Probed metadata for file entries, filled in by `probe_media`. Informational.
     #[serde(default)]
     pub meta: Option<MediaMeta>,
+    /// The entry this one is listed under in the browser: a transcript under the media it
+    /// came from, later a folder. Organisation only — nothing about rendering reads it.
+    /// Identity stays the id, so moving an entry is one field and no clip changes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent: Option<BinId>,
+    /// Position among its siblings in the browser. Entries with an order come first, in
+    /// that order; the rest follow by id, so a new entry lands at the bottom. Organisation
+    /// only, like `parent`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub order: Option<u32>,
 }
 
 /// What a bin entry actually is. Exactly one variant.
@@ -333,6 +363,9 @@ pub enum BinSource {
     /// A timeline of its own, placeable on another timeline. The project's `master` is
     /// one of these; so is every part edited separately and juxtaposed in the final cut.
     Sequence(Sequence),
+    /// A folder: an entry that exists to be a `parent`. Never placeable. The field is
+    /// what tells it apart from the other sources; its value is always `true`.
+    Folder { folder: bool },
 }
 
 /// A timeline: tracks and their markers. Held by a [`BinSource::Sequence`] entry rather
@@ -380,6 +413,10 @@ impl BinItem {
 
     pub fn is_sequence(&self) -> bool {
         matches!(self.source, BinSource::Sequence(_))
+    }
+
+    pub fn is_folder(&self) -> bool {
+        matches!(self.source, BinSource::Folder { .. })
     }
 
     /// A media file the probe found no video in. It renders nothing, so on a video track
@@ -749,6 +786,30 @@ mod tests {
         };
         assert!(mk(false).seq_has_audio("main"), "sound two levels down still needs a mix");
         assert!(!mk(true).seq_has_audio("main"), "a muted track inside carries nothing out");
+    }
+
+    #[test]
+    fn a_minted_bin_id_reads_like_a_typed_one() {
+        let p: Project = serde_json::from_value(json!({ "bin": {
+            "talk-subs": { "source": { "color": "#000" } },
+            "talk-subs-2": { "source": { "color": "#000" } }
+        } }))
+        .unwrap();
+        assert_eq!(p.free_bin_id("talk-subs"), "talk-subs-3");
+        assert_eq!(p.free_bin_id("other"), "other");
+    }
+
+    #[test]
+    fn children_are_ordered_then_by_id() {
+        let p: Project = serde_json::from_value(json!({ "bin": {
+            "a": { "source": { "color": "#000" } },
+            "b": { "source": { "color": "#000" }, "order": 1 },
+            "c": { "source": { "color": "#000" }, "order": 0 },
+            "d": { "source": { "color": "#000" }, "parent": "a" }
+        } }))
+        .unwrap();
+        assert_eq!(p.children(None).into_iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>(), ["c", "b", "a"]);
+        assert_eq!(p.children(Some("a")).len(), 1);
     }
 
     #[test]

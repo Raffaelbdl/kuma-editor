@@ -250,6 +250,111 @@ and is exactly right by construction.
 
 ---
 
+## Subtitles and vertical
+
+**Subtitles are an overlay entry, not a model concept** — adopted.
+
+A transcript is the `cues` var (`[{start, end, text}]`, source seconds) of the `subtitles`
+template, so it is a bin entry like any configured overlay: placed on an overlay track,
+edited in the inspector (one row per cue, so a misheard word is fixed in place and the live
+preview follows), hashed into the bake key, undone as one step. The only model change is a
+`cues` var *type* — a list has no CSS custom property, so it reaches the template through
+`window.kuma.vars` alone, which the contract already allowed for arrays. The alternative, a
+fifth `BinSource` variant, would have touched the compiler, the validator, the bake, the
+thumbnail job and the UI for something that "HTML templates subsume title clips" already
+covers: a subtitle is a title with timing.
+
+**Listed under the media, aligned from a clip** — adopted, replacing a first cut where
+the job took only a bin entry and left placement to the user. Cues stay in source seconds
+and the entry carries an `offset` var. From a *clip*, the job places the subtitles over
+it in the same patch, copying the clip's start, end and speed and setting `offset` to its
+`in`: at every timeline instant the template's own time is then `source − in`, so the
+cues line up exactly, speed included, with no per-cue arithmetic. It goes on the first
+overlay track with room at that range, else on a new one — alignment is the point, so a
+clip is never pushed along a busy track the way an ordinary drop is. From a bin entry the
+job makes the entry alone.
+
+**`parent` on a bin entry, not path-shaped ids** — adopted, and it is the ground for
+folders. A transcript is listed under its media through `parent: Option<BinId>`,
+meaning only "shown under this entry in the browser"; nothing about rendering reads it.
+Path-shaped ids (`speech/audio.mp3/subtitles`) were rejected: the id would become the
+location, so moving or renaming a folder would rename every descendant and rewrite every
+clip that references one, and a `/` breaks the id rule that keeps bin ids usable as XML
+ids, URL segments, cache file names and pointer segments. Kdenlive stores a folder id per
+clip for the same reason. Not `children` lists on the parent either: two-way lists drift.
+A folder is exactly that: `BinSource::Folder { folder: true }`, an entry with a name and
+children, refused on a track by the validator and by the compiler, folded in the browser
+behind a caret. The tree is drawn from `parent` alone, and the fold state is the panel's
+own, never the document's.
+
+**Manual order is an optional `order` per entry** — adopted. The bin is a map keyed by
+id, so its own order is alphabetical, and JSON Patch cannot move a key within an object;
+an ordered map was rejected for that reason. Entries with an `order` come first, by it,
+then the rest by id, so a new entry lands at the bottom and only a drag ever writes the
+field: a move renumbers the siblings 0..n in one patch with the `parent` change, one undo
+step. The validator refuses a dangling or circular parent, which is also what
+stops removing a media entry while its transcript is listed under it.
+
+**Cues are words; lines are the template's** — adopted, replacing a first cut that asked
+whisper for 24-character lines. Grouping is presentation, and at transcription time it is
+baked in at the one moment that cannot be revisited without re-running the model: from
+words any line length follows, from lines the words are gone. The text is identical either
+way (`-ml` is post-processing on the decoded tokens), and so is a line's timing, since any
+`-ml` above 0 already places its cuts with whisper's token-level timestamps; only a
+per-word highlight exposes their jitter, which is inherent to karaoke from any transcriber.
+So the job defaults to `-ml 1 -sow`, the template takes `words_per_line` and a `stress`
+mode, and `max_chars` stays for whoever wants whisper's own grouping. The cost is a longer
+cue list in the inspector, one row per word.
+
+**Where the words go is decided when they exist, not before** — adopted, after both
+failures were reproduced against a running daemon. The job used to snapshot the project,
+check the id, run the model for minutes, then patch from that snapshot. With a
+`base_revision` — what the editor sent — any unrelated edit meanwhile refused the patch
+and threw the transcription away (renaming one entry three seconds in was enough). Without
+one, the id check was minutes stale and a JSON Patch `add` on a name taken in the meantime
+*replaces* that member, so someone else's entry was silently overwritten and the job
+reported success.
+
+So the model still runs outside every lock, but nothing about where its words land is
+settled until they are in hand: `AppState::apply_built` composes the patch against the
+live project under the edit lock, and the id, the entry to replace, the overlay track and
+the clip id are all resolved there. An unnamed transcript *mints* its name then
+(`<bin>-subs`, then `<bin>-subs-2`…), which is why a second run now adds a second
+transcript rather than colliding; naming an `id` is how you mean one entry, and `replace`
+is the only way to overwrite it. `base_revision` is gone from this job: over minutes it
+only ever meant "nobody touched anything", and a transcript depends on nothing in the
+document but the entry it lands on.
+
+**Re-running replaces the words, not the entry** — adopted. A second transcript of the
+same media used to be refused outright ("bin id already exists"), which is right by
+default — it would overwrite work — but it left correcting a bad language or a bad model
+with no move but deleting the entry, and with it the styling, the placement and any
+template an agent had pointed it at. So `replace` patches `cues` (and `offset`, which
+follows the clip it is aligned to) and nothing else, and places a clip only when the entry
+is on no timeline yet. The editor asks before doing it, and offers a second entry beside
+the first as the alternative; the language sits in the same dialog, since forcing it is
+the other thing only a person can answer, and it is remembered because a person's videos
+are usually in one language.
+
+**whisper.cpp as a subprocess** — adopted, the way melt and ffmpeg are. `whisper-cli` on
+`PATH` (`KUMA_WHISPER_BIN`) and a ggml model in `~/.local/share/kuma/models`
+(`KUMA_WHISPER_MODEL`), discovered at daemon start like the baker; absent is a job error
+naming what to install, never a daemon that fails to start. ffmpeg extracts 16 kHz mono
+WAV first, `-oj` gives JSON with millisecond offsets, `-ml N -sow` splits segments on
+words to the short lines shorts use. Python `openai-whisper` and hosted APIs were passed
+over for now: whisper.cpp is the model people run on a laptop, and its JSON is the only
+shape the parser knows. The daemon test stands a shell script in for the binary, so the
+argument plumbing, the WAV step and the patch are exercised without a model.
+
+**Vertical is `width`/`height` and nothing else** — adopted. The compiler already read the
+profile off the project, presets carry no size, templates size in `vh`, and the stage
+letterboxes from the project size — so "switch orientation" is one button that swaps the
+two fields in a patch. A portrait *flag* was rejected: a second source of truth for the
+frame size that every reader would have to reconcile. The one thing a swap does not move
+is a pixel-valued `transform` offset, and that is documented rather than guessed at.
+
+---
+
 ## Desktop shell
 
 The editor became an application: a launcher that opens or creates a project, and a window

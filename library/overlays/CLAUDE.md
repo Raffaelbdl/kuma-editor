@@ -101,14 +101,17 @@ Transitions (dissolve/wipe) are refused on overlay clips: bakes carry no handle 
     "style":  { "type": "enum",   "options": ["pin", "chip"], "default": "pin" },
     "anchor": { "type": "point",  "default": { "x": 0.68, "y": 0.28 } },
     "on":     { "type": "boolean", "default": true },
-    "note":   { "type": "text",   "default": "multi-line" }
+    "note":   { "type": "text",   "default": "multi-line" },
+    "cues":   { "type": "cues",   "default": [ { "start": 0, "end": 1.5, "text": "line" } ] }
   },
   "tags": ["label"]
 }
 ```
 
 Var types → UI controls: `string` input, `text` textarea, `number` slider (min/max/step),
-`color` picker, `boolean` checkbox, `enum` select, `point` x/y (fraction of frame). The
+`color` picker, `boolean` checkbox, `enum` select, `point` x/y (fraction of frame), `cues`
+one editable row per `{start, end, text}` (seconds; `end` after `start`). A `cues` value
+reaches the template only through `window.kuma.vars` — a list has no CSS property. The
 manifest is checked on load (`id` equals the folder, defaults fit their specs, enums have
 options, `duration_default` > 0); clip `vars` are validated against it and unknown keys
 are rejected. Bakes are always the full frame; a still (`static`) is one PNG.

@@ -1,6 +1,6 @@
 // Timeline: tracks, clips (move/trim), transitions, playhead, zoom.
 
-import { button, el } from "../dom";
+import { button, dragPayload, el } from "../dom";
 import { placeBinItem, addFromLibrary } from "../edits";
 import { store } from "../store";
 import type { Clip, PatchOp, Project, Track } from "../types";
@@ -238,9 +238,8 @@ export class Timeline {
 
   private async onDrop(e: DragEvent) {
     e.preventDefault();
-    const data = e.dataTransfer?.getData("application/x-kuma");
-    if (!data) return;
-    const payload = JSON.parse(data) as { template?: string; bin?: string };
+    const payload = dragPayload(e);
+    if (!payload) return;
     const rect = this.root.getBoundingClientRect();
     const t = store.snap(this.t(e.clientX - rect.left));
     const row = (e.target as HTMLElement).closest(".tl-track") as HTMLElement | null;

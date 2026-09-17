@@ -37,6 +37,8 @@ button { background: var(--bg-3); border: 1px solid var(--line); border-radius: 
 button:hover { border-color: var(--fg-2); }
 button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
 input, select, textarea { background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; width: 100%; }
+/* A tick is its own size: full width would leave it floating in the middle of the field. */
+input[type="checkbox"] { width: auto; justify-self: start; }
 input[type="color"] { padding: 0; height: 26px; }
 input[type="checkbox"] { width: auto; }
 textarea { font-family: var(--mono); font-size: 12px; min-height: 80px; resize: vertical; }
@@ -151,7 +153,7 @@ body.has-titlebar #titlebar {
 /* Grid, not flex: `1fr auto` pins the badge to the right edge whatever the name is, so
    every row is the same full width and the badges line up down the panel. */
 .bin-row {
-  display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px;
+  display: grid; grid-template-columns: 12px minmax(0, 1fr) auto; align-items: center; gap: 6px;
   width: 100%; padding: 4px 6px; border-radius: 4px;
   cursor: grab; border: 1px solid transparent; user-select: none;
 }
@@ -190,23 +192,33 @@ button.linkish:hover { text-decoration: underline; }
 .badge-kind.video, .badge-kind.image { background: var(--video); color: #fff; }
 .badge-kind.audio { background: var(--audio); color: #fff; }
 .badge-kind.sequence { background: #3b5c7a; color: #fff; }
+.badge-kind.folder { background: #6b5a2a; color: #fff; }
+.bin-row .caret { width: 12px; padding: 0; font-size: 10px; line-height: 1; background: none; border: 0; color: var(--fg-2); text-align: center; }
+.bin-row.drop { border-color: var(--accent, #ff4f00); background: var(--bg-3); }
+.bin-row.drop-before { box-shadow: 0 -2px 0 0 var(--accent, #ff4f00); }
+.bin-row.drop-after { box-shadow: 0 2px 0 0 var(--accent, #ff4f00); }
 .lib-item.open { outline: 1px solid var(--sel); }
 .lib-add { display: flex; gap: 6px; margin-top: 6px; }
 
 .field { display: grid; grid-template-columns: 90px 1fr; gap: 6px; align-items: center; margin-bottom: 6px; }
 .field label { color: var(--fg-2); font-size: 11px; }
 .field .row { display: flex; gap: 4px; }
+/* An input that needs the width (a textarea, a list of rows) takes the row under its label. */
+.field > .wide { grid-column: 1 / -1; }
+.cue-row { display: grid; grid-template-columns: 58px 58px 1fr auto; gap: 4px; margin-bottom: 4px; }
+.cue-row input[type="number"] { padding: 4px 2px; }
 .effect { border: 1px solid var(--line); border-radius: 6px; padding: 6px; margin-bottom: 6px; background: var(--bg-3); }
 .effect .head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; font-weight: 600; }
 .effect .head button { padding: 0 6px; font-size: 11px; }
 
 dialog.modal {
   border: 1px solid var(--line); border-radius: 10px; background: var(--bg-2); color: var(--fg);
-  padding: 16px 18px; min-width: 320px; box-shadow: 0 16px 48px rgba(0, 0, 0, 0.5);
+  padding: 16px 18px; min-width: 320px; max-width: min(440px, 90vw); box-shadow: 0 16px 48px rgba(0, 0, 0, 0.5);
 }
 dialog.modal::backdrop { background: rgba(0, 0, 0, 0.5); }
 dialog.modal h3 { margin-top: 0; }
-dialog.modal .field { grid-template-columns: 60px 1fr; }
+dialog.modal .field { grid-template-columns: 70px 1fr; }
+dialog.modal p { margin-bottom: 10px; }
 .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
 
 #toasts { position: fixed; right: 12px; bottom: 312px; display: flex; flex-direction: column; gap: 6px; z-index: 10; }

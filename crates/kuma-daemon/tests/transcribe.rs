@@ -21,6 +21,9 @@ while [ $# -gt 0 ]; do
   shift
 done
 [ -n "$base" ] || exit 4
+# whisper reports its own progress on stderr as it works.
+printf 'whisper_print_progress_callback: progress =  40%%\n' >&2
+printf 'whisper_print_progress_callback: progress = 100%%\n' >&2
 printf '%s' '{ "transcription": [
   { "offsets": { "from": 0, "to": 900 }, "text": " Hello" },
   { "offsets": { "from": 900, "to": 2000 }, "text": " [BLANK_AUDIO]" },
@@ -50,7 +53,12 @@ fn a_transcript_becomes_an_editable_subtitles_entry() {
     jobs::add_media(&state, &media, None, None, "test").unwrap();
 
     let req = TranscribeRequest { bin: Some("talk".into()), clip: None, id: None, replace: false, options: Default::default(), base_revision: None, origin: "test".into() };
-    let out = jobs::transcribe(&state, &req, &|_, _| {}).unwrap();
+    // Whisper is minutes of work on a real recording, so the job must report its
+    // percentage while it runs rather than jumping from "started" to "done".
+    let seen = std::sync::Mutex::new(Vec::<u8>::new());
+    let out = jobs::transcribe(&state, &req, &|p, _| seen.lock().unwrap().push(p)).unwrap();
+    let seen = seen.into_inner().unwrap();
+    assert!(seen.iter().any(|p| (10..85).contains(p)), "no progress between starting and finishing: {seen:?}");
     assert_eq!(out["bin"], "talk-subs");
     assert_eq!(out["cues"], 2, "the blank-audio marker is not a cue");
     assert_eq!(out["placed"], false);

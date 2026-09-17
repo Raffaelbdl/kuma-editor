@@ -161,9 +161,11 @@ pub fn transcribe(state: &AppState, req: &TranscribeRequest, progress: &dyn Fn(u
         Some(item) if !item.is_overlay() => anyhow::bail!("`{id}` is not an overlay entry"),
         Some(_) => true,
     };
-    progress(5, "transcribing");
+    progress(2, "extracting audio");
     let media = resolve_path(state, Path::new(path));
-    let cues = state.transcriber.transcribe(&media, &state.config.cache_dir().join("transcripts"), &req.options).map_err(|e| anyhow::anyhow!(e))?;
+    // The model's own percentage, over most of the job: it is the part that takes minutes.
+    let report = |p: u8| progress(5 + (p as u16 * 80 / 100) as u8, &format!("transcribing {p}%"));
+    let cues = state.transcriber.transcribe(&media, &state.config.cache_dir().join("transcripts"), &req.options, &report).map_err(|e| anyhow::anyhow!(e))?;
     progress(90, "adding to the bin");
     let mut ops = Vec::new();
     if replacing {

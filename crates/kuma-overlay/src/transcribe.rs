@@ -5,8 +5,10 @@
 //! `cues` var of the `subtitles` overlay template, and nothing else about the model
 //! reaches the project: a cue is `{ start, end, text }` and is edited like any other var.
 
+use std::collections::VecDeque;
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use serde::{Deserialize, Serialize};
 
@@ -73,8 +75,10 @@ impl Transcriber {
     }
 
     /// Transcribe a media file's audio. `work_dir` receives the WAV and the JSON, under a
-    /// fresh directory per call so two jobs on one file never share a name.
-    pub fn transcribe(&self, media: &Path, work_dir: &Path, opts: &TranscribeOptions) -> Result<Vec<Cue>, String> {
+    /// fresh directory per call so two jobs on one file never share a name. `progress` is
+    /// called with the model's own percentage as it goes: whisper is minutes of work on a
+    /// long recording, so the caller must be able to say more than "started".
+    pub fn transcribe(&self, media: &Path, work_dir: &Path, opts: &TranscribeOptions, progress: &dyn Fn(u8)) -> Result<Vec<Cue>, String> {
         let model = self.available()?;
         std::fs::create_dir_all(work_dir).map_err(|e| format!("{}: {e}", work_dir.display()))?;
         let scratch = tempfile::Builder::new().prefix("stt-").tempdir_in(work_dir).map_err(|e| e.to_string())?;
@@ -84,19 +88,46 @@ impl Transcriber {
         ffmpeg(&["-i".into(), arg(media), "-vn".into(), "-ac".into(), "1".into(), "-ar".into(), "16000".into(), "-c:a".into(), "pcm_s16le".into(), arg(&wav)])
             .map_err(|e| format!("extracting audio: {e}"))?;
 
+        progress(0);
         let mut cmd = Command::new(&self.cli);
-        cmd.args(["-m", &arg(model), "-f", &arg(&wav), "-oj", "-of", &arg(&base), "-np", "-l", opts.language.as_deref().unwrap_or("auto")]);
+        // `-pp` prints a percentage on stderr as it works; `-np` silences everything else
+        // it would say there, which is why the two go together rather than fighting.
+        cmd.args(["-m", &arg(model), "-f", &arg(&wav), "-oj", "-of", &arg(&base), "-np", "-pp", "-l", opts.language.as_deref().unwrap_or("auto")]);
         let max_chars = opts.max_chars.unwrap_or(1);
         if max_chars > 0 {
             cmd.args(["-ml", &max_chars.to_string(), "-sow"]);
         }
-        let out = cmd.output().map_err(|e| format!("{}: {e}", self.cli.display()))?;
-        if !out.status.success() {
-            return Err(format!("whisper failed: {}", String::from_utf8_lossy(&out.stderr).trim()));
+        let mut child = cmd.stdout(Stdio::null()).stderr(Stdio::piped()).spawn().map_err(|e| format!("{}: {e}", self.cli.display()))?;
+        let stderr = child.stderr.take().expect("stderr is piped");
+        // Read it line by line rather than waiting for the process: that is the whole
+        // point of asking for progress. Whatever is not progress is kept for the error
+        // message, since a failure is explained by the last thing it said.
+        let mut tail: VecDeque<String> = VecDeque::new();
+        for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+            match parse_progress(&line) {
+                Some(p) => progress(p),
+                None => {
+                    if tail.len() == 10 {
+                        tail.pop_front();
+                    }
+                    tail.push_back(line);
+                }
+            }
+        }
+        let status = child.wait().map_err(|e| format!("{}: {e}", self.cli.display()))?;
+        if !status.success() {
+            return Err(format!("whisper failed: {}", Vec::from(tail).join("\n").trim()));
         }
         let json = std::fs::read_to_string(base.with_extension("json")).map_err(|e| format!("whisper wrote no transcript: {e}"))?;
         parse_whisper_json(&json)
     }
+}
+
+/// The percentage out of a `-pp` line (`…: progress =  40%`), clamped: whisper measures
+/// against the seek range and overshoots past 100 on the last window.
+fn parse_progress(line: &str) -> Option<u8> {
+    let pct = line.split("progress =").nth(1)?.trim().strip_suffix('%')?;
+    Some(pct.trim().parse::<u32>().ok()?.min(100) as u8)
 }
 
 /// The `transcription` list of whisper.cpp's `-oj` output. Offsets are milliseconds.
@@ -149,6 +180,14 @@ mod tests {
         ]);
         assert!(parse_whisper_json("{}").unwrap().is_empty(), "no transcription list is an empty transcript");
         assert!(parse_whisper_json("nope").is_err());
+    }
+
+    #[test]
+    fn reads_the_percentage_whisper_prints() {
+        assert_eq!(parse_progress("whisper_print_progress_callback: progress =  31%"), Some(31));
+        assert_eq!(parse_progress("whisper_print_progress_callback: progress = 126%"), Some(100), "it overshoots on the last window");
+        assert_eq!(parse_progress("read_audio_data: reading audio data from 'x.wav' ..."), None);
+        assert_eq!(parse_progress("progress = soon%"), None);
     }
 
     #[test]

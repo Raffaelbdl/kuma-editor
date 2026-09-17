@@ -3,12 +3,11 @@
 // revision-checked patch with its rule checked once — and no panel has to import another
 // to place a clip.
 
+import { api } from "./api";
 import { askText } from "./modal";
-import { store, toast } from "./store";
-import type { BinItem, Clip, PatchOp, Project, Track, TrackKind } from "./types";
-import { binItem, binPath, isFileSource, isTimedMedia, itemKind, seqDuration, shiftEffect, trimEffect, wouldNest, wouldRecurse } from "./types";
-
-const TRACK_FOR: Record<string, TrackKind> = { overlay: "overlay", audio: "audio", video: "video", image: "video", color: "video", sequence: "video" };
+import { startJob, store, toast } from "./store";
+import type { BinItem, BinSource, Clip, PatchOp, Project, Track, TrackKind } from "./types";
+import { binItem, binPath, isFileSource, isTimedMedia, itemKind, orientation, seqDuration, shiftEffect, trackFor, trimEffect, wouldNest, wouldRecurse } from "./types";
 
 /** Place an existing bin entry at time `t` on track `ti`. Every way of placing something —
  *  a button, a drop — comes through here, so the one rule a placement can break is checked
@@ -21,11 +20,11 @@ export async function placeBinItem(binId: string, t: number, ti = -1) {
     toast(`${item.name || binId} contains this sequence; placing it here would make a loop`, "err");
     return;
   }
-  if (itemKind(item) === "folder") {
-    toast(`${item.name || binId} is a folder`, "err");
+  const kind = trackFor(item);
+  if (!kind) {
+    toast(`${item.name || binId} cannot be placed on a timeline`, "err");
     return;
   }
-  const kind = TRACK_FOR[itemKind(item)];
   const d = defaultDuration(item, p, binId);
   const clip: Clip = { id: store.newId(kind === "overlay" ? "o" : "c"), start: t, end: t + d, bin: binId, in: 0, speed: 1, volume: 1, muted: false, effects: [], label: "" };
   await place(clip, kind, ti, []);
@@ -100,19 +99,50 @@ function newTrackOp(kind: TrackKind): { op: PatchOp; index: number } {
   return { op: { op: "add", path: `${store.seqPath}/tracks/${index}`, value: track }, index };
 }
 
-/** Add an empty sequence to the bin and open it. A sequence is just a bin entry, so this
- *  is one ordinary patch — and the new timeline starts with the same three tracks a new
- *  project does, because an empty one has nowhere to drop a clip. */
-export async function newSequence(name: string) {
+/** Mint a bin entry named by the user: a slug of the name (or `fallback`) made unique,
+ *  one patch. Returns the id, or null when the patch was refused. */
+async function addBinItem(name: string, fallback: string, source: BinSource): Promise<string | null> {
+  const id = uniqueId(slug(name) || fallback, Object.keys(store.state.project!.bin));
+  const value: BinItem = { name, source };
+  return (await store.patch([{ op: "add", path: binPath(id), value }], `add ${fallback} ${id}`)) ? id : null;
+}
+
+/** Bin ids must match [A-Za-z_][A-Za-z0-9_-]*, so a leading digit takes an `s`. */
+const slug = (name: string) => name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").replace(/^(?=[0-9])/, "s");
+
+/** Ask for a name, then mint an empty sequence and open it. It starts with the same
+ *  three tracks a new project does, because an empty one has nowhere to drop a clip.
+ *  `window.prompt` is not an option: Electron does not implement it (see `modal.ts`). */
+export async function promptNewSequence() {
+  const name = await askText({ title: "New sequence", label: "Name", placeholder: "Intro" });
+  if (!name) return;
+  const id = await addBinItem(name, "sequence", { tracks: [newTrack("video", "Video"), newTrack("overlay", "Overlays"), newTrack("audio", "Audio")], markers: [] });
+  if (id) await store.openSequence(id);
+}
+
+/** A folder is a bin entry with nothing but a name and children. */
+export async function promptNewFolder() {
+  const name = await askText({ title: "New folder", label: "Name", placeholder: "Speech" });
+  if (name) await addBinItem(name, "folder", { folder: true });
+}
+
+/** List `id` under `parent` (null for the top level). */
+export async function setParent(id: string, parent: string | null) {
   const p = store.state.project!;
-  const id = uniqueId(slug(name) || "sequence", Object.keys(p.bin));
-  const value: BinItem = {
-    name,
-    source: { tracks: [newTrack("video", "Video"), newTrack("overlay", "Overlays"), newTrack("audio", "Audio")], markers: [] },
-  };
-  if (await store.patch([{ op: "add", path: binPath(id), value }], `add sequence ${id}`)) {
-    await store.openSequence(id);
-  }
+  if ((p.bin[id]?.parent ?? null) === parent) return;
+  if (wouldNest(p, id, parent)) { toast("An entry cannot be listed inside itself", "err"); return; }
+  const path = `${binPath(id)}/parent`;
+  await store.patch([parent ? { op: "add", path, value: parent } : { op: "remove", path }], `move ${id}`);
+}
+
+/** Speech to text for the selection. From a clip the subtitles are placed over it,
+ *  aligned (the daemon copies its start, end and speed, and sets the entry's offset to
+ *  its `in`); from a bin entry they are listed under it, unplaced. */
+export async function transcribe() {
+  const sel = store.state.selection;
+  const what = sel?.kind === "clip" ? { clip: sel.id } : sel?.kind === "bin" ? { bin: sel.id } : null;
+  if (!what) { toast("Select a clip or a media entry to transcribe", ""); return; }
+  await startJob("Transcribe", () => api.transcribe(what, store.state.project!.revision));
 }
 
 /** Landscape ⇄ portrait: swap the frame's width and height. Everything else follows — the
@@ -120,7 +150,7 @@ export async function newSequence(name: string) {
  *  pixel-valued transforms, which stay where they were. */
 export async function swapOrientation() {
   const p = store.state.project!;
-  await store.patch([{ op: "replace", path: "/width", value: p.height }, { op: "replace", path: "/height", value: p.width }], `${p.height}×${p.width}`);
+  await store.patch([{ op: "replace", path: "/width", value: p.height }, { op: "replace", path: "/height", value: p.width }], `${orientation({ width: p.height, height: p.width })} ${p.height}×${p.width}`);
 }
 
 /** Add an empty track from the UI. */
@@ -129,38 +159,6 @@ export async function addTrack(kind: TrackKind) {
   await store.patch([op], `add ${kind} track`);
 }
 
-/** A folder is a bin entry with nothing but a name and children. */
-export async function newFolder(name: string, parent: string | null) {
-  const p = store.state.project!;
-  const id = uniqueId(slug(name) || "folder", Object.keys(p.bin));
-  const value: BinItem = { name, source: { folder: true }, ...(parent ? { parent } : {}) };
-  await store.patch([{ op: "add", path: binPath(id), value }], `add folder ${id}`);
-}
-
-export async function promptNewFolder(parent: string | null = null) {
-  const name = await askText({ title: "New folder", label: "Name", placeholder: "Speech" });
-  if (name) await newFolder(name, parent);
-}
-
-/** List `id` under `parent` (null for the top level). The validator refuses a ring; this
- *  is the same rule so the gesture is not offered. */
-export async function setParent(id: string, parent: string | null) {
-  const p = store.state.project!;
-  if ((p.bin[id]?.parent ?? null) === parent) return;
-  if (id === parent || wouldNest(p, id, parent)) { toast("An entry cannot be listed inside itself", "err"); return; }
-  const path = `${binPath(id)}/parent`;
-  await store.patch([parent ? { op: "add", path, value: parent } : { op: "remove", path }], `move ${id}`);
-}
-
-/** Bin ids must match [A-Za-z_][A-Za-z0-9_-]*, so a leading digit takes an `s`. */
-const slug = (name: string) => name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").replace(/^(?=[0-9])/, "s");
-
-/** Ask for a name, then mint the sequence. `window.prompt` is not an option: Electron
- *  does not implement it (see `modal.ts`). */
-export async function promptNewSequence() {
-  const name = await askText({ title: "New sequence", label: "Name", placeholder: "Intro" });
-  if (name) await newSequence(name);
-}
 
 /**
  * Split the selected clip at the playhead. Time-relative effects follow the cut: the

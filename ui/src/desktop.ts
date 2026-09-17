@@ -6,6 +6,7 @@
 // the browser already did.
 
 import { api } from "./api";
+import { Cmd, run } from "./commands";
 import { store, toast } from "./store";
 
 export interface DesktopBridge {
@@ -34,31 +35,20 @@ export function desktop(): DesktopBridge | null {
   return (globalThis as { kumaApp?: DesktopBridge }).kumaApp ?? null;
 }
 
-/** Commands the application menu can send. Each is whatever the toolbar button does. */
-export interface Commands {
-  undo(): void;
-  redo(): void;
-  render(): void;
-  reloadPreview(): void;
-  newSequence(): void;
-  swapOrientation(): void;
-  addMedia(): void;
-}
+/** What the application menu can send (`app/src/main.ts`), by the command it runs. A
+ *  menu action is one line here; the registry in `commands.ts` holds the behaviour. */
+const MENU: Record<string, string> = {
+  "undo": Cmd.undo,
+  "redo": Cmd.redo,
+  "render": Cmd.render,
+  "reload-preview": Cmd.reloadPreview,
+  "new-sequence": Cmd.newSequence,
+  "swap-orientation": Cmd.swapOrientation,
+  "add-media": Cmd.addMedia,
+};
 
-export function initDesktop(commands: Commands): void {
-  const app = desktop();
-  if (!app) return;
-  app.onCommand((name) => {
-    switch (name) {
-      case "undo": return commands.undo();
-      case "redo": return commands.redo();
-      case "render": return commands.render();
-      case "reload-preview": return commands.reloadPreview();
-      case "new-sequence": return commands.newSequence();
-      case "swap-orientation": return commands.swapOrientation();
-      case "add-media": return commands.addMedia();
-    }
-  });
+export function initDesktop(): void {
+  desktop()?.onCommand((name) => { if (MENU[name]) run(MENU[name]); });
 }
 
 /**

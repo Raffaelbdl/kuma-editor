@@ -199,6 +199,8 @@ button.linkish:hover { text-decoration: underline; }
 .field { display: grid; grid-template-columns: 90px 1fr; gap: 6px; align-items: center; margin-bottom: 6px; }
 .field label { color: var(--fg-2); font-size: 11px; }
 .field .row { display: flex; gap: 4px; }
+/* An input that needs the width (a textarea, a list of rows) takes the row under its label. */
+.field > .wide { grid-column: 1 / -1; }
 .cue-row { display: grid; grid-template-columns: 58px 58px 1fr auto; gap: 4px; margin-bottom: 4px; }
 .cue-row input[type="number"] { padding: 4px 2px; }
 .effect { border: 1px solid var(--line); border-radius: 6px; padding: 6px; margin-bottom: 6px; background: var(--bg-3); }

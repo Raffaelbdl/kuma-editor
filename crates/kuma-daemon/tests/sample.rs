@@ -7,7 +7,7 @@
 
 use std::sync::Arc;
 
-use kuma_daemon::jobs::{sample_frames, OverlayScope, SampleRequest};
+use kuma_daemon::jobs::{overlay_project, sample_frames, SampleRequest};
 use kuma_daemon::{AppState, Config};
 
 /// `tag` is an overlay entry **no clip places** — the case the whole feature is about.
@@ -45,20 +45,7 @@ fn fixture() -> (Arc<AppState>, tempfile::TempDir) {
 }
 
 fn req(overlay: Option<&str>, sequence: Option<&str>) -> SampleRequest {
-    SampleRequest {
-        t0: 1.0,
-        t1: None,
-        count: 1,
-        rect: None,
-        width: None,
-        overlays: OverlayScope::All,
-        sequence: sequence.map(str::to_string),
-        overlay: overlay.map(str::to_string),
-        duration: None,
-        backdrop: None,
-        frame_width: None,
-        frame_height: None,
-    }
+    SampleRequest { t0: 1.0, sequence: sequence.map(str::to_string), overlay: overlay.map(str::to_string), ..Default::default() }
 }
 
 /// The reason this is a synthetic project rather than a clip added and removed around the
@@ -105,4 +92,40 @@ fn a_valid_entry_sample_reaches_the_renderer() {
             eprintln!("no renderer on this machine, so only the request was checked: {msg}");
         }
     }
+}
+
+/// What the throwaway project is: one overlay clip over one colour, on the real project's
+/// rate and revision, in the asked-for frame — and a different sequence id for a
+/// different view, because that id is the frame cache's key.
+#[test]
+fn the_synthetic_project_has_the_shape_the_sample_relies_on() {
+    let (state, _dir) = fixture();
+    let doc = state.project.read().unwrap().clone();
+
+    let (p, seq) = overlay_project(&state, &doc, "tag", &req(Some("tag"), None)).unwrap();
+    assert_eq!(p.master, seq);
+    assert_eq!(p.bin.len(), 3, "the entry, a backdrop and the sequence: {:?}", p.bin.keys());
+    assert_eq!((p.fps, p.revision), (doc.fps, doc.revision), "sampled at the real rate, cached by the real revision");
+    assert_eq!((p.width, p.height), (doc.width, doc.height));
+    let clips: Vec<_> = p.all_clips().map(|(_, _, c)| c).collect();
+    assert_eq!(clips.len(), 2);
+    assert!(clips.iter().all(|c| c.start == 0.0 && c.end == 3.0), "both clips run the template's default 3 s: {clips:?}");
+    assert!(clips.iter().any(|c| c.bin == "tag"));
+    // The entry itself travels unchanged: same template, same vars, same name.
+    assert_eq!(serde_json::to_value(&p.bin["tag"]).unwrap(), serde_json::to_value(&doc.bin["tag"]).unwrap());
+
+    // The frame the caller asked for, and a length; the document is untouched by both.
+    let portrait = SampleRequest { frame_width: Some(1080), frame_height: Some(1920), duration: Some(6.0), ..req(Some("tag"), None) };
+    let (q, seq2) = overlay_project(&state, &doc, "tag", &portrait).unwrap();
+    assert_eq!((q.width, q.height), (1080, 1920));
+    assert!(q.all_clips().all(|(_, _, c)| c.end == 6.0));
+    assert_ne!(seq, seq2, "a different view is a different cache key");
+    assert_eq!((doc.width, doc.height), (320, 240));
+
+    // The backdrop is a colour entry; `transparent` is spelled the way MLT reads it.
+    let clear = SampleRequest { backdrop: Some("transparent".into()), ..req(Some("tag"), None) };
+    let (r, seq3) = overlay_project(&state, &doc, "tag", &clear).unwrap();
+    let colours: Vec<_> = r.bin.values().filter_map(|i| match &i.source { kuma_core::BinSource::Color { color } => Some(color.clone()), _ => None }).collect();
+    assert_eq!(colours, ["#00000000"]);
+    assert_ne!(seq, seq3);
 }

@@ -8,7 +8,7 @@ use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, Query, State};
 use axum::http::{header, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post, put};
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use kuma_core::edit::EditError;
 use kuma_core::{validate, BinSource, Project};
@@ -33,15 +33,15 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/project/validate", get(validate_project))
         .route("/api/sequence", get(get_sequence).post(open_sequence))
         .route("/api/schema", get(schema))
-        .route("/api/templates", get(templates).post(reload_templates).put(new_template))
+        .route("/api/templates", get(templates).post(reload_templates))
         .route("/api/templates/thumbs", post(thumbs))
+        .route("/api/templates/{id}", post(new_template))
         .route("/api/templates/{id}/lint", get(lint_template))
         .route("/api/presets/effects", get(effect_presets))
         .route("/api/media/probe", get(probe_media))
         .route("/api/bin", post(add_media))
         .route("/api/transcribe", post(transcribe))
-        .route("/api/bin/{id}/thumb.png", get(bin_thumb))
-        .route("/api/bin/{id}/preview.webp", get(bin_preview))
+        .route("/api/bin/{id}/{file}", get(bin_asset))
         .route("/api/presets", get(presets))
         .route("/api/render", post(render))
         .route("/api/bake", post(bake))
@@ -229,9 +229,8 @@ async fn reload_templates(State(st): S) -> Json<Value> {
     Json(json!(st.template_infos()))
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Default)]
 struct NewTemplate {
-    id: String,
     #[serde(default)]
     name: String,
     #[serde(default)]
@@ -241,18 +240,19 @@ struct NewTemplate {
 /// Scaffold a template into the **project's** `overlays/`, where a one-off written for
 /// this video belongs. It lands last on the search path, so it also shadows a library
 /// template of the same id — which is how a shipped template is forked and edited.
-async fn new_template(State(st): S, Json(req): Json<NewTemplate>) -> ApiResult {
+async fn new_template(State(st): S, Path(id): Path<String>, body: Option<Json<NewTemplate>>) -> ApiResult {
+    let req = body.map(|b| b.0).unwrap_or_default();
     let dir = st.config.project_root().join("overlays");
-    let out = kuma_overlay::new_template(&dir, &req.id, &req.name, &req.description).map_err(ApiError::bad_request)?;
+    let out = kuma_overlay::new_template(&dir, &id, &req.name, &req.description).map_err(ApiError::bad_request)?;
     st.reload_templates();
-    let report = jobs::lint_template(&st, &req.id).map_err(ApiError::bad_request)?;
-    Ok(Json(json!({ "id": req.id, "dir": out, "lint": report })))
+    let report = jobs::lint_template(&st, &id).map_err(|e| ApiError::bad_request(format!("{e:#}")))?;
+    Ok(Json(json!({ "id": id, "dir": out, "lint": report })))
 }
 
 /// Check a template against the contract before a bake proves it the slow way. Reads
 /// only: nothing is rendered and nothing is written.
 async fn lint_template(State(st): S, Path(id): Path<String>) -> ApiResult {
-    let report = jobs::lint_template(&st, &id).map_err(ApiError::bad_request)?;
+    let report = jobs::lint_template(&st, &id).map_err(|e| ApiError::bad_request(format!("{e:#}")))?;
     Ok(Json(json!(report)))
 }
 
@@ -314,9 +314,9 @@ async fn thumbs(State(st): S, Json(req): Json<ThumbsReq>) -> Json<Value> {
         for (i, (id, template, vars)) in entries.iter().enumerate() {
             progress((((wanted.len() + i) * 100) / n) as u8, &format!("thumbnail {id}"));
             let Some((dir, manifest)) = templates.get(template) else { continue };
-            let out = bin_thumb_path(&s2, id);
+            let out = bin_asset_path(&s2, id, "png");
             s2.baker.thumbnail(dir, manifest, vars, &out).map_err(|e| anyhow::anyhow!("{id}: {e}"))?;
-            let motion = bin_preview_path(&s2, id);
+            let motion = bin_asset_path(&s2, id, "webp");
             // A preview is a nicety: a template whose still baked and whose animation does
             // not encode (no libwebp in this ffmpeg) must not fail the whole job.
             let preview = s2.baker.preview(dir, manifest, vars, &motion);
@@ -328,29 +328,24 @@ async fn thumbs(State(st): S, Json(req): Json<ThumbsReq>) -> Json<Value> {
     Json(json!({ "job": id }))
 }
 
-fn bin_thumb_path(st: &AppState, bin_id: &str) -> PathBuf {
-    st.config.cache_dir().join("thumbs").join(format!("{bin_id}.png"))
+/// Where a bin entry's generated still (`png`) or moving preview (`webp`) lives.
+fn bin_asset_path(st: &AppState, bin_id: &str, ext: &str) -> PathBuf {
+    st.config.cache_dir().join("thumbs").join(format!("{bin_id}.{ext}"))
 }
 
-fn bin_preview_path(st: &AppState, bin_id: &str) -> PathBuf {
-    st.config.cache_dir().join("thumbs").join(format!("{bin_id}.webp"))
-}
-
-/// A bin entry's thumbnail, generated by the `thumbs` job. 404 until then.
-async fn bin_thumb(State(st): S, Path(id): Path<String>) -> Result<Response, ApiError> {
+/// A bin entry's still (`thumb.png`) or moving preview (`preview.webp`), both generated by
+/// the `thumbs` job. 404 until then — which is what makes the still a fallback for the
+/// preview rather than a second thing to keep in step.
+async fn bin_asset(State(st): S, Path((id, file)): Path<(String, String)>) -> Result<Response, ApiError> {
     if !kuma_core::is_valid_id(&id) {
         return Err(ApiError::bad_request("bad bin id"));
     }
-    file_response(&bin_thumb_path(&st, &id))
-}
-
-/// The same entry, moving: an animated WebP from the same job. 404 until then, which is
-/// what makes the still a fallback rather than a second thing to keep in step.
-async fn bin_preview(State(st): S, Path(id): Path<String>) -> Result<Response, ApiError> {
-    if !kuma_core::is_valid_id(&id) {
-        return Err(ApiError::bad_request("bad bin id"));
-    }
-    file_response(&bin_preview_path(&st, &id))
+    let ext = match file.as_str() {
+        "thumb.png" => "png",
+        "preview.webp" => "webp",
+        _ => return Err(ApiError::not_found("not found")),
+    };
+    file_response(&bin_asset_path(&st, &id, ext))
 }
 
 // ---------- assets ----------
@@ -436,20 +431,7 @@ struct SnapshotQuery {
 async fn snapshot(State(st): S, Query(q): Query<SnapshotQuery>) -> Result<Response, ApiError> {
     // Same overlay scope as the engine preview this stands in for: nested sequences baked
     // in, the open sequence's own left to the live DOM the UI draws on top.
-    let req = SampleRequest {
-        t0: q.t,
-        t1: None,
-        count: 1,
-        rect: None,
-        width: q.width.or(Some(960)),
-        overlays: jobs::OverlayScope::Nested,
-        sequence: Some(st.current_sequence()),
-        overlay: None,
-        duration: None,
-        backdrop: None,
-        frame_width: None,
-        frame_height: None,
-    };
+    let req = SampleRequest { t0: q.t, width: q.width.or(Some(960)), overlays: jobs::OverlayScope::Nested, sequence: Some(st.current_sequence()), ..Default::default() };
     let samples = blocking(move || jobs::sample_frames(&st, &req, &|_, _| {})).await??;
     let bytes = std::fs::read(&samples[0].path).map_err(|e| anyhow::anyhow!(e))?;
     Ok(([(header::CONTENT_TYPE, "image/png"), (header::CACHE_CONTROL, "no-store")], bytes).into_response())
@@ -617,26 +599,20 @@ struct EntryPreview {
 /// entry is, and that is editable before any clip plays it.
 async fn overlay_entry(State(st): S, Path(id): Path<String>, Query(q): Query<EntryPreview>) -> Result<Response, ApiError> {
     let project = read(&st.project).clone();
-    let (template, vars) = overlay_entry_source(&project, &id)?;
-    let default = {
-        let templates = read(&st.templates);
-        templates.loaded.get(template).ok_or(ApiError::not_found("unknown template"))?.1.duration_default
-    };
-    // A length from the query is a view, not a document value, so it is clamped rather
-    // than validated: nothing is stored and a silly number costs only this one render.
-    let duration = q.duration.filter(|d| d.is_finite() && *d > 0.0).map(|d| d.clamp(0.05, 3600.0)).unwrap_or(default);
-    let frame = (q.width.unwrap_or(project.width).clamp(16, 16384), q.height.unwrap_or(project.height).clamp(16, 16384));
+    let view = jobs::entry_view(&st, &project, &id, q.duration, q.width, q.height).map_err(entry_error)?;
     // Bin ids are validated to be URL-safe.
     let base = format!("/overlay-entry/{id}/");
-    overlay_document(&st, &project, template, vars, duration, 1.0, None, &base, Some(frame))
+    overlay_document(&st, &project, &view.template, &view.vars, view.duration, 1.0, None, &base, Some((view.width, view.height)))
 }
 
-/// The template and vars of an overlay entry, or why it is not one.
-fn overlay_entry_source<'a>(project: &'a Project, id: &str) -> Result<(&'a String, &'a serde_json::Map<String, Value>), ApiError> {
-    let item = project.bin.get(id).ok_or(ApiError::not_found("no such bin entry"))?;
-    match &item.source {
-        BinSource::Overlay { template, vars } => Ok((template, vars)),
-        _ => Err(ApiError::bad_request("not an overlay entry")),
+/// `entry_view`'s refusals as statuses: an entry that is not there is a 404, one that is
+/// there and is not an overlay is a 400.
+fn entry_error(e: anyhow::Error) -> ApiError {
+    let msg = format!("{e:#}");
+    if msg.starts_with("no bin entry") || msg.starts_with("unknown template") {
+        ApiError::not_found(msg)
+    } else {
+        ApiError::bad_request(msg)
     }
 }
 
@@ -687,8 +663,8 @@ async fn overlay_file(State(st): S, Path((clip, rest)): Path<(String, String)>) 
 /// Files referenced by a previewed overlay entry, resolved against its template dir.
 async fn overlay_entry_file(State(st): S, Path((id, rest)): Path<(String, String)>) -> Result<Response, ApiError> {
     let project = read(&st.project).clone();
-    let (template, _) = overlay_entry_source(&project, &id)?;
-    serve_template_file(&st, template, &rest)
+    let view = jobs::entry_view(&st, &project, &id, None, None, None).map_err(entry_error)?;
+    serve_template_file(&st, &view.template, &rest)
 }
 
 async fn overlay_static(State(st): S, Path((id, rest)): Path<(String, String)>) -> Result<Response, ApiError> {

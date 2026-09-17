@@ -300,7 +300,9 @@ fn local_refs(html: &str) -> Vec<String> {
             rest = &rest[i + attr.len()..];
             let Some(end) = rest.find('"') else { break };
             let v = &rest[..end];
-            let skip = v.is_empty() || v.starts_with("http") || v.starts_with("//") || v.starts_with('#') || v.starts_with("data:") || v.starts_with('/');
+            // Anything with a scheme (`https:`, `data:`, `mailto:`) is not a file here.
+            let has_scheme = v.split('/').next().is_some_and(|head| head.contains(':'));
+            let skip = v.is_empty() || has_scheme || v.starts_with("//") || v.starts_with('#') || v.starts_with('/');
             if !skip {
                 out.push(v.to_string());
             }
@@ -336,14 +338,20 @@ fn parse_hyperframes(text: &str) -> Vec<Finding> {
             continue;
         };
         let rest = rest.trim();
-        let (code, message) = rest.split_once(american_colon).unwrap_or(("hyperframes", rest));
+        let (code, message) = rest.split_once(':').unwrap_or(("hyperframes", rest));
         out.push(Finding { level, code: code.trim().to_string(), message: message.trim().to_string(), fix: None });
     }
+    // The summary line is the one thing least likely to change shape. If it counts errors
+    // that the lines above did not yield — the glyphs changed, say — the report must not
+    // read as clean: say so once, with the raw text, rather than pass by accident.
+    if out.is_empty() {
+        if let Some(n) = text.lines().find_map(|l| l.trim().split_once(" error(s)")).and_then(|(head, _)| head.rsplit(' ').next()?.parse::<usize>().ok()) {
+            if n > 0 {
+                out.push(Finding { level: Level::Error, code: "hyperframes".into(), message: format!("hyperframes reported {n} error(s) in a form this version does not parse:\n{}", text.trim()), fix: None });
+            }
+        }
+    }
     out
-}
-
-fn american_colon(c: char) -> bool {
-    c == ':'
 }
 
 #[cfg(test)]
@@ -433,6 +441,16 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let codes: Vec<String> = contract_findings(html, &manifest(&["anchor"]), dir.path()).into_iter().map(|f| f.code).collect();
         assert!(!codes.contains(&"unused_var".to_string()), "{codes:?}");
+    }
+
+    /// A format change must not turn into a clean report.
+    #[test]
+    fn an_unparsed_hyperframes_error_still_counts() {
+        let f = parse_hyperframes("Linting x\n  !! something new: bad\n  2 error(s), 0 warning(s)\n");
+        assert_eq!(f.len(), 1);
+        assert_eq!(f[0].level, Level::Error);
+        assert!(f[0].message.contains("2 error(s)"));
+        assert!(parse_hyperframes("  0 errors, 0 warnings\n").is_empty());
     }
 
     #[test]

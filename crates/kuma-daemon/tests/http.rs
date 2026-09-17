@@ -35,6 +35,13 @@ async fn daemon() -> (Arc<AppState>, String, tempfile::TempDir) {
     std::fs::create_dir_all(&tpl).unwrap();
     std::fs::write(tpl.join("template.json"), r#"{ "id": "probe", "name": "Probe" }"#).unwrap();
     std::fs::write(tpl.join("index.html"), "<html><body data-composition-id=\"root\"></body></html>").unwrap();
+    // The shared `_vendor/` every template references, as `kuma library` installs it.
+    // Without one, a scaffold is (rightly) told its `_vendor/…` files are missing.
+    let vendor = dir.path().join("library/overlays/_vendor");
+    std::fs::create_dir_all(&vendor).unwrap();
+    for f in ["gsap.min.js", "kuma.js", "kuma.css"] {
+        std::fs::write(vendor.join(f), "").unwrap();
+    }
 
     let ui = dir.path().join("repo/ui/dist");
     std::fs::create_dir_all(&ui).unwrap();
@@ -50,14 +57,15 @@ async fn daemon() -> (Arc<AppState>, String, tempfile::TempDir) {
     (state, addr.to_string(), dir)
 }
 
-/// One HTTP/1.1 GET: the status line and the headers, lowercased. Hand-rolled rather than
-/// adding a client crate for a test. Stops at the blank line ending the headers — reading
-/// to EOF waits for a close the server need not do, and hangs instead of failing.
-fn get(addr: &str, path: &str) -> (String, std::collections::HashMap<String, String>) {
+/// One HTTP/1.1 request: the status line, the headers (lowercased) and the body.
+/// Hand-rolled rather than adding a client crate for a test. The body is read by
+/// `content-length`, exactly — reading to EOF would wait on a close the server need not
+/// do, and hang instead of failing.
+fn request(addr: &str, method: &str, path: &str, body: &str) -> (String, std::collections::HashMap<String, String>, String) {
     use std::io::Read as _;
     let mut s = std::net::TcpStream::connect(addr).unwrap();
     s.set_read_timeout(Some(std::time::Duration::from_secs(10))).unwrap();
-    write!(s, "GET {path} HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n").unwrap();
+    write!(s, "{method} {path} HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}", body.len()).unwrap();
     let mut raw = Vec::new();
     let mut byte = [0u8; 1];
     while !raw.ends_with(b"\r\n\r\n") {
@@ -67,44 +75,27 @@ fn get(addr: &str, path: &str) -> (String, std::collections::HashMap<String, Str
             Err(e) => panic!("{path}: reading the response headers: {e}"),
         }
     }
-    let text = String::from_utf8_lossy(&raw).into_owned();
-    let head = text.trim_end().to_string();
+    let head = String::from_utf8_lossy(&raw).trim_end().to_string();
     let mut lines = head.lines();
     let status = lines.next().unwrap_or_default().to_string();
-    let headers = lines
+    let headers: std::collections::HashMap<String, String> = lines
         .filter_map(|l| l.split_once(':'))
         .map(|(k, v)| (k.trim().to_ascii_lowercase(), v.trim().to_ascii_lowercase()))
         .collect();
+    let len: usize = headers.get("content-length").and_then(|v| v.parse().ok()).unwrap_or(0);
+    let mut body = vec![0u8; len];
+    s.read_exact(&mut body).unwrap_or_else(|e| panic!("{path}: reading {len} bytes of body: {e}"));
+    (status, headers, String::from_utf8_lossy(&body).into_owned())
+}
+
+fn get(addr: &str, path: &str) -> (String, std::collections::HashMap<String, String>) {
+    let (status, headers, _) = request(addr, "GET", path, "");
     (status, headers)
 }
 
-/// The headers plus the body, read by `content-length` — exactly, so it never waits on a
-/// close the server need not do (see `get`).
 fn get_body(addr: &str, path: &str) -> (String, String) {
-    use std::io::Read as _;
-    let mut s = std::net::TcpStream::connect(addr).unwrap();
-    s.set_read_timeout(Some(std::time::Duration::from_secs(10))).unwrap();
-    write!(s, "GET {path} HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n").unwrap();
-    let mut head = Vec::new();
-    let mut byte = [0u8; 1];
-    while !head.ends_with(b"\r\n\r\n") {
-        match s.read(&mut byte) {
-            Ok(0) => break,
-            Ok(_) => head.push(byte[0]),
-            Err(e) => panic!("{path}: reading the response headers: {e}"),
-        }
-    }
-    let head = String::from_utf8_lossy(&head).into_owned();
-    let status = head.lines().next().unwrap_or_default().to_string();
-    let len: usize = head
-        .lines()
-        .filter_map(|l| l.split_once(':'))
-        .find(|(k, _)| k.trim().eq_ignore_ascii_case("content-length"))
-        .and_then(|(_, v)| v.trim().parse().ok())
-        .unwrap_or(0);
-    let mut body = vec![0u8; len];
-    s.read_exact(&mut body).unwrap_or_else(|e| panic!("{path}: reading {len} bytes of body: {e}"));
-    (status, String::from_utf8_lossy(&body).into_owned())
+    let (status, _, body) = request(addr, "GET", path, "");
+    (status, body)
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -157,4 +148,32 @@ async fn an_overlay_entry_previews_without_a_placement() {
     assert!(status.contains("400"), "a sequence entry is not an overlay: {status}");
     let (status, _) = get(&addr, "/overlay-entry/nope");
     assert!(status.contains("404"), "{status}");
+}
+
+/// The two authoring routes, over the wire: a check that finds nothing on the fixture
+/// template, a refusal for a template that is not there, and a scaffold that lands in the
+/// project's own `overlays/`, is picked up without a rescan, and refuses to be repeated.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_template_is_checked_and_scaffolded_over_http() {
+    let (state, addr, _dir) = daemon().await;
+    let (status, body) = get_body(&addr, "/api/templates/probe/lint");
+    assert!(status.contains("200"), "{status}");
+    let report: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(report["template"], "probe");
+    assert!(report["findings"].is_array());
+    let (status, _) = get(&addr, "/api/templates/nope/lint");
+    assert!(status.contains("400"), "{status}");
+
+    let (status, body) = {
+        let (s, _, b) = request(&addr, "POST", "/api/templates/fresh", r#"{ "name": "Fresh" }"#);
+        (s, b)
+    };
+    assert!(status.contains("200"), "{status}: {body}");
+    let made: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(made["id"], "fresh");
+    assert!(state.config.project_root().join("overlays/fresh/index.html").is_file());
+    assert!(state.template_infos().iter().any(|t| t.id == "fresh"), "not loaded after scaffolding");
+    assert_eq!(made["lint"]["findings"].as_array().map(Vec::len), Some(0), "the scaffold is not clean: {}", made["lint"]);
+    let (status, _, _) = request(&addr, "POST", "/api/templates/fresh", "{}");
+    assert!(status.contains("400"), "a second scaffold overwrote the first: {status}");
 }

@@ -238,11 +238,17 @@ export class Workbench {
     this.holder.style.transform = `scale(${s})`;
   }
 
+  private shotTimer = 0;
+
+  /** The engine's own picture is not reachable from here; this is the daemon's melt
+   *  snapshot, the same one the preview falls back to — and melt renders it, so a scrub
+   *  must ask once when the pointer settles rather than once per pointer move. */
   private loadShot() {
-    // The engine's own picture is not reachable from here; this is the daemon's melt
-    // snapshot, the same one the preview falls back to.
     this.shot.style.display = "";
-    this.shot.src = api.snapshotUrl(store.state.playhead, Math.max(640, this.stage.clientWidth * 2));
+    clearTimeout(this.shotTimer);
+    this.shotTimer = window.setTimeout(() => {
+      this.shot.src = api.snapshotUrl(store.state.playhead, Math.max(640, this.stage.clientWidth * 2));
+    }, 250);
   }
 
   /**

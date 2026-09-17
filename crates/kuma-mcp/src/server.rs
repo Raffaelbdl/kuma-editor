@@ -333,8 +333,8 @@ impl KumaServer {
 
     #[tool(description = "Scaffold a new overlay template in the project's `overlays/` folder and return where it landed plus its lint report. It is a working, contract-abiding skeleton — root timing attributes, a registered paused GSAP timeline, typed vars, sizing that survives both orientations — meant to be edited rather than read. Start here instead of writing a template from scratch; call `template_guide` for the contract it follows. An id that already exists is refused rather than overwritten.")]
     async fn new_template(&self, Parameters(p): Parameters<NewTemplate>) -> Result<CallToolResult, McpError> {
-        let body = json!({ "id": p.id, "name": p.name.unwrap_or_default(), "description": p.description.unwrap_or_default() });
-        Ok(ok_json(&self.client.put("/api/templates", &body).await.map_err(err)?))
+        let body = json!({ "name": p.name.unwrap_or_default(), "description": p.description.unwrap_or_default() });
+        self.post(&format!("/api/templates/{}", p.id), &body).await
     }
 
     #[tool(description = "Check an overlay template against the authoring contract — the composition root, timeline registration, wall-clock and network use, manifest/markup agreement on vars, and missing assets — plus hyperframes' own linter. Reads only: nothing is rendered or written. Run it after writing or editing a template, before baking: a contract break otherwise surfaces as a 45-second bake timeout or a silently wrong frame.")]

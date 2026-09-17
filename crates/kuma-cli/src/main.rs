@@ -264,13 +264,13 @@ async fn main() -> anyhow::Result<()> {
                 count: *count,
                 rect,
                 width: *width,
-                overlays: Default::default(),
                 sequence: sequence.clone(),
                 overlay: overlay.clone(),
                 duration: *duration,
                 backdrop: backdrop.clone(),
                 frame_width: frame.map(|(w, _)| w),
                 frame_height: frame.map(|(_, h)| h),
+                ..Default::default()
             };
             let samples = tokio::task::spawn_blocking(move || kuma_daemon::jobs::sample_frames(&state, &req, &|_, _| {})).await??;
             println!("{}", serde_json::to_string_pretty(&samples)?);
@@ -303,7 +303,7 @@ async fn main() -> anyhow::Result<()> {
             let out = kuma_overlay::new_template(&dir, id, name.as_deref().unwrap_or(""), description.as_deref().unwrap_or("")).map_err(anyhow::Error::msg)?;
             state.reload_templates();
             println!("{}", out.display());
-            let report = kuma_daemon::jobs::lint_template(&state, id).map_err(anyhow::Error::msg)?;
+            let report = kuma_daemon::jobs::lint_template(&state, id)?;
             for line in report.lines() {
                 println!("  {line}");
             }
@@ -316,7 +316,7 @@ async fn main() -> anyhow::Result<()> {
             };
             let mut errors = 0;
             for id in ids {
-                let report = kuma_daemon::jobs::lint_template(&state, &id).map_err(anyhow::Error::msg)?;
+                let report = kuma_daemon::jobs::lint_template(&state, &id)?;
                 errors += report.errors();
                 let status = if report.ok() { "ok" } else { "FAILED" };
                 println!("{id}: {status} ({} error(s), {} warning(s))", report.errors(), report.warnings());
@@ -343,8 +343,7 @@ async fn main() -> anyhow::Result<()> {
         }
         Cmd::DesignSystem { id, force } => {
             let state = open(&cli)?;
-            let dirs = state.config.design_system_dirs();
-            let installed = design_systems(&dirs);
+            let installed = state.config.installed_design_systems();
             let Some(id) = id else {
                 if installed.is_empty() {
                     println!("no design systems installed — run `kuma library` (or point KUMA_LIBRARY at a folder of them)");
@@ -365,7 +364,7 @@ async fn main() -> anyhow::Result<()> {
             if dst.exists() {
                 std::fs::remove_dir_all(&dst)?;
             }
-            copy_tree(&src, &dst)?;
+            kuma_daemon::copy_tree(&src, &dst)?;
             println!("{title} → {}", dst.display());
             println!("The agent reads `design-system/DESIGN.md`; templates copy the `:root` block from `tokens.css`.");
         }
@@ -460,7 +459,7 @@ async fn doctor(cli: &Cli) -> anyhow::Result<()> {
         "design system {}",
         cfg.project_design_system()
             .map(|p| p.display().to_string())
-            .unwrap_or_else(|| format!("none in this project — `kuma design-system` lists {} installed", design_systems(&cfg.design_system_dirs()).len()))
+            .unwrap_or_else(|| format!("none in this project — `kuma design-system` lists {} installed", cfg.installed_design_systems().len()))
     );
     println!("ui            {}", ok(cfg.repo_root.join("ui/dist").is_dir(), "ui/dist", "cd ui && npm run build"));
     println!("engine        {}", ok(cfg.repo_root.join("engine/build/kuma-preview").is_file(), "engine/build/kuma-preview", "cmake -S engine -B engine/build && cmake --build engine/build -j"));
@@ -486,51 +485,7 @@ async fn doctor(cli: &Cli) -> anyhow::Result<()> {
 
 /// Copy `<src>/{overlays,presets}` into the library, skipping entries that already exist
 /// unless `force`. Returns the number of entries written.
-/// Design systems on the search path, by id: where it is and the title of its `DESIGN.md`
-/// (its first heading). Later directories win, as they do for templates.
-fn design_systems(dirs: &[PathBuf]) -> std::collections::BTreeMap<String, (PathBuf, String)> {
-    let mut out = std::collections::BTreeMap::new();
-    for dir in dirs {
-        let Ok(rd) = std::fs::read_dir(dir) else { continue };
-        for e in rd.flatten().map(|e| e.path()) {
-            let design = e.join("DESIGN.md");
-            let Ok(text) = std::fs::read_to_string(&design) else { continue };
-            let Some(id) = e.file_name().and_then(|s| s.to_str()) else { continue };
-            let title = text.lines().find_map(|l| l.strip_prefix("# ")).unwrap_or(id).trim().to_string();
-            out.insert(id.to_string(), (e.clone(), title));
-        }
-    }
-    out
-}
-
-fn copy_tree(src: &Path, dst: &Path) -> std::io::Result<()> {
-    std::fs::create_dir_all(dst)?;
-    for e in std::fs::read_dir(src)? {
-        let e = e?;
-        let target = dst.join(e.file_name());
-        if e.path().is_dir() {
-            copy_tree(&e.path(), &target)?;
-        } else {
-            std::fs::copy(e.path(), target)?;
-        }
-    }
-    Ok(())
-}
-
 fn install_library(src: &Path, dst: &Path, force: bool) -> anyhow::Result<usize> {
-    fn copy_dir(src: &Path, dst: &Path) -> std::io::Result<()> {
-        std::fs::create_dir_all(dst)?;
-        for e in std::fs::read_dir(src)? {
-            let e = e?;
-            let target = dst.join(e.file_name());
-            if e.path().is_dir() {
-                copy_dir(&e.path(), &target)?;
-            } else {
-                std::fs::copy(e.path(), target)?;
-            }
-        }
-        Ok(())
-    }
     let mut n = 0;
     for kind in ["overlays", "presets", "design-systems"] {
         let Ok(rd) = std::fs::read_dir(src.join(kind)) else { continue };
@@ -540,7 +495,7 @@ fn install_library(src: &Path, dst: &Path, force: bool) -> anyhow::Result<usize>
                 continue;
             }
             if e.path().is_dir() {
-                copy_dir(&e.path(), &target)?;
+                kuma_daemon::copy_tree(&e.path(), &target)?;
             } else {
                 std::fs::create_dir_all(target.parent().unwrap())?;
                 std::fs::copy(e.path(), &target)?;

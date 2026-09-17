@@ -384,10 +384,10 @@ fn bake_clips(state: &AppState, project: &Project, ids: &[String], progress: &dy
 /// than another parameter on every function between here and the caller.
 /// Lint one template at the project's frame and rate, so a rule that depends on either
 /// judges the size the video is actually in.
-pub fn lint_template(state: &AppState, id: &str) -> Result<kuma_overlay::LintReport, String> {
+pub fn lint_template(state: &AppState, id: &str) -> anyhow::Result<kuma_overlay::LintReport> {
     let project = read(&state.project).clone();
     let templates = read(&state.templates);
-    let (dir, manifest) = templates.loaded.get(id).ok_or_else(|| format!("unknown template `{id}`"))?;
+    let (dir, manifest) = templates.loaded.get(id).ok_or_else(|| anyhow::anyhow!("unknown template `{id}`"))?;
     let req = kuma_overlay::BakeRequest {
         template_dir: dir,
         manifest,
@@ -398,7 +398,7 @@ pub fn lint_template(state: &AppState, id: &str) -> Result<kuma_overlay::LintRep
         duration: manifest.duration_default,
         speed: 1.0,
     };
-    state.baker.lint(&req).map_err(|e| e.to_string())
+    Ok(state.baker.lint(&req)?)
 }
 
 pub fn compile_options(state: &AppState) -> CompileOptions {
@@ -519,6 +519,27 @@ fn one_usize() -> usize {
     1
 }
 
+/// One frame of the master at t=0, overlays included. Callers name what they change;
+/// adding a field here no longer means visiting every construction.
+impl Default for SampleRequest {
+    fn default() -> Self {
+        SampleRequest {
+            t0: 0.0,
+            t1: None,
+            count: 1,
+            rect: None,
+            width: None,
+            overlays: OverlayScope::default(),
+            sequence: None,
+            overlay: None,
+            duration: None,
+            backdrop: None,
+            frame_width: None,
+            frame_height: None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct Sample {
     pub t: f64,
@@ -604,6 +625,38 @@ pub fn sample_frames(state: &AppState, req: &SampleRequest, progress: &dyn Fn(u8
     Ok(samples)
 }
 
+/// An overlay entry as the workbench or an agent asks to see it: at some length, in some
+/// frame. Both are views, not document values — an entry has no length until a clip
+/// gives it one, and the project's frame is only the default — so they are resolved
+/// against the template and the project here, and **clamped rather than validated**:
+/// nothing is stored, and a silly number costs one render.
+#[derive(Debug, Clone)]
+pub struct EntryView {
+    pub template: String,
+    pub vars: serde_json::Map<String, serde_json::Value>,
+    pub duration: f64,
+    pub width: u32,
+    pub height: u32,
+}
+
+pub fn entry_view(state: &AppState, doc: &Project, id: &str, duration: Option<f64>, width: Option<u32>, height: Option<u32>) -> anyhow::Result<EntryView> {
+    let item = doc.bin.get(id).ok_or_else(|| anyhow::anyhow!("no bin entry `{id}`"))?;
+    let kuma_core::BinSource::Overlay { template, vars } = &item.source else {
+        anyhow::bail!("`{id}` is not an overlay entry");
+    };
+    let default = {
+        let templates = read(&state.templates);
+        templates.loaded.get(template).ok_or_else(|| anyhow::anyhow!("unknown template `{template}`"))?.1.duration_default
+    };
+    Ok(EntryView {
+        template: template.clone(),
+        vars: vars.clone(),
+        duration: duration.filter(|d| d.is_finite() && *d > 0.0).map(|d| d.clamp(0.05, 3600.0)).unwrap_or(default),
+        width: width.unwrap_or(doc.width).clamp(16, 16384),
+        height: height.unwrap_or(doc.height).clamp(16, 16384),
+    })
+}
+
 /// A throwaway project whose master timeline is one overlay clip over a colour, so an
 /// entry can be sampled with no placement in the real document.
 ///
@@ -614,24 +667,20 @@ pub fn sample_frames(state: &AppState, req: &SampleRequest, progress: &dyn Fn(u8
 /// The sequence id carries a hash of what the caller asked for, because it is part of the
 /// frame cache's key: two samples of the same entry and frame over different backdrops
 /// are different pictures and must not share a cached file.
-fn overlay_project(state: &AppState, doc: &Project, id: &str, req: &SampleRequest) -> anyhow::Result<(Project, String)> {
-    let (duration, backdrop) = (req.duration, req.backdrop.as_deref());
+///
+/// Public for the tests: the shape is the contract (one clip, the real fps and revision,
+/// the asked-for frame), and it must not need a renderer to be checked.
+pub fn overlay_project(state: &AppState, doc: &Project, id: &str, req: &SampleRequest) -> anyhow::Result<(Project, String)> {
     let item = doc.bin.get(id).ok_or_else(|| anyhow::anyhow!("no bin entry `{id}`"))?;
-    let kuma_core::BinSource::Overlay { template, .. } = &item.source else {
-        anyhow::bail!("`{id}` is not an overlay entry");
-    };
-    let default = {
-        let templates = read(&state.templates);
-        templates.loaded.get(template).ok_or_else(|| anyhow::anyhow!("unknown template `{template}`"))?.1.duration_default
-    };
-    let d = duration.filter(|d| d.is_finite() && *d > 0.0).map(|d| d.clamp(0.05, 3600.0)).unwrap_or(default);
-    let colour = match backdrop {
+    let view = entry_view(state, doc, id, req.duration, req.frame_width, req.frame_height)?;
+    let d = view.duration;
+    let colour = match req.backdrop.as_deref() {
         // An overlay is transparent, so "nothing behind it" has to be asked for by name.
         Some("transparent") => "#00000000".to_string(),
         Some(c) => c.to_string(),
         None => "#000000".to_string(),
     };
-    let frame = (req.frame_width.unwrap_or(doc.width).clamp(16, 16384), req.frame_height.unwrap_or(doc.height).clamp(16, 16384));
+    let frame = (view.width, view.height);
     let stamp = hash_str(&format!("{d}/{colour}/{}x{}", frame.0, frame.1));
     let seq_id = format!("sample-{id}-{stamp}");
     let bg_id = format!("{seq_id}-bg");

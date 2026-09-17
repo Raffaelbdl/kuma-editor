@@ -60,8 +60,6 @@ pub struct Staged {
     pub is_still: bool,
     /// |speed|, which the effective frame rate implements.
     pub speed: f64,
-    /// Internal duration the contract was injected with, seconds.
-    pub duration: f64,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -213,7 +211,7 @@ impl Baker {
         let html = std::fs::read_to_string(&entry)?;
         let contract = Contract { vars: &vars, fps: req.fps, width: req.width, height: req.height, duration: internal_duration, speed: req.speed, bake: true, clip: None, head_extra: "" };
         std::fs::write(&entry, contract.apply(&html))?;
-        Ok(Staged { dir: src.to_path_buf(), entry, is_still, speed, duration: internal_duration })
+        Ok(Staged { dir: src.to_path_buf(), entry, is_still, speed })
     }
 
     /// Render into `work`; the result describes paths under `dir`, where `work` ends up.

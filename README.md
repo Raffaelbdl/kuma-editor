@@ -104,14 +104,15 @@ it into `~/.cargo/bin`, tell it where the repository is once:
 export KUMA_REPO=/path/to/kuma-editor        # or pass --repo <path> on each call
 ```
 
-Overlay templates and effect presets are **assets shared across projects**, not part of
-the codebase: they live in a user library at `~/.local/share/kuma/{overlays,presets}`
+Overlay templates, effect presets and design systems are **assets shared across
+projects**, not part of the codebase: they live in a user library at
+`~/.local/share/kuma/{overlays,presets,design-systems}`
 (`$XDG_DATA_HOME/kuma`), plus any directories in `KUMA_LIBRARY` (a `:`-separated path
 list) and a project's own `overlays/` and `presets/` folders. Later entries win on an id
 clash. The repository ships a starter set under `library/`; install it once:
 
 ```
-kuma library                                 # copies library/{overlays,presets} → ~/.local/share/kuma (--force to overwrite)
+kuma library                                 # copies library/{overlays,presets,design-systems} → ~/.local/share/kuma (--force to overwrite)
 kuma thumbs                                  # a still and a moving preview (animated WebP, alpha) per template and overlay entry
 ```
 
@@ -341,6 +342,26 @@ installed before a template existed picks it up with another `kuma library` (it 
 Effect presets are `<library>/presets/*.json` (Ken Burns, zoom to region, vignette,
 picture-in-picture, dim) and expand to ordinary effects; `$expr` values may use the
 project's `width`/`height`.
+
+## Design systems
+
+A design system is **a document, copied into the project**, that says what this video's
+overlays look like: colour roles, type sizes in `u`, geometry, motion, and the legibility
+floors that footage imposes. It is how six overlays made at different times end up looking
+like one video.
+
+```
+kuma design-system                          # what is installed
+kuma design-system studio                   # copy it to <project>/design-system/ (--force to replace)
+```
+
+`design-system/DESIGN.md` is what an agent reads before authoring or restyling an overlay;
+`design-system/tokens.css` is the same values as a `:root { --ds-… }` block to copy into a
+template's first `<style>`. **Nothing is injected at runtime** — applying a design system
+is an edit to the template or to an entry's vars, so a template stays readable on its own
+and the values live with the rest of the project's decisions. The starter pair is `studio`
+(dark, one saturated accent — the look of the shipped templates) and `broadcast` (light,
+editorial, no bounce); `library/design-systems/CLAUDE.md` says how to write another.
 
 ## What works (verified in this repo's tests and smoke runs)
 

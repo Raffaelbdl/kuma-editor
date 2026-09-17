@@ -36,6 +36,12 @@ sped up (MLT cannot time-warp a timeline: render it out and place the result as 
 be empty when placed. Track and clip ids are unique across the *whole project*, not per sequence.
 `sample_frames` and `render` take an optional `sequence` and default to the master.
 
+If the project directory holds a `design-system/` folder, read `design-system/DESIGN.md` before
+authoring or restyling an overlay and take its colours, type, geometry and motion from there;
+`tokens.css` beside it is the same values as a `:root` block to copy into a template. Nothing is
+injected at runtime — a design system is a document, and applying it is your edit. `health` says
+whether this project has one.
+
 Overlay entries reference an HTML template (`list_templates`). Templates live in the user's library
 (`~/.local/share/kuma/overlays/<id>/`) or in the project's own `overlays/<id>/`, as a folder with
 `index.html` + `template.json`; call `template_guide` before authoring one. Overlays are live DOM in

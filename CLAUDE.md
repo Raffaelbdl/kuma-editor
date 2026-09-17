@@ -16,12 +16,13 @@ crates/kuma-mlt       JSON → MLT XML compiler (the only place MLT's rules live
 crates/kuma-overlay   hyperframes bake driver, content-hash cache, ffprobe helpers
 crates/kuma-daemon    HTTP/WS API, undo, jobs, overlay live-preview routes, preview engine transport
 crates/kuma-mcp       rmcp stdio MCP server proxying the daemon
-crates/kuma-cli       `kuma` binary: serve | mcp | render | bake | sample | library | …
+crates/kuma-cli       `kuma` binary: serve | mcp | render | bake | sample | lint | design-system | library | …
 engine/               C++ libmlt++ preview engine (JPEG over stdout, SDL2-paced audio)
 ui/                   Vite + TypeScript editor (no framework)
 app/                  Electron shell: project launcher, windows, daemon lifecycle
 library/overlays/     starter overlay templates (folder = template) + `_vendor/{gsap.min.js,kuma.js,kuma.css}`
 library/presets/      starter effect presets (typed params + `$expr` substitution)
+library/design-systems/ starter design systems: `DESIGN.md` + `tokens.css`, copied into a project
 ```
 
 Templates and presets are user assets, not code: at runtime kuma reads
@@ -86,6 +87,10 @@ Chrome headless shell if hyperframes should not download one.
   transitions, A/B lanes for dissolves) stays in `crates/kuma-mlt/src/compile.rs`.
   `tests/fixtures/reference.mlt` is a golden file: regenerate with
   `UPDATE_GOLDEN=1 cargo test -p kuma-mlt` and read the diff.
+- A **design system** is a document, not a runtime layer: `kuma design-system <id>` copies
+  one into `<project>/design-system/` and an agent reads it there. Nothing injects it, so
+  applying it is an ordinary edit to a template or to an entry's vars — do not add a
+  cascade that would re-style finished videos behind the editor's back.
 - A template is **checked, not discovered to be broken**: `Baker::lint` reads the staged
   document (contract injected, `_vendor/` in place) and adds hyperframes' own linter, and
   `kuma new-template` writes a skeleton that passes it. A test lints every shipped

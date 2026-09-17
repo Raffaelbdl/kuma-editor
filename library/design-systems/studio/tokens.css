@@ -1,0 +1,34 @@
+/* Studio — the machine-readable half of DESIGN.md.
+ *
+ * Copy this :root block into a template's first <style> and reference the custom
+ * properties from then on, so a change of mind is one edit rather than a search.
+ * Lengths are in kuma's `--u` (1vh × the `size` var), which is what makes a template
+ * survive both orientations; `--u` itself comes from `_vendor/kuma.css`.
+ */
+:root {
+  --ds-accent: #ff4f00;
+  --ds-surface: rgba(12, 12, 18, 0.82);
+  --ds-ink: #ffffff;
+  --ds-ink-2: rgba(255, 255, 255, 0.72);
+  --ds-scrim: linear-gradient(transparent, rgba(0, 0, 0, 0.65));
+  --ds-shadow: 0 calc(0.6 * var(--u)) calc(2 * var(--u)) rgba(0, 0, 0, 0.4);
+
+  --ds-font: "Segoe UI", system-ui, -apple-system, sans-serif;
+  --ds-title: calc(3.2 * var(--u));
+  --ds-label: calc(2.6 * var(--u));
+  --ds-secondary: calc(1.9 * var(--u));
+  --ds-weight-title: 800;
+  --ds-weight-label: 600;
+
+  --ds-radius: calc(0.7 * var(--u));
+  --ds-pad-y: calc(0.9 * var(--u));
+  --ds-pad-x: calc(1.6 * var(--u));
+  --ds-rule: calc(0.5 * var(--u));
+  --ds-gap: calc(1.2 * var(--u));
+
+  --ds-in: 0.45s;
+  --ds-out: 0.35s;
+  --ds-ease-in: power3.out;   /* GSAP names: these are read by script, not by CSS */
+  --ds-ease-out: power2.in;
+  --ds-safe: 5%;
+}

@@ -31,6 +31,19 @@ same folder.
 - `_vendor/kuma.css` — the transparent reset and the `--u` unit (`1vh × --var-size`).
 - `_vendor/gsap.min.js`.
 
+## Read the project's design system first
+
+If the project directory has a `design-system/` folder, read `design-system/DESIGN.md`
+before authoring or restyling anything, and take the colours, type, geometry and motion
+from it rather than inventing them. `design-system/tokens.css` is the same values as a
+`:root` block: copy it into the template's first `<style>` and reference `var(--ds-*)`.
+That is the whole mechanism — nothing is injected at runtime, so what a template ends up
+with is what you wrote into it, and a template stays readable on its own.
+
+A project gets one with `kuma design-system <id>` (`kuma design-system` lists what is
+installed; `kuma library` installs the starter set). A project without one is not a
+mistake: use the template's own defaults and keep them consistent across the video.
+
 ## Start from the scaffold, and check your work
 
 Do not write a template from an empty file. `kuma new-template <id>` (the `new_template`

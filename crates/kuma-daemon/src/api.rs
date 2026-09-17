@@ -147,6 +147,10 @@ async fn health(State(st): S) -> Json<Value> {
         "template_dirs": st.config.all_template_dirs(),
         "templates_loaded": read(&st.templates).loaded.len(),
         "template_errors": read(&st.templates).errors,
+        // Not loaded by the daemon: a design system is a folder copied into the project
+        // for an agent to read (`kuma design-system <id>`). Reported so `doctor` and an
+        // agent can see whether this project has one.
+        "design_system": st.config.project_design_system(),
         "preview_engine": preview::PreviewHandle::engine_path(&st).is_file(),
         "preview_running": st.preview.get().is_some(),
         "sequence": st.current_sequence(),

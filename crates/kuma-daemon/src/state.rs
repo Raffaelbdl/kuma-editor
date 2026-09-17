@@ -39,6 +39,17 @@ impl Config {
     pub fn all_preset_dirs(&self) -> Vec<PathBuf> {
         self.library_dirs.iter().map(|d| d.join("presets")).chain([self.project_root().join("presets")]).collect()
     }
+    /// Where installed design systems are looked for. Unlike templates and presets these
+    /// are not read at runtime: one is **copied into the project** and the agent reads it
+    /// there, so the project is the destination rather than the last search path entry.
+    pub fn design_system_dirs(&self) -> Vec<PathBuf> {
+        self.library_dirs.iter().map(|d| d.join("design-systems")).collect()
+    }
+    /// The design system this project carries, if it has been given one.
+    pub fn project_design_system(&self) -> Option<PathBuf> {
+        let d = self.project_root().join("design-system/DESIGN.md");
+        d.is_file().then_some(d)
+    }
 }
 
 /// The user's asset library: `$XDG_DATA_HOME/kuma` (`~/.local/share/kuma`), holding

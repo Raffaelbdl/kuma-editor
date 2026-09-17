@@ -97,7 +97,15 @@ enum Cmd {
     Lint { templates: Vec<String> },
     /// Generate `thumb.png` for overlay templates (all, or the given ids).
     Thumbs { templates: Vec<String> },
-    /// Install the starter templates and presets into the user library (`~/.local/share/kuma`).
+    /// Copy a design system into the project for the agent to read (`design-system/`).
+    /// With no id, list what is installed.
+    DesignSystem {
+        id: Option<String>,
+        /// Replace the project's current one.
+        #[arg(long)]
+        force: bool,
+    },
+    /// Install the starter templates, presets and design systems into the user library (`~/.local/share/kuma`).
     Library {
         /// Overwrite templates that already exist in the library.
         #[arg(long)]
@@ -320,6 +328,34 @@ async fn main() -> anyhow::Result<()> {
                 println!("{id:16} {}", out.display());
             }
         }
+        Cmd::DesignSystem { id, force } => {
+            let state = open(&cli)?;
+            let dirs = state.config.design_system_dirs();
+            let installed = design_systems(&dirs);
+            let Some(id) = id else {
+                if installed.is_empty() {
+                    println!("no design systems installed — run `kuma library` (or point KUMA_LIBRARY at a folder of them)");
+                }
+                for (id, (dir, title)) in &installed {
+                    let here = state.config.project_design_system().is_some_and(|p| std::fs::read_to_string(p).ok().as_deref() == std::fs::read_to_string(dir.join("DESIGN.md")).ok().as_deref());
+                    println!("{id}\t{title}{}", if here { "  (this project's)" } else { "" });
+                }
+                return Ok(());
+            };
+            let (src, title) = installed.get(id).cloned().ok_or_else(|| anyhow::anyhow!("unknown design system `{id}` — `kuma design-system` lists what is installed"))?;
+            // One fixed place, so the contract can say where it is and the agent can look
+            // without being told: `<project>/design-system/`.
+            let dst = state.config.project_root().join("design-system");
+            if dst.exists() && !*force {
+                anyhow::bail!("{} already exists — pass --force to replace it", dst.display());
+            }
+            if dst.exists() {
+                std::fs::remove_dir_all(&dst)?;
+            }
+            copy_tree(&src, &dst)?;
+            println!("{title} → {}", dst.display());
+            println!("The agent reads `design-system/DESIGN.md`; templates copy the `:root` block from `tokens.css`.");
+        }
         Cmd::Library { force } => {
             let src = repo_root(&cli)?.join("library");
             let dst = default_library_dirs().remove(0);
@@ -407,6 +443,12 @@ async fn doctor(cli: &Cli) -> anyhow::Result<()> {
         let (loaded, errors) = kuma_core::template::TemplateManifest::load_all(&d);
         println!("templates     {} — {} loaded{}", d.display(), loaded.len(), if errors.is_empty() { String::new() } else { format!(", {} failed: {}", errors.len(), errors[0]) });
     }
+    println!(
+        "design system {}",
+        cfg.project_design_system()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|| format!("none in this project — `kuma design-system` lists {} installed", design_systems(&cfg.design_system_dirs()).len()))
+    );
     println!("ui            {}", ok(cfg.repo_root.join("ui/dist").is_dir(), "ui/dist", "cd ui && npm run build"));
     println!("engine        {}", ok(cfg.repo_root.join("engine/build/kuma-preview").is_file(), "engine/build/kuma-preview", "cmake -S engine -B engine/build && cmake --build engine/build -j"));
     println!("melt          {}", ok(kuma_mlt::melt::melt_available(), "ok", "apt install melt"));
@@ -431,6 +473,37 @@ async fn doctor(cli: &Cli) -> anyhow::Result<()> {
 
 /// Copy `<src>/{overlays,presets}` into the library, skipping entries that already exist
 /// unless `force`. Returns the number of entries written.
+/// Design systems on the search path, by id: where it is and the title of its `DESIGN.md`
+/// (its first heading). Later directories win, as they do for templates.
+fn design_systems(dirs: &[PathBuf]) -> std::collections::BTreeMap<String, (PathBuf, String)> {
+    let mut out = std::collections::BTreeMap::new();
+    for dir in dirs {
+        let Ok(rd) = std::fs::read_dir(dir) else { continue };
+        for e in rd.flatten().map(|e| e.path()) {
+            let design = e.join("DESIGN.md");
+            let Ok(text) = std::fs::read_to_string(&design) else { continue };
+            let Some(id) = e.file_name().and_then(|s| s.to_str()) else { continue };
+            let title = text.lines().find_map(|l| l.strip_prefix("# ")).unwrap_or(id).trim().to_string();
+            out.insert(id.to_string(), (e.clone(), title));
+        }
+    }
+    out
+}
+
+fn copy_tree(src: &Path, dst: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for e in std::fs::read_dir(src)? {
+        let e = e?;
+        let target = dst.join(e.file_name());
+        if e.path().is_dir() {
+            copy_tree(&e.path(), &target)?;
+        } else {
+            std::fs::copy(e.path(), target)?;
+        }
+    }
+    Ok(())
+}
+
 fn install_library(src: &Path, dst: &Path, force: bool) -> anyhow::Result<usize> {
     fn copy_dir(src: &Path, dst: &Path) -> std::io::Result<()> {
         std::fs::create_dir_all(dst)?;
@@ -446,7 +519,7 @@ fn install_library(src: &Path, dst: &Path, force: bool) -> anyhow::Result<usize>
         Ok(())
     }
     let mut n = 0;
-    for kind in ["overlays", "presets"] {
+    for kind in ["overlays", "presets", "design-systems"] {
         let Ok(rd) = std::fs::read_dir(src.join(kind)) else { continue };
         for e in rd.flatten() {
             let target = dst.join(kind).join(e.file_name());

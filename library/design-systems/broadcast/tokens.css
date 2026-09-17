@@ -1,0 +1,31 @@
+/* Broadcast — the machine-readable half of DESIGN.md. See Studio's tokens.css for how
+ * these are meant to be used: copy the :root block into the template's first <style>.
+ * Lengths are in kuma's `--u` (1vh × the `size` var).
+ */
+:root {
+  --ds-ink: #0f1115;
+  --ds-ink-2: #565b66;
+  --ds-surface: rgba(255, 255, 255, 0.94);
+  --ds-accent: #c8102e;
+  --ds-scrim: linear-gradient(transparent, rgba(0, 0, 0, 0.45));
+  --ds-hairline: rgba(15, 17, 21, 0.12);
+
+  --ds-font-name: Georgia, "Iowan Old Style", serif;
+  --ds-font: "Segoe UI", system-ui, sans-serif;
+  --ds-name: calc(3 * var(--u));
+  --ds-role: calc(1.9 * var(--u));
+  --ds-caption: calc(1.8 * var(--u));
+  --ds-caps-tracking: 0.08em;
+
+  --ds-radius: 0;
+  --ds-pad-y: calc(1.2 * var(--u));
+  --ds-pad-x: calc(2 * var(--u));
+  --ds-rule: calc(0.35 * var(--u));
+
+  --ds-in: 0.5s;
+  --ds-out: 0.4s;
+  --ds-stagger: 0.12s;
+  --ds-ease-in: power2.out;    /* GSAP names: read by script, not by CSS */
+  --ds-ease-out: power1.in;
+  --ds-safe: 6%;
+}

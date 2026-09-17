@@ -11,7 +11,7 @@ import { button, el, options } from "../dom";
 import { store, toast } from "../store";
 import type { BinItem, Clip, Cue, Effect, PatchOp, VarSpec } from "../types";
 import { placeBinItem } from "../edits";
-import { binItem, binPath, canTimeWarp, expandPreset, isColorSource, isFileSource, isOverlaySource, isSequenceSource, isTimedMedia, placementsOf, seqDuration, wouldRecurse } from "../types";
+import { binItem, binPath, canTimeWarp, childrenOf, expandPreset, hasAudio, isColorSource, isFileSource, isOverlaySource, isSequenceSource, isTimedMedia, placementsOf, seqDuration, wouldRecurse } from "../types";
 
 const presetsPromise = api.effectPresets().catch(() => []);
 
@@ -82,9 +82,12 @@ export class Inspector {
     }
     this.renderEffects(clip, path);
 
-    const del = button("Delete clip", () => store.patch([{ op: "remove", path }], `delete ${clip.id}`));
-    del.style.marginTop = "12px";
-    this.host.appendChild(del);
+    const actions = el("div", "insp-actions");
+    // From a clip the subtitles land over it, aligned: the daemon copies its start, end
+    // and speed and sets the entry's offset to its `in`.
+    if (hasAudio(item)) actions.appendChild(transcribeButton({ clip: clip.id }, "Transcribe the audio and place aligned subtitles over this clip"));
+    actions.appendChild(button("Delete clip", () => store.patch([{ op: "remove", path }], `delete ${clip.id}`)));
+    this.host.appendChild(actions);
   }
 
   /**
@@ -103,6 +106,11 @@ export class Inspector {
 
     const places = placementsOf(p, id);
     this.host.appendChild(el("p", "muted tiny", places === 0 ? "Not placed on any timeline yet." : `Placed by ${places} clip${places > 1 ? "s" : ""} — these apply to all of them.`));
+    if (item.parent) {
+      const under = el("div", "field");
+      under.append(el("label", "", "Under"), linkButton(`${p.bin[item.parent]?.name || item.parent} →`, () => store.selectItem("bin", item.parent!)));
+      this.host.appendChild(under);
+    }
 
     this.host.appendChild(field("Name", textInput(item.name, (v) => store.patch([{ op: "replace", path: `${bp}/name`, value: v }], `name ${id}`))));
     this.renderSource(id, item, bp);
@@ -112,18 +120,9 @@ export class Inspector {
     if (!wouldRecurse(p, id, store.state.sequence)) {
       actions.appendChild(button("Add at playhead", () => placeBinItem(id, store.state.playhead)));
     }
-    // Speech to text lands in the bin, not on the clip: the subtitles entry is placed
-    // like any overlay, and reads the same whichever clip of this media it sits over.
-    if (isFileSource(item.source) && item.source.kind !== "image" && item.meta?.has_audio !== false) {
-      actions.appendChild(button("Transcribe → subtitles", async () => {
-        try {
-          const r = await api.transcribe(id, p.revision);
-          toast(`Transcribe job #${r.job} started`, "ok");
-        } catch (e) {
-          toast((e as Error).message, "err");
-        }
-      }, "Run the local speech-to-text model and add a subtitles entry to the bin"));
-    }
+    // From the entry the subtitles are listed under it and left for you to place; to get
+    // them aligned on the timeline, transcribe from a clip instead.
+    if (hasAudio(item)) actions.appendChild(transcribeButton({ bin: id }, "Run the local speech-to-text model and add a subtitles entry under this one"));
     if (isSequenceSource(item.source)) {
       const open = button("Open", () => store.openSequence(id), "Edit its own timeline");
       (open as HTMLButtonElement).disabled = id === store.state.sequence;
@@ -131,6 +130,8 @@ export class Inspector {
     }
     const remove = button("Remove from bin", () => {
       if (places) return toast(`${id} is placed by ${places} clip${places > 1 ? "s" : ""}`, "err");
+      const kids = childrenOf(p, id).length;
+      if (kids) return toast(`${id} has ${kids} entr${kids > 1 ? "ies" : "y"} listed under it`, "err");
       if (id === p.master) return toast("The master sequence cannot be removed", "err");
       void store.patch([{ op: "remove", path: bp }], `remove ${id}`);
     });
@@ -257,6 +258,18 @@ export class Inspector {
     wrap.append(preset, params);
     return wrap;
   }
+}
+
+/** Start a transcribe job; the entry (and clip) arrive with the job's revision. */
+function transcribeButton(what: { bin: string } | { clip: string }, title: string): HTMLButtonElement {
+  return button("Transcribe → subtitles", async () => {
+    try {
+      const r = await api.transcribe(what, store.state.project!.revision);
+      toast(`Transcribe job #${r.job} started`, "ok");
+    } catch (e) {
+      toast((e as Error).message, "err");
+    }
+  }, title);
 }
 
 // ---- inputs --------------------------------------------------------------------

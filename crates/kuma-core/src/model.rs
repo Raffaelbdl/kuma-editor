@@ -106,6 +106,7 @@ impl Project {
                 markers: Vec::new(),
             }),
             meta: None,
+            parent: None,
         };
         Project {
             name: name.into(),
@@ -233,6 +234,17 @@ impl Project {
     pub fn free_bin_id(&self, prefix: &str) -> BinId {
         (1..).map(|n| format!("{prefix}{n}")).find(|id| !self.bin.contains_key(id)).unwrap_or_default()
     }
+
+    /// Lowest free `<prefix><n>` track or clip id — one namespace, the whole project.
+    pub fn free_track_or_clip_id(&self, prefix: &str) -> String {
+        let taken: HashSet<&str> = self.sequences().flat_map(|(_, s)| s.tracks.iter().flat_map(|t| std::iter::once(t.id.as_str()).chain(t.clips.iter().map(|c| c.id.as_str())))).collect();
+        (1..).map(|n| format!("{prefix}{n}")).find(|id| !taken.contains(id.as_str())).unwrap_or_default()
+    }
+
+    /// Entries listed directly under `parent` (`None` for the top level), in bin order.
+    pub fn children<'a>(&'a self, parent: Option<&'a str>) -> impl Iterator<Item = (&'a BinId, &'a BinItem)> + 'a {
+        self.bin.iter().filter(move |(_, i)| i.parent.as_deref() == parent)
+    }
 }
 
 /// A depth-first walk of the sequence graph, shared by `compile_order` (one root, and the
@@ -299,6 +311,11 @@ pub struct BinItem {
     /// Probed metadata for file entries, filled in by `probe_media`. Informational.
     #[serde(default)]
     pub meta: Option<MediaMeta>,
+    /// The entry this one is listed under in the browser: a transcript under the media it
+    /// came from, later a folder. Organisation only — nothing about rendering reads it.
+    /// Identity stays the id, so moving an entry is one field and no clip changes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent: Option<BinId>,
 }
 
 /// What a bin entry actually is. Exactly one variant.

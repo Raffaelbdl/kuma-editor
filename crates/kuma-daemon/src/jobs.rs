@@ -92,6 +92,7 @@ pub fn add_media(state: &AppState, path: &Path, id: Option<String>, base_revisio
         name: stem,
         source: kuma_core::BinSource::File { path: rel.to_string_lossy().into_owned(), kind: probe.kind, proxy: None },
         meta: Some(probe.meta),
+        parent: None,
     };
     let (rev, warnings) = state.apply_patch(&[add_bin_op(&id, serde_json::to_value(item)?)?], base_revision, origin)?;
     Ok((id, rev, warnings))
@@ -102,8 +103,14 @@ const SUBTITLES_TEMPLATE: &str = "subtitles";
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct TranscribeRequest {
-    /// The media entry to transcribe.
-    pub bin: String,
+    /// The media entry to transcribe. The result is listed under it, unplaced.
+    #[serde(default)]
+    pub bin: Option<String>,
+    /// Or a clip playing one: the result is placed over that clip, aligned to it — same
+    /// start, end and speed, and the entry's `offset` is the clip's `in` — on the first
+    /// overlay track with room there, else a new one. One of `bin` or `clip`.
+    #[serde(default)]
+    pub clip: Option<String>,
     /// Id for the new subtitles entry. Defaults to `<bin>-subs`.
     #[serde(default)]
     pub id: Option<String>,
@@ -119,20 +126,27 @@ fn default_origin() -> String {
 }
 
 /// Transcribe a media entry's audio and add the result to the bin as a `subtitles`
-/// overlay entry, cues in source seconds. It is not attached to the media: place it
-/// where you like, and set its `offset` var to the media clip's `in` if that is not 0.
-/// One patch, so it is revision-checked and one undo step like any other edit.
+/// overlay entry under that media, cues in source seconds. From a clip, also place it
+/// over the clip. One patch either way, so it is revision-checked and one undo step.
 pub fn transcribe(state: &AppState, req: &TranscribeRequest, progress: &dyn Fn(u8, &str)) -> anyhow::Result<serde_json::Value> {
     let project = read(&state.project).clone();
-    let item = project.bin.get(&req.bin).ok_or_else(|| anyhow::anyhow!("no bin entry `{}`", req.bin))?;
-    let BinSource::File { path, .. } = &item.source else { anyhow::bail!("`{}` is not a media file", req.bin) };
+    let (bin, placement) = match (&req.bin, &req.clip) {
+        (Some(bin), None) => (bin.clone(), None),
+        (None, Some(id)) => {
+            let (seq, _, clip) = project.find_clip(id).ok_or_else(|| anyhow::anyhow!("no clip `{id}`"))?;
+            (clip.bin.clone(), Some((seq.clone(), clip.clone())))
+        }
+        _ => anyhow::bail!("pass exactly one of `bin` or `clip`"),
+    };
+    let item = project.bin.get(&bin).ok_or_else(|| anyhow::anyhow!("no bin entry `{bin}`"))?;
+    let BinSource::File { path, .. } = &item.source else { anyhow::bail!("`{bin}` is not a media file") };
     if item.meta.as_ref().is_some_and(|m| !m.has_audio) {
-        anyhow::bail!("`{}` has no audio", req.bin);
+        anyhow::bail!("`{bin}` has no audio");
     }
     if !read(&state.templates).loaded.contains_key(SUBTITLES_TEMPLATE) {
         anyhow::bail!("the `{SUBTITLES_TEMPLATE}` template is not in any library; run `kuma library`");
     }
-    let id = req.id.clone().unwrap_or_else(|| format!("{}-subs", req.bin));
+    let id = req.id.clone().unwrap_or_else(|| format!("{bin}-subs"));
     if project.bin.contains_key(&id) {
         anyhow::bail!("bin id `{id}` already exists (pass a different id)");
     }
@@ -140,20 +154,47 @@ pub fn transcribe(state: &AppState, req: &TranscribeRequest, progress: &dyn Fn(u
     let media = resolve_path(state, Path::new(path));
     let cues = state.transcriber.transcribe(&media, &state.config.cache_dir().join("transcripts"), &req.options).map_err(|e| anyhow::anyhow!(e))?;
     progress(90, "adding to the bin");
+    let mut vars = serde_json::Map::from_iter([("cues".to_string(), serde_json::to_value(&cues)?)]);
+    let mut ops = Vec::new();
+    if let Some((seq, clip)) = &placement {
+        if clip.source_in != 0.0 {
+            vars.insert("offset".into(), clip.source_in.into());
+        }
+        // The overlay clip copies the media clip's start, end and speed, so at every
+        // timeline instant the template's own time is `source − in`: the cues line up.
+        let tracks = &project.seq(seq).ok_or_else(|| anyhow::anyhow!("`{seq}` is not a sequence"))?.tracks;
+        let free = |t: &kuma_core::Track| t.kind == kuma_core::TrackKind::Overlay && !t.clips.iter().any(|c| c.start < clip.end && c.end > clip.start);
+        let ti = match tracks.iter().position(free) {
+            Some(ti) => ti,
+            None => {
+                let track = kuma_core::Track { id: project.free_track_or_clip_id("o"), kind: kuma_core::TrackKind::Overlay, name: "Subtitles".into(), muted: false, hidden: false, clips: vec![], transitions: vec![] };
+                ops.push(add_op(&format!("/bin/{seq}/source/tracks/-"), serde_json::to_value(track)?)?);
+                tracks.len()
+            }
+        };
+        let placed = kuma_core::Clip { id: project.free_track_or_clip_id("subs"), start: clip.start, end: clip.end, bin: id.clone(), source_in: 0.0, speed: clip.speed, volume: 1.0, muted: false, effects: vec![], label: String::new() };
+        ops.push(add_op(&format!("/bin/{seq}/source/tracks/{ti}/clips/-"), serde_json::to_value(placed)?)?);
+    }
     let entry = kuma_core::BinItem {
-        name: format!("Subtitles: {}", item.display_name(&req.bin)),
-        source: BinSource::Overlay { template: SUBTITLES_TEMPLATE.into(), vars: [("cues".to_string(), serde_json::to_value(&cues)?)].into_iter().collect() },
+        name: format!("Subtitles: {}", item.display_name(&bin)),
+        source: BinSource::Overlay { template: SUBTITLES_TEMPLATE.into(), vars },
         meta: None,
+        parent: Some(bin.clone()),
     };
-    let (rev, warnings) = state.apply_patch(&[add_bin_op(&id, serde_json::to_value(entry)?)?], req.base_revision, &req.origin)?;
-    Ok(serde_json::json!({ "bin": id, "cues": cues.len(), "revision": rev, "warnings": warnings }))
+    // The entry first: the clip that places it must find it.
+    ops.insert(0, add_bin_op(&id, serde_json::to_value(entry)?)?);
+    let (rev, warnings) = state.apply_patch(&ops, req.base_revision, &req.origin)?;
+    Ok(serde_json::json!({ "bin": id, "cues": cues.len(), "placed": placement.is_some(), "revision": rev, "warnings": warnings }))
+}
+
+fn add_op(pointer: &str, value: serde_json::Value) -> anyhow::Result<json_patch::PatchOperation> {
+    Ok(json_patch::PatchOperation::Add(json_patch::AddOperation { path: pointer.parse()?, value }))
 }
 
 /// `add /bin/<id>`, the id escaped as a pointer segment so a bad one is refused by the
 /// validator rather than landing somewhere else.
 fn add_bin_op(id: &str, value: serde_json::Value) -> anyhow::Result<json_patch::PatchOperation> {
-    let pointer = format!("/bin/{}", id.replace('~', "~0").replace('/', "~1"));
-    Ok(json_patch::PatchOperation::Add(json_patch::AddOperation { path: pointer.parse()?, value }))
+    add_op(&format!("/bin/{}", id.replace('~', "~0").replace('/', "~1")), value)
 }
 
 pub type Bakes = HashMap<String, OverlayBake>;

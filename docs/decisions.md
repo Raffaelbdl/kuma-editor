@@ -264,10 +264,27 @@ fifth `BinSource` variant, would have touched the compiler, the validator, the b
 thumbnail job and the UI for something that "HTML templates subsume title clips" already
 covers: a subtitle is a title with timing.
 
-**Not attached to the media** — adopted, as asked. Cues stay in source seconds and the
-entry carries an `offset` var for a trimmed media clip's `in`. The job takes a bin entry,
-never a clip, so the transcript reads the same over every clip of that media; attaching it
-to one placement would make trimming that clip silently shift the words.
+**Listed under the media, aligned from a clip** — adopted, replacing a first cut where
+the job took only a bin entry and left placement to the user. Cues stay in source seconds
+and the entry carries an `offset` var. From a *clip*, the job places the subtitles over
+it in the same patch, copying the clip's start, end and speed and setting `offset` to its
+`in`: at every timeline instant the template's own time is then `source − in`, so the
+cues line up exactly, speed included, with no per-cue arithmetic. It goes on the first
+overlay track with room at that range, else on a new one — alignment is the point, so a
+clip is never pushed along a busy track the way an ordinary drop is. From a bin entry the
+job makes the entry alone.
+
+**`parent` on a bin entry, not path-shaped ids** — adopted, and it is the ground for
+folders. A transcript is listed under its media through `parent: Option<BinId>`,
+meaning only "shown under this entry in the browser"; nothing about rendering reads it.
+Path-shaped ids (`speech/audio.mp3/subtitles`) were rejected: the id would become the
+location, so moving or renaming a folder would rename every descendant and rewrite every
+clip that references one, and a `/` breaks the id rule that keeps bin ids usable as XML
+ids, URL segments, cache file names and pointer segments. Kdenlive stores a folder id per
+clip for the same reason. Not `children` lists on the parent either: two-way lists drift.
+A folder, when wanted, is a `BinSource` variant the validator refuses to place, and costs
+nothing else. The validator refuses a dangling or circular parent, which is also what
+stops removing a media entry while its transcript is listed under it.
 
 **whisper.cpp as a subprocess** — adopted, the way melt and ffmpeg are. `whisper-cli` on
 `PATH` (`KUMA_WHISPER_BIN`) and a ggml model in `~/.local/share/kuma/models`

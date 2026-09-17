@@ -101,6 +101,25 @@ pub fn validate(p: &Project, ctx: &ValidationContext) -> Vec<Issue> {
             // A sequence's own contents are checked below, with every other timeline.
             BinSource::Sequence(_) => {}
         }
+        // `parent` is organisation, but a dangling or circular one still breaks the
+        // browser: the chain up from every entry must end at the top level.
+        if let Some(parent) = &item.parent {
+            let mut seen = HashSet::from([id.as_str()]);
+            let mut at = Some(parent.as_str());
+            while let Some(cur) = at {
+                if !seen.insert(cur) {
+                    issues.push(Issue::error(format!("{ip}/parent"), format!("`{id}` is inside itself through `{cur}`")));
+                    break;
+                }
+                match p.bin.get(cur) {
+                    Some(i) => at = i.parent.as_deref(),
+                    None => {
+                        issues.push(Issue::error(format!("{ip}/parent"), format!("parent `{cur}` is not in the bin")));
+                        break;
+                    }
+                }
+            }
+        }
     }
 
     match p.bin.get(&p.master) {
@@ -418,6 +437,19 @@ mod tests {
             v["bin"]["main"] = json!({ "name": "Main", "source": { "tracks": tracks } });
         }
         serde_json::from_value(v).unwrap()
+    }
+
+    #[test]
+    fn a_parent_must_exist_and_not_ring() {
+        let entry = |parent: Option<&str>| json!({ "source": { "color": "#000" }, "parent": parent });
+        let ok = project(json!({ "bin": { "a": entry(None), "b": entry(Some("a")), "c": entry(Some("b")) }, "tracks": [] }));
+        assert!(validate(&ok, &Default::default()).is_empty());
+        assert_eq!(ok.children(Some("a")).map(|(id, _)| id.as_str()).collect::<Vec<_>>(), ["b"]);
+        let dangling = project(json!({ "bin": { "b": entry(Some("gone")) }, "tracks": [] }));
+        assert!(validate(&dangling, &Default::default()).iter().any(|i| i.path == "/bin/b/parent" && i.message.contains("not in the bin")));
+        let ring = project(json!({ "bin": { "a": entry(Some("b")), "b": entry(Some("a")), "s": entry(Some("s")) }, "tracks": [] }));
+        let bad: Vec<_> = validate(&ring, &Default::default()).into_iter().filter(|i| i.path.ends_with("/parent")).collect();
+        assert_eq!(bad.len(), 3, "{bad:?}");
     }
 
     /// Where a clip lives in the document now that timelines hang off the bin.

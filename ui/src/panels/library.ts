@@ -14,7 +14,7 @@ import { button, el } from "../dom";
 import { store, toast } from "../store";
 import { addFromLibrary } from "../edits";
 import type { BinItem, Project } from "../types";
-import { isSequenceSource, itemKind } from "../types";
+import { childrenOf, isSequenceSource, itemKind } from "../types";
 
 export class Library {
   constructor(private host: HTMLElement) {
@@ -42,10 +42,21 @@ export class Library {
   }
 
   private renderBin(p: Project) {
-    const entries = Object.entries(p.bin);
-    if (!entries.length) this.host.appendChild(el("p", "muted", "Empty. Add media below, or an overlay from the Templates tab."));
+    if (!Object.keys(p.bin).length) this.host.appendChild(el("p", "muted", "Empty. Add media below, or an overlay from the Templates tab."));
     const list = el("div", "bin-list");
-    for (const [id, item] of entries) list.appendChild(binRow(p, id, item));
+    // A tree by `parent`: an entry's children (a transcript under its media) sit under
+    // it, indented. Cycle-safe because the validator refuses a ring.
+    const walk = (parent: string | null, depth: number) => {
+      for (const [id, item] of childrenOf(p, parent)) {
+        const row = binRow(p, id, item);
+        row.style.paddingLeft = `${6 + depth * 14}px`;
+        list.appendChild(row);
+        walk(id, depth + 1);
+      }
+    };
+    walk(null, 0);
+    // An entry whose parent is missing (mid-edit) is still shown rather than lost.
+    for (const [id, item] of Object.entries(p.bin)) if (item.parent && !(item.parent in p.bin)) list.appendChild(binRow(p, id, item));
     this.host.appendChild(list);
 
     const input = el("input");

@@ -48,14 +48,17 @@ fn a_transcript_becomes_an_editable_subtitles_entry() {
     let state = Arc::new(AppState::load(config).unwrap());
     jobs::add_media(&state, &media, None, None, "test").unwrap();
 
-    let req = TranscribeRequest { bin: "talk".into(), id: None, options: Default::default(), base_revision: None, origin: "test".into() };
+    let req = TranscribeRequest { bin: Some("talk".into()), clip: None, id: None, options: Default::default(), base_revision: None, origin: "test".into() };
     let out = jobs::transcribe(&state, &req, &|_, _| {}).unwrap();
     assert_eq!(out["bin"], "talk-subs");
     assert_eq!(out["cues"], 2, "the blank-audio marker is not a cue");
+    assert_eq!(out["placed"], false);
 
     let p = state.project.read().unwrap().clone();
     let BinSource::Overlay { template, vars } = &p.bin["talk-subs"].source else { panic!("not an overlay entry") };
     assert_eq!(template, "subtitles");
+    assert_eq!(p.bin["talk-subs"].parent.as_deref(), Some("talk"), "listed under the media it came from");
+    assert_eq!(p.children(Some("talk")).count(), 1);
     assert_eq!(vars["cues"], json!([{ "start": 0.0, "end": 0.9, "text": "Hello" }, { "start": 2.0, "end": 2.8, "text": "world" }]));
     assert!(kuma_core::validate(&p, &state.validation_context()).is_empty(), "the entry validates against the real template");
     assert!(jobs::transcribe(&state, &req, &|_, _| {}).unwrap_err().to_string().contains("already exists"), "a second run must not rebind the entry");
@@ -67,8 +70,44 @@ fn a_transcript_becomes_an_editable_subtitles_entry() {
     let now = serde_json::to_value(&state.project.read().unwrap().bin["talk-subs"].source).unwrap();
     assert_eq!(now["vars"]["cues"][1]["text"], "World!");
     assert_eq!(now["vars"]["cues"][1]["end"], 2.8, "the refused patch changed nothing");
+    // Removing the media while its transcript is listed under it would leave a dangling parent.
+    assert!(edit(json!({ "op": "remove", "path": "/bin/talk" })).is_err());
     // Two undo steps: the edit, then the transcript itself.
     state.undo().unwrap();
     state.undo().unwrap();
     assert!(!state.project.read().unwrap().bin.contains_key("talk-subs"));
+
+    // From a clip: the subtitles are placed over it, aligned — same start, end and speed,
+    // and the entry's `offset` is the clip's `in` — so the cues land on the words.
+    let seq = "/bin/main/source/tracks/2/clips/-"; // the audio track: `talk.wav` has no picture
+    edit(json!({ "op": "add", "path": seq, "value": { "id": "c1", "start": 3.0, "end": 3.8, "bin": "talk", "in": 0.2, "speed": 0.5 } })).unwrap();
+    let from_clip = TranscribeRequest { bin: None, clip: Some("c1".into()), ..req.clone() };
+    let out = jobs::transcribe(&state, &from_clip, &|_, _| {}).unwrap();
+    assert_eq!(out["placed"], true);
+    let p = state.project.read().unwrap().clone();
+    let subs = serde_json::to_value(&p.bin["talk-subs"]).unwrap();
+    assert_eq!(subs["source"]["vars"]["offset"], 0.2);
+    let (seq_id, track, placed) = p.all_clips().find(|(_, _, c)| c.bin == "talk-subs").expect("placed on a track");
+    assert_eq!((seq_id.as_str(), track.kind), ("main", kuma_core::TrackKind::Overlay));
+    assert_eq!((placed.start, placed.end, placed.speed), (3.0, 3.8, 0.5));
+    let issues = kuma_core::validate(&p, &state.validation_context());
+    assert!(issues.is_empty(), "{issues:?}");
+    // Both ways are one undo step: the clip goes with the entry.
+    state.undo().unwrap();
+    assert!(state.project.read().unwrap().all_clips().all(|(_, _, c)| c.bin != "talk-subs"));
+
+    // Where every overlay track is busy at that range, alignment wins over reuse: a new
+    // overlay track is added rather than the clip being pushed along an old one.
+    let before = p.master_seq().unwrap().tracks.len();
+    jobs::transcribe(&state, &from_clip, &|_, _| {}).unwrap();
+    let p = state.project.read().unwrap().clone();
+    assert_eq!(p.master_seq().unwrap().tracks.len(), before, "the overlay track had room, so no track was added");
+    let again = TranscribeRequest { id: Some("talk-subs-2".into()), ..from_clip.clone() };
+    jobs::transcribe(&state, &again, &|_, _| {}).unwrap();
+    let p = state.project.read().unwrap().clone();
+    let tracks = &p.master_seq().unwrap().tracks;
+    assert_eq!(tracks.len(), before + 1, "no overlay track had room at {}–{}, so one was added", placed.start, placed.end);
+    let last = tracks.last().unwrap();
+    assert_eq!((last.kind, last.name.as_str(), last.clips[0].bin.as_str()), (kuma_core::TrackKind::Overlay, "Subtitles", "talk-subs-2"));
+    assert!(kuma_core::validate(&p, &state.validation_context()).is_empty());
 }

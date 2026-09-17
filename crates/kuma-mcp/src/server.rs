@@ -44,10 +44,11 @@ the editor's preview and are baked to alpha frames at export.
 To look at the footage, call `sample_frames` with a time range (and an optional pixel `rect`); it
 returns the composited frames as images plus their PNG paths.
 
-Subtitles: `transcribe` runs a local speech-to-text model (whisper.cpp) on a media entry and adds a
-`subtitles` overlay entry whose `cues` var is `[{start, end, text}, …]` in source seconds. Place it
-on an overlay track like any overlay; if the media clip is trimmed, set the entry's `offset` var to
-that clip's `in`. Fix a misheard word by patching the cue's `text`. Vertical (9:16) is only
+Subtitles: `transcribe` runs a local speech-to-text model (whisper.cpp) and adds a `subtitles`
+overlay entry whose `cues` var is `[{start, end, text}, …]` in source seconds, listed under the media
+(`parent`). Given a `clip`, it also places the subtitles over that clip, aligned; given a `bin`, the
+entry is yours to place (set its `offset` var to a trimmed clip's `in`). Fix a misheard word by
+patching the cue's `text`. `parent` on a bin entry is organisation only. Vertical (9:16) is only
 `width`/`height`: patch them to 1080×1920 (or swap them) and every preset renders portrait.
 "#;
 
@@ -179,8 +180,12 @@ pub struct AddMedia {
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct Transcribe {
-    /// Bin id of the media entry (video or audio) to transcribe.
-    pub bin: String,
+    /// Bin id of the media entry (video or audio) to transcribe: the result is added to the bin, unplaced.
+    #[serde(default)]
+    pub bin: Option<String>,
+    /// Or a clip id: transcribe what it plays and place the subtitles over it, aligned. One of the two.
+    #[serde(default)]
+    pub clip: Option<String>,
     /// Bin id for the new subtitles entry. Defaults to `<bin>-subs`.
     #[serde(default)]
     pub id: Option<String>,
@@ -265,9 +270,9 @@ impl KumaServer {
         self.post("/api/bin", &json!({ "path": p.path, "id": p.id, "base_revision": p.base_revision, "origin": "claude: add media" })).await
     }
 
-    #[tool(description = "Transcribe a media entry's audio with a local whisper.cpp model and add the result to the bin as a `subtitles` overlay entry (cues in source seconds, editable as its `cues` var). Returns the new bin id; place it on an overlay track yourself.")]
+    #[tool(description = "Transcribe media audio with a local whisper.cpp model into a `subtitles` overlay entry (cues in source seconds, editable as its `cues` var), listed under the media. Pass `clip` to place it over that clip, aligned, on an overlay track; pass `bin` for the entry alone.")]
     async fn transcribe(&self, Parameters(p): Parameters<Transcribe>) -> Result<CallToolResult, McpError> {
-        let body = json!({ "bin": p.bin, "id": p.id, "language": p.language, "max_chars": p.max_chars, "base_revision": p.base_revision, "origin": "claude: transcribe" });
+        let body = json!({ "bin": p.bin, "clip": p.clip, "id": p.id, "language": p.language, "max_chars": p.max_chars, "base_revision": p.base_revision, "origin": "claude: transcribe" });
         self.job("/api/transcribe", &body, Duration::from_secs(p.wait_seconds.unwrap_or(600))).await
     }
 

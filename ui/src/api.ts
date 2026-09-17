@@ -28,8 +28,10 @@ export const api = {
   reloadTemplates: () => json<TemplateInfo[]>("/api/templates", { method: "POST", body: "{}" }),
   addMedia: (path: string, base_revision: number) =>
     json<{ id: string; revision: number }>("/api/bin", { method: "POST", body: JSON.stringify({ path, base_revision, origin: "ui: add media" }) }),
-  transcribe: (bin: string, base_revision: number) =>
-    json<{ job: number }>("/api/transcribe", { method: "POST", body: JSON.stringify({ bin, base_revision, origin: "ui: transcribe" }) }),
+  /** Speech to text. From a `bin` entry the result is added unplaced; from a `clip` it is
+   *  placed over that clip, aligned. */
+  transcribe: (what: { bin: string } | { clip: string }, base_revision: number) =>
+    json<{ job: number }>("/api/transcribe", { method: "POST", body: JSON.stringify({ ...what, base_revision, origin: "ui: transcribe" }) }),
   render: (preset: string) => json<{ job: number }>("/api/render", { method: "POST", body: JSON.stringify({ preset }) }),
   previewReload: (scale?: number) => json<{ mlt: string; scale: number }>("/api/preview/reload", { method: "POST", body: JSON.stringify(scale === undefined ? {} : { scale }) }),
   snapshotUrl: (t: number, width = 960) => `/api/snapshot?t=${t.toFixed(3)}&width=${width}&_=${Date.now()}`,

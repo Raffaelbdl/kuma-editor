@@ -19,8 +19,10 @@ export type BinSource =
   | { color: string }
   | Sequence;
 
-/** One entry in the project bin: media, a configured overlay, a colour, or a sequence. */
-export interface BinItem { name: string; source: BinSource; meta?: MediaMeta | null }
+/** One entry in the project bin: media, a configured overlay, a colour, or a sequence.
+ *  `parent` is where it is listed in the browser (a transcript under its media); nothing
+ *  about rendering reads it. */
+export interface BinItem { name: string; source: BinSource; meta?: MediaMeta | null; parent?: string | null }
 
 export type TrackKind = "video" | "audio" | "overlay";
 
@@ -177,6 +179,10 @@ export function seqDuration(p: Project, id: string): number {
  *  project, so it is for whole-project questions, never a lookup (see `store.findClip`). */
 export const allClips = (p: Project): Clip[] => sequenceIds(p).flatMap((id) => sequenceOf(p, id)!.tracks.flatMap((t) => t.clips));
 
+/** Entries listed directly under `parent` (`null` for the top level), in bin order. */
+export const childrenOf = (p: Project, parent: string | null): [string, BinItem][] =>
+  Object.entries(p.bin).filter(([, i]) => (i.parent ?? null) === parent);
+
 /** How many clips place this bin entry. The delete guard and the "used by N clips" hint
  *  are the same question and must stay the same answer. */
 export const placementsOf = (p: Project, binId: string): number => allClips(p).filter((c) => c.bin === binId).length;
@@ -214,6 +220,10 @@ export const isOverlayClip = (p: Project, c: Clip): boolean => !!binItem(p, c) &
  *  into; a still, a colour and an overlay are generated to fit the clip. */
 export const isTimedMedia = (item: BinItem | undefined): boolean =>
   !!item && ["video", "audio", "sequence"].includes(itemKind(item));
+
+/** A media entry whose audio can be transcribed: not a still, and not probed silent. */
+export const hasAudio = (item: BinItem | undefined): boolean =>
+  !!item && isFileSource(item.source) && item.source.kind !== "image" && item.meta?.has_audio !== false;
 
 /** The track lane a clip is drawn in. */
 export type ClipKind = "overlay" | "video" | "audio" | "color" | "sequence";

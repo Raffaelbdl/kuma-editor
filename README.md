@@ -129,14 +129,17 @@ size button in the top bar (`1920×1080 ⇄`) swaps them, undoably, and the prev
 overlays and every export preset follow. Templates size in `vh`, so they need no edits;
 pixel-valued `transform` offsets are the one thing that stays put.
 
-**Subtitles.** Select a media entry in the bin and press **Transcribe → subtitles** (or
-`kuma transcribe <bin>`, or the `transcribe` tool). whisper.cpp runs locally and the result
-lands in the bin as a `subtitles` overlay entry — not attached to the media, so place it on
-an overlay track wherever you like. Its `cues` var is the transcript, `[{start, end,
-text}]` in source seconds; the inspector shows one row per cue, so a misheard word is
-fixed in place and the preview follows as you type. If the media clip is trimmed, set the
-entry's `offset` var to that clip's `in`. Cues are split on words to `max_chars` (24 by
-default), the short lines shorts use; 0 keeps whisper's own sentences.
+**Subtitles.** Select a clip and press **Transcribe → subtitles** (or `kuma transcribe
+--clip <id>`, or the `transcribe` tool with `clip`). whisper.cpp runs locally, the
+transcript lands in the bin as a `subtitles` overlay entry listed under its media, and a
+clip of it is placed over the one you selected, aligned: same start, end and speed, and the
+entry's `offset` set to the clip's `in`, so the cues land on the words. It goes on the
+first overlay track with room there, else on a new one. The same button on a media entry
+in the bin makes the entry alone, for you to place. Its `cues` var is the transcript,
+`[{start, end, text}]` in source seconds; the inspector shows one row per cue, so a
+misheard word is fixed in place and the preview follows as you type. Cues are split on
+words to `max_chars` (24 by default), the short lines shorts use; 0 keeps whisper's own
+sentences.
 
 ### Desktop app
 
@@ -209,7 +212,8 @@ kuma sample 12.0 14.0 --count 4 --rect 400,300,800,400
 kuma bake                                  # bake all overlay clips (cached by content)
 kuma compile > timeline.mlt                # inspect the MLT graph (or open it in Kdenlive)
 kuma render --sequence intro               # render one nested sequence instead of the master
-kuma transcribe screen --language en       # whisper.cpp → a `subtitles` entry `screen-subs` in the bin
+kuma transcribe --clip c1 --language en    # whisper.cpp → `subtitles` entry under the media, placed over clip c1
+kuma transcribe screen                     # the entry alone, listed under `screen`, unplaced
 kuma validate | thumbs | library | doctor
 ```
 
@@ -244,7 +248,9 @@ kuma validate | thumbs | library | doctor
 ```
 
 **The bin holds everything placeable** — media files, configured overlays, colours and
-*sequences* — each with an id, a name and optional probed metadata. A clip is a
+*sequences* — each with an id, a name, optional probed metadata and an optional `parent`:
+the entry it is listed under in the browser (a transcript under its media). That is
+organisation only; ids stay the identity, so moving an entry is one field. A clip is a
 *placement*: it says which entry, when, how fast and with which effects, and never carries
 a source of its own. So an overlay's text lives on its bin entry and every placement of it
 follows; a second wording is a second entry. Overlay clips take the same effects as video

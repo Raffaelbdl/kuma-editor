@@ -86,8 +86,11 @@ enum Cmd {
     },
     /// Transcribe a media entry with whisper.cpp and add the subtitles to the bin.
     Transcribe {
-        /// Bin id of the media entry.
-        bin: String,
+        /// Bin id of the media entry (the result is added to the bin, unplaced).
+        bin: Option<String>,
+        /// Or a clip id: place the subtitles over that clip, aligned.
+        #[arg(long, conflicts_with = "bin")]
+        clip: Option<String>,
         /// Bin id for the subtitles entry (default `<bin>-subs`).
         #[arg(long)]
         id: Option<String>,
@@ -257,15 +260,15 @@ async fn main() -> anyhow::Result<()> {
             };
             println!("added bin entry `{id}` (revision {rev})");
         }
-        Cmd::Transcribe { bin, id, language, max_chars } => {
+        Cmd::Transcribe { bin, clip, id, language, max_chars } => {
             let options = kuma_overlay::TranscribeOptions { language: language.clone(), max_chars: Some(*max_chars) };
             let out = if let Some(url) = running_daemon(&cli).await {
-                let body = serde_json::json!({ "bin": bin, "id": id, "language": options.language, "max_chars": options.max_chars, "origin": "cli: transcribe" });
+                let body = serde_json::json!({ "bin": bin, "clip": clip, "id": id, "language": options.language, "max_chars": options.max_chars, "origin": "cli: transcribe" });
                 let v = kuma_mcp::client::Client::new(&url).post("/api/transcribe", &body).await?;
                 kuma_mcp::client::Client::new(&url).wait_job(v["job"].as_u64().unwrap_or_default(), std::time::Duration::from_secs(3600)).await?
             } else {
                 let state = open(&cli)?;
-                let req = kuma_daemon::jobs::TranscribeRequest { bin: bin.clone(), id: id.clone(), options, base_revision: None, origin: "cli".into() };
+                let req = kuma_daemon::jobs::TranscribeRequest { bin: bin.clone(), clip: clip.clone(), id: id.clone(), options, base_revision: None, origin: "cli".into() };
                 tokio::task::spawn_blocking(move || kuma_daemon::jobs::transcribe(&state, &req, &|p, m| eprintln!("[{p:3}%] {m}"))).await??
             };
             println!("{}", serde_json::to_string_pretty(&out)?);

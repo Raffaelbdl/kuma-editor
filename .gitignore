@@ -10,6 +10,8 @@ app/dist/
 
 # C++ engine build
 /engine/build
+# whisper.cpp, cloned and built by `npm run rebuild`
+/whisper.cpp
 
 # Project working data
 .kuma/

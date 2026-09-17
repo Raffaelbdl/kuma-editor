@@ -128,7 +128,7 @@ impl AppState {
         // The shared `_vendor/` is the highest-precedence library that has one.
         let vendor_dir = config.all_template_dirs().iter().rev().map(|d| d.join("_vendor")).find(|d| d.is_dir()).unwrap_or_else(|| config.library_dirs[0].join("overlays/_vendor"));
         let baker = Baker::discover(&config.repo_root, vendor_dir, config.cache_dir().join("bakes"));
-        let transcriber = Transcriber::discover(config.library_dirs[0].join("models"));
+        let transcriber = Transcriber::discover(&config.repo_root, config.library_dirs[0].join("models"));
         let (events, _) = broadcast::channel(256);
         let st = AppState {
             templates: RwLock::new(Templates { loaded: BTreeMap::new(), errors: Vec::new() }),

@@ -35,7 +35,8 @@ pub struct TranscribeOptions {
 /// Where whisper.cpp is. Discovered once at daemon start, like the baker.
 #[derive(Debug, Clone)]
 pub struct Transcriber {
-    /// `whisper-cli` from whisper.cpp: `KUMA_WHISPER_BIN`, else found on `PATH`.
+    /// `whisper-cli` from whisper.cpp: `KUMA_WHISPER_BIN`, else the checkout's own build
+    /// (`npm run rebuild` clones and builds it under `whisper.cpp/`), else `PATH`.
     pub cli: PathBuf,
     /// A ggml model file: `KUMA_WHISPER_MODEL`, else the first `*.bin` in `model_dir`.
     pub model: Option<PathBuf>,
@@ -43,9 +44,13 @@ pub struct Transcriber {
 }
 
 impl Transcriber {
-    /// `model_dir` is the library's `models/` folder (`~/.local/share/kuma/models`).
-    pub fn discover(model_dir: PathBuf) -> Self {
-        let cli = std::env::var_os("KUMA_WHISPER_BIN").map(PathBuf::from).unwrap_or_else(|| "whisper-cli".into());
+    /// `repo_root` is the checkout; `model_dir` is the library's `models/` folder
+    /// (`~/.local/share/kuma/models`, where the rebuild downloads one).
+    pub fn discover(repo_root: &Path, model_dir: PathBuf) -> Self {
+        let cli = std::env::var_os("KUMA_WHISPER_BIN").map(PathBuf::from).unwrap_or_else(|| {
+            let own = repo_root.join("whisper.cpp/build/bin/whisper-cli");
+            if own.is_file() { own } else { "whisper-cli".into() }
+        });
         let model = std::env::var_os("KUMA_WHISPER_MODEL").map(PathBuf::from).or_else(|| {
             let mut bins: Vec<PathBuf> = std::fs::read_dir(&model_dir).ok()?.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "bin")).collect();
             bins.sort();

@@ -59,10 +59,12 @@ System packages (Debian/Ubuntu):
 sudo apt install ffmpeg melt libmlt-dev libmlt++-dev libsdl2-dev libturbojpeg0-dev cmake xvfb
 ```
 
-Subtitles need a local speech-to-text model, [whisper.cpp](https://github.com/ggml-org/whisper.cpp):
-its `whisper-cli` on `PATH` (or `KUMA_WHISPER_BIN`) and a ggml model in
-`~/.local/share/kuma/models/` (or `KUMA_WHISPER_MODEL`), e.g. `ggml-base.en.bin` from the
-whisper.cpp model downloads. `kuma doctor` reports both.
+Subtitles need a local speech-to-text model, [whisper.cpp](https://github.com/ggml-org/whisper.cpp).
+`npm run rebuild` clones and builds it under `whisper.cpp/` and downloads a ggml model
+into `~/.local/share/kuma/models/` (`WHISPER_MODEL=small npm run rebuild` for another size;
+`base` is the default, `.en` variants are English-only). To use your own, put `whisper-cli`
+on `PATH` (or `KUMA_WHISPER_BIN`) and a model in that folder (or `KUMA_WHISPER_MODEL`).
+`kuma doctor` reports both.
 
 Build:
 
@@ -83,8 +85,8 @@ cmake -S engine -B engine/build && cmake --build engine/build -j
 (cd ui && npm install && npm run build)
 ```
 
-The preview engine is the only optional piece; `npm run rebuild` reports it and carries on
-if its system libraries are missing.
+The preview engine and whisper.cpp are the optional pieces; `npm run rebuild` reports
+them and carries on if a system library or a download is missing.
 
 `cargo build --release` produces the `kuma` binary at `target/release/kuma` (it is the
 `crates/kuma-cli` crate). Either run it from there or install it on your `PATH`:

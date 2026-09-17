@@ -32,7 +32,7 @@ starter set that `kuma library` installs. Tests point `KUMA_LIBRARY` (or the bak
 ## Commands
 
 ```
-npm run rebuild                           # binary + ui/dist + app/dist + engine, then `kuma doctor`
+npm run rebuild                           # binary + ui/dist + app/dist + engine + whisper.cpp, then `kuma doctor`
 cargo build && cargo test                 # Rust; render/bake tests skip without melt/ffmpeg/hyperframes
 npm test                                  # every suite: Rust, the shell, the UI. Runs all three whatever
                                           # each does, and marks a suite that skipped rather than passed
@@ -45,9 +45,9 @@ npm run app                               # the desktop app: launcher, then a wi
 ```
 
 System deps (Debian/Ubuntu): `ffmpeg melt libmlt-dev libmlt++-dev libsdl2-dev libturbojpeg0-dev cmake xvfb`.
-Subtitles run whisper.cpp as a subprocess: `whisper-cli` on `PATH` (or `KUMA_WHISPER_BIN`) and a
-ggml model in `~/.local/share/kuma/models` (or `KUMA_WHISPER_MODEL`); tests stand a shell script
-in for it.
+Subtitles run whisper.cpp as a subprocess: the rebuild's own `whisper.cpp/build/bin/whisper-cli`
+(else `PATH`, or `KUMA_WHISPER_BIN`) and a ggml model in `~/.local/share/kuma/models` (the
+rebuild downloads one; or `KUMA_WHISPER_MODEL`); tests stand a shell script in for it.
 Headless machines: MLT's Qt module needs a display; melt and the engine are wrapped in
 `xvfb-run -a` automatically when `DISPLAY` is unset. Set `HYPERFRAMES_BROWSER_PATH` to a
 Chrome headless shell if hyperframes should not download one.

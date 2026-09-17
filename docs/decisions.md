@@ -717,6 +717,70 @@ compiler will composite it — there is no clip, so there are no clip effects to
 The exact answer is a sample, which is now available for an unplaced entry as well.
 Template *markup* is still edited outside the editor; `Reload` is the loop, not an editor.
 
+## Overlay authoring: checked, scaffolded, and shown moving
+
+Three changes made after reading through [OpenDesign](https://github.com/nexu-io/open-design),
+whose four-axis split — functional skills, rendering templates, brand `DESIGN.md`
+packages, and universal `craft/` rules injected into the prompt — is the same problem kuma
+has with one asset kind instead of four.
+
+**The contract is enforced, not just written** — adopted. `library/overlays/CLAUDE.md`
+described rules nothing checked, and every one of them fails far from its cause: no
+`data-no-timeline` waits 45 s for a timeline that never registers, `Date.now()` renders a
+wrong frame with no error, an undeclared var arrives as `undefined`. `Baker::lint` reads
+the staged document — the same staging the bake uses, extracted so the two cannot drift —
+and adds hyperframes' own linter, which was installed all along and never called.
+
+Two of its findings are suppressed rather than shown: it looks for a literal
+`window.__timelines` assignment, which kuma templates reach through `timeline()` in
+`_vendor/kuma.js` (every shipped template tripped it), and it reports `Math.random()` a
+second time in its own words. A report full of false positives is a report nobody reads.
+Comments are stripped before the behaviour rules run, because the scaffold *warns* about
+`Date.now()` in one and failed its own check.
+
+**A scaffold, not a blank file** — adopted, straight from OpenDesign's "use the
+deterministic scaffold and edit only what the prompt changes". `kuma new-template` writes
+a skeleton that passes the check; a test pins that, so the example an agent copies cannot
+drift from the contract it illustrates.
+
+**A preview that moves** — adopted. Every overlay is an animation and both places that
+showed one picked a single frame about a second in, which is the settled pose: the least
+informative moment. The `thumbs` job now also writes an animated WebP with alpha, and
+`preview.webp` joins `thumb.png` as a file that is neither staged nor hashed — without
+that, generating a preview would change the template's content hash and invalidate every
+bake of it.
+
+**Motion discipline in the contract** — adopted, as documentation. OpenDesign's
+`craft/animation-discipline.md` and its `review-animations` skill are written for
+interfaces: interruptibility, hover frequency, GPU-only properties, reduced-motion. Almost
+none of that survives the move to baked video, where nobody hovers, nothing can be
+interrupted and every frame is rendered offline. What does survive — animate arrival,
+departure and change; out-curves for entrances; never scale from zero — is now in
+`library/overlays/CLAUDE.md` with numbers, beside the thing that has no UI equivalent at
+all: how long a line must stay on screen to be read.
+
+## Design systems
+
+**A design system is a document copied into the project** — adopted, and deliberately not
+a project field or a runtime cascade.
+
+OpenDesign ships 154 brand packages, each a `DESIGN.md` plus a compiled `tokens.css`, and
+its agents paste the `:root` block into the artifact they generate; there is no global
+stylesheet at runtime. kuma takes the same shape at 1/77th the scale: `kuma design-system
+<id>` copies one into `<project>/design-system/`, an agent reads it there, and applying it
+is an ordinary edit to a template or to an entry's vars.
+
+The alternative — a `theme` on the project, injected into every overlay document beside
+the per-entry `--var-…` — was considered and turned down. It would re-style finished
+videos the moment the theme changed, which is the same objection already recorded against
+shared overlay configurations under *Still open*: vars are project-owned editing
+decisions, and they must stay a revision-checked, undoable patch rather than a value that
+arrives from elsewhere. Injection also hides where a colour came from, and a template that
+only looks right inside kuma has stopped being a plain HTML file.
+
+What this costs: changing the system does not propagate, so a video already made keeps
+what it had. That is the intended trade, not an oversight.
+
 ## Thumbnails
 
 **A thumbnail belongs to the configured entry** — adopted.

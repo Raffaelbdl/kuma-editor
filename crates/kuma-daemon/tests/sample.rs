@@ -56,6 +56,8 @@ fn req(overlay: Option<&str>, sequence: Option<&str>) -> SampleRequest {
         overlay: overlay.map(str::to_string),
         duration: None,
         backdrop: None,
+        frame_width: None,
+        frame_height: None,
     }
 }
 

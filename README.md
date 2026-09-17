@@ -255,7 +255,7 @@ project.
 ```
 kuma render --preset youtube-1080p         # bakes overlays, compiles, renders with melt
 kuma sample 12.0 14.0 --count 4 --rect 400,300,800,400
-kuma sample 0 3 --count 6 --overlay paris          # one overlay entry on its own, no placement (--backdrop, --duration)
+kuma sample 0 3 --count 6 --overlay paris          # one overlay entry on its own, no placement (--backdrop, --duration, --frame 1080x1920)
 kuma bake                                  # bake all overlay clips (cached by content)
 kuma compile > timeline.mlt                # inspect the MLT graph (or open it in Kdenlive)
 kuma render --sequence intro               # render one nested sequence instead of the master

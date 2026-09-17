@@ -447,6 +447,8 @@ async fn snapshot(State(st): S, Query(q): Query<SnapshotQuery>) -> Result<Respon
         overlay: None,
         duration: None,
         backdrop: None,
+        frame_width: None,
+        frame_height: None,
     };
     let samples = blocking(move || jobs::sample_frames(&st, &req, &|_, _| {})).await??;
     let bytes = std::fs::read(&samples[0].path).map_err(|e| anyhow::anyhow!(e))?;

@@ -507,6 +507,13 @@ pub struct SampleRequest {
     /// frame of it over nothing is not a picture of anything.
     #[serde(default)]
     pub backdrop: Option<String>,
+    /// With `overlay`: the frame to render into, when it is not the project's. A template
+    /// has to look right at 1920×1080 and 1080×1920 alike, and checking the other way
+    /// round should not mean editing the project to find out.
+    #[serde(default)]
+    pub frame_width: Option<u32>,
+    #[serde(default)]
+    pub frame_height: Option<u32>,
 }
 fn one_usize() -> usize {
     1
@@ -532,7 +539,7 @@ pub fn sample_frames(state: &AppState, req: &SampleRequest, progress: &dyn Fn(u8
             if req.sequence.is_some() {
                 anyhow::bail!("`overlay` samples one bin entry on its own and `sequence` samples a timeline; ask for one or the other");
             }
-            let (p, seq) = overlay_project(state, &doc, id, req.duration, req.backdrop.as_deref())?;
+            let (p, seq) = overlay_project(state, &doc, id, req)?;
             // An overlay sample with the overlays turned off would be a picture of the
             // backdrop, so that combination is read as a mistake rather than obeyed.
             (p, seq, OverlayScope::All)
@@ -607,13 +614,8 @@ pub fn sample_frames(state: &AppState, req: &SampleRequest, progress: &dyn Fn(u8
 /// The sequence id carries a hash of what the caller asked for, because it is part of the
 /// frame cache's key: two samples of the same entry and frame over different backdrops
 /// are different pictures and must not share a cached file.
-fn overlay_project(
-    state: &AppState,
-    doc: &Project,
-    id: &str,
-    duration: Option<f64>,
-    backdrop: Option<&str>,
-) -> anyhow::Result<(Project, String)> {
+fn overlay_project(state: &AppState, doc: &Project, id: &str, req: &SampleRequest) -> anyhow::Result<(Project, String)> {
+    let (duration, backdrop) = (req.duration, req.backdrop.as_deref());
     let item = doc.bin.get(id).ok_or_else(|| anyhow::anyhow!("no bin entry `{id}`"))?;
     let kuma_core::BinSource::Overlay { template, .. } = &item.source else {
         anyhow::bail!("`{id}` is not an overlay entry");
@@ -629,7 +631,8 @@ fn overlay_project(
         Some(c) => c.to_string(),
         None => "#000000".to_string(),
     };
-    let stamp = hash_str(&format!("{d}/{colour}"));
+    let frame = (req.frame_width.unwrap_or(doc.width).clamp(16, 16384), req.frame_height.unwrap_or(doc.height).clamp(16, 16384));
+    let stamp = hash_str(&format!("{d}/{colour}/{}x{}", frame.0, frame.1));
     let seq_id = format!("sample-{id}-{stamp}");
     let bg_id = format!("{seq_id}-bg");
     let clip = |cid: &str, bin: &str| kuma_core::Clip {
@@ -661,10 +664,12 @@ fn overlay_project(
         ],
         markers: Vec::new(),
     };
-    // The frame, the rate and the revision are the real project's: an overlay is sampled
-    // as the video it is going into would show it, and the revision keeps the frame cache
-    // honest when the entry's vars change.
+    // The rate and the revision are the real project's — an overlay is sampled as the
+    // video it is going into would show it, and the revision keeps the frame cache honest
+    // when the entry's vars change — and so is the frame unless the caller asked for
+    // another one to check the other orientation in.
     let mut out = doc.clone();
+    (out.width, out.height) = frame;
     out.bin = [
         (id.to_string(), item.clone()),
         (bg_id, entry(kuma_core::BinSource::Color { color: colour })),

@@ -51,8 +51,10 @@ To look at the footage, call `sample_frames` with a time range (and an optional 
 returns the composited frames as images plus their PNG paths. To look at an *overlay you are
 authoring*, call it with `overlay` set to the bin entry's id instead: that renders the entry on its
 own over a backdrop, with no placement anywhere, and `t0`/`t1` count from the start of the overlay —
-so an animation can be checked frame by frame before anything is placed in the cut. It is the same
-view the editor's overlay workbench gives a person.
+so an animation can be checked frame by frame before anything is placed in the cut — in another
+frame with `frame: [1080, 1920]`, and over `backdrop` white and black to see whether it stays
+legible over footage you have not seen. It is the same view the editor's overlay workbench gives a
+person, and `template_guide` ends with the checklist to run through.
 
 Subtitles: `transcribe` runs a local speech-to-text model (whisper.cpp) and adds a `subtitles`
 overlay entry whose `cues` var is `[{start, end, text}, …]` in source seconds, one cue per word (the
@@ -177,6 +179,11 @@ pub struct SampleFrames {
     /// alpha. Black by default — an overlay over nothing is not a picture of anything.
     #[serde(default)]
     pub backdrop: Option<String>,
+    /// With `overlay`: `[width, height]` to render it into instead of the project's frame.
+    /// A template must look right at 1920×1080 and 1080×1920 alike; this is how to check
+    /// the other way round without editing the project.
+    #[serde(default)]
+    pub frame: Option<(u32, u32)>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -345,6 +352,7 @@ impl KumaServer {
             "overlays": p.overlays.unwrap_or(true),
             "sequence": p.sequence,
             "overlay": p.overlay, "duration": p.duration, "backdrop": p.backdrop,
+            "frame_width": p.frame.map(|f| f.0), "frame_height": p.frame.map(|f| f.1),
         });
         let v = self.client.post("/api/sample", &body).await.map_err(err)?;
         let mut content = Vec::new();

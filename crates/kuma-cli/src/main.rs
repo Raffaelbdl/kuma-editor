@@ -69,6 +69,10 @@ enum Cmd {
         /// Colour behind it, e.g. `#102030` or `transparent` (default black).
         #[arg(long)]
         backdrop: Option<String>,
+        /// With --overlay: render it into another frame, `WxH` (e.g. 1080x1920), to check
+        /// the orientation the project is not in.
+        #[arg(long)]
+        frame: Option<String>,
     },
     /// Write the compiled MLT XML to stdout (overlays skipped unless baked).
     Compile {
@@ -237,7 +241,7 @@ async fn main() -> anyhow::Result<()> {
                 println!("{k}\t{}", b.resource.display());
             }
         }
-        Cmd::Sample { t0, t1, count, rect, width, sequence, overlay, duration, backdrop } => {
+        Cmd::Sample { t0, t1, count, rect, width, sequence, overlay, duration, backdrop, frame } => {
             let state = open(&cli)?;
             let rect = rect
                 .as_deref()
@@ -245,6 +249,13 @@ async fn main() -> anyhow::Result<()> {
                     let v: Vec<u32> = s.split(',').map(|x| x.trim().parse()).collect::<Result<_, _>>()?;
                     anyhow::ensure!(v.len() == 4, "rect must be x,y,w,h");
                     Ok::<_, anyhow::Error>(kuma_core::template::Region { x: v[0], y: v[1], w: v[2], h: v[3] })
+                })
+                .transpose()?;
+            let frame = frame
+                .as_deref()
+                .map(|s| {
+                    let (w, h) = s.split_once(['x', 'X', ',']).ok_or_else(|| anyhow::anyhow!("--frame takes WxH, e.g. 1080x1920"))?;
+                    anyhow::Ok((w.trim().parse::<u32>()?, h.trim().parse::<u32>()?))
                 })
                 .transpose()?;
             let req = kuma_daemon::jobs::SampleRequest {
@@ -258,6 +269,8 @@ async fn main() -> anyhow::Result<()> {
                 overlay: overlay.clone(),
                 duration: *duration,
                 backdrop: backdrop.clone(),
+                frame_width: frame.map(|(w, _)| w),
+                frame_height: frame.map(|(_, h)| h),
             };
             let samples = tokio::task::spawn_blocking(move || kuma_daemon::jobs::sample_frames(&state, &req, &|_, _| {})).await??;
             println!("{}", serde_json::to_string_pretty(&samples)?);

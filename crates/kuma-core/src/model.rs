@@ -350,6 +350,9 @@ pub enum BinSource {
     /// A timeline of its own, placeable on another timeline. The project's `master` is
     /// one of these; so is every part edited separately and juxtaposed in the final cut.
     Sequence(Sequence),
+    /// A folder: an entry that exists to be a `parent`. Never placeable. The field is
+    /// what tells it apart from the other sources; its value is always `true`.
+    Folder { folder: bool },
 }
 
 /// A timeline: tracks and their markers. Held by a [`BinSource::Sequence`] entry rather
@@ -397,6 +400,10 @@ impl BinItem {
 
     pub fn is_sequence(&self) -> bool {
         matches!(self.source, BinSource::Sequence(_))
+    }
+
+    pub fn is_folder(&self) -> bool {
+        matches!(self.source, BinSource::Folder { .. })
     }
 
     /// A media file the probe found no video in. It renders nothing, so on a video track

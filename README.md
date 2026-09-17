@@ -249,8 +249,11 @@ kuma validate | thumbs | library | doctor
 
 **The bin holds everything placeable** — media files, configured overlays, colours and
 *sequences* — each with an id, a name, optional probed metadata and an optional `parent`:
-the entry it is listed under in the browser (a transcript under its media). That is
-organisation only; ids stay the identity, so moving an entry is one field. A clip is a
+the entry it is listed under in the browser (a transcript under its media, anything in a
+folder). A **folder** is an entry with nothing but a name, `{ "source": { "folder": true } }`,
+and can never be placed. That is organisation only; ids stay the identity, so moving an
+entry is one field. In the editor, `+ folder` adds one, dragging a row onto a folder moves
+it there, onto the list's empty space moves it to the top, and the caret folds it. A clip is a
 *placement*: it says which entry, when, how fast and with which effects, and never carries
 a source of its own. So an overlay's text lives on its bin entry and every placement of it
 follows; a second wording is a second entry. Overlay clips take the same effects as video

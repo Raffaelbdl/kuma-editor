@@ -48,7 +48,9 @@ Subtitles: `transcribe` runs a local speech-to-text model (whisper.cpp) and adds
 overlay entry whose `cues` var is `[{start, end, text}, …]` in source seconds, listed under the media
 (`parent`). Given a `clip`, it also places the subtitles over that clip, aligned; given a `bin`, the
 entry is yours to place (set its `offset` var to a trimmed clip's `in`). Fix a misheard word by
-patching the cue's `text`. `parent` on a bin entry is organisation only. Vertical (9:16) is only
+patching the cue's `text`. `parent` on a bin entry is organisation only: the entry it is listed under
+in the browser, which can be any entry or a folder (`{"source": {"folder": true}}`, never placeable).
+Vertical (9:16) is only
 `width`/`height`: patch them to 1080×1920 (or swap them) and every preset renders portrait.
 "#;
 

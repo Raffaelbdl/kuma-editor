@@ -99,7 +99,7 @@ pub fn validate(p: &Project, ctx: &ValidationContext) -> Vec<Issue> {
                 }
             }
             // A sequence's own contents are checked below, with every other timeline.
-            BinSource::Sequence(_) => {}
+            BinSource::Sequence(_) | BinSource::Folder { .. } => {}
         }
         // `parent` is organisation, but a dangling or circular one still breaks the
         // browser: the chain up from every entry must end at the top level.
@@ -202,7 +202,9 @@ fn check_sequence<'a>(
                     // simply shows the tracks beneath it while its sound still plays.
                     // Video on an audio track stays silent here: the compiler hides its
                     // picture deliberately, which is the normal "use only the audio" move.
-                    if t.kind == TrackKind::Overlay && !item.is_overlay() {
+                    if item.is_folder() {
+                        issues.push(Issue::error(format!("{cp}/bin"), format!("`{}` is a folder and cannot be placed", c.bin)));
+                    } else if t.kind == TrackKind::Overlay && !item.is_overlay() {
                         issues.push(Issue::error(format!("{cp}/bin"), "overlay tracks only hold overlay clips"));
                     } else if t.kind != TrackKind::Overlay && item.is_overlay() {
                         issues.push(Issue::warn(format!("{cp}/bin"), "overlay clip on a non-overlay track"));
@@ -437,6 +439,18 @@ mod tests {
             v["bin"]["main"] = json!({ "name": "Main", "source": { "tracks": tracks } });
         }
         serde_json::from_value(v).unwrap()
+    }
+
+    #[test]
+    fn a_folder_parents_and_is_never_placed() {
+        let p = project(json!({
+            "bin": { "f": { "name": "Speech", "source": { "folder": true } }, "c": { "source": { "color": "#000" }, "parent": "f" } },
+            "tracks": [{ "id": "v1", "clips": [ { "id": "x", "start": 0, "end": 1, "bin": "f" } ] }]
+        }));
+        assert!(p.bin["f"].is_folder() && !p.bin["f"].is_timed_media());
+        let issues = validate(&p, &Default::default());
+        assert_eq!(issues.len(), 1, "{issues:?}");
+        assert!(issues[0].path == clip_path("main", 0, 0) + "/bin" && issues[0].message.contains("folder"));
     }
 
     #[test]

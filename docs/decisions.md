@@ -282,8 +282,10 @@ location, so moving or renaming a folder would rename every descendant and rewri
 clip that references one, and a `/` breaks the id rule that keeps bin ids usable as XML
 ids, URL segments, cache file names and pointer segments. Kdenlive stores a folder id per
 clip for the same reason. Not `children` lists on the parent either: two-way lists drift.
-A folder, when wanted, is a `BinSource` variant the validator refuses to place, and costs
-nothing else. The validator refuses a dangling or circular parent, which is also what
+A folder is exactly that: `BinSource::Folder { folder: true }`, an entry with a name and
+children, refused on a track by the validator and by the compiler, folded in the browser
+behind a caret. The tree is drawn from `parent` alone, and the fold state is the panel's
+own, never the document's. The validator refuses a dangling or circular parent, which is also what
 stops removing a media entry while its transcript is listed under it.
 
 **whisper.cpp as a subprocess** — adopted, the way melt and ffmpeg are. `whisper-cli` on

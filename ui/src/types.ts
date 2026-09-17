@@ -17,6 +17,7 @@ export type BinSource =
   | { path: string; kind: MediaKind; proxy?: string | null }
   | { template: string; vars?: Record<string, unknown> }
   | { color: string }
+  | { folder: true }
   | Sequence;
 
 /** One entry in the project bin: media, a configured overlay, a colour, or a sequence.
@@ -148,12 +149,14 @@ export const isOverlaySource = (s: BinSource): s is { template: string; vars?: R
 export const isFileSource = (s: BinSource): s is { path: string; kind: MediaKind; proxy?: string | null } => "path" in s;
 export const isSequenceSource = (s: BinSource): s is Sequence => "tracks" in s;
 export const isColorSource = (s: BinSource): s is { color: string } => "color" in s;
+export const isFolderSource = (s: BinSource): s is { folder: true } => "folder" in s;
 
 /** What a bin entry is, for badges and track placement. */
-export type ItemKind = "overlay" | "video" | "audio" | "image" | "color" | "sequence";
+export type ItemKind = "overlay" | "video" | "audio" | "image" | "color" | "sequence" | "folder";
 export function itemKind(item: BinItem): ItemKind {
   if (isOverlaySource(item.source)) return "overlay";
   if (isSequenceSource(item.source)) return "sequence";
+  if (isFolderSource(item.source)) return "folder";
   return isFileSource(item.source) ? item.source.kind : "color";
 }
 
@@ -178,6 +181,12 @@ export function seqDuration(p: Project, id: string): number {
  *  them, which is what lets anything address a clip by id alone — but this walks the whole
  *  project, so it is for whole-project questions, never a lookup (see `store.findClip`). */
 export const allClips = (p: Project): Clip[] => sequenceIds(p).flatMap((id) => sequenceOf(p, id)!.tracks.flatMap((t) => t.clips));
+
+/** Would listing `id` under `parent` put it inside itself? (`parent` is `id` or below it.) */
+export function wouldNest(p: Project, id: string, parent: string | null): boolean {
+  for (let at = parent, n = 0; at && n < 1000; at = p.bin[at]?.parent ?? null, n++) if (at === id) return true;
+  return false;
+}
 
 /** Entries listed directly under `parent` (`null` for the top level), in bin order. */
 export const childrenOf = (p: Project, parent: string | null): [string, BinItem][] =>

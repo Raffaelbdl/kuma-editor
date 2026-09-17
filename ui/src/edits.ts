@@ -6,7 +6,7 @@
 import { askText } from "./modal";
 import { store, toast } from "./store";
 import type { BinItem, Clip, PatchOp, Project, Track, TrackKind } from "./types";
-import { binItem, binPath, isFileSource, isTimedMedia, itemKind, seqDuration, shiftEffect, trimEffect, wouldRecurse } from "./types";
+import { binItem, binPath, isFileSource, isTimedMedia, itemKind, seqDuration, shiftEffect, trimEffect, wouldNest, wouldRecurse } from "./types";
 
 const TRACK_FOR: Record<string, TrackKind> = { overlay: "overlay", audio: "audio", video: "video", image: "video", color: "video", sequence: "video" };
 
@@ -19,6 +19,10 @@ export async function placeBinItem(binId: string, t: number, ti = -1) {
   if (!item) return;
   if (wouldRecurse(p, binId, store.state.sequence)) {
     toast(`${item.name || binId} contains this sequence; placing it here would make a loop`, "err");
+    return;
+  }
+  if (itemKind(item) === "folder") {
+    toast(`${item.name || binId} is a folder`, "err");
     return;
   }
   const kind = TRACK_FOR[itemKind(item)];
@@ -101,9 +105,7 @@ function newTrackOp(kind: TrackKind): { op: PatchOp; index: number } {
  *  project does, because an empty one has nowhere to drop a clip. */
 export async function newSequence(name: string) {
   const p = store.state.project!;
-  // Bin ids must match [A-Za-z_][A-Za-z0-9_-]*, so a leading digit takes an `s`.
-  const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").replace(/^(?=[0-9])/, "s");
-  const id = uniqueId(slug || "sequence", Object.keys(p.bin));
+  const id = uniqueId(slug(name) || "sequence", Object.keys(p.bin));
   const value: BinItem = {
     name,
     source: { tracks: [newTrack("video", "Video"), newTrack("overlay", "Overlays"), newTrack("audio", "Audio")], markers: [] },
@@ -126,6 +128,32 @@ export async function addTrack(kind: TrackKind) {
   const { op } = newTrackOp(kind);
   await store.patch([op], `add ${kind} track`);
 }
+
+/** A folder is a bin entry with nothing but a name and children. */
+export async function newFolder(name: string, parent: string | null) {
+  const p = store.state.project!;
+  const id = uniqueId(slug(name) || "folder", Object.keys(p.bin));
+  const value: BinItem = { name, source: { folder: true }, ...(parent ? { parent } : {}) };
+  await store.patch([{ op: "add", path: binPath(id), value }], `add folder ${id}`);
+}
+
+export async function promptNewFolder(parent: string | null = null) {
+  const name = await askText({ title: "New folder", label: "Name", placeholder: "Speech" });
+  if (name) await newFolder(name, parent);
+}
+
+/** List `id` under `parent` (null for the top level). The validator refuses a ring; this
+ *  is the same rule so the gesture is not offered. */
+export async function setParent(id: string, parent: string | null) {
+  const p = store.state.project!;
+  if ((p.bin[id]?.parent ?? null) === parent) return;
+  if (id === parent || wouldNest(p, id, parent)) { toast("An entry cannot be listed inside itself", "err"); return; }
+  const path = `${binPath(id)}/parent`;
+  await store.patch([parent ? { op: "add", path, value: parent } : { op: "remove", path }], `move ${id}`);
+}
+
+/** Bin ids must match [A-Za-z_][A-Za-z0-9_-]*, so a leading digit takes an `s`. */
+const slug = (name: string) => name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").replace(/^(?=[0-9])/, "s");
 
 /** Ask for a name, then mint the sequence. `window.prompt` is not an option: Electron
  *  does not implement it (see `modal.ts`). */

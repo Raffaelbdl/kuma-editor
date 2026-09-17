@@ -10,8 +10,8 @@ import { api } from "../api";
 import { button, el, options } from "../dom";
 import { store, toast } from "../store";
 import type { BinItem, Clip, Cue, Effect, PatchOp, VarSpec } from "../types";
-import { placeBinItem } from "../edits";
-import { binItem, binPath, canTimeWarp, childrenOf, expandPreset, hasAudio, isColorSource, isFileSource, isOverlaySource, isSequenceSource, isTimedMedia, placementsOf, seqDuration, wouldRecurse } from "../types";
+import { placeBinItem, setParent } from "../edits";
+import { binItem, binPath, canTimeWarp, childrenOf, expandPreset, hasAudio, isColorSource, isFileSource, isFolderSource, isOverlaySource, isSequenceSource, isTimedMedia, placementsOf, seqDuration, wouldNest, wouldRecurse } from "../types";
 
 const presetsPromise = api.effectPresets().catch(() => []);
 
@@ -106,18 +106,20 @@ export class Inspector {
 
     const places = placementsOf(p, id);
     this.host.appendChild(el("p", "muted tiny", places === 0 ? "Not placed on any timeline yet." : `Placed by ${places} clip${places > 1 ? "s" : ""} — these apply to all of them.`));
-    if (item.parent) {
-      const under = el("div", "field");
-      under.append(el("label", "", "Under"), linkButton(`${p.bin[item.parent]?.name || item.parent} →`, () => store.selectItem("bin", item.parent!)));
-      this.host.appendChild(under);
-    }
+    // Where it is listed: any folder, or wherever it already is (a transcript under its
+    // media). The same rule as the validator's: not inside itself.
+    const parent = el("select");
+    const choices = Object.entries(p.bin).filter(([pid, i]) => pid !== id && (isFolderSource(i.source) || pid === item.parent) && !wouldNest(p, id, pid));
+    options(parent, choices.map(([pid, i]) => ({ value: pid, label: i.name || pid })), item.parent ?? "", "(top level)");
+    parent.onchange = () => void setParent(id, parent.value || null);
+    this.host.appendChild(field("Under", parent));
 
     this.host.appendChild(field("Name", textInput(item.name, (v) => store.patch([{ op: "replace", path: `${bp}/name`, value: v }], `name ${id}`))));
     this.renderSource(id, item, bp);
 
     const actions = el("div", "insp-actions");
-    // A sequence cannot be placed on itself, directly or through another.
-    if (!wouldRecurse(p, id, store.state.sequence)) {
+    // A sequence cannot be placed on itself, directly or through another; a folder never.
+    if (!isFolderSource(item.source) && !wouldRecurse(p, id, store.state.sequence)) {
       actions.appendChild(button("Add at playhead", () => placeBinItem(id, store.state.playhead)));
     }
     // From the entry the subtitles are listed under it and left for you to place; to get
@@ -155,6 +157,11 @@ export class Inspector {
       c.value = String(item.source.color).slice(0, 7);
       c.onchange = () => store.patch([{ op: "replace", path: `${bp}/source/color`, value: c.value }], `colour ${id}`);
       this.host.appendChild(field("Colour", c));
+      return;
+    }
+    if (isFolderSource(item.source)) {
+      const n = childrenOf(store.state.project!, id).length;
+      this.host.appendChild(field("Contents", el("div", "mono muted", `${n} entr${n === 1 ? "y" : "ies"}`)));
       return;
     }
     if (isSequenceSource(item.source)) {

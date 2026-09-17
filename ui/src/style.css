@@ -151,7 +151,7 @@ body.has-titlebar #titlebar {
 /* Grid, not flex: `1fr auto` pins the badge to the right edge whatever the name is, so
    every row is the same full width and the badges line up down the panel. */
 .bin-row {
-  display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px;
+  display: grid; grid-template-columns: 12px minmax(0, 1fr) auto; align-items: center; gap: 6px;
   width: 100%; padding: 4px 6px; border-radius: 4px;
   cursor: grab; border: 1px solid transparent; user-select: none;
 }
@@ -190,6 +190,9 @@ button.linkish:hover { text-decoration: underline; }
 .badge-kind.video, .badge-kind.image { background: var(--video); color: #fff; }
 .badge-kind.audio { background: var(--audio); color: #fff; }
 .badge-kind.sequence { background: #3b5c7a; color: #fff; }
+.badge-kind.folder { background: #6b5a2a; color: #fff; }
+.bin-row .caret { width: 12px; padding: 0; font-size: 10px; line-height: 1; background: none; border: 0; color: var(--fg-2); text-align: center; }
+.bin-row.drop { border-color: var(--accent, #ff4f00); background: var(--bg-3); }
 .lib-item.open { outline: 1px solid var(--sel); }
 .lib-add { display: flex; gap: 6px; margin-top: 6px; }
 

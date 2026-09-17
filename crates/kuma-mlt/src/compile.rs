@@ -511,6 +511,7 @@ fn emit_clip_producer(ctx: &Ctx, p: &Plan, w: &mut XmlWriter) -> Result<(), Comp
             emit_filters(ctx, p, w);
             w.close("playlist");
         }
+        BinSource::Folder { .. } => return Err(CompileError::Internal(format!("clip `{}` places a folder", clip.id))),
         BinSource::Overlay { .. } => {
             let bake = ctx.opts.bakes.get(&clip.id).ok_or_else(|| CompileError::Unbaked(clip.id.clone()))?;
             w.open("producer", &base);

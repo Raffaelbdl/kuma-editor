@@ -12,17 +12,19 @@ import { api } from "../api";
 import { desktop, pickAndAddMedia } from "../desktop";
 import { button, el } from "../dom";
 import { store, toast } from "../store";
-import { addFromLibrary } from "../edits";
+import { addFromLibrary, promptNewFolder, setParent } from "../edits";
 import type { BinItem, Project } from "../types";
-import { childrenOf, isSequenceSource, itemKind } from "../types";
+import { childrenOf, isFolderSource, isSequenceSource, itemKind } from "../types";
 
 export class Library {
   constructor(private host: HTMLElement) {
     store.select((s) => [s.project, s.templates, s.sequence], () => this.render());
   }
 
-  /** Which tab is showing. View state, so it lives here rather than in the store. */
+  /** Which tab is showing, and which folders are folded. View state, so it lives here
+   *  rather than in the store. */
   private tab: "bin" | "templates" = "bin";
+  private collapsed = new Set<string>();
 
   private render() {
     const s = store.state;
@@ -44,20 +46,35 @@ export class Library {
   private renderBin(p: Project) {
     if (!Object.keys(p.bin).length) this.host.appendChild(el("p", "muted", "Empty. Add media below, or an overlay from the Templates tab."));
     const list = el("div", "bin-list");
-    // A tree by `parent`: an entry's children (a transcript under its media) sit under
-    // it, indented. Cycle-safe because the validator refuses a ring.
+    // A tree by `parent`: an entry's children (a transcript under its media, a folder's
+    // contents) sit under it, indented, behind a caret. Cycle-safe because the validator
+    // refuses a ring.
     const walk = (parent: string | null, depth: number) => {
       for (const [id, item] of childrenOf(p, parent)) {
-        const row = binRow(p, id, item);
+        let caret: HTMLElement | undefined;
+        if (childrenOf(p, id).length || isFolderSource(item.source)) {
+          const folded = this.collapsed.has(id);
+          caret = button(folded ? "▸" : "▾", () => { this.collapsed[folded ? "delete" : "add"](id); this.render(); }, folded ? "Expand" : "Collapse");
+          caret.onpointerdown = (e) => e.stopPropagation();
+        }
+        const row = binRow(p, id, item, caret);
         row.style.paddingLeft = `${6 + depth * 14}px`;
         list.appendChild(row);
-        walk(id, depth + 1);
+        if (!this.collapsed.has(id)) walk(id, depth + 1);
       }
     };
     walk(null, 0);
     // An entry whose parent is missing (mid-edit) is still shown rather than lost.
     for (const [id, item] of Object.entries(p.bin)) if (item.parent && !(item.parent in p.bin)) list.appendChild(binRow(p, id, item));
+    // Dropping a row on the list's empty space lists it at the top level.
+    list.ondragover = (e) => e.preventDefault();
+    list.ondrop = (e) => { e.preventDefault(); const from = dragged(e); if (from) void setParent(from, null); };
     this.host.appendChild(list);
+
+    const folder = button("+ folder", () => void promptNewFolder(), "Add a folder; drag entries onto it");
+    const folderRow = el("div", "lib-add");
+    folderRow.appendChild(folder);
+    this.host.appendChild(folderRow);
 
     const input = el("input");
     input.placeholder = "media/clip.mp4";
@@ -121,19 +138,34 @@ export class Library {
  * the actions — is the entry's own detail, and detail belongs in the inspector now that
  * selecting an entry opens it there. A bin of twenty things should read as a list.
  */
-function binRow(p: Project, id: string, item: BinItem): HTMLDivElement {
+function binRow(p: Project, id: string, item: BinItem, caret?: HTMLElement): HTMLDivElement {
   const kind = itemKind(item);
   const row = el("div", `bin-row${store.state.selection?.kind === "bin" && store.state.selection.id === id ? " selected" : ""}`);
   if (id === store.state.sequence) row.classList.add("open");
   row.draggable = true;
   row.title = item.name || id;
   const name = el("span", "bin-name", item.name || id);
-  row.append(name, el("span", `badge-kind ${kind}`, kind));
+  // Every row has the caret slot, so names line up whether or not there is one to show.
+  const slot = caret ?? el("span");
+  slot.classList.add("caret");
+  row.append(slot, name, el("span", `badge-kind ${kind}`, kind));
   row.onclick = () => store.selectItem("bin", id);
   // A sequence is a timeline; opening it is what double-clicking one means everywhere.
   if (isSequenceSource(item.source)) row.ondblclick = () => store.openSequence(id);
   row.ondragstart = (e) => e.dataTransfer?.setData("application/x-kuma", JSON.stringify({ bin: id }));
+  // A folder takes what is dropped on it. Any entry can be a parent, but only a folder
+  // is offered as a drop target: dropping media on media is more often a slip.
+  if (isFolderSource(item.source)) {
+    row.ondragover = (e) => { e.preventDefault(); e.stopPropagation(); row.classList.add("drop"); };
+    row.ondragleave = () => row.classList.remove("drop");
+    row.ondrop = (e) => { e.preventDefault(); e.stopPropagation(); row.classList.remove("drop"); const from = dragged(e); if (from && from !== id) void setParent(from, id); };
+  }
   return row;
+}
+
+/** The bin id a drag carries, if it is a bin row (templates carry `template`). */
+function dragged(e: DragEvent): string | null {
+  try { return (JSON.parse(e.dataTransfer?.getData("application/x-kuma") || "{}") as { bin?: string }).bin ?? null; } catch { return null; }
 }
 
 /** One draggable card. The payload is what a drop on the timeline receives. */

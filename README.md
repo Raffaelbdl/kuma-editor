@@ -240,8 +240,10 @@ claude mcp add --scope user    kuma -- kuma mcp --project /abs/path.kuma.json  #
 and the agent always share one state. Tools: `get_project`, `get_schema`, `apply_edits`,
 `undo`, `redo`, `validate_project`, `list_templates`, `template_guide`, `list_presets`,
 `add_media`, `probe_media`, `transcribe`, **`sample_frames`**, `bake_overlay`, `render`,
-`job_status`, `health`. `sample_frames` takes an `overlay` (a bin id) to look at one
-overlay entry on its own, which is how an agent checks an animation it is authoring.
+`job_status`, `health`, `new_template`, `check_template`. `sample_frames` takes an
+`overlay` (a bin id) to look at one overlay entry on its own, which is how an agent checks
+an animation it is authoring; `new_template` scaffolds a template that already obeys the
+contract and `check_template` says whether one still does, without baking it.
 `template_guide` returns the overlay authoring contract
 (`library/overlays/CLAUDE.md`) so the agent can write templates into the library or the
 project.
@@ -257,6 +259,8 @@ kuma compile > timeline.mlt                # inspect the MLT graph (or open it i
 kuma render --sequence intro               # render one nested sequence instead of the master
 kuma transcribe --clip c1 --language fr    # whisper.cpp → `subtitles` entry under the media, placed over clip c1
 kuma transcribe screen --replace           # re-transcribe in place: same entry, styling and placement, new words
+kuma new-template my-tag                   # a contract-abiding skeleton in the project's overlays/ (--library for the user library)
+kuma lint                                  # check every template against the contract (exit 1 on errors); `kuma lint my-tag` for one
 kuma validate | thumbs | library | doctor
 ```
 
@@ -382,6 +386,8 @@ project's `width`/`height`.
   and why). No library at all: run `kuma library`.
 - **Bakes fail with "timelines did not become ready"** — a template without a GSAP timeline
   needs `data-no-timeline` on its composition root (see `library/overlays/CLAUDE.md`).
+  `kuma lint <id>` says so in a second instead of after a 45-second wait, and reports the
+  rest of the contract with it.
 
 ## Known limitations
 

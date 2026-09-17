@@ -1,0 +1,448 @@
+//! Checking a template against the contract, before a bake proves it the slow way.
+//!
+//! A template that breaks the contract fails far from its cause: a missing
+//! `data-no-timeline` waits 45 seconds for a timeline that will never register, a
+//! `Date.now()` renders a frozen or wrong frame with no error at all, and an undeclared
+//! var reaches the document as `undefined`. All of it is visible in the markup, so it is
+//! read here — where the answer costs a second and names the fix.
+//!
+//! Two sources, one report. hyperframes ships its own linter and knows its own runtime;
+//! kuma knows its contract (`library/overlays/CLAUDE.md`), which is stricter on the two
+//! things that make a bake deterministic: no wall clock, and nothing fetched over the
+//! network. What is checked is the **staged** template — the injection applied, `_vendor/`
+//! in place — so a rule never fires on something the renderer would not have seen.
+
+use std::path::Path;
+use std::process::Command;
+
+use kuma_core::template::TemplateManifest;
+use serde::{Deserialize, Serialize};
+
+use crate::bake::{BakeError, BakeRequest, Baker};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Level {
+    /// The bake fails, or the frames come out wrong. Fix before rendering.
+    Error,
+    /// Legal, and usually a mistake.
+    Warning,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Finding {
+    pub level: Level,
+    /// A short stable slug, so a report can be diffed and a rule can be searched for.
+    pub code: String,
+    pub message: String,
+    /// What to do about it, in one line.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fix: Option<String>,
+}
+
+impl Finding {
+    fn error(code: &str, message: impl Into<String>, fix: &str) -> Self {
+        Finding { level: Level::Error, code: code.into(), message: message.into(), fix: Some(fix.into()) }
+    }
+    fn warn(code: &str, message: impl Into<String>, fix: &str) -> Self {
+        Finding { level: Level::Warning, code: code.into(), message: message.into(), fix: Some(fix.into()) }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LintReport {
+    pub template: String,
+    pub findings: Vec<Finding>,
+    /// Why hyperframes' own linter did not run, when it did not. Its absence is not a
+    /// pass and not a failure — the same stance the render tests take.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub renderer_skipped: Option<String>,
+}
+
+impl LintReport {
+    pub fn errors(&self) -> usize {
+        self.findings.iter().filter(|f| f.level == Level::Error).count()
+    }
+    pub fn warnings(&self) -> usize {
+        self.findings.iter().filter(|f| f.level == Level::Warning).count()
+    }
+    /// True when nothing would stop this template rendering correctly.
+    pub fn ok(&self) -> bool {
+        self.errors() == 0
+    }
+    /// One line per finding, for a terminal or a toast.
+    pub fn lines(&self) -> Vec<String> {
+        self.findings
+            .iter()
+            .map(|f| format!("{} {}: {}{}", if f.level == Level::Error { "✗" } else { "⚠" }, f.code, f.message, f.fix.as_deref().map(|x| format!(" — {x}")).unwrap_or_default()))
+            .collect()
+    }
+}
+
+/// Wall-clock and non-determinism: the contract forbids these outright, because the bake
+/// renders frame by frame with no real time passing and the preview scrubs.
+const FORBIDDEN: &[(&str, &str)] = &[
+    ("setTimeout", "`setTimeout` drives state from the wall clock"),
+    ("setInterval", "`setInterval` drives state from the wall clock"),
+    ("requestAnimationFrame", "`requestAnimationFrame` drives state from the wall clock"),
+    ("Date.now", "`Date.now()` reads the wall clock"),
+    ("performance.now", "`performance.now()` reads the wall clock"),
+    ("Math.random", "`Math.random()` is different on every frame and every bake"),
+];
+
+impl Baker {
+    /// Lint a template: kuma's contract over the staged document, plus hyperframes' own
+    /// linter when it is installed. `req` decides the size and length the document is
+    /// staged at, exactly as a bake would.
+    pub fn lint(&self, req: &BakeRequest) -> Result<LintReport, BakeError> {
+        let work = tempfile::Builder::new().prefix("kuma-lint-").tempdir()?;
+        let staged = self.stage(req, &work.path().join("src"))?;
+        let html = std::fs::read_to_string(&staged.entry)?;
+        let mut findings = contract_findings(&html, req.manifest, &staged.dir);
+
+        let renderer_skipped = match hyperframes_lint(&self.hyperframes, &staged.dir) {
+            Ok(mut fs) => {
+                // hyperframes looks for a literal `window.__timelines[...]` assignment.
+                // kuma templates register through `timeline()` in `_vendor/kuma.js`, so
+                // its miss is a false positive whenever our own check is satisfied — and
+                // a report full of false positives is a report nobody reads.
+                let registered = !findings.iter().any(|f| f.code == "no_timeline");
+                // The same fault reported twice in different words reads as two faults.
+                let wall_clock = findings.iter().any(|f| f.code == "wall_clock");
+                fs.retain(|f| !(registered && f.code == "missing_timeline_registry") && !(wall_clock && f.code == "non_deterministic_code"));
+                findings.append(&mut fs);
+                None
+            }
+            Err(e) => Some(e),
+        };
+        findings.sort_by_key(|f| f.level == Level::Warning);
+        Ok(LintReport { template: req.manifest.id.clone(), findings, renderer_skipped })
+    }
+}
+
+/// kuma's own contract, read off the staged document.
+fn contract_findings(html: &str, manifest: &TemplateManifest, dir: &Path) -> Vec<Finding> {
+    let mut out = Vec::new();
+    let scripts = script_text(html);
+
+    if !html.contains("data-composition-id") {
+        out.push(Finding::error(
+            "no_composition_root",
+            "no element carries `data-composition-id`",
+            "give the root `data-composition-id=\"main\"` with `data-start`, `data-duration`, `data-width` and `data-height`",
+        ));
+    }
+    // A timeline is registered either directly or through `kumaTemplate().timeline()`;
+    // without one the renderer waits for a timeline that never comes, so the template has
+    // to say so instead.
+    let has_timeline = scripts.contains("__timelines") || scripts.contains("timeline()") || scripts.contains("timeline(");
+    if !has_timeline && !html.contains("data-no-timeline") {
+        out.push(Finding::error(
+            "no_timeline",
+            "no GSAP timeline is registered and the root does not carry `data-no-timeline`",
+            "add `data-no-timeline` to the composition root, or register one with `timeline()` from `_vendor/kuma.js`",
+        ));
+    }
+    for (needle, why) in FORBIDDEN {
+        if scripts.contains(needle) {
+            out.push(Finding::error("wall_clock", format!("{why}; a bake renders frame by frame with no time passing"), "drive everything from the timeline, which the renderer seeks"));
+        }
+    }
+    if html.contains("fonts.googleapis.com") || html.contains("fonts.gstatic.com") {
+        out.push(Finding::error("remote_font", "a Google Fonts URL is referenced", "bundle the font in the template folder and reference it with a relative `@font-face` src"));
+    }
+    if html.contains("<video") && html.contains("autoplay") {
+        out.push(Finding::error("autoplay_video", "an autoplaying `<video>` cannot be seeked deterministically", "drive the video from the timeline, or bake it as media and place it on a video track"));
+    }
+
+    // Vars: the manifest is what the inspector shows and what the injection resolves, so
+    // a var used but not declared arrives as `undefined` and one declared but unused is a
+    // control that does nothing.
+    for name in used_vars(html) {
+        if !manifest.vars.contains_key(&name) {
+            out.push(Finding::error("unknown_var", format!("`{name}` is read but not declared in template.json"), "declare it under `vars` with a type and a default, or stop reading it"));
+        }
+    }
+    let used = used_vars(html);
+    for name in manifest.vars.keys() {
+        if !used.contains(name) {
+            out.push(Finding::warn("unused_var", format!("`{name}` is declared in template.json but never read"), "read it as `vars.<name>` or `var(--var-<name>)`, or remove it from the manifest"));
+        }
+    }
+    if has_timeline && !scripts.contains("duration") {
+        out.push(Finding::warn(
+            "duration_not_read",
+            "the animation never reads `duration`",
+            "anchor the out-animation to the clip's real length (`duration` from `kumaTemplate`), or it plays at the template's default length whatever the clip is",
+        ));
+    }
+
+    // Local assets, resolved the way the renderer resolves them: after staging, so a
+    // `_vendor/` reference that only the shared library satisfies is not a miss.
+    for href in local_refs(html) {
+        if !dir.join(&href).is_file() {
+            out.push(Finding::error("missing_asset", format!("`{href}` is referenced but not in the template folder"), "add the file, or fix the path (it resolves against the template folder)"));
+        }
+    }
+    out
+}
+
+/// Everything inside `<script>` tags, comments removed — where the rules about behaviour
+/// apply. kuma's own injected script is skipped: it is not the template's to answer for.
+///
+/// Comments come out because a template that *warns* about `Date.now()` is not using it,
+/// and a linter that cannot tell the two apart is one people learn to ignore. The
+/// scaffold this crate writes says exactly that in a comment, and used to fail its own
+/// check.
+fn script_text(html: &str) -> String {
+    let mut out = String::new();
+    let mut rest = html;
+    while let Some(start) = rest.find("<script") {
+        let after = &rest[start..];
+        let Some(open_end) = after.find('>') else { break };
+        let Some(close) = after.find("</script") else { break };
+        let tag = &after[..open_end];
+        let body = &after[open_end + 1..close];
+        if !tag.contains("kuma-inject") {
+            out.push_str(&strip_comments(body));
+            out.push('\n');
+        }
+        rest = &after[close + 8..];
+    }
+    out
+}
+
+/// Drop `//` and `/* */` comments, leaving string literals alone so a `https://` inside
+/// one is not read as the start of a comment. Regex literals are not tracked: a `//`
+/// inside one would take the rest of its line, which costs a missed check, never a false
+/// one.
+fn strip_comments(js: &str) -> String {
+    let b: Vec<char> = js.chars().collect();
+    let mut out = String::with_capacity(js.len());
+    let mut i = 0;
+    while i < b.len() {
+        let c = b[i];
+        match c {
+            '"' | '\'' | '`' => {
+                // A string literal, copied through with its escapes.
+                let quote = c;
+                out.push(c);
+                i += 1;
+                while i < b.len() {
+                    out.push(b[i]);
+                    if b[i] == '\\' {
+                        if i + 1 < b.len() {
+                            out.push(b[i + 1]);
+                        }
+                        i += 2;
+                        continue;
+                    }
+                    if b[i] == quote {
+                        i += 1;
+                        break;
+                    }
+                    i += 1;
+                }
+            }
+            '/' if i + 1 < b.len() && b[i + 1] == '/' => {
+                while i < b.len() && b[i] != '\n' {
+                    i += 1;
+                }
+            }
+            '/' if i + 1 < b.len() && b[i + 1] == '*' => {
+                i += 2;
+                while i + 1 < b.len() && !(b[i] == '*' && b[i + 1] == '/') {
+                    i += 1;
+                }
+                i = (i + 2).min(b.len());
+                // Keep the newline count roughly honest for anything reading lines later.
+                out.push(' ');
+            }
+            _ => {
+                out.push(c);
+                i += 1;
+            }
+        }
+    }
+    out
+}
+
+/// Var names the document reads, either as `vars.<name>` in script or `--var-<name>` in
+/// CSS. Both are how a value reaches a template, so both count as using it.
+fn used_vars(html: &str) -> std::collections::BTreeSet<String> {
+    let mut out = std::collections::BTreeSet::new();
+    let ident = |s: &str| -> String { s.chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '_').collect() };
+    for (marker, dashes) in [("vars.", false), ("--var-", true)] {
+        let mut rest = html;
+        while let Some(i) = rest.find(marker) {
+            rest = &rest[i + marker.len()..];
+            let name = if dashes {
+                // `--var-anchor-x` is the `point` var `anchor`; the axis is the injection's.
+                let raw: String = rest.chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '-').collect();
+                raw.strip_suffix("-x").or_else(|| raw.strip_suffix("-y")).unwrap_or(&raw).to_string()
+            } else {
+                ident(rest)
+            };
+            if !name.is_empty() {
+                out.insert(name);
+            }
+        }
+    }
+    out
+}
+
+/// Local files the document references: `src="…"` and `href="…"` that are not URLs.
+fn local_refs(html: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for attr in ["src=\"", "href=\""] {
+        let mut rest = html;
+        while let Some(i) = rest.find(attr) {
+            rest = &rest[i + attr.len()..];
+            let Some(end) = rest.find('"') else { break };
+            let v = &rest[..end];
+            let skip = v.is_empty() || v.starts_with("http") || v.starts_with("//") || v.starts_with('#') || v.starts_with("data:") || v.starts_with('/');
+            if !skip {
+                out.push(v.to_string());
+            }
+        }
+    }
+    out
+}
+
+/// hyperframes' own linter over the staged folder. `Err` is why it could not run.
+fn hyperframes_lint(bin: &Path, dir: &Path) -> Result<Vec<Finding>, String> {
+    let out = Command::new(bin).arg("lint").arg(dir).output().map_err(|e| format!("{}: {e}", bin.display()))?;
+    let text = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+    Ok(parse_hyperframes(&text))
+}
+
+/// Its output is a human report: `✗ code: message` / `⚠ code: message`, each optionally
+/// followed by an indented `Fix: …`. Parsed rather than asked for as JSON because the
+/// command has no JSON mode.
+fn parse_hyperframes(text: &str) -> Vec<Finding> {
+    let mut out: Vec<Finding> = Vec::new();
+    for line in text.lines() {
+        let t = line.trim();
+        let (level, rest) = if let Some(r) = t.strip_prefix('✗') {
+            (Level::Error, r)
+        } else if let Some(r) = t.strip_prefix('⚠') {
+            (Level::Warning, r)
+        } else {
+            if let Some(fix) = t.strip_prefix("Fix:") {
+                if let Some(last) = out.last_mut() {
+                    last.fix = Some(fix.trim().to_string());
+                }
+            }
+            continue;
+        };
+        let rest = rest.trim();
+        let (code, message) = rest.split_once(american_colon).unwrap_or(("hyperframes", rest));
+        out.push(Finding { level, code: code.trim().to_string(), message: message.trim().to_string(), fix: None });
+    }
+    out
+}
+
+fn american_colon(c: char) -> bool {
+    c == ':'
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn manifest(vars: &[&str]) -> TemplateManifest {
+        let vars: serde_json::Map<String, serde_json::Value> =
+            vars.iter().map(|v| ((*v).to_string(), serde_json::json!({ "type": "string", "default": "x" }))).collect();
+        serde_json::from_value(serde_json::json!({ "id": "t", "vars": vars })).unwrap()
+    }
+
+    /// The template that follows the contract: nothing to report.
+    #[test]
+    fn a_contract_abiding_template_is_clean() {
+        let html = r##"<html><head></head><body>
+          <script src="_vendor/kuma.js"></script>
+          <div id="root" data-composition-id="main" data-start="0" data-duration="4"><span id="label"></span></div>
+          <script>const { vars, duration, text, timeline } = kumaTemplate({ label: "x" });
+          text("label", vars.label);
+          const tl = timeline(); tl.to("#label", { opacity: 1 }, duration - 0.45);</script>
+        </body></html>"##;
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("_vendor")).unwrap();
+        std::fs::write(dir.path().join("_vendor/kuma.js"), "").unwrap();
+        let out = contract_findings(html, &manifest(&["label"]), dir.path());
+        assert!(out.is_empty(), "{out:?}");
+    }
+
+    /// Each rule fires on its own fault, so a report names one thing to fix.
+    #[test]
+    fn each_rule_catches_its_own_fault() {
+        let dir = tempfile::tempdir().unwrap();
+        let codes = |html: &str, m: &TemplateManifest| -> Vec<String> { contract_findings(html, m, dir.path()).into_iter().map(|f| f.code).collect() };
+
+        let no_root = "<div><script>const tl = timeline();</script></div>";
+        assert!(codes(no_root, &manifest(&[])).contains(&"no_composition_root".to_string()));
+
+        // A static template says so; one that neither animates nor says so is the 45-second
+        // bake failure this whole file exists to prevent.
+        let silent = r#"<div data-composition-id="main"></div>"#;
+        assert!(codes(silent, &manifest(&[])).contains(&"no_timeline".to_string()));
+        let declared = r#"<div data-composition-id="main" data-no-timeline></div>"#;
+        assert!(!codes(declared, &manifest(&[])).contains(&"no_timeline".to_string()));
+
+        let clock = r#"<div data-composition-id="main" data-no-timeline></div><script>setTimeout(f, 10)</script>"#;
+        assert!(codes(clock, &manifest(&[])).contains(&"wall_clock".to_string()));
+        // The same call in a comment-free string is still a call as far as this is
+        // concerned; what matters is that nothing in the template's own scripts reads a
+        // clock. kuma's injected script is not the template's to answer for.
+        let injected = r#"<div data-composition-id="main" data-no-timeline></div><script id="kuma-inject">Date.now()</script>"#;
+        assert!(!codes(injected, &manifest(&[])).contains(&"wall_clock".to_string()));
+
+        let remote = r#"<link href="https://fonts.googleapis.com/css2?family=X"><div data-composition-id="main" data-no-timeline></div>"#;
+        assert!(codes(remote, &manifest(&[])).contains(&"remote_font".to_string()));
+
+        let unknown = r#"<div data-composition-id="main" data-no-timeline></div><script>vars.nope</script>"#;
+        assert!(codes(unknown, &manifest(&[])).contains(&"unknown_var".to_string()));
+        assert!(codes(unknown, &manifest(&["label"])).contains(&"unused_var".to_string()));
+
+        let missing = r#"<div data-composition-id="main" data-no-timeline></div><img src="logo.png">"#;
+        assert!(codes(missing, &manifest(&[])).contains(&"missing_asset".to_string()));
+    }
+
+    /// A comment is not code. The scaffold warns about `Date.now()` in a comment, and a
+    /// linter that flagged that would be one nobody trusts.
+    #[test]
+    fn a_comment_is_not_a_wall_clock() {
+        let dir = tempfile::tempdir().unwrap();
+        let html = r#"<div data-composition-id="main" data-no-timeline></div>
+          <script>// never use Date.now() or setTimeout here
+          /* nor Math.random() */
+          const url = "https://example.com/x"; // a protocol is not a comment
+          </script>"#;
+        let found = contract_findings(html, &manifest(&[]), dir.path());
+        assert!(found.is_empty(), "{found:?}");
+        // …and the real thing still is.
+        let real = r#"<div data-composition-id="main" data-no-timeline></div><script>const t = Date.now();</script>"#;
+        assert!(contract_findings(real, &manifest(&[]), dir.path()).iter().any(|f| f.code == "wall_clock"));
+    }
+
+    /// A `point` var reaches CSS as two properties; both name the one var.
+    #[test]
+    fn a_point_var_counts_as_used() {
+        let html = r#"<style>.p { left: calc(var(--var-anchor-x) * 100%); top: calc(var(--var-anchor-y) * 100%); }</style>
+          <div data-composition-id="main" data-no-timeline></div>"#;
+        let dir = tempfile::tempdir().unwrap();
+        let codes: Vec<String> = contract_findings(html, &manifest(&["anchor"]), dir.path()).into_iter().map(|f| f.code).collect();
+        assert!(!codes.contains(&"unused_var".to_string()), "{codes:?}");
+    }
+
+    #[test]
+    fn hyperframes_output_is_read_as_findings() {
+        let text = "◆  Linting src/index.html\n\n  ✗ missing_timeline_registry: Missing `window.__timelines` registration.\n    Fix: Register each composition timeline.\n  ⚠ gsap_infinite_repeat: GSAP tween uses `repeat: -1`.\n\n◇  1 error(s), 1 warning(s)\n";
+        let f = parse_hyperframes(text);
+        assert_eq!(f.len(), 2);
+        assert_eq!(f[0].code, "missing_timeline_registry");
+        assert_eq!(f[0].level, Level::Error);
+        assert_eq!(f[0].fix.as_deref(), Some("Register each composition timeline."));
+        assert_eq!(f[1].level, Level::Warning);
+    }
+}

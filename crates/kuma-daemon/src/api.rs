@@ -8,7 +8,7 @@ use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, Query, State};
 use axum::http::{header, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use kuma_core::edit::EditError;
 use kuma_core::{validate, BinSource, Project};
@@ -33,8 +33,9 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/project/validate", get(validate_project))
         .route("/api/sequence", get(get_sequence).post(open_sequence))
         .route("/api/schema", get(schema))
-        .route("/api/templates", get(templates).post(reload_templates))
+        .route("/api/templates", get(templates).post(reload_templates).put(new_template))
         .route("/api/templates/thumbs", post(thumbs))
+        .route("/api/templates/{id}/lint", get(lint_template))
         .route("/api/presets/effects", get(effect_presets))
         .route("/api/media/probe", get(probe_media))
         .route("/api/bin", post(add_media))
@@ -221,6 +222,33 @@ async fn templates(State(st): S) -> Json<Value> {
 async fn reload_templates(State(st): S) -> Json<Value> {
     st.reload_templates();
     Json(json!(st.template_infos()))
+}
+
+#[derive(Deserialize)]
+struct NewTemplate {
+    id: String,
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    description: String,
+}
+
+/// Scaffold a template into the **project's** `overlays/`, where a one-off written for
+/// this video belongs. It lands last on the search path, so it also shadows a library
+/// template of the same id — which is how a shipped template is forked and edited.
+async fn new_template(State(st): S, Json(req): Json<NewTemplate>) -> ApiResult {
+    let dir = st.config.project_root().join("overlays");
+    let out = kuma_overlay::new_template(&dir, &req.id, &req.name, &req.description).map_err(ApiError::bad_request)?;
+    st.reload_templates();
+    let report = jobs::lint_template(&st, &req.id).map_err(ApiError::bad_request)?;
+    Ok(Json(json!({ "id": req.id, "dir": out, "lint": report })))
+}
+
+/// Check a template against the contract before a bake proves it the slow way. Reads
+/// only: nothing is rendered and nothing is written.
+async fn lint_template(State(st): S, Path(id): Path<String>) -> ApiResult {
+    let report = jobs::lint_template(&st, &id).map_err(ApiError::bad_request)?;
+    Ok(Json(json!(report)))
 }
 
 async fn presets() -> Json<Value> {

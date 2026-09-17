@@ -31,6 +31,21 @@ same folder.
 - `_vendor/kuma.css` — the transparent reset and the `--u` unit (`1vh × --var-size`).
 - `_vendor/gsap.min.js`.
 
+## Start from the scaffold, and check your work
+
+Do not write a template from an empty file. `kuma new-template <id>` (the `new_template`
+tool) writes a working one into the project's `overlays/`: the root's timing attributes, a
+registered paused timeline, typed vars of three kinds, `--u` sizing that survives both
+orientations, and an exit anchored to the clip's real length. Edit that.
+
+`kuma lint <id>` (the `check_template` tool, **Check** in the overlay workbench) reads the
+staged template — the injection applied, `_vendor/` in place — and reports what would
+otherwise surface as a bake that times out after 45 seconds or a frame that is quietly
+wrong: a missing timeline registration, a wall clock, a Google Fonts URL, a var the markup
+reads that the manifest does not declare, a missing asset. It runs hyperframes' own linter
+too when it is installed. It renders nothing and writes nothing, so run it after every
+edit; a bake is the slow way to learn the same thing.
+
 ## The contract (what kuma guarantees, what the template must do)
 
 **kuma injects:**

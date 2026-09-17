@@ -382,6 +382,25 @@ fn bake_clips(state: &AppState, project: &Project, ids: &[String], progress: &dy
 /// Compile options pointed at this project's directories. Callers set what they need on
 /// it (`bakes`, `unbaked`, `size`, `sequence`) — a new compile knob is then a field rather
 /// than another parameter on every function between here and the caller.
+/// Lint one template at the project's frame and rate, so a rule that depends on either
+/// judges the size the video is actually in.
+pub fn lint_template(state: &AppState, id: &str) -> Result<kuma_overlay::LintReport, String> {
+    let project = read(&state.project).clone();
+    let templates = read(&state.templates);
+    let (dir, manifest) = templates.loaded.get(id).ok_or_else(|| format!("unknown template `{id}`"))?;
+    let req = kuma_overlay::BakeRequest {
+        template_dir: dir,
+        manifest,
+        vars: &serde_json::Map::new(),
+        fps: project.fps,
+        width: project.width,
+        height: project.height,
+        duration: manifest.duration_default,
+        speed: 1.0,
+    };
+    state.baker.lint(&req).map_err(|e| e.to_string())
+}
+
 pub fn compile_options(state: &AppState) -> CompileOptions {
     let mut opts = CompileOptions::new(state.config.project_root());
     opts.cache_dir = state.config.cache_dir().join("cache");

@@ -120,6 +120,23 @@ pub struct ApplyEdits {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct NewTemplate {
+    /// Folder name and id: `[A-Za-z_][A-Za-z0-9_-]*`.
+    pub id: String,
+    /// Human-readable name for the library browser. Defaults to the id.
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct CheckTemplate {
+    /// Template id, as `list_templates` gives it.
+    pub template: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct SampleFrames {
     /// Start time, seconds.
     pub t0: f64,
@@ -299,6 +316,18 @@ impl KumaServer {
     async fn transcribe(&self, Parameters(p): Parameters<Transcribe>) -> Result<CallToolResult, McpError> {
         let body = json!({ "bin": p.bin, "clip": p.clip, "id": p.id, "replace": p.replace.unwrap_or(false), "language": p.language, "max_chars": p.max_chars, "origin": "claude: transcribe" });
         self.job("/api/transcribe", &body, Duration::from_secs(p.wait_seconds.unwrap_or(600))).await
+    }
+
+    #[tool(description = "Scaffold a new overlay template in the project's `overlays/` folder and return where it landed plus its lint report. It is a working, contract-abiding skeleton — root timing attributes, a registered paused GSAP timeline, typed vars, sizing that survives both orientations — meant to be edited rather than read. Start here instead of writing a template from scratch; call `template_guide` for the contract it follows. An id that already exists is refused rather than overwritten.")]
+    async fn new_template(&self, Parameters(p): Parameters<NewTemplate>) -> Result<CallToolResult, McpError> {
+        let body = json!({ "id": p.id, "name": p.name.unwrap_or_default(), "description": p.description.unwrap_or_default() });
+        Ok(ok_json(&self.client.put("/api/templates", &body).await.map_err(err)?))
+    }
+
+    #[tool(description = "Check an overlay template against the authoring contract — the composition root, timeline registration, wall-clock and network use, manifest/markup agreement on vars, and missing assets — plus hyperframes' own linter. Reads only: nothing is rendered or written. Run it after writing or editing a template, before baking: a contract break otherwise surfaces as a 45-second bake timeout or a silently wrong frame.")]
+    async fn check_template(&self, Parameters(p): Parameters<CheckTemplate>) -> Result<CallToolResult, McpError> {
+        // A template id is a folder name, so it carries no path separator to escape.
+        self.get(&format!("/api/templates/{}/lint", p.template)).await
     }
 
     #[tool(description = "Render exact composited frames (through the real MLT graph, overlays included) and return them as images. Use a rect to zoom into a region. Pass `sequence` to look at a nested sequence instead of the master, or `overlay` to look at one overlay bin entry on its own — no placement needed, times counted from the start of the overlay, which is how to check an animation you are authoring before it is in the cut. Frames are also written as PNGs whose paths are returned.")]

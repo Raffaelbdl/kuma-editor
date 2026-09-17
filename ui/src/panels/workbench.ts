@@ -64,7 +64,9 @@ export class Workbench {
   private scrub = el("input");
   private lengthInput = el("input");
   private frameSel = selectInput(Object.keys(FRAMES).map((value) => ({ value })), "project", (v) => { this.frame = v; this.update(); });
-  private hint = el("p", "muted wb-hint");
+  private hint = el("div", "muted wb-hint");
+  /** The last check's findings, shown under the stage until the tab changes. */
+  private notes: string[] = [];
 
   /** Where each entry was left, so flipping between tabs keeps your place. */
   private times = new Map<string, number>();
@@ -75,6 +77,8 @@ export class Workbench {
   private backdropKind = "alpha";
   /** Everything the loaded document is a function of; when it changes, reload it. */
   private key = "";
+  /** The document the notes describe. */
+  private checkedKey = "";
   private ready = false;
   private playing = false;
   private raf = 0;
@@ -97,6 +101,7 @@ export class Workbench {
     this.head.append(
       this.title, this.sub, el("span", "spacer"),
       button("Reload", () => void this.rescan(), "Rescan the template libraries and rebuild this document — the loop for editing a template's markup"),
+      button("Check", () => void this.check(), "Check this overlay's template against the authoring contract, without baking it"),
       button("Duplicate", () => void duplicateOverlay(store.state.tab), "Fork this entry, vars and all, and open the copy"),
       button("Place at playhead", () => void this.place(), "Add a clip of this entry to the open sequence, at the length below", "primary"),
     );
@@ -178,7 +183,8 @@ export class Workbench {
     this.title.textContent = item.name || id;
     this.sub.textContent = source ? source.template : "";
     const tpl = source && templateOf(source.template);
-    this.hint.textContent = tpl ? "" : `Unknown template${source ? ` “${source.template}”` : ""} — is its library on the search path? Reload rescans them.`;
+    const lines = tpl ? this.notes : [`Unknown template${source ? ` “${source.template}”` : ""} — is its library on the search path? Reload rescans them.`];
+    this.hint.replaceChildren(...lines.map((l) => el("div", "", l)));
 
     const [w, h] = this.size(p!);
     const len = this.length();
@@ -203,6 +209,9 @@ export class Workbench {
    *  scripts read `window.kuma` once, at load. */
   private mount(id: string, len: number, w: number, h: number, revision: number) {
     this.ready = false;
+    // A new document means the last check is about something else.
+    if (this.key !== this.checkedKey) this.notes = [];
+    this.checkedKey = this.key;
     this.iframe?.remove();
     const f = el("iframe");
     f.width = String(w);
@@ -234,6 +243,31 @@ export class Workbench {
     // snapshot, the same one the preview falls back to.
     this.shot.style.display = "";
     this.shot.src = api.snapshotUrl(store.state.playhead, Math.max(640, this.stage.clientWidth * 2));
+  }
+
+  /**
+   * Check the template against the contract. What it reports is what would otherwise
+   * surface as a bake that times out after 45 seconds, or a frame that is quietly wrong —
+   * so it belongs next to Reload, at the point where markup has just been edited.
+   */
+  private async check() {
+    const id = store.state.tab;
+    const item = store.state.project?.bin[id];
+    const source = item && isOverlaySource(item.source) ? item.source : null;
+    if (!source) return;
+    this.notes = ["Checking…"];
+    this.update();
+    try {
+      const report = await api.lintTemplate(source.template);
+      const errors = report.findings.filter((f) => f.level === "error").length;
+      this.notes = report.findings.map((f) => `${f.level === "error" ? "✗" : "⚠"} ${f.code}: ${f.message}${f.fix ? ` — ${f.fix}` : ""}`);
+      if (report.renderer_skipped) this.notes.push(`(hyperframes' own linter did not run: ${report.renderer_skipped})`);
+      toast(errors ? `${source.template}: ${errors} contract error(s)` : `${source.template}: contract ok`, errors ? "err" : "ok");
+    } catch (e) {
+      this.notes = [];
+      toast((e as Error).message, "err");
+    }
+    this.update();
   }
 
   private async rescan() {

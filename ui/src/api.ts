@@ -1,4 +1,4 @@
-import type { DaemonEvent, EffectPreset, Issue, PatchOp, Preset, Project, SequenceState, TemplateInfo } from "./types";
+import type { DaemonEvent, EffectPreset, Issue, LintReport, PatchOp, Preset, Project, SequenceState, TemplateInfo } from "./types";
 
 async function json<T>(url: string, init?: RequestInit): Promise<T> {
   const r = await fetch(url, { headers: { "content-type": "application/json" }, ...init });
@@ -25,6 +25,8 @@ export const api = {
   presets: () => json<Preset[]>("/api/presets"),
   effectPresets: () => json<EffectPreset[]>("/api/presets/effects"),
   thumbs: () => json<{ job: number }>("/api/templates/thumbs", { method: "POST", body: "{}" }),
+  /** Check a template against the authoring contract. Reads only. */
+  lintTemplate: (id: string) => json<LintReport>(`/api/templates/${encodeURIComponent(id)}/lint`),
   reloadTemplates: () => json<TemplateInfo[]>("/api/templates", { method: "POST", body: "{}" }),
   addMedia: (path: string, base_revision: number) =>
     json<{ id: string; revision: number }>("/api/bin", { method: "POST", body: JSON.stringify({ path, base_revision, origin: "ui: add media" }) }),

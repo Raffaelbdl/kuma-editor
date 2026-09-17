@@ -78,6 +78,10 @@ export interface TemplateManifest {
 }
 export interface TemplateInfo { id: string; manifest: TemplateManifest; has_thumb: boolean }
 
+/** What `check` says about a template: the contract's own rules plus hyperframes'. */
+export interface Finding { level: "error" | "warning"; code: string; message: string; fix?: string }
+export interface LintReport { template: string; findings: Finding[]; renderer_skipped?: string }
+
 export interface Preset { id: string; description: string; extension: string }
 
 /** An effect preset: typed params and effects whose values may be `$expr` strings. */

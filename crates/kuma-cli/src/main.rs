@@ -80,6 +80,21 @@ enum Cmd {
     Validate,
     /// Check the installation: repo, tools, engine, library, daemon, MCP config.
     Doctor,
+    /// Scaffold a contract-abiding overlay template in the project's `overlays/`.
+    NewTemplate {
+        /// Folder name and id: [A-Za-z_][A-Za-z0-9_-]*
+        id: String,
+        /// Name for the library browser (defaults to the id).
+        #[arg(long)]
+        name: Option<String>,
+        #[arg(long)]
+        description: Option<String>,
+        /// Write it to the user library instead of this project.
+        #[arg(long)]
+        library: bool,
+    },
+    /// Check overlay templates against the contract (all, or the given ids). Exit 1 on errors.
+    Lint { templates: Vec<String> },
     /// Generate `thumb.png` for overlay templates (all, or the given ids).
     Thumbs { templates: Vec<String> },
     /// Install the starter templates and presets into the user library (`~/.local/share/kuma`).
@@ -252,6 +267,46 @@ async fn main() -> anyhow::Result<()> {
             let issues = kuma_core::validate(&project, &state.validation_context());
             println!("{}", serde_json::to_string_pretty(&issues)?);
             if kuma_core::validate::has_errors(&issues) {
+                std::process::exit(1);
+            }
+        }
+        Cmd::NewTemplate { id, name, description, library } => {
+            let state = open(&cli)?;
+            // The project's own `overlays/` is where a one-off for this video belongs and
+            // is last on the search path; `--library` is for one meant to be reused.
+            let dir = if *library {
+                state.config.library_dirs.last().cloned().unwrap_or_else(|| state.config.project_root()).join("overlays")
+            } else {
+                state.config.project_root().join("overlays")
+            };
+            let out = kuma_overlay::new_template(&dir, id, name.as_deref().unwrap_or(""), description.as_deref().unwrap_or("")).map_err(anyhow::Error::msg)?;
+            state.reload_templates();
+            println!("{}", out.display());
+            let report = kuma_daemon::jobs::lint_template(&state, id).map_err(anyhow::Error::msg)?;
+            for line in report.lines() {
+                println!("  {line}");
+            }
+        }
+        Cmd::Lint { templates } => {
+            let state = open(&cli)?;
+            let ids: Vec<String> = {
+                let all = state.templates.read().unwrap().loaded.clone();
+                if templates.is_empty() { all.keys().cloned().collect() } else { templates.clone() }
+            };
+            let mut errors = 0;
+            for id in ids {
+                let report = kuma_daemon::jobs::lint_template(&state, &id).map_err(anyhow::Error::msg)?;
+                errors += report.errors();
+                let status = if report.ok() { "ok" } else { "FAILED" };
+                println!("{id}: {status} ({} error(s), {} warning(s))", report.errors(), report.warnings());
+                for line in report.lines() {
+                    println!("  {line}");
+                }
+                if let Some(why) = &report.renderer_skipped {
+                    println!("  (hyperframes' own linter did not run: {why})");
+                }
+            }
+            if errors > 0 {
                 std::process::exit(1);
             }
         }

@@ -86,6 +86,11 @@ Chrome headless shell if hyperframes should not download one.
   transitions, A/B lanes for dissolves) stays in `crates/kuma-mlt/src/compile.rs`.
   `tests/fixtures/reference.mlt` is a golden file: regenerate with
   `UPDATE_GOLDEN=1 cargo test -p kuma-mlt` and read the diff.
+- A template is **checked, not discovered to be broken**: `Baker::lint` reads the staged
+  document (contract injected, `_vendor/` in place) and adds hyperframes' own linter, and
+  `kuma new-template` writes a skeleton that passes it. A test lints every shipped
+  template and the scaffold, so the starter library cannot drift from the contract it
+  documents. New contract rule → a rule in `lint.rs`, or nothing enforces it.
 - Overlay bakes run hyperframes with **one worker**; multi-worker capture was measured
   to be non-deterministic on GSAP-driven transforms.
 - Subtitles are not a model concept: a transcript is the `cues` var of a `subtitles`

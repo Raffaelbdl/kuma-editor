@@ -49,6 +49,18 @@ impl BakeResult {
     }
 }
 
+/// A template staged for the renderer: where it went and the timing it carries.
+#[derive(Debug, Clone)]
+pub struct Staged {
+    pub dir: PathBuf,
+    pub entry: PathBuf,
+    pub is_still: bool,
+    /// |speed|, which the effective frame rate implements.
+    pub speed: f64,
+    /// Internal duration the contract was injected with, seconds.
+    pub duration: f64,
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum BakeError {
     #[error("hyperframes not found: {0}")]
@@ -173,13 +185,15 @@ impl Baker {
         Ok(result)
     }
 
-    /// Render into `work`; the result describes paths under `dir`, where `work` ends up.
-    fn bake_into(&self, req: &BakeRequest, work: &Path, dir: &Path) -> Result<BakeResult, BakeError> {
-        // 1. Stage the template with kuma's injection script. Shared libraries live in
-        //    `_vendor/` and are referenced by templates as `_vendor/...`; a template's own
-        //    copy (already staged with it) wins, exactly as the preview serves it.
-        let src = work.join("src");
-        copy_dir(req.template_dir, &src)?;
+    /// Stage a template into `src`: its own files, the shared `_vendor/` when it has none
+    /// of its own, and `index.html` with the contract injected — byte for byte what the
+    /// renderer opens. The bake renders this; the lint reads it, so what is checked is
+    /// what would run rather than the source with the injection imagined on top.
+    pub fn stage(&self, req: &BakeRequest, src: &Path) -> Result<Staged, BakeError> {
+        // Shared libraries live in `_vendor/` and are referenced by templates as
+        // `_vendor/...`; a template's own copy (already staged with it) wins, exactly as
+        // the preview serves it.
+        copy_dir(req.template_dir, src)?;
         if let Some(vendor) = self.vendor_for(req.template_dir).filter(|v| !v.starts_with(req.template_dir)) {
             copy_dir(&vendor, &src.join("_vendor"))?;
         }
@@ -196,6 +210,16 @@ impl Baker {
         let html = std::fs::read_to_string(&entry)?;
         let contract = Contract { vars: &vars, fps: req.fps, width: req.width, height: req.height, duration: internal_duration, speed: req.speed, bake: true, clip: None, head_extra: "" };
         std::fs::write(&entry, contract.apply(&html))?;
+        Ok(Staged { dir: src.to_path_buf(), entry, is_still, speed, duration: internal_duration })
+    }
+
+    /// Render into `work`; the result describes paths under `dir`, where `work` ends up.
+    fn bake_into(&self, req: &BakeRequest, work: &Path, dir: &Path) -> Result<BakeResult, BakeError> {
+        // 1. Stage the template with kuma's injection script.
+        let staged = self.stage(req, &work.join("src"))?;
+        let (src, is_still, speed) = (staged.dir, staged.is_still, staged.speed);
+        // The renderer takes the same resolved vars the staged document carries.
+        let vars = req.manifest.resolve_vars(req.vars);
         let eff_fps = effective_fps(req.fps, speed).ok_or(BakeError::Speed(req.speed))?;
 
         // 2. Render. One worker: multi-worker capture was measured to be non-deterministic.

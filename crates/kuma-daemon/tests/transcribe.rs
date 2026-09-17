@@ -58,7 +58,7 @@ fn a_transcript_becomes_an_editable_subtitles_entry() {
     let BinSource::Overlay { template, vars } = &p.bin["talk-subs"].source else { panic!("not an overlay entry") };
     assert_eq!(template, "subtitles");
     assert_eq!(p.bin["talk-subs"].parent.as_deref(), Some("talk"), "listed under the media it came from");
-    assert_eq!(p.children(Some("talk")).count(), 1);
+    assert_eq!(p.children(Some("talk")).len(), 1);
     assert_eq!(vars["cues"], json!([{ "start": 0.0, "end": 0.9, "text": "Hello" }, { "start": 2.0, "end": 2.8, "text": "world" }]));
     assert!(kuma_core::validate(&p, &state.validation_context()).is_empty(), "the entry validates against the real template");
     assert!(jobs::transcribe(&state, &req, &|_, _| {}).unwrap_err().to_string().contains("already exists"), "a second run must not rebind the entry");

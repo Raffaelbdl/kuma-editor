@@ -458,7 +458,7 @@ mod tests {
         let entry = |parent: Option<&str>| json!({ "source": { "color": "#000" }, "parent": parent });
         let ok = project(json!({ "bin": { "a": entry(None), "b": entry(Some("a")), "c": entry(Some("b")) }, "tracks": [] }));
         assert!(validate(&ok, &Default::default()).is_empty());
-        assert_eq!(ok.children(Some("a")).map(|(id, _)| id.as_str()).collect::<Vec<_>>(), ["b"]);
+        assert_eq!(ok.children(Some("a")).into_iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>(), ["b"]);
         let dangling = project(json!({ "bin": { "b": entry(Some("gone")) }, "tracks": [] }));
         assert!(validate(&dangling, &Default::default()).iter().any(|i| i.path == "/bin/b/parent" && i.message.contains("not in the bin")));
         let ring = project(json!({ "bin": { "a": entry(Some("b")), "b": entry(Some("a")), "s": entry(Some("s")) }, "tracks": [] }));

@@ -252,8 +252,11 @@ kuma validate | thumbs | library | doctor
 the entry it is listed under in the browser (a transcript under its media, anything in a
 folder). A **folder** is an entry with nothing but a name, `{ "source": { "folder": true } }`,
 and can never be placed. That is organisation only; ids stay the identity, so moving an
-entry is one field. In the editor, `+ folder` adds one, dragging a row onto a folder moves
-it there, onto the list's empty space moves it to the top, and the caret folds it. A clip is a
+entry is one field. An optional `order` sorts siblings (ordered ones first, the rest by
+id, so new entries land at the bottom). In the editor, `+ folder` adds one; drag a row onto
+the middle of a folder to move it there, onto the upper or lower part of any row to put it
+before or after that row, or onto the list's empty space to send it last at the top level;
+the caret folds a folder. A clip is a
 *placement*: it says which entry, when, how fast and with which effects, and never carries
 a source of its own. So an overlay's text lives on its bin entry and every placement of it
 follows; a second wording is a second entry. Overlay clips take the same effects as video

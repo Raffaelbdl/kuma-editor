@@ -107,6 +107,7 @@ impl Project {
             }),
             meta: None,
             parent: None,
+            order: None,
         };
         Project {
             name: name.into(),
@@ -241,9 +242,12 @@ impl Project {
         (1..).map(|n| format!("{prefix}{n}")).find(|id| !taken.contains(id.as_str())).unwrap_or_default()
     }
 
-    /// Entries listed directly under `parent` (`None` for the top level), in bin order.
-    pub fn children<'a>(&'a self, parent: Option<&'a str>) -> impl Iterator<Item = (&'a BinId, &'a BinItem)> + 'a {
-        self.bin.iter().filter(move |(_, i)| i.parent.as_deref() == parent)
+    /// Entries listed directly under `parent` (`None` for the top level), in browser
+    /// order: by `order` where set, then by id.
+    pub fn children(&self, parent: Option<&str>) -> Vec<(&BinId, &BinItem)> {
+        let mut v: Vec<_> = self.bin.iter().filter(|(_, i)| i.parent.as_deref() == parent).collect();
+        v.sort_by_key(|(id, i)| (i.order.unwrap_or(u32::MAX), *id));
+        v
     }
 }
 
@@ -316,6 +320,11 @@ pub struct BinItem {
     /// Identity stays the id, so moving an entry is one field and no clip changes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent: Option<BinId>,
+    /// Position among its siblings in the browser. Entries with an order come first, in
+    /// that order; the rest follow by id, so a new entry lands at the bottom. Organisation
+    /// only, like `parent`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub order: Option<u32>,
 }
 
 /// What a bin entry actually is. Exactly one variant.
@@ -773,6 +782,19 @@ mod tests {
         };
         assert!(mk(false).seq_has_audio("main"), "sound two levels down still needs a mix");
         assert!(!mk(true).seq_has_audio("main"), "a muted track inside carries nothing out");
+    }
+
+    #[test]
+    fn children_are_ordered_then_by_id() {
+        let p: Project = serde_json::from_value(json!({ "bin": {
+            "a": { "source": { "color": "#000" } },
+            "b": { "source": { "color": "#000" }, "order": 1 },
+            "c": { "source": { "color": "#000" }, "order": 0 },
+            "d": { "source": { "color": "#000" }, "parent": "a" }
+        } }))
+        .unwrap();
+        assert_eq!(p.children(None).into_iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>(), ["c", "b", "a"]);
+        assert_eq!(p.children(Some("a")).len(), 1);
     }
 
     #[test]

@@ -13,9 +13,9 @@ import { api } from "../api";
 import { desktop, pickAndAddMedia } from "../desktop";
 import { button, dragPayload, el, row, setDragPayload } from "../dom";
 import { startJob, store, toast } from "../store";
-import { addFromLibrary, promptNewFolder, setParent } from "../edits";
+import { addFromLibrary, moveBinItem, promptNewFolder } from "../edits";
 import type { BinItem, Project } from "../types";
-import { childrenMap, isFolderSource, isSequenceSource, itemKind } from "../types";
+import { childrenMap, isFolderSource, isSequenceSource, itemKind, parentOf } from "../types";
 
 export class Library {
   constructor(private host: HTMLElement) {
@@ -57,15 +57,15 @@ export class Library {
           caret = button(folded ? "▸" : "▾", () => { folded ? this.collapsed.delete(id) : this.collapsed.add(id); this.render(); }, folded ? "Expand" : "Collapse", "caret");
           caret.onpointerdown = (e) => e.stopPropagation();
         }
-        const entry = binRow(p, id, item, caret);
+        const entry = binRow(p, id, item, caret, kids.get(parent) ?? []);
         entry.style.paddingLeft = `${6 + depth * 14}px`;
         list.appendChild(entry);
         if (!folded) walk(id, depth + 1);
       }
     };
     walk(null, 0);
-    // Dropping a row on the list's empty space lists it at the top level.
-    dropTarget(list, null);
+    // Dropping a row on the list's empty space lists it last at the top level.
+    dropTarget(list, () => ({ parent: null, before: null }));
     this.host.appendChild(list);
     this.host.appendChild(row("lib-add", button("+ folder", () => void promptNewFolder(), "Add a folder; drag entries onto it")));
 
@@ -125,7 +125,7 @@ export class Library {
  * the actions — is the entry's own detail, and detail belongs in the inspector now that
  * selecting an entry opens it there. A bin of twenty things should read as a list.
  */
-function binRow(p: Project, id: string, item: BinItem, caret?: HTMLElement): HTMLDivElement {
+function binRow(p: Project, id: string, item: BinItem, caret: HTMLElement | undefined, siblings: [string, BinItem][]): HTMLDivElement {
   const kind = itemKind(item);
   const entry = el("div", `bin-row${store.state.selection?.kind === "bin" && store.state.selection.id === id ? " selected" : ""}`);
   if (id === store.state.sequence) entry.classList.add("open");
@@ -137,23 +137,42 @@ function binRow(p: Project, id: string, item: BinItem, caret?: HTMLElement): HTM
   // A sequence is a timeline; opening it is what double-clicking one means everywhere.
   if (isSequenceSource(item.source)) entry.ondblclick = () => store.openSequence(id);
   entry.ondragstart = (e) => setDragPayload(e, { bin: id });
-  // A folder takes what is dropped on it. Any entry can be a parent, but only a folder
-  // is offered as a drop target: dropping media on media is more often a slip.
-  if (isFolderSource(item.source)) dropTarget(entry, id);
+  // A drop on the row's upper or lower part reorders around it; the middle of a folder
+  // row drops into the folder. Any entry can be a parent, but only a folder is offered
+  // as a drop target: dropping media on media is more often a slip.
+  const folder = isFolderSource(item.source);
+  dropTarget(entry, (e) => {
+    const box = entry.getBoundingClientRect();
+    const y = (e.clientY - box.top) / box.height;
+    if (folder && y > 0.25 && y < 0.75) return { parent: id, before: null, zone: "into" };
+    const i = siblings.findIndex(([sid]) => sid === id);
+    const before = y < 0.5 ? id : siblings[i + 1]?.[0] ?? null;
+    return { parent: parentOf(p, id), before, zone: y < 0.5 ? "before" : "after" };
+  });
   return entry;
 }
 
-/** Make `node` accept a dragged bin row and list it under `to` (`null`: the top level).
- *  `setParent` holds the rule; this only stops the drop reaching an enclosing target. */
-function dropTarget(node: HTMLElement, to: string | null) {
-  node.ondragover = (e) => { e.preventDefault(); e.stopPropagation(); node.classList.add("drop"); };
-  node.ondragleave = () => node.classList.remove("drop");
+/** Where a drop on `node` would put the dragged row. */
+interface DropSpot { parent: string | null; before: string | null; zone?: "before" | "after" | "into" }
+
+/** Make `node` accept a dragged bin row, showing which spot the pointer means. The rule
+ *  lives in `moveBinItem`; this only stops the drop reaching an enclosing target. */
+function dropTarget(node: HTMLElement, spot: (e: DragEvent) => DropSpot) {
+  const clear = () => node.classList.remove("drop", "drop-before", "drop-after");
+  node.ondragover = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    clear();
+    node.classList.add({ before: "drop-before", after: "drop-after", into: "drop" }[spot(e).zone ?? "into"]);
+  };
+  node.ondragleave = clear;
   node.ondrop = (e) => {
     e.preventDefault();
     e.stopPropagation();
-    node.classList.remove("drop");
+    clear();
     const from = dragPayload(e)?.bin;
-    if (from && from !== to) void setParent(from, to);
+    const { parent, before } = spot(e);
+    if (from && from !== parent && from !== before) void moveBinItem(from, parent, before);
   };
 }
 

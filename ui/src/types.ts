@@ -23,7 +23,7 @@ export type BinSource =
 /** One entry in the project bin: media, a configured overlay, a colour, a sequence or a
  *  folder. `parent` is where it is listed in the browser (a transcript under its media);
  *  absent means the top level, and nothing about rendering reads it. */
-export interface BinItem { name: string; source: BinSource; meta?: MediaMeta | null; parent?: string }
+export interface BinItem { name: string; source: BinSource; meta?: MediaMeta | null; parent?: string; order?: number }
 
 export type TrackKind = "video" | "audio" | "overlay";
 
@@ -184,16 +184,24 @@ export const allClips = (p: Project): Clip[] => sequenceIds(p).flatMap((id) => s
 
 // ---- the parent relation, defined once, the way the sequence relation is below ----
 
-/** The bin grouped by parent, in bin order. A parent that is not in the bin (mid-edit)
- *  counts as the top level, so nothing is ever lost from the tree. */
+/** The bin grouped by parent, each group in browser order: entries with an `order`
+ *  first, by it, then the rest by id (the document's own order). A parent that is not in
+ *  the bin (mid-edit) counts as the top level, so nothing is ever lost from the tree. */
 export function childrenMap(p: Project): Map<string | null, [string, BinItem][]> {
   const m = new Map<string | null, [string, BinItem][]>();
   for (const [id, item] of Object.entries(p.bin)) {
     const parent = item.parent && item.parent in p.bin ? item.parent : null;
     (m.get(parent) ?? m.set(parent, []).get(parent)!).push([id, item]);
   }
+  for (const group of m.values()) group.sort(([, a], [, b]) => (a.order ?? Infinity) - (b.order ?? Infinity));
   return m;
 }
+
+/** The parent an entry is listed under, as the tree resolves it. */
+export const parentOf = (p: Project, id: string): string | null => {
+  const parent = p.bin[id]?.parent;
+  return parent && parent in p.bin ? parent : null;
+};
 
 /** Entries listed directly under `parent` (`null` for the top level). */
 export const childrenOf = (p: Project, parent: string | null): [string, BinItem][] => childrenMap(p).get(parent) ?? [];

@@ -285,7 +285,14 @@ clip for the same reason. Not `children` lists on the parent either: two-way lis
 A folder is exactly that: `BinSource::Folder { folder: true }`, an entry with a name and
 children, refused on a track by the validator and by the compiler, folded in the browser
 behind a caret. The tree is drawn from `parent` alone, and the fold state is the panel's
-own, never the document's. The validator refuses a dangling or circular parent, which is also what
+own, never the document's.
+
+**Manual order is an optional `order` per entry** — adopted. The bin is a map keyed by
+id, so its own order is alphabetical, and JSON Patch cannot move a key within an object;
+an ordered map was rejected for that reason. Entries with an `order` come first, by it,
+then the rest by id, so a new entry lands at the bottom and only a drag ever writes the
+field: a move renumbers the siblings 0..n in one patch with the `parent` change, one undo
+step. The validator refuses a dangling or circular parent, which is also what
 stops removing a media entry while its transcript is listed under it.
 
 **whisper.cpp as a subprocess** — adopted, the way melt and ffmpeg are. `whisper-cli` on

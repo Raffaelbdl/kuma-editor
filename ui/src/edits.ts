@@ -7,7 +7,7 @@ import { api } from "./api";
 import { askText } from "./modal";
 import { startJob, store, toast } from "./store";
 import type { BinItem, BinSource, Clip, PatchOp, Project, Track, TrackKind } from "./types";
-import { binItem, binPath, isFileSource, isTimedMedia, itemKind, orientation, seqDuration, shiftEffect, trackFor, trimEffect, wouldNest, wouldRecurse } from "./types";
+import { binItem, binPath, childrenOf, isFileSource, isTimedMedia, itemKind, orientation, parentOf, seqDuration, shiftEffect, trackFor, trimEffect, wouldNest, wouldRecurse } from "./types";
 
 /** Place an existing bin entry at time `t` on track `ti`. Every way of placing something —
  *  a button, a drop — comes through here, so the one rule a placement can break is checked
@@ -126,13 +126,20 @@ export async function promptNewFolder() {
   if (name) await addBinItem(name, "folder", { folder: true });
 }
 
-/** List `id` under `parent` (null for the top level). */
-export async function setParent(id: string, parent: string | null) {
+/** List `id` under `parent` (null for the top level), just before sibling `before`, or
+ *  last when that is null. The siblings are renumbered 0..n in their new order, so one
+ *  patch carries the move and every `order` it changes. */
+export async function moveBinItem(id: string, parent: string | null, before: string | null) {
   const p = store.state.project!;
-  if ((p.bin[id]?.parent ?? null) === parent) return;
   if (wouldNest(p, id, parent)) { toast("An entry cannot be listed inside itself", "err"); return; }
+  const siblings = childrenOf(p, parent).map(([sid]) => sid).filter((sid) => sid !== id);
+  const at = before ? siblings.indexOf(before) : -1;
+  siblings.splice(at < 0 ? siblings.length : at, 0, id);
+  const ops: PatchOp[] = [];
   const path = `${binPath(id)}/parent`;
-  await store.patch([parent ? { op: "add", path, value: parent } : { op: "remove", path }], `move ${id}`);
+  if (parentOf(p, id) !== parent) ops.push(parent ? { op: "add", path, value: parent } : { op: "remove", path });
+  siblings.forEach((sid, i) => { if (p.bin[sid].order !== i) ops.push({ op: "add", path: `${binPath(sid)}/order`, value: i }); });
+  if (ops.length) await store.patch(ops, `move ${id}`);
 }
 
 /** Speech to text for the selection. From a clip the subtitles are placed over it,

@@ -93,6 +93,7 @@ pub fn add_media(state: &AppState, path: &Path, id: Option<String>, base_revisio
         source: kuma_core::BinSource::File { path: rel.to_string_lossy().into_owned(), kind: probe.kind, proxy: None },
         meta: Some(probe.meta),
         parent: None,
+        order: None,
     };
     let (rev, warnings) = state.apply_patch(&[add_bin_op(&id, serde_json::to_value(item)?)?], base_revision, origin)?;
     Ok((id, rev, warnings))
@@ -180,6 +181,7 @@ pub fn transcribe(state: &AppState, req: &TranscribeRequest, progress: &dyn Fn(u
         source: BinSource::Overlay { template: SUBTITLES_TEMPLATE.into(), vars },
         meta: None,
         parent: Some(bin.clone()),
+        order: None,
     };
     // The entry first: the clip that places it must find it.
     ops.insert(0, add_bin_op(&id, serde_json::to_value(entry)?)?);

@@ -11,7 +11,7 @@ import { Cmd, run } from "../commands";
 import { button, el, options, plural, row, selectInput } from "../dom";
 import { store, toast } from "../store";
 import type { BinItem, Clip, Cue, Effect, PatchOp, Project, VarSpec } from "../types";
-import { placeBinItem, setParent } from "../edits";
+import { moveBinItem, placeBinItem } from "../edits";
 import { binItem, binPath, canPlace, canTimeWarp, childrenOf, expandPreset, hasAudio, isColorSource, isFileSource, isFolderSource, isOverlaySource, isSequenceSource, isTimedMedia, placementsOf, seqDuration, wouldNest } from "../types";
 
 const presetsPromise = api.effectPresets().catch(() => []);
@@ -109,7 +109,7 @@ export class Inspector {
     // Where it is listed: any folder, or wherever it already is (a transcript under its
     // media), never inside itself.
     const choices = Object.entries(p.bin).filter(([pid, i]) => (isFolderSource(i.source) || pid === item.parent) && !wouldNest(p, id, pid));
-    this.host.appendChild(field("Under", selectInput(choices.map(([pid, i]) => ({ value: pid, label: i.name || pid })), item.parent, (v) => void setParent(id, v || null), "(top level)")));
+    this.host.appendChild(field("Under", selectInput(choices.map(([pid, i]) => ({ value: pid, label: i.name || pid })), item.parent, (v) => void moveBinItem(id, v || null, null), "(top level)")));
 
     this.host.appendChild(field("Name", textInput(item.name, (v) => store.patch([{ op: "replace", path: `${bp}/name`, value: v }], `name ${id}`))));
     this.renderSource(p, id, item, bp);

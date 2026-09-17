@@ -59,6 +59,16 @@ enum Cmd {
         /// Sequence (bin id) to use instead of the project's master.
         #[arg(long)]
         sequence: Option<String>,
+        /// Sample one overlay bin entry on its own instead of a timeline — what the
+        /// editor's overlay workbench shows. Times are seconds into the overlay.
+        #[arg(long)]
+        overlay: Option<String>,
+        /// How long to run that overlay for (default: the template's own).
+        #[arg(long)]
+        duration: Option<f64>,
+        /// Colour behind it, e.g. `#102030` or `transparent` (default black).
+        #[arg(long)]
+        backdrop: Option<String>,
     },
     /// Write the compiled MLT XML to stdout (overlays skipped unless baked).
     Compile {
@@ -204,7 +214,7 @@ async fn main() -> anyhow::Result<()> {
                 println!("{k}\t{}", b.resource.display());
             }
         }
-        Cmd::Sample { t0, t1, count, rect, width, sequence } => {
+        Cmd::Sample { t0, t1, count, rect, width, sequence, overlay, duration, backdrop } => {
             let state = open(&cli)?;
             let rect = rect
                 .as_deref()
@@ -214,7 +224,18 @@ async fn main() -> anyhow::Result<()> {
                     Ok::<_, anyhow::Error>(kuma_core::template::Region { x: v[0], y: v[1], w: v[2], h: v[3] })
                 })
                 .transpose()?;
-            let req = kuma_daemon::jobs::SampleRequest { t0: *t0, t1: *t1, count: *count, rect, width: *width, overlays: Default::default(), sequence: sequence.clone() };
+            let req = kuma_daemon::jobs::SampleRequest {
+                t0: *t0,
+                t1: *t1,
+                count: *count,
+                rect,
+                width: *width,
+                overlays: Default::default(),
+                sequence: sequence.clone(),
+                overlay: overlay.clone(),
+                duration: *duration,
+                backdrop: backdrop.clone(),
+            };
             let samples = tokio::task::spawn_blocking(move || kuma_daemon::jobs::sample_frames(&state, &req, &|_, _| {})).await??;
             println!("{}", serde_json::to_string_pretty(&samples)?);
         }

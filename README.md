@@ -146,6 +146,13 @@ template being written in an editor is one click from being on screen; **Duplica
 the entry so a variant costs nothing; **Place at playhead** puts a clip of it on the open
 sequence at that length, when it is ready.
 
+An agent gets the same view: `sample_frames` with `overlay` set to the entry's id (or
+`kuma sample 0 2 --count 5 --overlay paris`) renders that entry on its own, over a
+backdrop, with `t0`/`t1` counted from the start of the overlay — so an animation can be
+checked frame by frame before anything is placed. Nothing is added to the document to make
+that possible: the frames come from a throwaway one-clip timeline through the real MLT
+graph, so they are the composite the render would produce.
+
 **Vertical.** Landscape or portrait is nothing but the project's `width`/`height`: the
 size button in the top bar (`1920×1080 ⇄`) swaps them, undoably, and the preview, the
 overlays and every export preset follow. Templates size in `vh`, so they need no edits;
@@ -233,7 +240,9 @@ claude mcp add --scope user    kuma -- kuma mcp --project /abs/path.kuma.json  #
 and the agent always share one state. Tools: `get_project`, `get_schema`, `apply_edits`,
 `undo`, `redo`, `validate_project`, `list_templates`, `template_guide`, `list_presets`,
 `add_media`, `probe_media`, `transcribe`, **`sample_frames`**, `bake_overlay`, `render`,
-`job_status`, `health`. `template_guide` returns the overlay authoring contract
+`job_status`, `health`. `sample_frames` takes an `overlay` (a bin id) to look at one
+overlay entry on its own, which is how an agent checks an animation it is authoring.
+`template_guide` returns the overlay authoring contract
 (`library/overlays/CLAUDE.md`) so the agent can write templates into the library or the
 project.
 
@@ -242,6 +251,7 @@ project.
 ```
 kuma render --preset youtube-1080p         # bakes overlays, compiles, renders with melt
 kuma sample 12.0 14.0 --count 4 --rect 400,300,800,400
+kuma sample 0 3 --count 6 --overlay paris          # one overlay entry on its own, no placement (--backdrop, --duration)
 kuma bake                                  # bake all overlay clips (cached by content)
 kuma compile > timeline.mlt                # inspect the MLT graph (or open it in Kdenlive)
 kuma render --sequence intro               # render one nested sequence instead of the master

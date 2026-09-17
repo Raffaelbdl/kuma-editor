@@ -473,6 +473,21 @@ pub struct SampleRequest {
     /// Sequence to sample. The master when absent.
     #[serde(default)]
     pub sequence: Option<String>,
+    /// Sample one overlay bin **entry** instead of a timeline: the workbench's view of an
+    /// overlay, for an agent. An entry is a whole thing before any clip places it, so
+    /// checking an animation must not require putting one in the cut first. Refuses to be
+    /// combined with `sequence`.
+    #[serde(default)]
+    pub overlay: Option<String>,
+    /// How long to run that overlay for. The template's own default when absent — an
+    /// entry has no length until a clip gives it one.
+    #[serde(default)]
+    pub duration: Option<f64>,
+    /// What to composite it over, as a colour entry would spell it (`#102030`). Black by
+    /// default, and `transparent` for straight alpha: an overlay is transparent, and a
+    /// frame of it over nothing is not a picture of anything.
+    #[serde(default)]
+    pub backdrop: Option<String>,
 }
 fn one_usize() -> usize {
     1
@@ -489,13 +504,30 @@ pub struct Sample {
 /// cached per revision, frame and bake set; every cached file is written atomically so
 /// two concurrent samples of the same frame never read a half-written PNG.
 pub fn sample_frames(state: &AppState, req: &SampleRequest, progress: &dyn Fn(u8, &str)) -> anyhow::Result<Vec<Sample>> {
-    let project = read(&state.project).clone();
-    let sequence = project.sequence_or_master(req.sequence.as_deref()).map_err(|e| anyhow::anyhow!(e))?.clone();
+    let doc = read(&state.project).clone();
+    // Sampling an entry is sampling a timeline that holds nothing else. Everything below
+    // is then the ordinary path — the same bake, the same compiler, the same melt — so
+    // what comes back is the composite the render would produce, not an approximation.
+    let (project, sequence, scope) = match req.overlay.as_deref() {
+        Some(id) => {
+            if req.sequence.is_some() {
+                anyhow::bail!("`overlay` samples one bin entry on its own and `sequence` samples a timeline; ask for one or the other");
+            }
+            let (p, seq) = overlay_project(state, &doc, id, req.duration, req.backdrop.as_deref())?;
+            // An overlay sample with the overlays turned off would be a picture of the
+            // backdrop, so that combination is read as a mistake rather than obeyed.
+            (p, seq, OverlayScope::All)
+        }
+        None => {
+            let seq = doc.sequence_or_master(req.sequence.as_deref()).map_err(|e| anyhow::anyhow!(e))?.clone();
+            (doc, seq, req.overlays)
+        }
+    };
     let t1 = req.t1.unwrap_or(req.t0);
     let count = req.count.clamp(1, 32);
     // Only the overlays this sample can actually show: one frame must not pay for a bake
     // of every overlay on the timeline, nor fail because one somewhere else is broken.
-    let bakes = bake_for(state, &project, &sequence, req.overlays, Some((req.t0, t1)), &|p, m| progress(p / 2, m))?;
+    let bakes = bake_for(state, &project, &sequence, scope, Some((req.t0, t1)), &|p, m| progress(p / 2, m))?;
     let out_dir = state.config.cache_dir().join("samples");
     std::fs::create_dir_all(&out_dir)?;
     let mut opts = compile_options(state);
@@ -544,6 +576,84 @@ pub fn sample_frames(state: &AppState, req: &SampleRequest, progress: &dyn Fn(u8
         samples.push(Sample { t, frame, path });
     }
     Ok(samples)
+}
+
+/// A throwaway project whose master timeline is one overlay clip over a colour, so an
+/// entry can be sampled with no placement in the real document.
+///
+/// Built rather than patched in: the document must not gain a clip nobody asked for, and
+/// undo must not have to know about one. It is never stored and never validated — it is
+/// well formed by construction, and it lives for one compile.
+///
+/// The sequence id carries a hash of what the caller asked for, because it is part of the
+/// frame cache's key: two samples of the same entry and frame over different backdrops
+/// are different pictures and must not share a cached file.
+fn overlay_project(
+    state: &AppState,
+    doc: &Project,
+    id: &str,
+    duration: Option<f64>,
+    backdrop: Option<&str>,
+) -> anyhow::Result<(Project, String)> {
+    let item = doc.bin.get(id).ok_or_else(|| anyhow::anyhow!("no bin entry `{id}`"))?;
+    let kuma_core::BinSource::Overlay { template, .. } = &item.source else {
+        anyhow::bail!("`{id}` is not an overlay entry");
+    };
+    let default = {
+        let templates = read(&state.templates);
+        templates.loaded.get(template).ok_or_else(|| anyhow::anyhow!("unknown template `{template}`"))?.1.duration_default
+    };
+    let d = duration.filter(|d| d.is_finite() && *d > 0.0).map(|d| d.clamp(0.05, 3600.0)).unwrap_or(default);
+    let colour = match backdrop {
+        // An overlay is transparent, so "nothing behind it" has to be asked for by name.
+        Some("transparent") => "#00000000".to_string(),
+        Some(c) => c.to_string(),
+        None => "#000000".to_string(),
+    };
+    let stamp = hash_str(&format!("{d}/{colour}"));
+    let seq_id = format!("sample-{id}-{stamp}");
+    let bg_id = format!("{seq_id}-bg");
+    let clip = |cid: &str, bin: &str| kuma_core::Clip {
+        id: cid.into(),
+        start: 0.0,
+        end: d,
+        bin: bin.into(),
+        source_in: 0.0,
+        speed: 1.0,
+        volume: 1.0,
+        muted: false,
+        effects: Vec::new(),
+        label: String::new(),
+    };
+    let track = |tid: &str, kind: kuma_core::TrackKind, clip: kuma_core::Clip| kuma_core::Track {
+        id: tid.into(),
+        kind,
+        name: String::new(),
+        muted: false,
+        hidden: false,
+        clips: vec![clip],
+        transitions: Vec::new(),
+    };
+    let entry = |source| kuma_core::BinItem { name: String::new(), source, meta: None, parent: None, order: None };
+    let sequence = kuma_core::Sequence {
+        tracks: vec![
+            track(&format!("{seq_id}-v"), kuma_core::TrackKind::Video, clip(&format!("{seq_id}-bgc"), &bg_id)),
+            track(&format!("{seq_id}-o"), kuma_core::TrackKind::Overlay, clip(&format!("{seq_id}-oc"), id)),
+        ],
+        markers: Vec::new(),
+    };
+    // The frame, the rate and the revision are the real project's: an overlay is sampled
+    // as the video it is going into would show it, and the revision keeps the frame cache
+    // honest when the entry's vars change.
+    let mut out = doc.clone();
+    out.bin = [
+        (id.to_string(), item.clone()),
+        (bg_id, entry(kuma_core::BinSource::Color { color: colour })),
+        (seq_id.clone(), entry(kuma_core::BinSource::Sequence(sequence))),
+    ]
+    .into();
+    out.master = seq_id.clone();
+    Ok((out, seq_id))
 }
 
 fn hash_str(s: &str) -> String {

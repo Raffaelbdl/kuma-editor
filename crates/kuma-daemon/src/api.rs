@@ -390,6 +390,9 @@ async fn snapshot(State(st): S, Query(q): Query<SnapshotQuery>) -> Result<Respon
         width: q.width.or(Some(960)),
         overlays: jobs::OverlayScope::Nested,
         sequence: Some(st.current_sequence()),
+        overlay: None,
+        duration: None,
+        backdrop: None,
     };
     let samples = blocking(move || jobs::sample_frames(&st, &req, &|_, _| {})).await??;
     let bytes = std::fs::read(&samples[0].path).map_err(|e| anyhow::anyhow!(e))?;

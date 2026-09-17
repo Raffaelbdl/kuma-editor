@@ -691,9 +691,30 @@ while the engine is streaming pauses it rather than decoding JPEGs into a hidden
 only, as Kdenlive's monitor tabs are, so `Place at playhead` has somewhere visible to land
 and the tracks do not disappear and reappear as you flip.
 
+**An agent can look at an unplaced entry too** — adopted, and the reason it is not a
+footnote: the editor gained a way to iterate on an overlay that the agent half of the
+product could not see. `sample_frames` took a sequence and a time, so checking an animation
+meant placing a clip, sampling, and removing it — an edit, an undo entry and a revision
+bump for a *look*.
+
+It now takes `overlay` (a bin id), with `duration` and `backdrop`. What that builds is a
+throwaway project whose master is one overlay clip over a colour, compiled and sampled
+through the ordinary path — same bake, same compiler, same melt — so the frames are the
+composite the render would produce rather than a second rendering path that could disagree
+with the first. It is never stored and never validated: it is well formed by construction
+and lives for one compile. The alternative, patching a hidden clip in and out around the
+sample, would have put a placement in the document nobody asked for and made undo answer
+for it.
+
+The synthetic sequence's id carries a hash of the length and backdrop because it is part
+of the frame cache's key: the same entry at the same frame over black and over white are
+two pictures, and one must not be served for the other. `overlay` and `sequence` together
+are refused rather than ranked — the times would mean different things — and so is an
+entry that is not an overlay.
+
 Still open here: the workbench shows the overlay as the template renders it, not as the
-compiler will composite it — there is no clip, so there are no clip effects to approximate
-and no bake to compare against (`sample_frames` is still the way to see the exact result).
+compiler will composite it — there is no clip, so there are no clip effects to approximate.
+The exact answer is a sample, which is now available for an unplaced entry as well.
 Template *markup* is still edited outside the editor; `Reload` is the loop, not an editor.
 
 ## Thumbnails

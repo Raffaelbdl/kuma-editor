@@ -42,7 +42,11 @@ Overlay entries reference an HTML template (`list_templates`). Templates live in
 the editor's preview and are baked to alpha frames at export.
 
 To look at the footage, call `sample_frames` with a time range (and an optional pixel `rect`); it
-returns the composited frames as images plus their PNG paths.
+returns the composited frames as images plus their PNG paths. To look at an *overlay you are
+authoring*, call it with `overlay` set to the bin entry's id instead: that renders the entry on its
+own over a backdrop, with no placement anywhere, and `t0`/`t1` count from the start of the overlay —
+so an animation can be checked frame by frame before anything is placed in the cut. It is the same
+view the editor's overlay workbench gives a person.
 
 Subtitles: `transcribe` runs a local speech-to-text model (whisper.cpp) and adds a `subtitles`
 overlay entry whose `cues` var is `[{start, end, text}, …]` in source seconds, one cue per word (the
@@ -137,6 +141,19 @@ pub struct SampleFrames {
     /// Bin id of the sequence to sample. The project's `master` when omitted.
     #[serde(default)]
     pub sequence: Option<String>,
+    /// Bin id of an overlay **entry** to sample on its own, with no placement — the way to
+    /// check an animation you are authoring before it is in the cut. `t0`/`t1` are then
+    /// seconds into the overlay. Not combinable with `sequence`.
+    #[serde(default)]
+    pub overlay: Option<String>,
+    /// With `overlay`: how long to run it for. The template's `duration_default` when
+    /// omitted — an entry has no length until a clip gives it one.
+    #[serde(default)]
+    pub duration: Option<f64>,
+    /// With `overlay`: the colour behind it (`#102030`), or `transparent` for straight
+    /// alpha. Black by default — an overlay over nothing is not a picture of anything.
+    #[serde(default)]
+    pub backdrop: Option<String>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -284,7 +301,7 @@ impl KumaServer {
         self.job("/api/transcribe", &body, Duration::from_secs(p.wait_seconds.unwrap_or(600))).await
     }
 
-    #[tool(description = "Render exact composited frames of the timeline (through the real MLT graph, overlays included) and return them as images. Use a rect to zoom into a region. Pass `sequence` to look at a nested sequence instead of the master. Frames are also written as PNGs whose paths are returned.")]
+    #[tool(description = "Render exact composited frames (through the real MLT graph, overlays included) and return them as images. Use a rect to zoom into a region. Pass `sequence` to look at a nested sequence instead of the master, or `overlay` to look at one overlay bin entry on its own — no placement needed, times counted from the start of the overlay, which is how to check an animation you are authoring before it is in the cut. Frames are also written as PNGs whose paths are returned.")]
     async fn sample_frames(&self, Parameters(p): Parameters<SampleFrames>) -> Result<CallToolResult, McpError> {
         let body = json!({
             "t0": p.t0, "t1": p.t1, "count": p.count.unwrap_or(1),
@@ -292,6 +309,7 @@ impl KumaServer {
             "width": p.width.or(if p.rect.is_some() { None } else { Some(960) }),
             "overlays": p.overlays.unwrap_or(true),
             "sequence": p.sequence,
+            "overlay": p.overlay, "duration": p.duration, "backdrop": p.backdrop,
         });
         let v = self.client.post("/api/sample", &body).await.map_err(err)?;
         let mut content = Vec::new();

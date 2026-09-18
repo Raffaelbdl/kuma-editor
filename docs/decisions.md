@@ -725,7 +725,8 @@ bump for a *look*.
 
 It now takes `overlay` (a bin id), with `duration` and `backdrop`. What that builds is a
 throwaway project whose master is one overlay clip over a colour, compiled and sampled
-through the ordinary path — same bake, same compiler, same melt — so the frames are the
+through the ordinary path — a mechanism that wants generalising to every bin entry, which
+is its own item under *Still open* — same bake, same compiler, same melt — so the frames are the
 composite the render would produce rather than a second rendering path that could disagree
 with the first. It is never stored and never validated: it is well formed by construction
 and lives for one compile. The alternative, patching a hidden clip in and out around the
@@ -954,6 +955,69 @@ Nested sequences are done and the editor is an application now, so this list is 
 of what is next on the *model and compiler*; the desktop shell's own loose ends are at the
 end of its section above. The item this list gained from the sequence work comes first,
 because it is the part deliberately left out.
+
+- **One pipeline for every bin entry, not just sequences** — agreed direction, not built,
+  and the largest thing on this list.
+
+  Today `sample_frames` takes a *sequence* or an *overlay entry*, and the overlay case
+  builds a throwaway one-clip project and runs the ordinary path — same bake, same
+  compiler, same melt. That mechanism generalises; the interface does not. It grew two
+  ways in because the API had two fields, and then a rule refusing both at once.
+
+  **A sequence is a bin entry.** So there are not two kinds of thing to look at, only one,
+  and the rule is a sentence: *a subject is a bin entry; if it is already a timeline you
+  compile it, and if it is not you put it on one.* Written that way the `sequence`/
+  `overlay` split folds into a single `id` and the either/or rule is deleted rather than
+  generalised.
+
+  ```rust
+  pub struct Subject { id: Option<BinId>, length: Option<f64>, frame: Option<(u32, u32)>, backdrop: Option<String> }
+  pub fn view(state, doc, subject) -> Result<View /* (Project, root BinId) */, SubjectError>
+  ```
+
+  `None` is the master, which is a bin entry like any other. `length` and `backdrop`
+  describe the timeline *built for* an entry that has not got one, so they are refused for
+  a sequence rather than ignored — two readings, so ask for one, as the old `overlay` plus
+  `sequence` combination was refused. `frame` applies to either: it is the profile size,
+  which the compiler already varies for the preview scale.
+
+  Time on an entry subject is time **into the thing itself** — for media that means `t` is
+  time into the file, which is what a colour-grading editor wants to scrub, and it needs no
+  extra parameter because the built timeline's axis *is* the source's.
+
+  Which track an entry goes on is the one thing that varies per kind, and that table is
+  already written twice: open-coded in `validate.rs` (an overlay track takes overlay
+  entries and nothing else) and as `TRACK_FOR` in the UI. It belongs in `kuma-core`, shared
+  by all three — otherwise the builder can construct a document the validator would refuse.
+
+  **Melt always**, decided rather than assumed. Sampling a transparent overlay could skip
+  melt entirely, since the baked frames are already RGBA at the right size, and it was
+  turned down: one rendering path is what makes "what you sample is what renders" true, and
+  a second compositor would have to be kept in agreement with the first forever. No subject
+  kind gets its own path, however cheap its frames look.
+
+  What it unlocks is the reason to do it. The daemon's session state is an open *sequence*;
+  make it a subject and the engine, the snapshot fallback, sampling and rendering all point
+  at the same thing — so a bin-entry editor for video (colour correction, say) gets the
+  preview engine for free, and the overlay workbench's live-DOM iframe reads as what it is:
+  an optimisation of one subject kind, the way live-DOM overlays are an optimisation for
+  the open sequence. `render` on an entry falls out with the output naming already in
+  place, which means an overlay rendered to ProRes 4444 with alpha for somebody else's
+  editor.
+
+  Three phases, only the first of which is free: `Subject` plus the resolver, with the old
+  fields as sugar and no behaviour change (the existing tests are the proof, ~120 lines net
+  and half of it moved); then entry subjects for media and colour entries, with a test per
+  kind that the synthetic project compiles; then the session state and the UI's tab strip,
+  where `state.sequences` and `state.overlays` collapse into one list of subjects.
+
+  Invariants to keep whichever way it is built: nothing synthetic is ever stored or
+  validated (it is well formed by construction and lives for one compile — the test that
+  sampling an entry leaves the document byte-identical should gain a case per kind); the
+  cache key covers the whole subject, because two views of one entry are two pictures; and
+  a sequence subject must not be wrapped in a synthetic root, since a nested sequence's
+  background is transparent and wrapping would give it one that compiling it as root does
+  not.
 
 - **Speed on a sequence clip**, refused today. The mechanism is known to work (see the
   spike above): write the sub-sequence to its own `.mlt` in the cache and hand `timewarp`

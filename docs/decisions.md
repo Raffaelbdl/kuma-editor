@@ -746,8 +746,9 @@ Template *markup* is still edited outside the editor; `Reload` is the loop, not 
 
 ## The timeline clipboard
 
-Copy, cut and paste for a clip, the first of the quality-of-life gestures the editor was
-missing. The interesting part is not the copy; it is where a paste *lands*.
+Copy, cut and paste for clips, the first of the quality-of-life gestures the editor was
+missing. The interesting part is not the copy; it is where a paste *lands* — which has two
+answers, one for a single clip and one for a group, and they are not the same answer.
 
 **The clipboard is UI state, not document state** — adopted.
 Everything else in the editor is a revision-checked patch against the daemon's document,
@@ -758,7 +759,7 @@ of the project on an act that changed nothing. The paste is the edit, and it is 
 like any other. The price is that the clipboard is per window and dies with it — already
 true of the selection, the playhead and which tab is open.
 
-**A paste needs a *where*, and clicking a track is it** — adopted.
+**One clip needs a *where*, and clicking a track is it** — adopted.
 The playhead answers *when*, and nothing answered *where*: the first sketch pasted back
 onto the track the clip came from, which is no use for the thing actually wanted ("this
 clip, but on Video 2"). So the timeline remembers the track last clicked — the head, an
@@ -770,18 +771,20 @@ already follows; refusing would be correct and useless.
 
 **An occupied slot pushes the clip forward; it does not refuse** — adopted.
 A paste names a position, so the answer to "that one is taken" that keeps the gesture
-usable is *the next position that is free*. `firstFreeSlot` walks the track's clips in
-start order and returns the first gap long enough to hold the clip. Two consequences worth
+usable is *the next position that is free*: the paste walks the target tracks' clips and
+pushes its offset past whatever it lands in, looking again each time, because clearing one
+clip can walk into the next. Two consequences worth
 having: pasting twice in a row lays two clips end to end, and pasting onto the track a clip
 was copied from never lands on top of what is already there. Kdenlive refuses instead, and
 `place` (what a drop from the bin uses) sends the clip to the end of the track; neither
 answers the question the gesture asked.
 
-**The track kind travels with the clip** — adopted.
+**The track travels with the clip — its kind, and its id** — adopted.
 `trackFor` would answer "video" for a video file, but a video file can be sitting on an
 audio track, and a paste of it belongs where it was copied from. So the clipboard holds the
-kind of the track the copy came off, and compatibility is that kind rather than the bin
-entry's.
+*kind* of the track each copy came off, and compatibility is that kind rather than the bin
+entry's. It holds the track's *id* as well, which is what lets a group of clips be put back
+on their own tracks (below).
 
 **What travels is the placement, and only the placement** — adopted, and it is the model's
 own split. The pasted clip carries `in`, speed, volume, label and effects; it does not copy
@@ -791,6 +794,40 @@ nothing to attach to. This is also what makes pasting into *another sequence* fr
 entry is already project-wide — so the only check a cross-sequence paste needs is the
 recursion one `placeBinItem` already makes.
 
+**A selection is a list of clips; a bin selection is one entry** — adopted.
+`Selection` became `{ kind: "clip"; ids: string[] } | { kind: "bin"; id: string }`, which is
+not symmetry for its own sake: copying, deleting and splitting are all things you want to
+do to several clips at once, while every bin-entry action — rename, vars, delete — is
+about *that* entry. The list is in click order, so its last member is "the clip" a
+single-clip action means, and `store.selectedClip` still answers that; the panels that
+edit one thing did not have to change. Ctrl/Cmd- or Shift-click builds the list, and a
+plain click collapses it, which is also what makes a drag unambiguous.
+
+**Several clips are a shape, not a position** — adopted.
+A group paste keeps the spacing between the clips and the tracks they came off, so the
+clicked track does not come into it: there is no one track a group belongs on, and the
+answer for a single clip ("the one you clicked") does not generalise. Each source track is
+matched by id in the sequence being pasted into, else by kind, and a track is added when
+there is nothing left to match — two source tracks never collapse onto one, because that
+is the one way the shape could be lost without anyone noticing. The whole group then takes
+**one** offset, pushed forward until every clip in it fits; per-clip pushes would preserve
+the position and destroy the shape, which is the wrong half to keep.
+
+**What a multiple selection does *not* do** — the deliberate edges.
+Dragging still moves one clip: a plain click collapses the selection to the clip under the
+pointer, so a drag can never move part of a group that looks joined. The inspector still
+edits the last clip clicked and says so, rather than showing fields that look like they
+apply to all of them. And there is no marquee: a drag on an empty lane scrubs, which is
+older and more useful than a rubber band.
+
+**Deleting a clip takes its transitions with it** — adopted, and it was a latent bug.
+A transition names two clips and the validator refuses one that names a clip that has
+gone, so deleting an end of a dissolve was already rejected — a 422 toast and nothing
+deleted. Multiple selection made it likely enough to fix: `deleteSelectedClips` drops
+every transition naming a clip it removes, in the same patch, the way a clip dragged to
+another track already did. Removals go highest index first, because removing a clip
+renumbers the ones after it on its track.
+
 **Ctrl+C/X/V are bound off the workbench only** — adopted.
 The workbench edits a bin entry and has no track to paste onto, so a paste there would
 edit a timeline nobody is looking at. The bindings sit in `shortcuts.ts` with the rest,
@@ -798,6 +835,22 @@ which is what keeps a text field's own copy and paste working (the handler ignor
 from fields), and the desktop app carries the same three actions in the Project menu with
 **no** accelerator — the Edit menu's `cut`/`copy`/`paste` roles are text editing and stay
 that way, for the reason recorded under *Desktop shell*.
+
+## Track lanes: drawn by kind, stored by composite
+
+**Overlays on top, then video, then audio at the bottom** — adopted.
+The timeline used to draw the track array reversed, which put audio at the top of the
+window for no better reason than that a new project appends it last. Tracks are now grouped
+by kind for drawing — overlays, video, audio — and within a kind the later track is drawn
+higher, because that is the one compositing over the other.
+
+**The drawing is grouped; the document is not** — adopted, and it is the point.
+Array order *is* the composite: a video track after an overlay track composites over it.
+Reordering the document to match the screen would silently change every project it was
+applied to, so nothing is reordered — `render` sorts a copy, each row still carries its
+document index in `data-ti`, and every track edit (mute, hide, remove, a clip dragged onto
+another track) is addressed by that index as before. `ui/test/timeline.test.mjs` pins both
+halves at once: the screen says one order, the document still says the other.
 
 ## Overlay authoring: checked, scaffolded, and shown moving
 
@@ -1282,10 +1335,14 @@ because it is the part deliberately left out.
   no reason and stops improvements reaching the copy. Same shape as the media search path
   below: the library wants to hold more kinds of thing than templates, and the two should
   be one mechanism.
-- Copy and paste move **one** clip, because one clip is all the editor can select. A
-  multiple selection would make "copy these three, paste them together" expressible, and
-  the paste would want to keep their relative starts and the transitions between them —
-  which is the same machinery "make a sequence from the selected clips" (below) needs.
+- Several clips can be selected, copied, pasted, deleted and split together, but not
+  **moved** together: a drag is still one clip, and a marquee selection does not exist
+  (a drag on an empty lane scrubs). Moving a group wants a ghost per clip and one offset
+  for all of them — the offset part is written, in `pasteClipboard`.
+- A group paste keeps the transitions *inside* it no better than a single paste does: it
+  keeps none. A transition is a relation between two clips on one track, and copying it
+  means copying it only when both ends came along — worth doing, and the same bookkeeping
+  "make a sequence from the selected clips" (below) needs.
 - Folders and search in the browser, now that the bin is the thing they organise. The bin
   now holds sequences too, which makes this more pressing than it was.
 - A thumbnail for a sequence entry. The `thumbs` job renders overlay entries with their

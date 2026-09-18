@@ -4,11 +4,12 @@
 // to place a clip.
 
 import { api } from "./api";
-import { checkbox, el, selectInput } from "./dom";
+import { checkbox, el, plural, selectInput } from "./dom";
 import { askForm, askText } from "./modal";
 import { startJob, store, toast } from "./store";
-import type { BinItem, BinSource, Clip, PatchOp, Project, Track, TrackKind } from "./types";
-import { binItem, binPath, childrenOf, hasAudio, isFileSource, isOverlaySource, isTimedMedia, itemKind, orientation, parentOf, seqDuration, shiftEffect, trackFor, trimEffect, wouldNest, wouldRecurse } from "./types";
+import type { ClipboardEntry } from "./store";
+import type { BinItem, BinSource, Clip, PatchOp, Project, Track, TrackKind, Transition } from "./types";
+import { binItem, binPath, childrenOf, hasAudio, isFileSource, isOverlaySource, isTimedMedia, itemKind, orientation, parentOf, seqDuration, seqPath, shiftEffect, trackFor, trimEffect, wouldNest, wouldRecurse } from "./types";
 
 /** Place an existing bin entry at time `t` on track `ti`. Every way of placing something —
  *  a button, a drop — comes through here, so the one rule a placement can break is checked
@@ -101,17 +102,19 @@ async function place(clip: Clip, kind: TrackKind, ti: number, pre: PatchOp[]) {
 /** Build the patch op that inserts a new empty track of `kind`. Tracks composite in array
  *  order, so a video track goes below the first overlay track and everything else on top
  *  (audio order does not matter). */
-function newTrack(kind: TrackKind, name?: string): Track {
-  const id = store.newTrackId(kind[0]);
+function newTrack(kind: TrackKind, name?: string, minted: string[] = []): Track {
+  const id = store.newTrackId(kind[0], minted);
   return { id, kind, name: name ?? `${kind[0].toUpperCase()}${kind.slice(1)} ${id.slice(1)}`, muted: false, hidden: false, clips: [], transitions: [] };
 }
 
-function newTrackOp(kind: TrackKind): { op: PatchOp; index: number } {
-  const tracks = store.tracks;
-  const track = newTrack(kind);
+/** `tracks` is the array the new one is going into — the open sequence's, or the version
+ *  a patch that adds several is building up. `minted` names the track ids that patch has
+ *  already taken, which are not in the project yet and must not be handed out twice. */
+function newTrackOp(kind: TrackKind, tracks: { kind: TrackKind }[] = store.tracks, minted: string[] = []): { op: PatchOp; index: number; track: Track } {
+  const track = newTrack(kind, undefined, minted);
   const firstOverlay = tracks.findIndex((t) => t.kind === "overlay");
   const index = kind === "video" && firstOverlay >= 0 ? firstOverlay : tracks.length;
-  return { op: { op: "add", path: `${store.seqPath}/tracks/${index}`, value: track }, index };
+  return { op: { op: "add", path: `${store.seqPath}/tracks/${index}`, value: track }, index, track };
 }
 
 /** Mint a bin entry named by the user: a slug of the name (or `fallback`) made unique,
@@ -229,7 +232,8 @@ const saveLanguage = (v: string) => { try { localStorage.setItem(LANGUAGE_KEY, v
 export async function transcribe() {
   const p = store.state.project!;
   const sel = store.state.selection;
-  const clip = sel?.kind === "clip" ? store.findClip(sel.id)?.clip : undefined;
+  // One clip's worth of audio: the last one clicked, whatever else is selected with it.
+  const clip = store.findClip(store.selectedClip)?.clip;
   const binId = clip?.bin ?? (sel?.kind === "bin" ? sel.id : null);
   if (!binId || !hasAudio(p.bin[binId])) { toast("Select a clip or a media entry to transcribe", ""); return; }
   // An entry listed under this media that carries cues is already a transcript of it,
@@ -272,27 +276,39 @@ export async function addTrack(kind: TrackKind) {
 
 
 /**
- * Split the selected clip at the playhead. Time-relative effects follow the cut: the
- * left half keeps its fade-in, the right half its fade-out, and keyframes are re-based
- * on the new start. A transition leaving the clip now leaves its right half.
+ * Split every selected clip the playhead crosses. Time-relative effects follow the cut:
+ * the left half keeps its fade-in, the right half its fade-out, and keyframes are
+ * re-based on the new start. A transition leaving a clip now leaves its right half.
+ *
+ * One patch, whatever it cuts: three clips selected across three tracks is one cut of the
+ * timeline, and half of it applying is not an outcome anyone wants.
  */
 export async function splitAtPlayhead() {
-  const f = store.findClip(store.selectedClip);
   const t = store.state.playhead;
-  if (!f || t <= f.clip.start || t >= f.clip.end) { toast("Select a clip under the playhead to split", ""); return; }
-  const c = f.clip;
-  const cut = t - c.start;
-  const left: Clip = { ...c, end: t, effects: c.effects.map((e) => trimEffect(e, cut)) };
-  const right: Clip = { ...c, id: store.newId(c.id + "_"), start: t, effects: c.effects.map((e) => shiftEffect(e, cut)) };
-  // Both halves keep playing the same bin entry; only the right one moves its in point.
-  if (isTimedMedia(binItem(store.state.project!, c))) right.in = (c.in ?? 0) + cut * Math.abs(c.speed);
-  const path = store.clipPath(c.id)!;
-  const tracks = `${store.seqPath}/tracks/${f.ti}`;
-  const ops: PatchOp[] = [{ op: "replace", path, value: left }, { op: "add", path: `${tracks}/clips/-`, value: right }];
-  if (f.track.transitions.some((x) => x.from === c.id)) {
-    ops.push({ op: "replace", path: `${tracks}/transitions`, value: f.track.transitions.map((x) => (x.from === c.id ? { ...x, from: right.id } : x)) });
+  const cutting = store.selectedClips.map((id) => store.findClip(id)).filter((f) => f && t > f.clip.start && t < f.clip.end) as NonNullable<ReturnType<typeof store.findClip>>[];
+  if (!cutting.length) { toast("Select a clip under the playhead to split", ""); return; }
+  const ops: PatchOp[] = [];
+  const minted: string[] = [];
+  // One entry per track being cut: two clips on one track must not each rewrite the
+  // track's transitions from the version they were handed.
+  const transitions = new Map<string, Transition[]>();
+  for (const f of cutting) {
+    const c = f.clip;
+    const cut = t - c.start;
+    const left: Clip = { ...c, end: t, effects: c.effects.map((e) => trimEffect(e, cut)) };
+    const right: Clip = { ...c, id: store.newId(c.id + "_", minted), start: t, effects: c.effects.map((e) => shiftEffect(e, cut)) };
+    minted.push(right.id);
+    // Both halves keep playing the same bin entry; only the right one moves its in point.
+    if (isTimedMedia(binItem(store.state.project!, c))) right.in = (c.in ?? 0) + cut * Math.abs(c.speed);
+    const track = `${seqPath(f.seq)}/tracks/${f.ti}`;
+    // A replace leaves every index alone and an append takes the next one, so the paths
+    // computed here stay right however many clips this patch cuts.
+    ops.push({ op: "replace", path: `${track}/clips/${f.ci}`, value: left }, { op: "add", path: `${track}/clips/-`, value: right });
+    const xs = (transitions.get(`${track}/transitions`) ?? f.track.transitions).map((x) => (x.from === c.id ? { ...x, from: right.id } : x));
+    if (f.track.transitions.some((x) => x.from === c.id)) transitions.set(`${track}/transitions`, xs);
   }
-  await store.patch(ops, `split ${c.id}`);
+  for (const [path, value] of transitions) ops.push({ op: "replace", path, value });
+  await store.patch(ops, `split ${cutting.map((f) => f.clip.id).join(", ")}`);
 }
 
 // ---- the timeline clipboard --------------------------------------------------------
@@ -303,99 +319,148 @@ export async function splitAtPlayhead() {
 //
 // What travels is the **placement** — when it plays, how fast, how loud, its label, its
 // effects — never the bin entry. Two clips of the same entry play the same thing, which
-// is the model's own split, so a paste adds a clip and nothing else. A transition is a
+// is the model's own split, so a paste adds clips and nothing else. A transition is a
 // relation between two clips on one track, so it stays behind with the pair it names.
 
-/** Copy the selected clip. Deeply, because the clipboard has to outlive the project
- *  object it came from: every refresh replaces that, and a cut removes the clip outright. */
-export function copySelectedClip(): boolean {
-  const f = store.findClip(store.selectedClip);
-  if (!f) { toast("Select a clip to copy", ""); return false; }
-  store.set({ clipboard: { clip: structuredClone(f.clip), kind: f.track.kind } });
-  toast(`Copied ${clipName(f.clip)}`, "ok", 1500);
+/** Copy the selection. Deeply, because the clipboard has to outlive the project object it
+ *  came from: every refresh replaces that, and a cut removes the clips outright. The
+ *  track each clip came off travels with it — see `pasteClipboard`. */
+export function copySelection(): boolean {
+  const entries: ClipboardEntry[] = [];
+  for (const id of store.selectedClips) {
+    const f = store.findClip(id);
+    if (f) entries.push({ clip: structuredClone(f.clip), track: f.track.id, kind: f.track.kind });
+  }
+  if (!entries.length) { toast("Select a clip to copy", ""); return false; }
+  // In time order, so the first one is the anchor a paste lands on the playhead.
+  entries.sort((a, b) => a.clip.start - b.clip.start);
+  store.set({ clipboard: { entries } });
+  toast(entries.length === 1 ? `Copied ${clipName(entries[0].clip)}` : `Copied ${plural(entries.length, "clip")}`, "ok", 1500);
   return true;
 }
 
-/** Cut: the copy first, so a refused delete never leaves the clipboard holding a clip
- *  that is still on the timeline under a different revision. */
-export async function cutSelectedClip() {
-  if (copySelectedClip()) await deleteSelectedClip();
+/** Cut: the copy first, so a refused delete never leaves the clipboard holding clips that
+ *  are still on the timeline under a different revision. */
+export async function cutSelection() {
+  if (copySelection()) await deleteSelectedClips();
 }
 
 /**
- * Paste the clipboard onto the open sequence: at the playhead, on the track last clicked.
+ * Paste the clipboard onto the open sequence, at the playhead.
  *
- * A paste needs a *where* as well as a *when* — the playhead answers the second half, and
- * clicking a track answers the first. Any track of the kind the clip was copied from will
+ * **One clip** needs a *where* as well as a *when* — the playhead answers the second half,
+ * and clicking a track answers the first. Any track of the kind it was copied from will
  * take it, in this sequence or another one, which is what makes "copy here, paste there"
  * one gesture rather than two features. With no track clicked it lands on the first of
  * that kind, the same rule a drop from the bin follows.
  *
- * Where the target time is already taken the clip goes to the **first free slot after it**
- * that is long enough: a paste names a position, so an occupied one is answered with the
+ * **Several clips** are a shape, not a position: they keep their spacing and they keep
+ * their tracks, so the clicked track does not come into it — there is no one track a
+ * group belongs on. Each track they came off is matched by id in the sequence being
+ * pasted into, else by kind, and a track is added when there is nothing to match; two of
+ * them never collapse onto one, because that is the one way the shape could be lost
+ * silently.
+ *
+ * Where the clips would land on something the whole group moves to the **first free slot
+ * after it** that fits: a paste names a position, so an occupied one is answered with the
  * next one that is free rather than by refusing, or by silently landing at the end. That
- * also makes pasting twice in a row lay two clips back to back.
+ * also makes pasting twice in a row lay two copies back to back.
  */
-export async function pasteClip() {
-  const cb = store.state.clipboard;
-  if (!cb) { toast("Nothing to paste — copy a clip first (Ctrl/Cmd+C)", ""); return; }
+export async function pasteClipboard() {
+  const entries = store.state.clipboard?.entries ?? [];
+  if (!entries.length) { toast("Nothing to paste — copy a clip first (Ctrl/Cmd+C)", ""); return; }
   const p = store.state.project!;
-  const item = p.bin[cb.clip.bin];
-  if (!item) { toast(`${cb.clip.bin} is no longer in the bin`, "err"); return; }
-  // The same rule `placeBinItem` checks, for the same reason: a sequence that contains
-  // the one you are editing cannot be placed on it.
-  if (wouldRecurse(p, cb.clip.bin, store.state.sequence)) {
-    toast(`${item.name || cb.clip.bin} contains this sequence; pasting it here would make a loop`, "err");
+  const gone = entries.find((e) => !p.bin[e.clip.bin]);
+  if (gone) { toast(`${gone.clip.bin} is no longer in the bin`, "err"); return; }
+  // The same rule `placeBinItem` checks, for the same reason: a sequence that contains the
+  // one you are editing cannot be placed on it.
+  const loop = entries.find((e) => wouldRecurse(p, e.clip.bin, store.state.sequence));
+  if (loop) {
+    toast(`${p.bin[loop.clip.bin].name || loop.clip.bin} contains this sequence; pasting it here would make a loop`, "err");
     return;
   }
 
-  const tracks = store.tracks;
-  let ti = tracks.findIndex((t) => t.id === store.state.track && t.kind === cb.kind);
-  if (ti < 0) ti = tracks.findIndex((t) => t.kind === cb.kind);
-  // What is in the way is read here, before a track can be created: a new track is empty,
-  // and it is inserted at an index the old array already uses, so `tracks[ti]` afterwards
-  // would be somebody else's clips.
-  const taken = ti >= 0 ? tracks[ti].clips : [];
+  // The tracks as this patch will leave them. Tracks are resolved as objects rather than
+  // as indices because adding one renumbers the others; the indices are read off at the
+  // end, when nothing more will move.
+  const sim = store.tracks.map((t) => ({ id: t.id, kind: t.kind, clips: t.clips }));
   const ops: PatchOp[] = [];
-  if (ti < 0) {
-    const { op, index } = newTrackOp(cb.kind);
-    ti = index;
-    ops.push(op);
-    toast(`Added a ${cb.kind} track`, "ok");
+  const minted: string[] = [];
+  const claimed = new Map<string, typeof sim[number]>();
+  const single = entries.length === 1;
+
+  const targets = entries.map((entry) => {
+    // One clip goes where you clicked, else back where it came from; several keep the
+    // tracks they were copied from, and the click does not come into it.
+    const wanted = single ? [store.state.track, entry.track] : [entry.track];
+    let track = claimed.get(entry.track);
+    if (!track) {
+      // A track already taken by another clip of this paste is not a candidate: two of
+      // them collapsing onto one track is the one way the shape is lost silently.
+      const free = (t: typeof sim[number]) => t.kind === entry.kind && ![...claimed.values()].includes(t);
+      track = wanted.map((id) => sim.find((t) => t.id === id && free(t))).find(Boolean) ?? sim.find(free);
+      if (!track) {
+        const { op, index, track: added } = newTrackOp(entry.kind, sim, minted);
+        ops.push(op);
+        minted.push(added.id);
+        track = { id: added.id, kind: added.kind, clips: [] };
+        sim.splice(index, 0, track);
+        toast(`Added a ${entry.kind} track`, "ok");
+      }
+      claimed.set(entry.track, track);
+    }
+    return { entry, track };
+  });
+
+  // One offset for the whole group, so the shape survives: push it past whatever any of
+  // its clips lands on, and look again — clearing one clip can walk into the next.
+  const anchor = Math.min(...entries.map((e) => e.clip.start));
+  const at = store.snap(store.state.playhead);
+  let dt = at - anchor;
+  const room = sim.reduce((n, t) => n + t.clips.length, 0) + 2;
+  for (let guard = 0; guard < room; guard++) {
+    let push = 0;
+    for (const { entry, track } of targets) {
+      const start = entry.clip.start + dt, end = entry.clip.end + dt;
+      for (const c of track.clips) if (start < c.end && end > c.start) push = Math.max(push, c.end - start);
+    }
+    if (push <= 0) break;
+    dt += push;
   }
 
-  const dur = cb.clip.end - cb.clip.start;
-  const start = firstFreeSlot(taken, store.snap(store.state.playhead), dur);
-  const clip: Clip = { ...structuredClone(cb.clip), id: store.newId(cb.kind === "overlay" ? "o" : "c"), start, end: start + dur };
-  ops.push({ op: "add", path: `${store.seqPath}/tracks/${ti}/clips/-`, value: clip });
-  if (!(await store.patch(ops, `paste ${clip.id}`))) return;
-  // One update: the pasted clip is what the inspector shows, and the track it landed on is
-  // where the next paste goes — including the one just created for it.
-  store.set({ selection: { kind: "clip", id: clip.id }, track: store.tracks[ti]?.id ?? null });
-  if (start > store.snap(store.state.playhead)) toast(`The playhead was inside a clip — pasted at ${start.toFixed(2)}s`, "", 2500);
-}
-
-/** The first moment at or after `t` where a clip `dur` long fits between what is already
- *  on the track. Clips may overlap in an agent-made document, so this walks them in start
- *  order and keeps pushing past whatever it lands in. */
-function firstFreeSlot(clips: Clip[], t: number, dur: number): number {
-  let at = t;
-  for (const c of [...clips].sort((a, b) => a.start - b.start)) {
-    if (c.end <= at) continue;      // already behind the candidate
-    if (c.start >= at + dur) break; // the gap in front of it is long enough
-    at = c.end;                     // the candidate is inside it: try just after
+  const pasted: Clip[] = [];
+  for (const { entry, track } of targets) {
+    const clip: Clip = { ...structuredClone(entry.clip), id: store.newId(entry.kind === "overlay" ? "o" : "c", pasted.map((c) => c.id)), start: entry.clip.start + dt, end: entry.clip.end + dt };
+    pasted.push(clip);
+    ops.push({ op: "add", path: `${store.seqPath}/tracks/${sim.indexOf(track)}/clips/-`, value: clip });
   }
-  return store.snap(at);
+  if (!(await store.patch(ops, `paste ${pasted.map((c) => c.id).join(", ")}`))) return;
+  // One update: what was pasted is what the inspector shows, and — for a single clip — the
+  // track it landed on is where the next paste goes, including one just created for it.
+  store.set({ selection: { kind: "clip", ids: pasted.map((c) => c.id) }, track: single ? targets[0].track.id : store.state.track });
+  if (dt > at - anchor) toast(`The playhead was inside a clip — pasted at ${(anchor + dt).toFixed(2)}s`, "", 2500);
 }
 
 /** What to call a clip in a message: its label, else the entry it plays, else its id. */
 const clipName = (c: Clip): string => c.label || store.state.project?.bin[c.bin]?.name || c.bin || c.id;
 
-/** Remove the selected clip. Only clips: removing a bin entry throws away what every
- *  placement of it plays, so that stays a deliberate button in the inspector. */
-export async function deleteSelectedClip() {
-  const id = store.selectedClip;
-  if (!id) return;
-  const path = store.clipPath(id);
-  if (path) await store.patch([{ op: "remove", path }], `delete ${id}`);
+/**
+ * Remove every selected clip, in one patch. Only clips: removing a bin entry throws away
+ * what every placement of it plays, so that stays a deliberate button in the inspector.
+ */
+export async function deleteSelectedClips() {
+  const found = store.selectedClips.map((id) => store.findClip(id)).filter(Boolean) as NonNullable<ReturnType<typeof store.findClip>>[];
+  if (!found.length) return;
+  const removed = new Set(found.map((f) => f.clip.id));
+  const ops: PatchOp[] = [];
+  // A transition names two clips, and one naming a clip that has gone is refused by the
+  // validator — so a transition leaves with either of the clips it joins.
+  const tracks = new Map(found.map((f) => [`${seqPath(f.seq)}/tracks/${f.ti}`, f.track]));
+  for (const [path, track] of tracks) {
+    const keep = track.transitions.filter((x) => !removed.has(x.from) && !removed.has(x.to));
+    if (keep.length !== track.transitions.length) ops.push({ op: "replace", path: `${path}/transitions`, value: keep });
+  }
+  // Highest index first: removing a clip renumbers every clip after it on its track.
+  for (const f of [...found].sort((a, b) => b.ci - a.ci)) ops.push({ op: "remove", path: `${seqPath(f.seq)}/tracks/${f.ti}/clips/${f.ci}` });
+  await store.patch(ops, `delete ${[...removed].join(", ")}`);
 }

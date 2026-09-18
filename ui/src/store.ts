@@ -6,13 +6,22 @@ import { allClips, fpsValue, freeId, isOverlaySource, seqDuration, seqPath, sequ
  * What the inspector is showing. A clip and a bin entry are different things to inspect,
  * which is the model's own split: what is shown lives on the entry, when it is shown
  * lives on the clip. One selection addresses either, so the panel never has to guess.
+ *
+ * Clips come as a list, because copying, deleting and splitting are all things you want
+ * to do to several at once; a bin entry does not, because every entry action (rename,
+ * vars, delete) is about *that* entry. The list is in click order, so its last member is
+ * the one a single-clip action — the inspector's fields, a transcript — means.
  */
-export type Selection = { kind: "clip"; id: string } | { kind: "bin"; id: string } | null;
+export type Selection = { kind: "clip"; ids: string[] } | { kind: "bin"; id: string } | null;
 
-/** A clip taken off a timeline, waiting to be pasted. The kind of track it came off
- *  travels with it rather than being derived from its bin entry: a video file placed on
- *  an audio track is an audio clip, and that is where a paste of it belongs. */
-export interface Clipboard { clip: Clip; kind: TrackKind }
+/** A clip taken off a timeline, waiting to be pasted, with the track it came off. The
+ *  track's *kind* travels rather than being derived from the bin entry: a video file
+ *  placed on an audio track is an audio clip, and that is where a paste of it belongs.
+ *  Its *id* travels because a copy of several clips keeps them on their own tracks. */
+export interface ClipboardEntry { clip: Clip; track: string; kind: TrackKind }
+
+/** What was copied or cut: one clip, or several with the shape they were in. */
+export interface Clipboard { entries: ClipboardEntry[] }
 
 /** The tab that shows the sequence being edited. Not a bin id — ids must match
  *  `[A-Za-z_][A-Za-z0-9_-]*`, so the empty string can never name an entry and the two
@@ -176,11 +185,14 @@ class Store {
     return this.refreshing;
   }
 
-  /** A selection survives a refresh only while the thing it names still exists. */
+  /** A selection survives a refresh only while the things it names still exist — each of
+   *  them, so deleting one of three selected clips leaves the other two selected. */
   private stillThere(project: Project, sel: Selection): Selection {
     if (!sel) return null;
     if (sel.kind === "bin") return sel.id in project.bin ? sel : null;
-    return allClips(project).some((c) => c.id === sel.id) ? sel : null;
+    const live = new Set(allClips(project).map((c) => c.id));
+    const ids = sel.ids.filter((id) => live.has(id));
+    return ids.length ? { kind: "clip", ids } : null;
   }
 
   /**
@@ -206,10 +218,23 @@ class Store {
     this.set({ overlays, tab });
   }
 
-  /** Point the inspector at a clip or a bin entry. (`select` above is the subscription
-   *  helper; this one is the selection, and they are deliberately not the same word.) */
+  /** Point the inspector at a clip or a bin entry, and at nothing else. (`select` above is
+   *  the subscription helper; this one is the selection, and they are deliberately not the
+   *  same word.) */
   selectItem(kind: "clip" | "bin", id: string) {
-    this.set({ selection: { kind, id } as Selection });
+    this.set({ selection: kind === "clip" ? { kind: "clip", ids: [id] } : { kind: "bin", id } });
+  }
+
+  /** Point the inspector at several clips at once — what a paste of several leaves behind. */
+  selectClips(ids: string[]) {
+    this.set({ selection: ids.length ? { kind: "clip", ids } : null });
+  }
+
+  /** Add a clip to the selection, or take it out again: Ctrl/Cmd- or Shift-click. The one
+   *  just clicked goes last, so it is the one the inspector edits. */
+  toggleClip(id: string) {
+    const ids = this.selectedClips.filter((x) => x !== id);
+    this.selectClips(ids.length === this.selectedClips.length ? [...ids, id] : ids);
   }
 
   /** Aim the next paste at a track. Clicking a track is the whole gesture: a paste needs
@@ -218,9 +243,14 @@ class Store {
     this.set({ track: id });
   }
 
-  /** The selected clip, or null when a bin entry (or nothing) is selected. */
+  /** Every selected clip, in click order. Empty when a bin entry (or nothing) is selected. */
+  get selectedClips(): string[] {
+    return this.state.selection?.kind === "clip" ? this.state.selection.ids : [];
+  }
+
+  /** The clip a single-clip action means: the last one clicked. */
   get selectedClip(): string | null {
-    return this.state.selection?.kind === "clip" ? this.state.selection.id : null;
+    return this.selectedClips.at(-1) ?? null;
   }
 
   async undo() { await api.undo(); await this.refresh(); }
@@ -292,15 +322,17 @@ class Store {
     return f ? `${seqPath(f.seq)}/tracks/${f.ti}/clips/${f.ci}` : null;
   }
 
-  /** A clip id free across the whole project: clip ids are global, not per sequence. */
-  newId(prefix: string): string {
-    return freeId(prefix, allClips(this.state.project!).map((c) => c.id));
+  /** A clip id free across the whole project: clip ids are global, not per sequence.
+   *  `minted` is for a patch that adds several at once — those are not in the project
+   *  yet, and two clips of one paste sharing an id would be refused. */
+  newId(prefix: string, minted: Iterable<string> = []): string {
+    return freeId(prefix, [...allClips(this.state.project!).map((c) => c.id), ...minted]);
   }
 
-  /** A track id free across the whole project, for the same reason. */
-  newTrackId(prefix: string): string {
+  /** A track id free across the whole project, for the same reason, `minted` included. */
+  newTrackId(prefix: string, minted: Iterable<string> = []): string {
     const p = this.state.project!;
-    return freeId(prefix, sequenceIds(p).flatMap((id) => sequenceOf(p, id)!.tracks.map((t) => t.id)));
+    return freeId(prefix, [...sequenceIds(p).flatMap((id) => sequenceOf(p, id)!.tracks.map((t) => t.id)), ...minted]);
   }
 
   /** Round to the frame grid. */

@@ -41,11 +41,12 @@ export class Inspector {
     const sel = store.state.selection;
     this.host.innerHTML = "";
     if (sel?.kind === "bin") return this.renderBinEntry(sel.id);
-    const f = store.findClip(sel?.kind === "clip" ? sel.id : null);
+    const f = store.findClip(store.selectedClip);
     if (!f) {
       this.host.innerHTML = `<h3>Inspector</h3>
         <p class="muted">Select a <b>bin entry</b> to change what it is, or a <b>clip</b> to change where and how it plays. Drag from the bin onto the timeline to place one.</p>
-        <h3>Shortcuts</h3><p class="muted"><kbd>Space</kbd> play/pause · <kbd>←</kbd><kbd>→</kbd> frame step · <kbd>Del</kbd> delete · <kbd>Ctrl+Z</kbd>/<kbd>Ctrl+Shift+Z</kbd> undo/redo · <kbd>Ctrl+wheel</kbd> zoom · <kbd>S</kbd> split at playhead</p>`;
+        <h3>Shortcuts</h3><p class="muted"><kbd>Space</kbd> play/pause · <kbd>←</kbd><kbd>→</kbd> frame step · <kbd>Del</kbd> delete · <kbd>Ctrl+Z</kbd>/<kbd>Ctrl+Shift+Z</kbd> undo/redo · <kbd>Ctrl+wheel</kbd> zoom · <kbd>S</kbd> split at playhead</p>
+        <p class="muted"><kbd>Ctrl+C</kbd>/<kbd>Ctrl+X</kbd>/<kbd>Ctrl+V</kbd> copy, cut and paste clips — a paste lands at the playhead, on the track you last clicked. <kbd>Ctrl+click</kbd> a clip to select more than one; those keep their own tracks and spacing.</p>`;
       return;
     }
     const { clip } = f;
@@ -55,7 +56,11 @@ export class Inspector {
     const h = el("h3", "", "Clip ");
     h.appendChild(el("span", "mono muted", clip.id));
     this.host.appendChild(h);
-    this.host.appendChild(el("p", "muted tiny", "This placement only."));
+    // With several selected the panel still edits one — the last one clicked. Saying so is
+    // the honest version: the alternative is fields that look like they apply to all of
+    // them. Copy, cut, delete and split do apply to all of them, and say so in the strip.
+    const n = store.selectedClips.length;
+    this.host.appendChild(el("p", "muted tiny", n > 1 ? `This placement only — ${n} clips are selected, and this is the last one clicked.` : "This placement only."));
 
     const item = binItem(store.state.project!, clip);
     const frame = 1 / store.fps;

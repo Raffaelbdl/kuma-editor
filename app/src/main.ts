@@ -330,9 +330,9 @@ function rebuildMenu() {
         { type: "separator" },
         // The timeline's own clipboard, not the text one above: it copies a clip, and the
         // paste lands at the playhead on the track last clicked.
-        { label: "Copy Clip", click: () => sendCommand("copy-clip") },
-        { label: "Cut Clip", click: () => sendCommand("cut-clip") },
-        { label: "Paste Clip", click: () => sendCommand("paste-clip") },
+        { label: "Copy Clips", click: () => sendCommand("copy-clip") },
+        { label: "Cut Clips", click: () => sendCommand("cut-clip") },
+        { label: "Paste Clips", click: () => sendCommand("paste-clip") },
         { type: "separator" },
         { label: "Add Media…", click: () => sendCommand("add-media") },
         { label: "New Sequence…", click: () => sendCommand("new-sequence") },

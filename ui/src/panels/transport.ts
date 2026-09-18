@@ -49,14 +49,21 @@ export function mountTransport(host: HTMLElement): void {
     play.textContent = s.playing ? "⏸" : "▶";
     time.textContent = `${fmtTime(s.playhead, store.fps)} / ${fmtTime(store.duration, store.fps)}`;
     zoom.value = String(s.zoom);
-    // Say what is possible rather than explaining it after the click.
-    const clip = s.selection?.kind === "clip";
-    copy.disabled = !clip;
-    cut.disabled = !clip;
-    paste.disabled = !s.clipboard;
-    if (s.clipboard) {
-      const track = store.tracks.find((t) => t.id === s.track && t.kind === s.clipboard!.kind) ?? store.tracks.find((t) => t.kind === s.clipboard!.kind);
-      paste.title = `Paste onto ${track ? track.name || track.id : `a new ${s.clipboard.kind} track`} at the playhead (Ctrl/Cmd+V)`;
+    // Say what is possible, and to how much, rather than explaining it after the click.
+    const n = store.selectedClips.length;
+    copy.disabled = !n;
+    cut.disabled = !n;
+    copy.textContent = n > 1 ? `Copy (${n})` : "Copy";
+    cut.textContent = n > 1 ? `Cut (${n})` : "Cut";
+    const held = s.clipboard?.entries ?? [];
+    paste.disabled = !held.length;
+    paste.textContent = held.length > 1 ? `Paste (${held.length})` : "Paste";
+    if (held.length > 1) {
+      paste.title = `Paste ${held.length} clips at the playhead, each on the track it was copied from (Ctrl/Cmd+V)`;
+    } else if (held.length) {
+      const kind = held[0].kind;
+      const track = store.tracks.find((t) => t.id === s.track && t.kind === kind) ?? store.tracks.find((t) => t.kind === kind);
+      paste.title = `Paste onto ${track ? track.name || track.id : `a new ${kind} track`} at the playhead (Ctrl/Cmd+V)`;
     }
   });
 }

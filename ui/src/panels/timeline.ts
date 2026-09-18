@@ -3,7 +3,7 @@
 import { button, dragPayload, el } from "../dom";
 import { placeBinItem, addFromLibrary } from "../edits";
 import { store } from "../store";
-import type { Clip, PatchOp, Project, Track } from "../types";
+import type { Clip, PatchOp, Project, Track, TrackKind } from "../types";
 import { binItem, clipKind, isOverlaySource, isSequenceSource, isTimedMedia, seqDuration, sequenceOf } from "../types";
 
 const HEAD = 136;
@@ -19,9 +19,9 @@ export class Timeline {
     // Only the project, the open sequence and the zoom rebuild the DOM; selection and
     // playhead are cheap updates.
     store.select((s) => [s.project, s.sequence, s.zoom], () => this.render());
-    store.select((s) => [s.selection], (s) => {
-      const sel = s.selection?.kind === "clip" ? s.selection.id : null;
-      for (const c of this.root.querySelectorAll<HTMLElement>(".clip:not(.ghost)")) c.classList.toggle("selected", c.dataset.id === sel);
+    store.select((s) => [s.selection], () => {
+      const sel = new Set(store.selectedClips);
+      for (const c of this.root.querySelectorAll<HTMLElement>(".clip:not(.ghost)")) c.classList.toggle("selected", sel.has(c.dataset.id!));
     });
     store.select((s) => [s.playhead], (s) => this.movePlayhead(s.playhead));
     // Which track a paste lands on is a click away and must show, so it is toggled here
@@ -67,8 +67,12 @@ export class Timeline {
     ruler.addEventListener("pointerdown", (e) => this.scrub(e));
     this.root.appendChild(ruler);
 
-    // Tracks (top track of the composite is drawn first, i.e. reverse of array order)
-    const tracks = [...store.tracks].map((t, i) => ({ t, i })).reverse();
+    // Drawn overlays first, then video, then audio: the order they composite in, top
+    // down, with audio — which composites in no order at all — out of the way at the
+    // bottom. Within a kind the array order is reversed, because a later track
+    // composites over an earlier one. Only the drawing is grouped; the document's own
+    // order is what the compiler reads, and `data-ti` still names it.
+    const tracks = store.tracks.map((t, i) => ({ t, i })).sort((a, b) => LANE_ORDER[a.t.kind] - LANE_ORDER[b.t.kind] || b.i - a.i);
     for (const { t, i } of tracks) this.root.appendChild(this.trackEl(p, t, i));
     if (!store.tracks.length) {
       const hint = el("div", "muted", "No tracks yet — use “Add at playhead” in the library; the right track is created for you.");
@@ -150,11 +154,18 @@ export class Timeline {
     box.append(el("div", "", c.label || name), el("div", "sub", String(sub)), hl, hr);
     box.addEventListener("pointerdown", (e) => {
       e.stopPropagation();
-      const kind = e.target === hl ? "trim-l" : e.target === hr ? "trim-r" : "move";
-      this.beginDrag(e, kind, c, ti, box);
       // Clicking a clip is also clicking the track it is on, so a copy followed by a
       // paste with nothing else clicked lands back on the track it came from.
       store.focusTrack(t.id);
+      // Ctrl/Cmd or Shift builds a selection of several clips, and does not drag: adding a
+      // clip to a selection and moving one are different intentions, and a drag that
+      // started on the modifier would move one clip out of a group that looks joined.
+      if (e.ctrlKey || e.metaKey || e.shiftKey) {
+        store.toggleClip(c.id);
+        return;
+      }
+      const kind = e.target === hl ? "trim-l" : e.target === hr ? "trim-r" : "move";
+      this.beginDrag(e, kind, c, ti, box);
       store.selectItem("clip", c.id);
     });
     return box;
@@ -262,6 +273,9 @@ export class Timeline {
     else if (payload.template) await addFromLibrary(payload.template, t, ti);
   }
 }
+
+/** Which lane a kind is drawn in, top to bottom. */
+const LANE_ORDER: Record<TrackKind, number> = { overlay: 0, video: 1, audio: 2 };
 
 function niceStep(zoom: number): number {
   const target = 80 / zoom; // seconds per ~80px

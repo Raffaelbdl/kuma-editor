@@ -126,6 +126,8 @@ kuma serve                                               # open http://127.0.0.1
 ```
 
 Drag bin entries onto the timeline, scrub, edit vars in the inspector, press **Render**.
+Tracks are drawn overlays on top, then video, then audio at the bottom — how they
+composite, rather than the order the document happens to store them in.
 Output lands in `renders/`. Render means the **master** — the sequence `master` names, which
 is the whole video; while you are editing another sequence a picker appears beside the
 export preset to render that one instead, and it lands beside the other as
@@ -133,15 +135,26 @@ export preset to render that one instead, and it lands beside the other as
 workbench* below — rather than by scrubbing the timeline to where they happen to be.
 
 **Copy, cut and paste.** `Ctrl/Cmd+C`, `Ctrl/Cmd+X` and `Ctrl/Cmd+V` — also the buttons
-beside *Split*, and the Project menu in the app — move a clip around a timeline, or onto
-another one. A paste needs a *where* as well as a *when*: the playhead answers the second
-half and **clicking a track** answers the first, so a clip copied from *Video* lands on
-*Video 2* by clicking *Video 2* and pasting. Any track of the kind it was copied from will
-take it, in this sequence or in another one you switch to first; with no track clicked it
-goes on the first of that kind. Where the playhead sits inside a clip the paste lands at
-the first free slot after it that is long enough, so pasting twice lays two clips end to
-end. What travels is the placement — `in`, speed, volume, label, effects — never the bin
-entry: both clips play the same entry, which is what the model's split already means.
+beside *Split*, and the Project menu in the app — move clips around a timeline, or onto
+another one. A paste of **one** clip needs a *where* as well as a *when*: the playhead
+answers the second half and **clicking a track** answers the first, so a clip copied from
+*Video* lands on *Video 2* by clicking *Video 2* and pasting. Any track of the kind it was
+copied from will take it, in this sequence or in another one you switch to first; with no
+track clicked it goes back on the track it came from, or on the first of that kind. Where the playhead sits inside a clip the
+paste lands at the first free slot after it that is long enough, so pasting twice lays two
+clips end to end.
+
+**Ctrl/Cmd+click** (or Shift+click) a clip to select more than one. Several clips are a
+*shape* rather than a position: they keep their spacing and they keep their own tracks, so
+the clicked track does not come into it, and the group moves together to the first place
+all of it fits. Each track they came from is matched by id in the sequence being pasted
+into, else by kind, and a track is added when there is nothing to match — two of them
+never collapse onto one. Delete and `S` (split at the playhead) apply to the whole
+selection too, each in a single undoable patch; dragging and the inspector's fields are
+still one clip at a time, the last one you clicked.
+
+What travels is the placement — `in`, speed, volume, label, effects — never the bin entry:
+both clips play the same entry, which is what the model's split already means.
 
 **The overlay workbench.** The centre of the window is tabbed, Kdenlive style. A
 **sequence** tab is a timeline you have open — the engine's picture with that sequence's

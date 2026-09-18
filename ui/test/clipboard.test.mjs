@@ -34,6 +34,7 @@ const PROJECT = JSON.stringify({
       track("v1", "video", "Video", [clip("c1", "red", 0, 4)]),
       track("v2", "video", "Video 2"),
       track("o1", "overlay", "Overlays"),
+      track("a1", "audio", "Audio"),
     ] } },
     intro: { name: "Intro", source: { markers: [], tracks: [
       track("io1", "overlay", "Overlays", [clip("i1", "probe", 0, 4)]),
@@ -68,14 +69,16 @@ describe("the timeline clipboard", { skip: why ? `skipping: ${why}` : false }, (
   const REVISION = `fetch("/api/project").then(r => r.json()).then(p => p.revision)`;
 
   /** Drive the page the way a person does: a pointer on the timeline, keys on the window. */
-  const pointer = (selector, dx = 0) => `(() => {
+  const pointer = (selector, dx = 0, modifiers = {}) => `(() => {
     const e = document.querySelector(${JSON.stringify(selector)});
     const r = e.getBoundingClientRect();
-    e.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, clientX: r.left + ${dx}, clientY: r.top + 2 }));
+    e.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, clientX: r.left + ${dx}, clientY: r.top + 2, ...${JSON.stringify(modifiers)} }));
     window.dispatchEvent(new PointerEvent("pointerup", { bubbles: true }));
     return true;
   })()`;
   const selectClip = (id) => pointer(`.clip[data-id="${id}"]`, 20);
+  /** The one clip on a track — Ctrl-clicked, which is how a selection of several is built. */
+  const addClipOn = (track) => pointer(`.tl-track[data-tid="${track}"] .clip`, 20, { ctrlKey: true });
   const clickTrack = (id) => pointer(`.tl-track[data-tid="${id}"] .tl-head`);
   /** Put the playhead at `t` seconds by clicking the ruler, at the zoom the page is on. */
   const seek = (t) => `(() => {
@@ -114,7 +117,7 @@ describe("the timeline clipboard", { skip: why ? `skipping: ${why}` : false }, (
 
     daemon = await startDaemon(projectFile, path.join(tmp, "library"));
     page = await driver(daemon.url);
-    await page.until(`document.querySelectorAll("#timeline .tl-track").length === 3`);
+    await page.until(`document.querySelectorAll("#timeline .tl-track").length === 4`);
   });
 
   after(() => {
@@ -182,5 +185,35 @@ describe("the timeline clipboard", { skip: why ? `skipping: ${why}` : false }, (
     await clipsAre("v3:red@1-5 io1:probe@0-4", "intro");
     // …and the sequence it was copied from is untouched by any of it.
     await clipsAre("v1:red@20-24 v1:red@30-34 v2:red@5-9 v2:red@9-13");
+  });
+
+  it("copies several clips as a shape: their own tracks, their own spacing", async () => {
+    // `intro` now holds an overlay at 0–4 and a video clip at 1–5, one second apart on two
+    // tracks of different kinds — which is the whole question a group paste answers.
+    await page.eval(selectClip("i1"));
+    await page.eval(addClipOn("v3"));
+    await page.until(`document.querySelectorAll("#timeline .clip.selected").length === 2`);
+    await page.eval(key("c"));
+
+    await page.eval(seek(10));
+    await page.until(`${TIME}.startsWith("00:10")`);
+    // The clicked track is deliberately the wrong one for half of the group: several clips
+    // keep the tracks they came from, so it must not come into it at all.
+    await page.eval(clickTrack("v3"));
+    await paste();
+    await clipsAre("v3:red@1-5 v3:red@11-15 io1:probe@0-4 io1:probe@10-14", "intro");
+
+    // Again, with the playhead inside what was just pasted: the *group* moves to where all
+    // of it fits, so the second copy keeps the same one second between its halves.
+    await page.eval(seek(12));
+    await page.until(`${TIME}.startsWith("00:12")`);
+    await paste();
+    await clipsAre("v3:red@1-5 v3:red@11-15 v3:red@15-19 io1:probe@0-4 io1:probe@10-14 io1:probe@14-18", "intro");
+
+    // A paste selects what it pasted, so Delete takes the whole group back off in one
+    // patch — and leaves the clips it was pasted from alone.
+    await page.until(`document.querySelectorAll("#timeline .clip.selected").length === 2`);
+    await page.eval(`window.dispatchEvent(new KeyboardEvent("keydown", { key: "Delete", bubbles: true })) || true`);
+    await clipsAre("v3:red@1-5 v3:red@11-15 io1:probe@0-4 io1:probe@10-14", "intro");
   });
 });

@@ -537,6 +537,39 @@ impl Clip {
     }
 }
 
+/// How a keyframe reaches the **next** one — MLT's own three, and MLT's own rule: the
+/// interpolation of a segment is decided by the keyframe that opens it, so the last one's
+/// `ease` never means anything. Absent is `linear`, which is what every keyframe did
+/// before this existed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum Ease {
+    /// A straight line to the next key.
+    #[default]
+    Linear,
+    /// Hold this value until the next key, then jump.
+    Hold,
+    /// A Catmull-Rom curve through the neighbouring keys.
+    Smooth,
+}
+
+impl Ease {
+    /// The operator MLT writes it with in an animation string.
+    pub fn op(self) -> &'static str {
+        match self {
+            Ease::Linear => "=",
+            Ease::Hold => "|=",
+            Ease::Smooth => "~=",
+        }
+    }
+
+    /// Serialization skips the default, so a project that does not ease is unchanged by
+    /// this field existing.
+    pub fn is_linear(&self) -> bool {
+        *self == Ease::Linear
+    }
+}
+
 /// A keyframed transform sample. Fields not set (`null`) fall back to the effect's
 /// static values. Always serialized in full so a patch can `replace` one axis.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
@@ -554,6 +587,9 @@ pub struct TransformKeyframe {
     pub rotation: Option<f64>,
     #[serde(default)]
     pub opacity: Option<f64>,
+    /// How this key reaches the next one.
+    #[serde(default, skip_serializing_if = "Ease::is_linear")]
+    pub ease: Ease,
 }
 
 /// Blend modes, mapped by the compiler onto the compositor's modes.
@@ -647,6 +683,9 @@ pub enum Effect {
 pub struct VolumeKeyframe {
     pub t: f64,
     pub gain: f64,
+    /// How this key reaches the next one.
+    #[serde(default, skip_serializing_if = "Ease::is_linear")]
+    pub ease: Ease,
 }
 
 /// A transition between two adjacent media clips on the same track. The cut point is the

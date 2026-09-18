@@ -426,7 +426,8 @@ and the values live with the rest of the project's decisions.
 - 60 s 1080p30 overlay bake to ProRes 4444 / PNG sequence with exact straight alpha;
   4K supersampling; byte-identical repeat bakes with one worker.
 - Compiler: dissolves (A/B lanes + luma), wipes (generated PGM lumas), timewarp speed,
-  crop, keyframed transform, fade, blend modes (discrete keyframes on `qtblend`), blur,
+  crop, keyframed transform (linear, held or smooth per key), fade, blend modes (discrete
+  keyframes on `qtblend`), blur,
   colour, PiP stills, overlay PNG sequences; golden-file + DTD + real `melt` render tests.
 - Daemon + MCP end to end: patch/undo/409 on stale revisions, `sample_frames` returning
   image blocks, background render jobs.

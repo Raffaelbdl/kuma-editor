@@ -25,11 +25,12 @@
 // different model (and MLT packs x, y, scale and opacity into one `rect` property anyway).
 
 import { store } from "./store";
-import type { Clip } from "./types";
-import { keyframeAt } from "./types";
+import type { Clip, Ease } from "./types";
+import { easeAt, sampleTrack } from "./types";
 
-/** A keyframe as the model has them: a time, plus whichever numeric fields it carries. */
-export type Key = { t: number } & Record<string, number | undefined>;
+/** A keyframe as the model has them: a time, an ease, and whichever numeric fields it
+ *  carries. `ease` is how it reaches the next key — see `types.ts`. */
+export type Key = { t: number; ease?: Ease } & Record<string, number | Ease | undefined>;
 
 /**
  * One field's value at clip-local `t`, read the way the compiler reads it: linear between
@@ -37,8 +38,8 @@ export type Key = { t: number } & Record<string, number | undefined>;
  * value rather than to its neighbours.
  */
 export function sampleKey(keys: Key[], field: string, t: number, base: number): number {
-  const pts = keys.map((k) => ({ t: k.t, v: k[field] ?? base }));
-  return keyframeAt(pts, t, (a, b, u) => ({ t, v: a.v + (b.v - a.v) * u }))?.v ?? base;
+  if (!keys.length) return base;
+  return sampleTrack(keys.map((k) => ({ t: k.t, v: (k[field] as number | undefined) ?? base, ease: k.ease })), t);
 }
 
 export interface AnimationOpts {
@@ -111,9 +112,29 @@ export class Animation {
     return sampleKey(this.keys, field, t, this.o.base(field));
   }
 
-  /** Every field at `t`: what a new key carries, so adding one moves nothing. */
+  /** Every field at `t`, and the ease in force there: what a new key carries, so adding
+   *  one moves nothing — including inside a hold, which a linear key would break. */
   sample(t: number): Key {
-    return { t, ...Object.fromEntries(this.o.fields.map((f) => [f, this.at(f, t)])) };
+    const key: Key = { t, ...Object.fromEntries(this.o.fields.map((f) => [f, this.at(f, t)])) };
+    const ease = easeAt(this.keys, t);
+    if (ease !== "linear") key.ease = ease;
+    return key;
+  }
+
+  /** How the key under the playhead reaches the next one, and how to change it. */
+  get ease(): Ease {
+    return this.keys[this.index]?.ease ?? "linear";
+  }
+
+  setEase(ease: Ease) {
+    const i = this.index;
+    if (i < 0) return;
+    // `linear` is the default and is not written: a project that does not ease should not
+    // grow a field saying so.
+    const key = { ...this.keys[i] };
+    if (ease === "linear") delete key.ease;
+    else key.ease = ease;
+    this.write(this.keys.map((k, j) => (j === i ? key : k)), `ease ${ease}`);
   }
 
   private write(keys: Key[], note: string) {
@@ -157,7 +178,8 @@ export class Animation {
    *  the first key — which is never what you meant. */
   clear() {
     if (this.o.min > 0) return;
-    const { t: _t, ...values } = this.sample(this.local);
+    // `t` and `ease` belong to a key, not to the effect, which would refuse them.
+    const { t: _t, ease: _e, ...values } = this.sample(this.local);
     this.o.commit({ ...this.o.effect, [this.o.keyField]: [], ...values }, "clear keys");
   }
 

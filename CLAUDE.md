@@ -59,8 +59,9 @@ Chrome headless shell if hyperframes should not download one.
   happens once, in `Fps::frame`. Never do frame math anywhere else.
 - The `bin` holds everything placeable (media, configured overlays, colours, sequences); a
   clip is a placement referencing one entry and never carries a source. What is shown lives
-  on the entry, when it is shown lives on the clip. Nothing has shipped yet, so the format
-  has no upgrade path: changing it means bumping `PROJECT_VERSION` and writing one.
+  on the entry, when it is shown lives on the clip. The format has an upgrade path now
+  (`kuma_core::parse_project`, one step per version, applied to the JSON on the way in):
+  changing it means bumping `PROJECT_VERSION` and adding a step there.
 - There is no project-level `tracks`: a timeline is a `Sequence` bin entry and `master`
   names the one that renders, so a clip lives at `/bin/<seq>/source/tracks/<i>/clips/<j>`.
   Track and clip ids are unique across the whole project. A sequence compiles to one

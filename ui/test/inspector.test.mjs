@@ -60,13 +60,24 @@ describe("the inspector's property fields", { skip: why ? `skipping: ${why}` : f
    *  — which is the daemon doing its job, and a race only a test is fast enough to lose. */
   const fieldIs = (sel, text) => page.until(`document.querySelector(${JSON.stringify(sel)} + " input").value === ${JSON.stringify(text)}`);
 
-  /** Wait for a field of the effect to read `value` in the document. */
+  /** Wait for the page to have caught up with the daemon: the top bar shows the revision
+   *  it last loaded, so this is "the panel you are about to click is built from the
+   *  current document". Without it the next gesture builds its patch on a stale revision,
+   *  which the daemon refuses — a race a person cannot lose, and a test can. */
+  const settled = async () => {
+    const rev = await page.eval(`fetch("/api/project").then(r => r.json()).then(p => p.revision)`);
+    await page.until(`document.querySelector("#topbar .mono").textContent.startsWith("r${rev}")`);
+  };
+
+  /** Wait for a field of the effect to read `value` in the document, and for the page to
+   *  have caught up with it. */
   const effectIs = async (key, value) => {
     try {
       await page.until(`${EFFECT}.then(e => e[${JSON.stringify(key)}] === ${JSON.stringify(value)})`, 8000);
     } catch {
       assert.deepEqual(await page.eval(`${EFFECT}.then(e => e[${JSON.stringify(key)}])`), value, `${key} never reached ${value}`);
     }
+    await settled();
   };
 
   before(async () => {
@@ -121,6 +132,10 @@ describe("the inspector's property fields", { skip: why ? `skipping: ${why}` : f
   it("stops at the bounds the model has", async () => {
     // The validator refuses a scale of 0, so the field stops one step above it: a drag
     // must not be able to compose a patch the daemon will reject.
+    // Wait for the panel to have settled from the previous case first: a drag that starts
+    // on a field the daemon has already moved past builds its patch on a stale revision,
+    // which is refused — a race a person cannot lose and a test can.
+    await fieldIs(`[data-prop="scale"] .num`, "1");
     await page.eval(drag(`[data-prop="scale"] .num`, -500, { altKey: true }));
     await effectIs("scale", 0.01);
     await fieldIs(`[data-prop="scale"] .num`, "0.01");
@@ -170,12 +185,22 @@ describe("keyframes", { skip: why ? `skipping: ${why}` : false }, () => {
   const X = `document.querySelector(".effect .num.axis-x input").value`;
   const button = (text) => `[...document.querySelectorAll(".effect button")].find(b => b.textContent.trim() === ${JSON.stringify(text)})`;
 
+  /** Wait for the page to have caught up with the daemon: the top bar shows the revision
+   *  it last loaded, so this is "the panel you are about to click is built from the
+   *  current document". Without it the next gesture builds its patch on a stale revision,
+   *  which the daemon refuses — a race a person cannot lose, and a test can. */
+  const settled = async () => {
+    const rev = await page.eval(`fetch("/api/project").then(r => r.json()).then(p => p.revision)`);
+    await page.until(`document.querySelector("#topbar .mono").textContent.startsWith("r${rev}")`);
+  };
+
   const keysAre = async (expected) => {
     try {
       await page.until(`${KEYS}.then(s => s === ${JSON.stringify(expected)})`, 8000);
     } catch {
       assert.equal(await page.eval(KEYS), expected);
     }
+    await settled();
   };
   /** Move the playhead in timeline time; the clip starts at 2s, so 4s is 2s into it. */
   const seek = (t) => `(() => {
@@ -279,5 +304,57 @@ describe("keyframes", { skip: why ? `skipping: ${why}` : false }, () => {
     await page.eval(`${button("◆ Animate")}.click()`);
     await keysAre("3:140");
     assert.deepEqual(await page.eval(`${EFFECT}.then(e => e.keyframes[0])`), { t: 3, x: 140, y: 0, scale: 1, rotation: 0, opacity: 1 });
+  });
+
+  // ---- ease -----------------------------------------------------------------------
+  // How a key reaches the next one. MLT decides this from the key that *opens* a segment,
+  // and so does the panel: setting the first key to `hold` freezes the value until the
+  // second, in the document, in the preview, and in what the field reads.
+
+  const setEase = (v) => `(() => { const s = document.querySelector(".kf-ease"); s.value = ${JSON.stringify(v)}; s.dispatchEvent(new Event("change", { bubbles: true })); return true; })()`;
+  /** Wait for the strip to be rebuilt with `n` keys — the page catching up with the
+   *  document, without which the next gesture builds its patch on a stale revision. */
+  const drawn = (n) => page.until(`document.querySelectorAll(".effect .kfs-key").length === ${n}`);
+  const EASES = `${EFFECT}.then(e => e.keyframes.map(k => k.t + ":" + (k.ease ?? "linear")).join(" "))`;
+
+  it("holds a value to the next key when a key eases that way", async () => {
+    await page.eval(seek(8)); // six seconds in
+    await page.eval(`${button("+ key")}.click()`);
+    await keysAre("3:140 6:140");
+    await drawn(2);
+    await page.eval(type("40"));
+    await keysAre("3:140 6:40");
+    // Halfway between them, a linear key is halfway.
+    await page.eval(seek(6.5));
+    await page.until(`${X} === "90"`);
+
+    await page.eval(seek(5)); // back onto the first key
+    await page.until(`document.querySelector(".kf-ease").disabled === false`);
+    await page.eval(setEase("hold"));
+    await page.until(`${EASES}.then(s => s === "3:hold 6:linear")`);
+    // …and the value stops moving between them, which is the whole point of it.
+    await page.eval(seek(6.5));
+    await page.until(`${X} === "140"`);
+    // The shape says so: a square holds, a diamond runs straight to the next key.
+    await page.until(`[...document.querySelectorAll(".effect .kfs-key")].map(k => k.className).join("|") === "kfs-key hold|kfs-key"`);
+  });
+
+  it("adds a key inside a hold that keeps holding", async () => {
+    await page.eval(seek(6.5)); // 4.5s in, inside the held segment
+    await page.eval(`${button("+ key")}.click()`);
+    await keysAre("3:140 4.5:140 6:40");
+    await drawn(3);
+    assert.equal(await page.eval(`${EASES}`), "3:hold 4.5:hold 6:linear", "a key put inside a hold must go on holding");
+    assert.equal(await page.eval(X), "140", "and the picture must not move for it");
+  });
+
+  it("writes no ease at all for the default", async () => {
+    await page.eval(seek(5));
+    await page.until(`document.querySelector(".kf-ease").value === "hold"`);
+    await page.eval(setEase("linear"));
+    await page.until(`${EASES}.then(s => s === "3:linear 4.5:hold 6:linear")`);
+    // Not as `"ease": "linear"` — a project that does not ease should not grow a field
+    // saying so, which is also what keeps a version 1 document byte-identical.
+    assert.equal(await page.eval(`${EFFECT}.then(e => "ease" in e.keyframes[0])`), false);
   });
 });

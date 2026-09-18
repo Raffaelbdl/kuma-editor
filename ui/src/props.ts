@@ -223,8 +223,8 @@ export function sliderField(value: number, commit: (v: number) => void, opts: Nu
 export interface KeyStripOpts {
   /** The span the strip covers, seconds: a clip's length. */
   duration: number;
-  /** Key times within it. */
-  keys: number[];
+  /** The keys within it: when, and a class saying what shape to draw (an ease, here). */
+  keys: { t: number; kind?: string }[];
   /** Where the playhead is in that span, or null when it is outside. */
   playhead: number | null;
   /** Click: somewhere in the strip, or on a key. */
@@ -260,10 +260,10 @@ export function keyStrip(o: KeyStripOpts): HTMLElement {
     return snap(Math.min(o.duration, Math.max(0, ((clientX - r.left) / r.width) * o.duration)));
   };
 
-  o.keys.forEach((t, i) => {
-    const key = el("div", "kfs-key");
+  o.keys.forEach(({ t, kind }, i) => {
+    const key = el("div", `kfs-key${kind ? ` ${kind}` : ""}`);
     key.style.left = pct(t);
-    key.title = `${t.toFixed(2)}s — drag to move it, click to go there`;
+    key.title = `${t.toFixed(2)}s${kind ? ` · ${kind}` : ""} — drag to move it, click to go there`;
     key.addEventListener("pointerdown", (e) => {
       // The lane's own click is a seek; a key's is the key's.
       e.stopPropagation();

@@ -10,7 +10,7 @@ import { api } from "../api";
 import { Cmd, run } from "../commands";
 import { button, checkbox, el, options, plural, row, selectInput } from "../dom";
 import { store, toast } from "../store";
-import type { BinItem, Clip, Cue, Effect, PatchOp, Project, VarSpec } from "../types";
+import type { BinItem, Clip, Cue, Ease, Effect, PatchOp, Project, VarSpec } from "../types";
 import { moveBinItem, placeBinItem } from "../edits";
 import { Animation } from "../keyframes";
 import { icon } from "../icons";
@@ -42,6 +42,7 @@ type PropSpec =
  *  offsets are pixels from the centred position, a crop is a fraction of each edge, a
  *  blur radius is pixels. */
 interface EffectSpec { add: Effect; props?: PropSpec[] }
+const EASES: Ease[] = ["linear", "hold", "smooth"];
 const BLEND_MODES = ["normal", "multiply", "screen", "overlay", "darken", "lighten", "color_dodge", "color_burn", "hard_light", "soft_light", "difference", "exclusion"];
 const EFFECTS: Partial<Record<Effect["type"], EffectSpec>> = {
   transform: {
@@ -188,7 +189,9 @@ function keyRow(anim: Animation, follow: (fn: () => void) => void): HTMLElement 
 
   wrap.appendChild(keyStrip({
     duration: anim.duration,
-    keys: anim.keys.map((k) => k.t),
+    // The shape says how the key reaches the next one: a diamond runs straight there, a
+    // square holds, a circle curves — Kdenlive's shapes, for the same reason.
+    keys: anim.keys.map((k) => ({ t: k.t, kind: k.ease })),
     playhead: anim.inside ? anim.local : null,
     onSeek: (t) => anim.seek(t),
     onMove: (i, t) => anim.moveKey(i, t),
@@ -197,10 +200,20 @@ function keyRow(anim: Animation, follow: (fn: () => void) => void): HTMLElement 
     live: (set) => follow(() => set(anim.inside ? anim.local : null)),
   }));
 
+  // How the key under the playhead reaches the next one. It is a property of *that* key,
+  // so it sits under the strip rather than among the effect's values, and means nothing
+  // when the playhead is not on one.
+  const ease = selectInput(EASES.map((value) => ({ value })), anim.ease, (v) => anim.setEase(v as Ease));
+  ease.className = "kf-ease";
+  ease.title = "How this key reaches the next one: a straight line, a hold, or a curve through its neighbours";
+  wrap.appendChild(field("Ease", ease));
+
   const hint = el("div", "muted tiny kf-hint");
   const refresh = () => {
     add.disabled = !anim.inside || anim.index >= 0;
     del.disabled = !anim.inside || anim.index < 0 || anim.keys.length <= anim.min;
+    ease.disabled = anim.index < 0;
+    ease.value = anim.ease;
     hint.textContent = anim.inside ? "" : "The playhead is outside this clip — click the strip, or use ‹ ›, to edit a key.";
   };
   refresh();

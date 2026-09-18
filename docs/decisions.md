@@ -966,6 +966,31 @@ the clip in the timeline, where time is and where you scrub past them. One place
 one glance to see. A curve editor, keys draggable in the timeline itself, and per-key
 easing are all deliberately not here yet.
 
+**Per-key easing, and the upgrade path that came with it** — adopted, format version 2.
+A key now carries `ease`: `linear`, `hold` or `smooth`, mapping onto MLT's three animation
+operators (`=`, `|=`, `~=`). The rule is MLT's, and it is the part worth remembering: the
+key that **opens** a segment decides that segment's shape, so the last key's ease never
+means anything. The UI reads it the same way, Catmull-Rom and all, so the live overlay
+preview curves the way the render will; `shiftEffect`/`trimEffect` carry the segment's ease
+onto the key a split inserts, and a key added inside a hold inherits the hold — otherwise
+"adding a key changes nothing" would be a lie exactly where it matters most.
+
+`linear` is the default and is not serialized, so a project that does not ease is
+byte-identical to the version 1 file it was. The version still went to 2, because an older
+kuma reading `"ease": "hold"` would say "unknown field" rather than "unsupported version",
+and that is what the field is for. Which brought back the thing **No upgrade path; the
+format stays version 1** (above) deleted: `kuma_core::parse_project`, one step per bump,
+applied to the JSON before it is deserialized. That entry's reasoning was that nothing was
+using kuma yet; projects exist now, and breaking them to add a defaulted field would be
+absurd. The step itself is four lines — 1 → 2 is a stamp, since a version 1 keyframe always
+did what `linear` means — and the golden test now reads its version 1 fixture through it,
+so "the upgrade changes nothing about what is rendered" is checked rather than asserted.
+
+*Not verified by rendering here*: this machine has no melt, so the `~=` on `qtblend`'s
+`rect` is pinned by a compiler test on the string and by Kdenlive driving the same filter
+with the same operator — not by frames. The check to run where melt exists is the one the
+blur ramp got: render a smooth scale ramp over sixty frames and look at them.
+
 **The panel does not re-render as the playhead moves** — adopted, and it took a bug to get
 right. A keyed field follows the playhead through one `store.select` per effect that sets
 values in place; rebuilding the inspector 25 times a second is exactly what that helper

@@ -300,6 +300,10 @@ button.linkish:hover { text-decoration: underline; }
 .kfs-track { position: absolute; top: 0; bottom: 0; left: 6px; right: 6px; }
 .kfs-key { position: absolute; top: 4px; width: 8px; height: 8px; margin-left: -4px; background: var(--sel); border: 1px solid rgba(0, 0, 0, 0.45); transform: rotate(45deg); cursor: ew-resize; }
 .kfs-key:hover { background: #fff; }
+/* The shape is the ease, as in Kdenlive: a diamond runs straight to the next key, a
+   square holds until it, a circle curves through its neighbours. */
+.kfs-key.hold { transform: none; border-radius: 1px; }
+.kfs-key.smooth { transform: none; border-radius: 50%; }
 .kfs-head { position: absolute; top: 0; bottom: 0; width: 0; border-left: 2px solid var(--accent); pointer-events: none; }
 .kf-tools { display: flex; align-items: center; gap: 4px; margin: 0 0 5px; }
 .kf-tools .spacer { flex: 1; }

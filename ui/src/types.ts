@@ -32,7 +32,11 @@ export interface Track {
   clips: Clip[]; transitions: Transition[];
 }
 
-export interface TransformKeyframe { t: number; x?: number; y?: number; scale?: number; rotation?: number; opacity?: number }
+/** How a keyframe reaches the **next** one, MLT's rule: the key that opens a segment
+ *  decides that segment's shape, so the last key's ease never means anything. */
+export type Ease = "linear" | "hold" | "smooth";
+
+export interface TransformKeyframe { t: number; x?: number; y?: number; scale?: number; rotation?: number; opacity?: number; ease?: Ease }
 
 export type Effect =
   | { type: "transform"; x?: number; y?: number; scale?: number; rotation?: number; opacity?: number; keyframes?: TransformKeyframe[] }
@@ -41,7 +45,7 @@ export type Effect =
   | { type: "blur"; radius: number }
   | { type: "color"; brightness?: number; contrast?: number; saturation?: number; gamma?: number }
   | { type: "fade"; in?: number; out?: number }
-  | { type: "volume"; keyframes: { t: number; gain: number }[] }
+  | { type: "volume"; keyframes: { t: number; gain: number; ease?: Ease }[] }
   | { type: "mlt"; service: string; properties?: Record<string, string> };
 
 /** A placement of a bin entry: when it plays, not what it is. */
@@ -297,38 +301,70 @@ export function freeId(prefix: string, taken: Iterable<string>): string {
   return `${prefix}${n}`;
 }
 
-/** Linear interpolation of a keyframe list at time `t` (relative to the clip start). */
-export function keyframeAt<K extends { t: number }>(kfs: K[], t: number, mix: (a: K, b: K, u: number) => K): K | undefined {
-  if (!kfs.length) return undefined;
-  if (t <= kfs[0].t) return kfs[0];
-  for (let i = 1; i < kfs.length; i++) {
-    if (t <= kfs[i].t) return mix(kfs[i - 1], kfs[i], (t - kfs[i - 1].t) / Math.max(1e-6, kfs[i].t - kfs[i - 1].t));
+/** One point of a scalar keyframe track: when, what, and how it reaches the next one. */
+export interface TrackPoint { t: number; v: number; ease?: Ease }
+
+/** Catmull-Rom through four values — MLT's `~=`, and the same formula, so the preview
+ *  curves the way the render will. */
+const catmull = (p0: number, p1: number, p2: number, p3: number, u: number) => {
+  const u2 = u * u;
+  return 0.5 * (2 * p1 + (p2 - p0) * u + (2 * p0 - 5 * p1 + 4 * p2 - p3) * u2 + (3 * p1 - p0 - 3 * p2 + p3) * u2 * u);
+};
+
+/**
+ * Sample a scalar track at `t` (seconds from the clip's start), reading it the way MLT
+ * reads an animation string: **the preceding key's ease decides the segment** — held to
+ * the next key, a straight line to it, or a curve through the neighbours. Before the first
+ * key and after the last, the track holds.
+ */
+export function sampleTrack(pts: TrackPoint[], t: number): number {
+  if (!pts.length) return 0;
+  if (t <= pts[0].t) return pts[0].v;
+  let i = 0;
+  while (i < pts.length - 1 && t > pts[i + 1].t) i++;
+  const a = pts[i];
+  const b = pts[i + 1];
+  if (!b) return a.v;
+  if (a.ease === "hold") return a.v;
+  const u = (t - a.t) / Math.max(1e-9, b.t - a.t);
+  if (a.ease !== "smooth") return a.v + (b.v - a.v) * u;
+  return catmull((pts[i - 1] ?? a).v, a.v, b.v, (pts[i + 2] ?? b).v, u);
+}
+
+/** The ease in force at `t`: the key that opens the segment `t` falls in. */
+export function easeAt(kfs: { t: number; ease?: Ease }[], t: number): Ease {
+  let ease: Ease = "linear";
+  for (const k of kfs) {
+    if (k.t > t + 1e-9) break;
+    ease = k.ease ?? "linear";
   }
-  return kfs[kfs.length - 1];
+  return ease;
 }
 
 export type TransformSample = { x: number; y: number; scale: number; rotation: number; opacity: number };
 
-/** The transform effect's values at `local` seconds, keyframes applied. */
+/** The transform effect's values at `local` seconds, keyframes applied. Field by field,
+ *  because a key that leaves one out means the effect's static value for it. */
 export function transformAt(e: Extract<Effect, { type: "transform" }>, local: number): TransformSample {
   const base: TransformSample = { x: e.x ?? 0, y: e.y ?? 0, scale: e.scale ?? 1, rotation: e.rotation ?? 0, opacity: e.opacity ?? 1 };
-  const fill = (k: TransformKeyframe): TransformSample & { t: number } => ({ t: k.t, x: k.x ?? base.x, y: k.y ?? base.y, scale: k.scale ?? base.scale, rotation: k.rotation ?? base.rotation, opacity: k.opacity ?? base.opacity });
-  const lerp = (a: number, b: number, u: number) => a + (b - a) * u;
-  const s = keyframeAt((e.keyframes ?? []).map(fill), local, (a, b, u) => ({ t: local, x: lerp(a.x, b.x, u), y: lerp(a.y, b.y, u), scale: lerp(a.scale, b.scale, u), rotation: lerp(a.rotation, b.rotation, u), opacity: lerp(a.opacity, b.opacity, u) }));
-  return s ?? base;
+  const kfs = e.keyframes ?? [];
+  if (!kfs.length) return base;
+  const track = (field: keyof TransformSample) => sampleTrack(kfs.map((k) => ({ t: k.t, v: k[field] ?? base[field], ease: k.ease })), local);
+  return { x: track("x"), y: track("y"), scale: track("scale"), rotation: track("rotation"), opacity: track("opacity") };
 }
 
 /** Re-base a time-relative effect for a clip that starts `cut` seconds later (the right
  *  half of a split): keyframes shift, the value at the cut becomes the first keyframe. */
 export function shiftEffect(e: Effect, cut: number): Effect {
   if (e.type === "fade") return { ...e, in: 0 };
+  // The key the cut lands in carries that segment's ease, or a half cut out of a hold
+  // would come back interpolating.
   if (e.type === "transform" && e.keyframes?.length) {
-    // `transformAt` may hand back a keyframe object carrying its own `t`: set ours last.
-    return { ...e, keyframes: [{ ...transformAt(e, cut), t: 0 }, ...e.keyframes.filter((k) => k.t > cut).map((k) => ({ ...k, t: k.t - cut }))] };
+    return { ...e, keyframes: [{ ...transformAt(e, cut), t: 0, ease: easeAt(e.keyframes, cut) }, ...e.keyframes.filter((k) => k.t > cut).map((k) => ({ ...k, t: k.t - cut }))] };
   }
   if (e.type === "volume") {
-    const at = keyframeAt(e.keyframes, cut, (a, b, u) => ({ t: cut, gain: a.gain + (b.gain - a.gain) * u }))?.gain ?? 1;
-    return { ...e, keyframes: [{ t: 0, gain: at }, ...e.keyframes.filter((k) => k.t > cut).map((k) => ({ ...k, t: k.t - cut }))] };
+    const gain = sampleTrack(e.keyframes.map((k) => ({ t: k.t, v: k.gain, ease: k.ease })), cut);
+    return { ...e, keyframes: [{ t: 0, gain, ease: easeAt(e.keyframes, cut) }, ...e.keyframes.filter((k) => k.t > cut).map((k) => ({ ...k, t: k.t - cut }))] };
   }
   return e;
 }
@@ -337,11 +373,11 @@ export function shiftEffect(e: Effect, cut: number): Effect {
 export function trimEffect(e: Effect, cut: number): Effect {
   if (e.type === "fade") return { ...e, out: 0 };
   if (e.type === "transform" && e.keyframes?.some((k) => k.t > cut)) {
-    return { ...e, keyframes: [...e.keyframes.filter((k) => k.t <= cut), { ...transformAt(e, cut), t: cut }] };
+    return { ...e, keyframes: [...e.keyframes.filter((k) => k.t <= cut), { ...transformAt(e, cut), t: cut, ease: easeAt(e.keyframes, cut) }] };
   }
   if (e.type === "volume" && e.keyframes.some((k) => k.t > cut)) {
-    const at = keyframeAt(e.keyframes, cut, (a, b, u) => ({ t: cut, gain: a.gain + (b.gain - a.gain) * u }))!;
-    return { ...e, keyframes: [...e.keyframes.filter((k) => k.t <= cut), { t: cut, gain: at.gain }] };
+    const gain = sampleTrack(e.keyframes.map((k) => ({ t: k.t, v: k.gain, ease: k.ease })), cut);
+    return { ...e, keyframes: [...e.keyframes.filter((k) => k.t <= cut), { t: cut, gain, ease: easeAt(e.keyframes, cut) }] };
   }
   return e;
 }

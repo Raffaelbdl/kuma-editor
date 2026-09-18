@@ -580,11 +580,15 @@ fn emit_filters(ctx: &Ctx, p: &Plan, w: &mut XmlWriter) {
                     let mut rot = Vec::new();
                     for k in keyframes {
                         let pos = at(k.t);
+                        // The operator is the key's own ease, and MLT reads it as "how
+                        // this key reaches the next": `=` a straight line, `|=` a hold,
+                        // `~=` a curve through the neighbours.
+                        let op = k.ease.op();
                         rect.push(format!(
-                            "{pos}={}",
+                            "{pos}{op}{}",
                             rect_str(ctx, k.x.unwrap_or(*x), k.y.unwrap_or(*y), k.scale.unwrap_or(*scale), k.opacity.unwrap_or(*opacity))
                         ));
-                        rot.push(format!("{pos}={}", num(k.rotation.unwrap_or(*rotation))));
+                        rot.push(format!("{pos}{op}{}", num(k.rotation.unwrap_or(*rotation))));
                     }
                     w.property("rect", rect.join(";"));
                     w.property("rotation", rot.join(";"));
@@ -641,7 +645,7 @@ fn emit_filters(ctx: &Ctx, p: &Plan, w: &mut XmlWriter) {
             }
             Effect::Volume { keyframes } => {
                 open(w, "vol", "volume");
-                let s: Vec<String> = keyframes.iter().map(|k| format!("{}={}", at(k.t), num(db(k.gain * clip.volume)))).collect();
+                let s: Vec<String> = keyframes.iter().map(|k| format!("{}{}{}", at(k.t), k.ease.op(), num(db(k.gain * clip.volume)))).collect();
                 w.property("level", s.join(";"));
                 w.close("filter");
             }
@@ -762,6 +766,31 @@ mod tests {
             v["bin"]["main"] = json!({ "source": { "tracks": tracks } });
         }
         serde_json::from_value(v).unwrap()
+    }
+
+    /// A keyframe's `ease` is the operator MLT reads it with, and it governs the segment
+    /// that *follows* the key — which is why the last one's never shows up as anything.
+    #[test]
+    fn keyframe_ease_is_the_mlt_operator() {
+        let p = project(json!({
+            "fps": 30, "bin": { "x": { "source": { "path": "x.mp4" } } },
+            "tracks": [{ "id": "v1", "clips": [{ "id": "a", "start": 0, "end": 4, "bin": "x", "effects": [
+                { "type": "transform", "keyframes": [
+                    { "t": 0, "scale": 1, "ease": "hold" },
+                    { "t": 1, "scale": 2, "ease": "smooth" },
+                    { "t": 2, "scale": 1 }
+                ] },
+                { "type": "volume", "keyframes": [
+                    { "t": 0, "gain": 1, "ease": "hold" },
+                    { "t": 2, "gain": 1 }
+                ] }
+            ] }]}]
+        }));
+        let xml = compile(&p, &CompileOptions::new("/proj")).unwrap();
+        let rect = xml.split(r#"<property name="rect">"#).nth(1).unwrap().split('<').next().unwrap();
+        assert_eq!(rect.split(';').map(|s| s.split(' ').next().unwrap()).collect::<Vec<_>>(), ["0|=0", "30~=-960", "60=0"], "{xml}");
+        assert!(xml.contains(r#"<property name="rotation">0|=0;30~=0;60=0</property>"#), "{xml}");
+        assert!(xml.contains(r#"<property name="level">0|=0;60=0</property>"#), "{xml}");
     }
 
     #[test]

@@ -178,7 +178,12 @@ the effect shows where the keys are (click to go to one, drag to retime, double-
 add), `‹ ›` step between them, `+ key` / `− key` add and remove one where you are, and
 **Clear** stops animating while keeping the value you are looking at. The same keys are
 drawn along the bottom of the clip in the timeline, so an animated clip says so at a glance
-and you watch them go past while scrubbing. With the playhead outside the clip there is no
+and you watch them go past while scrubbing — and can be dragged there too, or clicked to
+jump to. **● Auto-key** in the transport strip is record mode: while it is on, changing
+any animatable value writes a key at the playhead, starting the animation if there was
+none. **curve** in the keys row opens a graph of one parameter over the clip, the shape
+between keys drawn as the render will produce it, with the keys as points you drag in both
+axes at once. With the playhead outside the clip there is no
 "now" to write to, so the fields read the nearest end and say so rather than pretending.
 
 **The overlay workbench.** The centre of the window is tabbed, Kdenlive style. A

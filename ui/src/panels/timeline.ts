@@ -2,7 +2,7 @@
 
 import { button, dragPayload, el } from "../dom";
 import { placeBinItem, addFromLibrary } from "../edits";
-import { keysOf } from "../keyframes";
+import { animationOf, keysOf } from "../keyframes";
 import { store } from "../store";
 import type { Clip, PatchOp, Project, Track, TrackKind } from "../types";
 import { binItem, clipKind, isOverlaySource, isSequenceSource, isTimedMedia, seqDuration, sequenceOf } from "../types";
@@ -154,15 +154,39 @@ export class Timeline {
     const hr = el("div", "handle r");
     box.append(el("div", "", c.label || name), el("div", "sub", String(sub)), hl, hr);
     // Keyframed effects are drawn along the bottom of the clip: an animated clip says so
-    // at a glance, and the keys go past under the playhead while you scrub. They take no
-    // pointer events — editing them is the inspector's, where the values are.
+    // at a glance, and the keys go past under the playhead while you scrub. A key can be
+    // dragged to another time here, or clicked to go there; its value is the inspector's.
     for (const k of keysOf(c)) {
       const lane = el("div", `kf-lane ${k.type}`);
-      for (const t of k.times) {
+      k.times.forEach((t, i) => {
         const key = el("div", "kf");
         key.style.left = `${t * store.state.zoom}px`;
+        key.title = `${k.type} key at ${(c.start + t).toFixed(2)}s — drag to move it, click to go there`;
+        key.addEventListener("pointerdown", (e) => {
+          // This press is the key's: the clip under it must not start moving.
+          e.stopPropagation();
+          e.preventDefault();
+          const zoom = store.state.zoom;
+          const startX = e.clientX;
+          let at = t;
+          let moved = false;
+          const move = (ev: PointerEvent) => {
+            if (!moved && Math.abs(ev.clientX - startX) < 3) return;
+            moved = true;
+            at = store.snap(Math.min(c.end - c.start, Math.max(0, t + (ev.clientX - startX) / zoom)));
+            key.style.left = `${at * zoom}px`;
+          };
+          const up = () => {
+            window.removeEventListener("pointermove", move);
+            window.removeEventListener("pointerup", up);
+            if (moved) animationOf(c.id, k.index)?.moveKey(i, at);
+            else store.seek(c.start + t);
+          };
+          window.addEventListener("pointermove", move);
+          window.addEventListener("pointerup", up);
+        });
         lane.appendChild(key);
-      }
+      });
       box.appendChild(lane);
     }
     box.addEventListener("pointerdown", (e) => {

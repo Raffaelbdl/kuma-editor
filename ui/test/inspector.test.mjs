@@ -152,6 +152,24 @@ describe("the inspector's property fields", { skip: why ? `skipping: ${why}` : f
     await effectIs("y", -42.5);
     assert.equal(await page.eval(reads(".effect .num.axis-y")), "-42.5");
   });
+  it("records a key instead of a value while auto-key is on", async () => {
+    const REC = `[...document.querySelectorAll("#transport button")].find(b => b.textContent.includes("Auto-key"))`;
+    await page.eval(`${REC}.click()`);
+    await page.until(`${REC}.classList.contains("on") && document.body.classList.contains("autokey")`);
+    // Two seconds in on an effect that has no keys: the edit becomes its first key, a
+    // full sample of what the effect did there, with the one value changed — and the
+    // static fields are left exactly as they were.
+    await page.eval(`(() => { const tl = document.querySelector(".tl"), ruler = document.querySelector(".tl-ruler"); const r = tl.getBoundingClientRect();
+      ruler.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, clientX: r.left + 136 + 2 * 60, clientY: r.top + 2 })); window.dispatchEvent(new PointerEvent("pointerup", { bubbles: true })); return true; })()`);
+    await page.until(`document.querySelector("#transport .time").textContent.startsWith("00:02")`);
+    await page.eval(`(() => { const i = document.querySelector(".effect .num.axis-x input"); i.value = "33"; i.dispatchEvent(new Event("change", { bubbles: true })); return true; })()`);
+    await page.until(`${EFFECT}.then(e => e.keyframes.length === 1)`);
+    assert.deepEqual(await page.eval(`${EFFECT}.then(e => [e.keyframes, e.x])`), [[{ t: 2, x: 33, y: -42.5, scale: 0.01, rotation: 0, opacity: 1 }], -150]);
+    await settled();
+    await page.eval(`${REC}.click()`);
+    await page.until(`!document.body.classList.contains("autokey")`);
+  });
+
 });
 
 // ---------------------------------------------------------------------------------
@@ -384,5 +402,48 @@ describe("keyframes", { skip: why ? `skipping: ${why}` : false }, () => {
     // Not as `"ease": "linear"` — a project that does not ease should not grow a field
     // saying so, which is also what keeps a version 1 document byte-identical.
     assert.equal(await page.eval(`${EFFECT}.then(e => "ease" in e.keyframes[0])`), false);
+  });
+  it("moves a key by dragging it on the clip, and goes to one by clicking it", async () => {
+    // The keys drawn on the clip in the timeline are the same keys: 30px at the default
+    // zoom of 60px/s is half a second.
+    const dot = (i) => `[...document.querySelectorAll('.clip[data-id="c1"] .kf-lane.transform .kf')][${i}]`;
+    await page.eval(`(() => { const k = ${dot(0)}; const r = k.getBoundingClientRect(); const x = r.left + 3, y = r.top + 3;
+      k.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0, clientX: x, clientY: y }));
+      for (const f of [0.5, 1]) window.dispatchEvent(new PointerEvent("pointermove", { bubbles: true, clientX: x + 30 * f, clientY: y }));
+      window.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, clientX: x + 30, clientY: y })); return true; })()`);
+    await keysAre("3.5:140 4.5:140 6:40");
+    // …and the clip itself did not move: the press was the key's, not a clip drag.
+    assert.equal(await page.eval(`fetch("/api/project").then(r => r.json()).then(p => p.bin.main.source.tracks[0].clips[0].start)`), 2);
+    await page.eval(`(() => { const k = ${dot(1)}; const r = k.getBoundingClientRect();
+      k.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0, clientX: r.left + 3, clientY: r.top + 3 }));
+      window.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, clientX: r.left + 3, clientY: r.top + 3 })); return true; })()`);
+    await page.until(`document.querySelector("#transport .time").textContent.startsWith("00:06.15")`); // 6s and 15 frames
+  });
+
+
+  it("shows the curve on request, and moves a point in two axes at once", async () => {
+    const box = `[...document.querySelectorAll(".effect")][0]`;
+    // Off until asked: the panel does not grow a graph per effect on its own.
+    assert.equal(await page.eval(`!!${box}.querySelector(".kf-curve")`), false);
+    await page.eval(`[...${box}.querySelectorAll(".kf-tools button")].find(b => b.textContent.trim() === "curve").click()`);
+    await page.until(`${box}.querySelectorAll(".kf-point").length === 3`);
+    assert.equal(await page.eval(`${box}.querySelector(".kf-curve-param").value`), "x", "the first parameter, until another is picked");
+    assert.match(await page.eval(`${box}.querySelector(".kf-plot polyline").getAttribute("points")`), /^0,[\d.]+ /, "the sampled curve is drawn");
+
+    // Drag the last point (x: 40 at 6s) up and to the left: the value rises and the time
+    // moves back, in one edit. The value's exact figure depends on the axis fit, so the
+    // assertion is the direction and the time, which is the frame grid's to decide.
+    const before = await page.eval(`${EFFECT}.then(e => e.keyframes[2])`);
+    await page.eval(`(() => { const pt = [...${box}.querySelectorAll(".kf-point")][2]; const r = pt.getBoundingClientRect(); const x = r.left + 4, y = r.top + 4;
+      pt.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0, clientX: x, clientY: y }));
+      for (const f of [0.5, 1]) window.dispatchEvent(new PointerEvent("pointermove", { bubbles: true, clientX: x - 40 * f, clientY: y - 20 * f }));
+      window.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, clientX: x - 40, clientY: y - 20 })); return true; })()`);
+    await page.until(`${EFFECT}.then(e => e.keyframes[2].t < ${before.t})`);
+    const after = await page.eval(`${EFFECT}.then(e => e.keyframes[2])`);
+    assert.ok(after.x > before.x, `up is more: ${after.x} > ${before.x}`);
+    assert.equal(Math.round(after.t * 30) / 30, after.t, "the time landed on the frame grid");
+    await settled();
+    // …and the view is still open after the edit re-rendered the panel.
+    assert.equal(await page.eval(`${box}.querySelectorAll(".kf-point").length`), 3);
   });
 });

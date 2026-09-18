@@ -1029,6 +1029,33 @@ Not rendered here, as with B: `avfilter.eq` and `qtcrop` taking animation string
 pinned by the compiler test and by the record's own earlier note (blur's `sigma` ramp
 was rendered and looked at; colour "should be checked rather than assumed"). Still should.
 
+**The rest of the keyframe editor: keys dragged on the clip, record mode, a curve view** —
+adopted, and each stopped where the model stops.
+
+*Keys on the clip take the pointer now.* The dots the timeline draws along a clip were
+read-only first, to keep one place to edit; that lasted until the first time someone
+reached for one. They drag in time and click to seek, through the same `Animation` the
+panel uses (`animationOf` builds it for both), so a key moved on the clip and a key moved
+in the strip go through one set of rules. Values stay the panel's — the clip has no room
+to say what a key is worth, and the strip and the graph do.
+
+*Auto-key is Godot's record button, and it lives in the transport strip.* While it is on,
+a change to any animatable value writes a key at the playhead, starting the animation if
+the effect had none; the statics are left alone. It is in the strip rather than the
+inspector because it is about every edit that follows, not about one panel, and it is read
+at the moment of the write rather than when the row is built, so switching it needs no
+re-render. The button goes red and so does the top edge of the inspector: the whole page
+should say it is recording, not one control.
+
+*The curve view is a graph you can drag points on, not a curve editor.* It draws one
+parameter over the clip with the same sampler the preview and the compiler agree on, so
+what it shows is the shape the render will have — a hold's step, a Catmull-Rom's overshoot
+— and its points move in two axes at once, one edit. What it does *not* offer is bezier
+handles, because the model has three eases and MLT's animation strings have no bezier;
+drawing one would be drawing a promise the render cannot keep. It is off until asked, per
+effect, and remembers being open across the re-render every edit causes, so the panel
+grows a graph only where someone put one.
+
 **The panel does not re-render as the playhead moves** — adopted, and it took a bug to get
 right. A keyed field follows the playhead through one `store.select` per effect that sets
 values in place; rebuilding the inspector 25 times a second is exactly what that helper

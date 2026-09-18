@@ -44,6 +44,10 @@ export interface State {
    *  edit. It survives switching sequences, which is what makes pasting into another
    *  timeline the same gesture as pasting into this one. */
   clipboard: Clipboard | null;
+  /** Record mode: while on, changing an animatable parameter writes a key at the playhead
+   *  instead of the static value. View state — it is about how the next edit is made,
+   *  not about the document. */
+  autoKey: boolean;
   playhead: number;
   playing: boolean;
   /** pixels per second */
@@ -63,7 +67,7 @@ export interface State {
 type Listener = (s: State) => void;
 
 class Store {
-  state: State = { project: null, templates: [], sequence: "", selection: null, track: null, clipboard: null, playhead: 0, playing: false, zoom: 60, tab: SEQUENCE_TAB, sequences: [], overlays: [], connected: false, jobs: {} };
+  state: State = { project: null, templates: [], sequence: "", selection: null, track: null, clipboard: null, autoKey: false, playhead: 0, playing: false, zoom: 60, tab: SEQUENCE_TAB, sequences: [], overlays: [], connected: false, jobs: {} };
   private listeners = new Set<Listener>();
   private refreshing: Promise<void> | null = null;
   private refreshAgain = false;

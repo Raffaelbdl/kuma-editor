@@ -12,11 +12,12 @@ import { button, checkbox, el, options, plural, row, selectInput } from "../dom"
 import { store, toast } from "../store";
 import type { BinItem, Clip, Cue, Ease, Effect, PatchOp, Project, VarSpec } from "../types";
 import { moveBinItem, placeBinItem } from "../edits";
-import { Animation } from "../keyframes";
+import type { Animation } from "../keyframes";
+import { animationOf } from "../keyframes";
 import { icon } from "../icons";
 import type { NumberOpts } from "../props";
-import { keyStrip, numberField, sliderField, vectorField } from "../props";
-import { ANIMATABLE, binItem, binPath, canPlace, canTimeWarp, childrenOf, expandPreset, hasAudio, isColorSource, isFileSource, isFolderSource, isOverlaySource, isSequenceSource, isTimedMedia, placementsOf, seqDuration, staticOf, wouldNest } from "../types";
+import { keyStrip, numberField, showNumber, sliderField, vectorField } from "../props";
+import { binItem, binPath, canPlace, canTimeWarp, childrenOf, expandPreset, hasAudio, isColorSource, isFileSource, isFolderSource, isOverlaySource, isSequenceSource, isTimedMedia, placementsOf, seqDuration, wouldNest } from "../types";
 
 const presetsPromise = api.effectPresets().catch(() => []);
 
@@ -33,7 +34,7 @@ type PropSpec =
   /** This effect's keyframes: the row of buttons and the strip, and the fact that the
    *  fields above it are then values *at the playhead*. What a key carries is the kind's
    *  `ANIMATABLE` set; `min` is how many keys must remain. */
-  | { kind: "keys"; min?: number };
+  | { kind: "keys" };
 
 /** Per effect kind: the value `+ add effect` inserts, and the properties it shows, in the
  *  order they are shown. Adding an effect kind is one row here plus the Rust model; a kind
@@ -100,11 +101,109 @@ const EFFECTS: Partial<Record<Effect["type"], EffectSpec>> = {
     add: { type: "volume", keyframes: [{ t: 0, gain: 1 }] },
     props: [
       { kind: "num", key: "gain", step: 0.05, min: 0, title: "Gain at the playhead: 1 is the clip as recorded" },
-      { kind: "keys", min: 1 },
+      { kind: "keys" },
     ],
   },
   mlt: { add: { type: "mlt", service: "frei0r.vignette", properties: {} }, props: [{ kind: "text", key: "service" }, { kind: "json", key: "properties" }] },
 };
+
+/** Which effects have their curve view open, and on which parameter — by `clip/effect`,
+ *  so the view survives the re-render every edit causes. View state; nothing saves it. */
+const openCurves = new Map<string, string>();
+
+/** How many points the curve is drawn with. Enough for a Catmull-Rom to look like one. */
+const CURVE_POINTS = 64;
+
+/**
+ * The curve view: one parameter's value over the clip, the keys on it as points you can
+ * drag in both axes. The graph is what the strip cannot say — the *shape* between keys,
+ * which is the whole question with a hold or a smooth — and a point dragged up is a
+ * value edited without a number being typed. Read-only in one respect: it draws the
+ * curve the compiler will produce (`paramAt` is the same sampler the preview uses), it
+ * does not let you draw one.
+ */
+function curveView(anim: Animation, param: string, onParam: (p: string) => void, follow: (fn: () => void) => void): HTMLElement {
+  const wrap = el("div", "kf-curve");
+  if (anim.fields.length > 1) {
+    const pick = selectInput(anim.fields.map((value) => ({ value, label: title(value) })), param, onParam);
+    pick.className = "kf-curve-param";
+    wrap.appendChild(pick);
+  }
+  const plot = el("div", "kf-plot");
+  const dur = anim.duration;
+
+  // The value axis fits what is there — the curve and the keys — with a little room, and
+  // a flat line gets a unit of room either side rather than a division by nothing.
+  const samples = Array.from({ length: CURVE_POINTS + 1 }, (_, i) => anim.at(param, (i / CURVE_POINTS) * dur));
+  const values = [...samples, ...anim.keys.map((k) => (k[param] as number | undefined) ?? anim.at(param, k.t))];
+  let lo = Math.min(...values);
+  let hi = Math.max(...values);
+  if (hi - lo < 1e-9) { lo -= 1; hi += 1; }
+  const pad = (hi - lo) * 0.12;
+  lo -= pad;
+  hi += pad;
+  const xPct = (t: number) => (t / Math.max(dur, 1e-6)) * 100;
+  const yPct = (v: number) => (1 - (v - lo) / (hi - lo)) * 100;
+
+  // The line is SVG stretched to the box; the points are HTML, so they keep their shape.
+  const svg = document.createElementNS(NS, "svg");
+  svg.setAttribute("viewBox", "0 0 100 100");
+  svg.setAttribute("preserveAspectRatio", "none");
+  const line = document.createElementNS(NS, "polyline");
+  line.setAttribute("points", samples.map((v, i) => `${(i / CURVE_POINTS) * 100},${yPct(v)}`).join(" "));
+  svg.appendChild(line);
+  plot.appendChild(svg);
+
+  const head = el("div", "kf-plot-head");
+  const showHead = () => { head.hidden = !anim.inside; if (anim.inside) head.style.left = `${xPct(anim.local)}%`; };
+  showHead();
+  follow(showHead);
+  plot.appendChild(head);
+
+  anim.keys.forEach((k, i) => {
+    const v = (k[param] as number | undefined) ?? anim.at(param, k.t);
+    const point = el("div", `kf-point${k.ease && k.ease !== "linear" ? ` ${k.ease}` : ""}`);
+    point.style.left = `${xPct(k.t)}%`;
+    point.style.top = `${yPct(v)}%`;
+    point.title = `${k.t.toFixed(2)}s · ${showNumber(v)} — drag: sideways for when, up and down for how much`;
+    point.addEventListener("pointerdown", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const r = plot.getBoundingClientRect();
+      const startX = e.clientX;
+      const startY = e.clientY;
+      let moved = false;
+      let at = k.t;
+      let val = v;
+      const move = (ev: PointerEvent) => {
+        if (!moved && Math.abs(ev.clientX - startX) < 3 && Math.abs(ev.clientY - startY) < 3) return;
+        moved = true;
+        at = Math.min(dur, Math.max(0, k.t + ((ev.clientX - startX) / r.width) * dur));
+        val = Number((v - ((ev.clientY - startY) / r.height) * (hi - lo)).toFixed(3));
+        point.style.left = `${xPct(at)}%`;
+        point.style.top = `${yPct(val)}%`;
+      };
+      const up = () => {
+        window.removeEventListener("pointermove", move);
+        window.removeEventListener("pointerup", up);
+        if (moved) anim.updateKey(i, { t: at, [param]: val });
+        else anim.seek(k.t);
+      };
+      window.addEventListener("pointermove", move);
+      window.addEventListener("pointerup", up);
+    });
+    plot.appendChild(point);
+  });
+
+  // The value axis, as the two numbers that matter: the top of the box and the bottom.
+  const top = el("span", "kf-axis hi muted tiny", showNumber(hi - pad));
+  const bottom = el("span", "kf-axis lo muted tiny", showNumber(lo + pad));
+  plot.append(top, bottom);
+  wrap.appendChild(plot);
+  return wrap;
+}
+
+const NS = "http://www.w3.org/2000/svg";
 
 /** Whether the playhead is inside the selected clip. */
 function playheadInClip(): boolean {
@@ -169,7 +268,7 @@ function build(p: PropSpec, ctx: PropCtx): HTMLDivElement {
  * one row of buttons and a strip — the panel deliberately does not grow a track editor,
  * and the clip in the timeline carries the same keys so you can see them while scrubbing.
  */
-function keyRow(anim: Animation, follow: (fn: () => void) => void): HTMLElement {
+function keyRow(anim: Animation, id: string, follow: (fn: () => void) => void): HTMLElement {
   const wrap = el("div");
   wrap.dataset.prop = "keys";
   if (!anim.animated) {
@@ -184,7 +283,21 @@ function keyRow(anim: Animation, follow: (fn: () => void) => void): HTMLElement 
   const next = button(icon("chevron-right", 12), () => anim.step(1), "Next key", "icon");
   const add = button("+ key", () => anim.addKey(), "Add a key at the playhead, holding the values it has there");
   const del = button("− key", () => anim.removeKey(), "Remove the key at the playhead");
-  tools.append(el("span", "muted tiny", "keys"), prev, add, del, next, el("span", "spacer"));
+  // The curve view is off until asked for, and stays where it was put across the
+  // re-render every edit causes: the panel must not grow a graph per effect unbidden.
+  const curveHost = el("div", "kf-curve-host");
+  const curve = button("curve", () => {
+    if (openCurves.has(id)) openCurves.delete(id);
+    else openCurves.set(id, anim.fields[0]);
+    showCurve();
+  }, "Show this effect's values over the clip as a graph, with the keys to drag");
+  const showCurve = () => {
+    const param = openCurves.get(id);
+    curve.classList.toggle("on", !!param);
+    curveHost.replaceChildren(...(param ? [curveView(anim, param, (p) => { openCurves.set(id, p); showCurve(); }, follow)] : []));
+  };
+  // No caption: the strip under it says what these are, and the width is spoken for.
+  tools.append(prev, add, del, next, curve, el("span", "spacer"));
   // A volume effect must keep a key, so it has no "stop animating" — removing the effect is
   // how that is said.
   if (anim.min === 0) tools.append(button("Clear", () => anim.clear(), "Stop keyframing, keeping the values at the playhead"));
@@ -210,6 +323,9 @@ function keyRow(anim: Animation, follow: (fn: () => void) => void): HTMLElement 
   ease.className = "kf-ease";
   ease.title = "How this key reaches the next one: a straight line, a hold, or a curve through its neighbours";
   wrap.appendChild(field("Ease", ease));
+
+  wrap.appendChild(curveHost);
+  showCurve();
 
   const hint = el("div", "muted tiny kf-hint");
   const refresh = () => {
@@ -429,23 +545,16 @@ export class Inspector {
 
       // Keyframes, when this kind has them: the fields above the strip then read and write
       // the value *at the playhead* rather than a static one.
-      const keySpec = (spec.props ?? []).find((p) => p.kind === "keys") as Extract<PropSpec, { kind: "keys" }> | undefined;
-      const animatable = ANIMATABLE[e.type] ?? {};
-      const anim = keySpec && new Animation({
-        effect: rec,
-        keyField: "keyframes",
-        fields: Object.keys(animatable),
-        min: keySpec.min ?? 0,
-        // What a key that leaves a parameter out means: the effect's static value, or
-        // the parameter's own meaning when the effect does not state one (a volume's gain).
-        base: (f) => staticOf(e, f),
-        clip,
-        commit: (next, note) => replace(next, note),
-      });
+      const keyed = (spec.props ?? []).some((p) => p.kind === "keys");
+      const anim = keyed ? animationOf(clip.id, ei) ?? undefined : undefined;
       const timed = (key: string) => !!anim?.animated && anim.fields.includes(key);
+      // Auto-key: with it on, a change to any animatable parameter is a key at the
+      // playhead, whether or not the effect had keys — Godot's record button. Read when
+      // the write happens, not when the row is built, so the toggle needs no re-render.
+      const recording = (key: string) => store.state.autoKey && !!anim && anim.fields.includes(key) && anim.inside;
       const ctx: PropCtx = {
         read: (key) => (timed(key) ? anim!.at(key) : cur(key)),
-        write: (key, v) => (timed(key) ? anim!.setAt(key, Number(v)) : set(key, v)),
+        write: (key, v) => (timed(key) || recording(key) ? anim!.setAt(key, Number(v)) : set(key, v)),
         animated: timed,
         frozen: !!anim && !anim.inside,
         // A keyed field follows the playhead: one subscription per effect updates the
@@ -453,7 +562,7 @@ export class Inspector {
         // `store.select` exists to prevent.
         live: (key) => (timed(key) ? (set) => followers.push(() => set(anim!.at(key))) : undefined),
       };
-      for (const p of spec.props ?? []) box.appendChild(p.kind === "keys" ? keyRow(anim!, (fn) => followers.push(fn)) : propRow(p, ctx));
+      for (const p of spec.props ?? []) box.appendChild(p.kind === "keys" ? keyRow(anim!, `${clip.id}/${ei}`, (fn) => followers.push(fn)) : propRow(p, ctx));
       this.host.appendChild(box);
     });
     const add = el("select");

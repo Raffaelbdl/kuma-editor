@@ -55,6 +55,10 @@ export const ANIMATABLE: Partial<Record<Effect["type"], Record<string, number>>>
   volume: { gain: 1 },
 };
 
+/** How many keys a kind must keep: a volume effect *is* its keyframes, and the validator
+ *  refuses one with none. Every other kind can go back to being static. */
+export const minKeys = (type: Effect["type"]): number => (type === "volume" ? 1 : 0);
+
 export type Effect =
   | { type: "transform"; x?: number; y?: number; scale?: number; rotation?: number; opacity?: number; keyframes?: Keyframe[] }
   | { type: "crop"; left?: number; right?: number; top?: number; bottom?: number; radius?: number; keyframes?: Keyframe[] }

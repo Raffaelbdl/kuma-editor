@@ -209,12 +209,18 @@ body.has-titlebar #titlebar {
 .clip.tiny .handle { display: none; } /* too narrow to grab the body otherwise */
 .clip .sub { color: rgba(255,255,255,0.7); font-size: 10px; }
 .clip.ghost { opacity: 0.6; pointer-events: none; }
-/* Keyframes on the clip: one lane per keyed effect, stacked up from the bottom edge.
-   Read-only here — the inspector is where a value lives, so that is where keys are made. */
-.clip .kf-lane { position: absolute; left: 0; right: 0; bottom: 0; height: 7px; pointer-events: none; }
-.clip .kf-lane ~ .kf-lane { bottom: 7px; }
-.clip .kf { position: absolute; top: 1px; width: 5px; height: 5px; margin-left: -3px; background: var(--sel); transform: rotate(45deg); }
+/* Keyframes on the clip: one lane per keyed effect, stacked up from the bottom edge. The
+   lane lets the clip's own gestures through; the keys take the pointer, to be dragged in
+   time or clicked. Values stay the inspector's. */
+.clip .kf-lane { position: absolute; left: 0; right: 0; bottom: 0; height: 9px; pointer-events: none; }
+.clip .kf-lane ~ .kf-lane { bottom: 9px; }
+.clip .kf { position: absolute; top: 1px; width: 7px; height: 7px; margin-left: -4px; background: var(--sel); transform: rotate(45deg); pointer-events: auto; cursor: ew-resize; }
+.clip .kf:hover { background: #fff; }
 .clip .kf-lane.volume .kf { background: var(--fg); }
+/* Record mode: the button is red, and so is the top edge of the panel the recording
+   edits are made in — you should not have to look at the strip to know. */
+#transport button.rec.on { background: #b3261e; border-color: #b3261e; color: #fff; }
+body.autokey #inspector { box-shadow: inset 0 3px 0 #b3261e; }
 .tl-playhead { position: absolute; top: 0; bottom: 0; width: 0; border-left: 2px solid var(--accent); z-index: 4; pointer-events: none; }
 .tl-playhead::before { content: ""; position: absolute; top: 0; left: -6px; border: 6px solid transparent; border-top: 8px solid var(--accent); }
 .tl-marker { position: absolute; top: 22px; bottom: 0; border-left: 1px dashed var(--sel); z-index: 1; pointer-events: none; }
@@ -305,10 +311,25 @@ button.linkish:hover { text-decoration: underline; }
 .kfs-key.hold { transform: none; border-radius: 1px; }
 .kfs-key.smooth { transform: none; border-radius: 50%; }
 .kfs-head { position: absolute; top: 0; bottom: 0; width: 0; border-left: 2px solid var(--accent); pointer-events: none; }
-.kf-tools { display: flex; align-items: center; gap: 4px; margin: 0 0 5px; }
+.kf-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 3px; margin: 0 0 5px; }
 .kf-tools .spacer { flex: 1; }
-.kf-tools button { padding: 3px 6px; font-size: 11px; white-space: nowrap; }
+.kf-tools button { padding: 3px 5px; font-size: 11px; white-space: nowrap; }
 .kf-tools button:disabled { opacity: 0.4; cursor: default; }
+.kf-tools button.on { border-color: var(--sel); color: var(--sel); }
+/* The curve view: the shape between the keys, which the strip cannot say. */
+.kf-curve { margin: 0 0 6px; }
+.kf-curve-param { width: 100%; margin-bottom: 4px; }
+.kf-plot { position: relative; height: 84px; border: 1px solid var(--line); border-radius: 5px; background: var(--bg); overflow: visible; }
+.kf-plot svg { position: absolute; inset: 0; width: 100%; height: 100%; }
+.kf-plot polyline { fill: none; stroke: var(--sel); stroke-width: 1.5; vector-effect: non-scaling-stroke; }
+.kf-plot-head { position: absolute; top: 0; bottom: 0; width: 0; border-left: 2px solid var(--accent); pointer-events: none; }
+.kf-point { position: absolute; width: 9px; height: 9px; margin: -5px 0 0 -5px; background: var(--sel); border: 1px solid rgba(0, 0, 0, 0.45); transform: rotate(45deg); cursor: move; }
+.kf-point:hover { background: #fff; }
+.kf-point.hold { transform: none; border-radius: 1px; }
+.kf-point.smooth { transform: none; border-radius: 50%; }
+.kf-axis { position: absolute; left: 4px; font-family: var(--mono); pointer-events: none; }
+.kf-axis.hi { top: 1px; }
+.kf-axis.lo { bottom: 1px; }
 .kf-hint:not(:empty) { margin: -2px 0 4px; }
 /* A field showing a keyed value with the playhead outside the clip: readable, not editable. */
 .num.off { opacity: 0.6; }

@@ -42,12 +42,16 @@ export function mountTransport(host: HTMLElement): void {
   // them: three more buttons for gestures everyone already knows the keys for, and the
   // strip is a transport. What is worth saying is the thing the outlines make you count.
   const selected = el("span", "muted sel-count");
+  // Record mode, Godot's: while it is on, changing any animatable value in the inspector
+  // writes a key at the playhead. It lives here rather than in the inspector because it
+  // is about *every* edit that follows, and the strip is where the clock is.
+  const rec = button("● Auto-key", () => store.set({ autoKey: !store.state.autoKey }), "Record: while on, changing an effect's value writes a keyframe at the playhead", "rec");
 
   host.append(
     button(icon("skip-back"), () => store.seek(0), "Back to the start (Home)", "icon"),
     play, time,
     button("Split (S)", () => run(Cmd.split)),
-    selected,
+    rec, selected,
     addTrackSel, quality,
     el("span", "muted", "zoom"), zoom,
   );
@@ -58,6 +62,10 @@ export function mountTransport(host: HTMLElement): void {
     zoom.value = String(s.zoom);
     // One clip is visible as one outline; several are worth counting for you. The
     // clipboard's own count stays out of it — it is not what this strip is about.
+    rec.classList.toggle("on", s.autoKey);
+    // The whole page says so, not just the button: a red edge on the panel where the
+    // recording edits are made.
+    document.body.classList.toggle("autokey", s.autoKey);
     const n = store.selectedClips.length;
     selected.textContent = n > 1 ? `${plural(n, "clip")} selected` : "";
     selected.title = n > 1 ? "Copy, cut, delete and split act on all of them" : "";

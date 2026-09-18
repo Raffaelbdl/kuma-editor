@@ -25,8 +25,8 @@
 // different model (and MLT packs x, y, scale and opacity into one `rect` property anyway).
 
 import { store } from "./store";
-import type { Clip, Ease, Keyframe } from "./types";
-import { easeAt, keyframesOf, sampleTrack } from "./types";
+import type { Clip, Ease, Effect, Keyframe } from "./types";
+import { ANIMATABLE, easeAt, keyframesOf, minKeys, sampleTrack, seqPath, staticOf } from "./types";
 
 /** A keyframe as the model has them — `types.ts` defines it; this is the panel's name. */
 export type Key = Keyframe;
@@ -172,6 +172,15 @@ export class Animation {
     this.write(this.keys.map((k, j) => (j === i ? { ...k, t: at } : k)), "move key");
   }
 
+  /** Change one key outright — a value, a time, both — as the curve view does when a
+   *  point is dragged in two axes at once. One patch either way. */
+  updateKey(i: number, patch: Partial<Key>) {
+    if (i < 0 || !this.keys[i]) return;
+    const next = { ...this.keys[i], ...patch };
+    if (patch.t !== undefined) next.t = store.snap(Math.min(this.duration, Math.max(0, patch.t)));
+    this.write(this.keys.map((k, j) => (j === i ? next : k)), "edit key");
+  }
+
   /** Stop keyframing, keeping the picture: the values at the playhead become the static
    *  ones. Without that, un-animating would snap back to whatever the statics were before
    *  the first key — which is never what you meant. */
@@ -203,6 +212,27 @@ export class Animation {
 
 /** The keyframed effects of a clip, as the timeline draws them: which effect, and where
  *  its keys are in clip-local seconds. */
-export function keysOf(clip: Clip): { type: string; times: number[] }[] {
-  return clip.effects.map((e) => ({ type: e.type, times: keyframesOf(e).map((k) => k.t) })).filter((k) => k.times.length > 0);
+export function keysOf(clip: Clip): { type: string; index: number; times: number[] }[] {
+  return clip.effects.map((e, index) => ({ type: e.type, index, times: keyframesOf(e).map((k) => k.t) })).filter((k) => k.times.length > 0);
+}
+
+/**
+ * The `Animation` for one effect of a clip, wired to write it back through a patch — or
+ * null when the clip or the effect is not there (an undo, an agent edit). The inspector
+ * and the timeline both build one, so a key dragged on the clip and a key dragged in the
+ * panel go through the same code and the same rules.
+ */
+export function animationOf(clipId: string, ei: number): Animation | null {
+  const f = store.findClip(clipId);
+  const e = f?.clip.effects[ei];
+  if (!f || !e) return null;
+  return new Animation({
+    effect: e as unknown as Record<string, unknown>,
+    keyField: "keyframes",
+    fields: Object.keys(ANIMATABLE[e.type] ?? {}),
+    min: minKeys(e.type),
+    base: (p) => staticOf(e as Effect, p),
+    clip: f.clip,
+    commit: (next, note) => void store.patch([{ op: "replace", path: `${seqPath(f.seq)}/tracks/${f.ti}/clips/${f.ci}/effects/${ei}`, value: next }], `${e.type} ${note}`),
+  });
 }

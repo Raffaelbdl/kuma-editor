@@ -808,6 +808,21 @@ only looks right inside kuma has stopped being a plain HTML file.
 What this costs: changing the system does not propagate, so a video already made keeps
 what it had. That is the intended trade, not an oversight.
 
+**No starter set ships** — decided after writing one. Two were written (`studio`, dark and
+accent-led; `broadcast`, light and editorial) and removed before merge: the mechanism is
+what the change is for, and an opinionated pair of design systems is *content*, which
+wants its own review rather than riding in on a mechanism change. What stays is the way in
+and the guide — `library/design-systems/CLAUDE.md` says what belongs in one, and it is
+video-specific where a web design system would not be: lengths in kuma's `--u` so they
+survive both orientations, safe margins, when a scrim is required, and how long a line
+must stay on screen to be read.
+
+**A starter set is owed before any public release.** A feature whose first run lists
+nothing teaches nobody what it is for: the guide describes a shape, and a shape is not an
+example. At least two, far enough apart to show that the system is a choice rather than a
+default — the removed pair is a reasonable starting point, in a change that is about them
+and nothing else.
+
 ## Thumbnails
 
 **A thumbnail belongs to the configured entry** — adopted.
@@ -1043,6 +1058,10 @@ because it is the part deliberately left out.
   a sequence subject must not be wrapped in a synthetic root, since a nested sequence's
   background is transparent and wrapping would give it one that compiling it as root does
   not.
+
+- **Ship a starter set of design systems** before any public release. The mechanism is in
+  and nothing is in it, which makes the feature invisible to anyone who has not read the
+  guide; see *Design systems* above for what such a set has to demonstrate.
 
 - **Templates and overlays are the same word today and will not be** — a discussion to
   have, deliberately not a decision, and best had *before* the second kind of template

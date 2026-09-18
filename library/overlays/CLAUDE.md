@@ -31,6 +31,34 @@ same folder.
 - `_vendor/kuma.css` — the transparent reset and the `--u` unit (`1vh × --var-size`).
 - `_vendor/gsap.min.js`.
 
+## Read the project's design system first
+
+If the project directory has a `design-system/` folder, read `design-system/DESIGN.md`
+before authoring or restyling anything, and take the colours, type, geometry and motion
+from it rather than inventing them. `design-system/tokens.css` is the same values as a
+`:root` block: copy it into the template's first `<style>` and reference `var(--ds-*)`.
+That is the whole mechanism — nothing is injected at runtime, so what a template ends up
+with is what you wrote into it, and a template stays readable on its own.
+
+A project gets one with `kuma design-system <id>` (`kuma design-system` lists what is
+installed; `kuma library` installs the starter set). A project without one is not a
+mistake: use the template's own defaults and keep them consistent across the video.
+
+## Start from the scaffold, and check your work
+
+Do not write a template from an empty file. `kuma new-template <id>` (the `new_template`
+tool) writes a working one into the project's `overlays/`: the root's timing attributes, a
+registered paused timeline, typed vars of three kinds, `--u` sizing that survives both
+orientations, and an exit anchored to the clip's real length. Edit that.
+
+`kuma lint <id>` (the `check_template` tool, **Check** in the overlay workbench) reads the
+staged template — the injection applied, `_vendor/` in place — and reports what would
+otherwise surface as a bake that times out after 45 seconds or a frame that is quietly
+wrong: a missing timeline registration, a wall clock, a Google Fonts URL, a var the markup
+reads that the manifest does not declare, a missing asset. It runs hyperframes' own linter
+too when it is installed. It renders nothing and writes nothing, so run it after every
+edit; a bake is the slow way to learn the same thing.
+
 ## The contract (what kuma guarantees, what the template must do)
 
 **kuma injects:**
@@ -126,6 +154,62 @@ Speed on an overlay clip is applied at bake time as a time remap of the seek (no
 duplication). Position/scale/opacity/blur/blend/crop on the clip are MLT effects applied to
 the baked producer and approximated with CSS in the live preview.
 
+## Motion discipline
+
+An overlay is not a user interface. Nobody hovers it, nothing can be interrupted, there is
+no reduced-motion setting to honour once the frames are baked, and the viewer cannot pause
+to re-read a line that left too fast. What that leaves is one budget — the clip's length —
+and one competitor: the footage, which is the thing people came for.
+
+**Animate arrival, departure and change. Nothing else.** A tag arrives, points, and
+leaves. A counter changes because the number is the content. Motion that decorates,
+signals "premium" or fills a silence is motion that takes attention away from the video
+and gives nothing back. An element that moves continuously while the presenter talks is
+the worst of these, because it never stops asking.
+
+House numbers, for templates that should sit beside the shipped ones:
+
+| | |
+|---|---|
+| Entrance | 0.3–0.5 s, an out-curve (`power3.out`); the viewer sees the end of a move, so the deceleration is the part that reads |
+| Exit | 0.25–0.4 s, an in-curve (`power2.in`), anchored to `duration`, never to a constant |
+| Stagger | 0.08–0.15 s between a line and its subline. Two things arriving together read as one thing arriving badly |
+| Hold | ≥ 1.2 s on screen after the entrance settles for one line, ≥ 2 s for two, ≥ 2.5 s for a person's name |
+| Anything longer than 0.6 s | only when the motion *is* the content: a countdown, a chart drawing itself, a line being traced |
+| Loops | a pointer's pulse and nothing else, under 20% travel in scale or opacity |
+
+- Scale from 0.9, never from 0: a thing that grows from nothing reads as a glitch at
+  speed, and its first frames are unreadable anyway.
+- Overshoot (`back.out`) belongs on a mark — a pin, a badge, a ring. On text it reads as
+  cheap, and at 1080p the wobble is legible frame by frame.
+- One thing moves at a time. If two must, stagger them.
+- Blur, large shadows and filters over a whole frame are paid for on every baked frame;
+  a 30 s overlay is 900 renders of them. Cheap where it does not show.
+
+## Checking your work
+
+The contract check and the frames are two different questions: whether it will render, and
+whether it is any good. Both have an answer that costs seconds.
+
+1. **`check_template`** (`kuma lint <id>`) — the contract. Do this after every edit to the
+   markup; it is the difference between knowing now and a bake timing out in 45 seconds.
+2. **`sample_frames` with `overlay: "<bin id>"`** — the entry on its own, no placement
+   needed, times counted from the start of the overlay. Take 5 or 6 across the clip, and
+   include `t0: 0`: an overlay that is already fully visible in its first frame has no
+   entrance, which is the most common defect and invisible in a still.
+3. **Both orientations.** Pass `frame: [1080, 1920]` and look again. Text that fits in
+   landscape overflows in portrait, and anchors that look centred move. The contract
+   requires a template to survive both; this is how you find out that it does not.
+4. **Both extremes of backdrop.** `backdrop: "#ffffff"` and `backdrop: "#000000"`. An
+   overlay is transparent and will sit over footage you have not seen; if it is legible on
+   white and on black, it is legible.
+5. **Read the frames, not just the log.** Is the text inside the safe area (5–6% on every
+   side)? Is the accent used once? Does the exit finish before the clip ends — sample at
+   `duration - 0.05` and check that what should be gone is gone?
+
+The editor's overlay workbench is the same five checks for a person: its own clock, a
+frame picker, a backdrop picker and **Check**, on an entry that nothing places.
+
 ## Testing a template
 
 ```
@@ -149,4 +233,5 @@ preview, then `sample_frames` on its range to check the baked result matches.
    `{ "name": "…", "source": { "template": "<id>", "vars": {…} } }` under `/bin/<binId>`,
    then a clip `{ "id": "…", "start": t, "end": t + d, "bin": "<binId>" }` on an overlay
    track. Two instances with different vars are two bin entries.
-5. `sample_frames` again on that range to verify.
+5. `sample_frames` again on that range to verify — and run *Checking your work* above on
+   the entry before you place anything, which needs no clip at all.

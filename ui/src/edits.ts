@@ -4,7 +4,7 @@
 // to place a clip.
 
 import { api } from "./api";
-import { checkbox, selectInput } from "./dom";
+import { checkbox, el, selectInput } from "./dom";
 import { askForm, askText } from "./modal";
 import { startJob, store, toast } from "./store";
 import type { BinItem, BinSource, Clip, PatchOp, Project, Track, TrackKind } from "./types";
@@ -13,7 +13,7 @@ import { binItem, binPath, childrenOf, hasAudio, isFileSource, isOverlaySource, 
 /** Place an existing bin entry at time `t` on track `ti`. Every way of placing something —
  *  a button, a drop — comes through here, so the one rule a placement can break is checked
  *  here rather than next to each gesture. */
-export async function placeBinItem(binId: string, t: number, ti = -1) {
+export async function placeBinItem(binId: string, t: number, ti = -1, duration?: number) {
   const p = store.state.project!;
   const item = p.bin[binId];
   if (!item) return;
@@ -26,7 +26,9 @@ export async function placeBinItem(binId: string, t: number, ti = -1) {
     toast(`${item.name || binId} cannot be placed on a timeline`, "err");
     return;
   }
-  const d = defaultDuration(item, p, binId);
+  // The workbench passes the length it was iterating at; everything else takes the
+  // entry's own default.
+  const d = duration && duration > 0 ? duration : defaultDuration(item, p, binId);
   const clip: Clip = { id: store.newId(kind === "overlay" ? "o" : "c"), start: t, end: t + d, bin: binId, in: 0, speed: 1, volume: 1, muted: false, effects: [], label: "" };
   await place(clip, kind, ti, []);
 }
@@ -46,8 +48,20 @@ function defaultDuration(item: BinItem, p: Project, binId: string): number {
   if (isFileSource(item.source)) return item.meta?.duration ?? 5;
   // A sequence goes down at its own length, the way dragging in a clip does.
   if (itemKind(item) === "sequence") return seqDuration(p, binId) || 4;
+  // An overlay goes down at the length its template was authored for — the same number
+  // `addFromLibrary` uses, so placing an entry and dragging in its template agree.
+  if (isOverlaySource(item.source)) return overlayDuration(item);
   return 4;
 }
+
+/** The loaded template an overlay entry points at, if its library is on the search path. */
+export const templateOf = (id: string) => store.state.templates.find((t) => t.id === id);
+
+/** How long an overlay runs when nothing says otherwise: the length its template was
+ *  authored for. The clip that places it and the workbench that previews it must agree,
+ *  so they ask here. */
+export const overlayDuration = (item: BinItem | undefined): number =>
+  (item && isOverlaySource(item.source) && templateOf(item.source.template)?.manifest.duration_default) || 4;
 
 /** `base`, or `base-2`, `base-3`… if taken. Bin ids allow letters, digits, `_` and `-`. */
 function uniqueId(base: string, taken: Iterable<string>): string {
@@ -125,6 +139,54 @@ export async function promptNewSequence() {
 export async function promptNewFolder() {
   const name = await askText({ title: "New folder", label: "Name", placeholder: "Speech" });
   if (name) await addBinItem(name, "folder", { folder: true });
+}
+
+/**
+ * Mint an overlay entry from a template and open it in the workbench — **without placing
+ * it**. Creating an overlay and deciding where it plays are two different decisions, and
+ * the second one should not be forced on you while you are still making the first.
+ */
+export async function promptNewOverlay(template?: string) {
+  const templates = store.state.templates;
+  if (!templates.length) {
+    toast("No templates found. Run `kuma library`, or point KUMA_LIBRARY at a folder of them.", "err", 8000);
+    return;
+  }
+  const pick = selectInput(templates.map((t) => ({ value: t.id, label: t.manifest.name || t.id, title: t.manifest.description })), template ?? templates[0].id, () => {
+    // The name follows the template until it has been typed in, so the common case is
+    // one click and the rarer one is still a free choice.
+    if (!typed) name.value = templateOf(pick.value)?.manifest.name ?? pick.value;
+  });
+  const name = el("input");
+  name.type = "text";
+  name.value = templateOf(pick.value)?.manifest.name ?? pick.value;
+  let typed = false;
+  name.oninput = () => { typed = true; };
+  const ok = await askForm({
+    title: "New overlay",
+    note: "Adds a configured overlay to the bin and opens it in the workbench. Nothing is placed on a timeline until you place it.",
+    rows: [{ label: "Template", input: pick }, { label: "Name", input: name }],
+    ok: "Create",
+  });
+  if (!ok) return;
+  const label = name.value.trim() || templateOf(pick.value)?.manifest.name || pick.value;
+  const id = await addBinItem(label, pick.value, { template: pick.value, vars: {} });
+  if (id) store.openOverlay(id);
+}
+
+/** Fork an overlay entry, vars and all, and open the copy. Iterating means keeping the
+ *  version that works while trying another; a copy is the only way to do that, because
+ *  editing an entry changes every clip that plays it. */
+export async function duplicateOverlay(id: string) {
+  const p = store.state.project!;
+  const item = p.bin[id];
+  if (!item || !isOverlaySource(item.source)) return;
+  const name = `${item.name || id} copy`;
+  const copyId = uniqueId(slug(name) || "overlay", Object.keys(p.bin));
+  const value: BinItem = { name, source: { template: item.source.template, vars: { ...(item.source.vars ?? {}) } } };
+  // Listed where the original is, so a variant does not turn up at the other end of the bin.
+  if (item.parent) value.parent = item.parent;
+  if (await store.patch([{ op: "add", path: binPath(copyId), value }], `duplicate ${id}`)) store.openOverlay(copyId);
 }
 
 /** List `id` under `parent` (null for the top level), just before sibling `before`, or

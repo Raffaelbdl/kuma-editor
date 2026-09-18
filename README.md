@@ -104,14 +104,16 @@ it into `~/.cargo/bin`, tell it where the repository is once:
 export KUMA_REPO=/path/to/kuma-editor        # or pass --repo <path> on each call
 ```
 
-Overlay templates and effect presets are **assets shared across projects**, not part of
-the codebase: they live in a user library at `~/.local/share/kuma/{overlays,presets}`
+Overlay templates, effect presets and design systems are **assets shared across
+projects**, not part of the codebase: they live in a user library at
+`~/.local/share/kuma/{overlays,presets,design-systems}`
 (`$XDG_DATA_HOME/kuma`), plus any directories in `KUMA_LIBRARY` (a `:`-separated path
 list) and a project's own `overlays/` and `presets/` folders. Later entries win on an id
 clash. The repository ships a starter set under `library/`; install it once:
 
 ```
-kuma library                                 # copies library/{overlays,presets} → ~/.local/share/kuma (--force to overwrite)
+kuma library                                 # copies library/{overlays,presets,design-systems} → ~/.local/share/kuma (--force to overwrite)
+kuma thumbs                                  # a still and a moving preview (animated WebP, alpha) per template and overlay entry
 ```
 
 A project is a directory with `<name>.kuma.json` and your media:
@@ -124,7 +126,40 @@ kuma serve                                               # open http://127.0.0.1
 ```
 
 Drag bin entries onto the timeline, scrub, edit vars in the inspector, press **Render**.
-Output lands in `renders/`.
+Output lands in `renders/`. Render means the **master** — the sequence `master` names, which
+is the whole video; while you are editing another sequence a picker appears beside the
+export preset to render that one instead, and it lands beside the other as
+`<name>-<sequence>-<preset>.<ext>`. Overlays are iterated on in their own tab — see *The overlay
+workbench* below — rather than by scrubbing the timeline to where they happen to be.
+
+**The overlay workbench.** The centre of the window is tabbed, Kdenlive style. A
+**sequence** tab is a timeline you have open — the engine's picture with that sequence's
+overlays live on top, driven by the timeline below; the topbar picker opens one and gives
+it a tab, and clicking between them switches which sequence is being edited (a round trip:
+the daemon holds that choice, so switching recompiles, and the last tab stays put because
+something is always open). Every other tab is one **overlay entry**, open on its own. `+ overlay` (or the
+Templates tab's *Open in workbench*, or double-clicking an overlay in the bin, or **New
+Overlay…** in the Project menu) mints a configured overlay and opens it there **without
+placing it**: creating an overlay and deciding where it plays are two decisions, and the
+workbench is for the first one.
+
+Inside it the overlay runs on its own clock — play, scrub and frame-step with `Space` and
+the arrows, looping, with no relation to the timeline's playhead — over a backdrop you
+pick (alpha as a checkerboard, dark, light, or the sequence's frame at the playhead), at a
+length you set, and in another frame if you want one: `9:16` renders it at 1080×1920
+without touching the project, which is how you check the responsiveness the template
+contract asks for. Its vars are edited where every bin entry is edited, in the inspector
+on the right. **Reload** rescans the template libraries and rebuilds the document, so a
+template being written in an editor is one click from being on screen; **Duplicate** forks
+the entry so a variant costs nothing; **Place at playhead** puts a clip of it on the open
+sequence at that length, when it is ready.
+
+An agent gets the same view: `sample_frames` with `overlay` set to the entry's id (or
+`kuma sample 0 2 --count 5 --overlay paris`) renders that entry on its own, over a
+backdrop, with `t0`/`t1` counted from the start of the overlay — so an animation can be
+checked frame by frame before anything is placed. Nothing is added to the document to make
+that possible: the frames come from a throwaway one-clip timeline through the real MLT
+graph, so they are the composite the render would produce.
 
 **Vertical.** Landscape or portrait is nothing but the project's `width`/`height`: the
 size button in the top bar (`1920×1080 ⇄`) swaps them, undoably, and the preview, the
@@ -213,7 +248,11 @@ claude mcp add --scope user    kuma -- kuma mcp --project /abs/path.kuma.json  #
 and the agent always share one state. Tools: `get_project`, `get_schema`, `apply_edits`,
 `undo`, `redo`, `validate_project`, `list_templates`, `template_guide`, `list_presets`,
 `add_media`, `probe_media`, `transcribe`, **`sample_frames`**, `bake_overlay`, `render`,
-`job_status`, `health`. `template_guide` returns the overlay authoring contract
+`job_status`, `health`, `new_template`, `check_template`. `sample_frames` takes an
+`overlay` (a bin id) to look at one overlay entry on its own, which is how an agent checks
+an animation it is authoring; `new_template` scaffolds a template that already obeys the
+contract and `check_template` says whether one still does, without baking it.
+`template_guide` returns the overlay authoring contract
 (`library/overlays/CLAUDE.md`) so the agent can write templates into the library or the
 project.
 
@@ -222,11 +261,14 @@ project.
 ```
 kuma render --preset youtube-1080p         # bakes overlays, compiles, renders with melt
 kuma sample 12.0 14.0 --count 4 --rect 400,300,800,400
+kuma sample 0 3 --count 6 --overlay paris          # one overlay entry on its own, no placement (--backdrop, --duration, --frame 1080x1920)
 kuma bake                                  # bake all overlay clips (cached by content)
 kuma compile > timeline.mlt                # inspect the MLT graph (or open it in Kdenlive)
 kuma render --sequence intro               # render one nested sequence instead of the master
 kuma transcribe --clip c1 --language fr    # whisper.cpp → `subtitles` entry under the media, placed over clip c1
 kuma transcribe screen --replace           # re-transcribe in place: same entry, styling and placement, new words
+kuma new-template my-tag                   # a contract-abiding skeleton in the project's overlays/ (--library for the user library)
+kuma lint                                  # check every template against the contract (exit 1 on errors); `kuma lint my-tag` for one
 kuma validate | thumbs | library | doctor
 ```
 
@@ -294,7 +336,10 @@ not per sequence. The full schema: `GET /api/schema` or the `get_schema` tool.
 
 A template is a folder `<library>/overlays/<id>/` with `index.html` + `template.json`. The
 manifest's typed vars become the properties panel, so templates are editable without an
-agent; the agent can author new ones because they are plain folders. Starter set
+agent; the agent can author new ones because they are plain folders. The **thumbnails** button in the Templates tab (or `kuma thumbs`) renders each template
+twice: a still, and a moving preview — an animated WebP with alpha, the first seconds
+looping — which is what the browser and the inspector show. An overlay is an animation,
+and a still can only pick one moment out of it. Starter set
 (`library/overlays/`, installed by `kuma library`): `location-tag`, `lower-third`,
 `callout-arrow`, `label-pin`, `section-title`, `countdown`, `watermark` (static),
 `subtitles` (a `cues` var: the transcript). Contract: `library/overlays/CLAUDE.md`. A library
@@ -303,6 +348,29 @@ installed before a template existed picks it up with another `kuma library` (it 
 Effect presets are `<library>/presets/*.json` (Ken Burns, zoom to region, vignette,
 picture-in-picture, dim) and expand to ordinary effects; `$expr` values may use the
 project's `width`/`height`.
+
+## Design systems
+
+A design system is **a document, copied into the project**, that says what this video's
+overlays look like: colour roles, type sizes in `u`, geometry, motion, and the legibility
+floors that footage imposes. It is how six overlays made at different times end up looking
+like one video.
+
+```
+kuma design-system                          # what is installed
+kuma design-system <id>                     # copy it to <project>/design-system/ (--force to replace)
+```
+
+`design-system/DESIGN.md` is what an agent reads before authoring or restyling an overlay;
+`design-system/tokens.css` is the same values as a `:root { --ds-… }` block to copy into a
+template's first `<style>`. **Nothing is injected at runtime** — applying a design system
+is an edit to the template or to an entry's vars, so a template stays readable on its own
+and the values live with the rest of the project's decisions.
+
+**None ship yet** — the mechanism is here and the starter set is not, so
+`kuma design-system` lists whatever you have written or installed yourself.
+`library/design-systems/CLAUDE.md` is the guide: two files, `DESIGN.md` for the prose and
+`tokens.css` for the same values as a `:root` block.
 
 ## What works (verified in this repo's tests and smoke runs)
 
@@ -352,6 +420,8 @@ project's `width`/`height`.
   and why). No library at all: run `kuma library`.
 - **Bakes fail with "timelines did not become ready"** — a template without a GSAP timeline
   needs `data-no-timeline` on its composition root (see `library/overlays/CLAUDE.md`).
+  `kuma lint <id>` says so in a second instead of after a 45-second wait, and reports the
+  rest of the contract with it.
 
 ## Known limitations
 

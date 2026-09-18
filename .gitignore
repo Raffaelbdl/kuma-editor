@@ -21,5 +21,6 @@ app/dist/
 # Scratch
 *.log
 .DS_Store
-# Overlay thumbnails are generated (kuma thumbs)
+# Overlay thumbnails and moving previews are generated (kuma thumbs)
 library/overlays/*/thumb.png
+library/overlays/*/preview.webp

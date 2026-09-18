@@ -631,6 +631,198 @@ the first disables playback.
 Without an audio device, SDL's dummy driver still paces the callback in real time, so
 playback is always audio-paced and the alternate clock path was dead code.
 
+## Editor tabs and the overlay workbench
+
+**The centre of the window is tabbed** — adopted. One tab is the sequence being edited
+(the engine's picture with that sequence's overlays live on top); every other tab is one
+overlay entry open in a workbench. Kdenlive tabs its monitors for the same reason: a
+timeline is not the only thing worth looking at, and the thing you are making is not
+always in it yet.
+
+The occasion was overlays. An overlay entry could only be seen by placing a clip of it and
+scrubbing the timeline to where that clip happened to be — so *creating* an overlay was
+stuck behind *deciding where it plays*, two decisions that have nothing to do with each
+other. Worse, iterating on one meant leaving a placement lying around in the middle of a
+cut you were not editing.
+
+**A tab is an editor, not a document** — adopted. `state.tab` is the empty string for the
+sequence monitor and a bin id otherwise; ids must match `[A-Za-z_][A-Za-z0-9_-]*`, so the
+sentinel cannot collide with an entry. `state.overlays` is which workbench tabs are open,
+pruned on every refresh exactly as the open sequence is, because an agent edit or an undo
+can remove the entry a tab is showing.
+
+**One tab per open sequence, Kdenlive's timeline tabs** — adopted, superseding this
+entry's own earlier reading that it should not be built. That reading conflated two
+things: several sequences *running* at once, which would indeed be a second engine and is
+still not built, and several sequences *one click away*, which is all a tab strip has to
+be. Kdenlive's timeline tabs show one timeline at a time too.
+
+So `state.sequences` is the list of tabs and `state.sequence` — the daemon's — is which of
+them is being edited. Clicking one is the round trip the topbar picker already made, and
+the strip is honest about the cost: switching recompiles. The picker stays, because it is
+how a sequence that has no tab is found; opening from it adds one.
+
+The last sequence tab cannot be closed. The daemon always has a sequence open, so a strip
+with none would misrepresent what the preview is showing; closing the one being edited
+falls back to a neighbour, which is another round trip.
+
+**Render means the master, and says so** — adopted. `render` (and `sample_frames`) take a
+sequence and default to the master on every surface; the editor's button sent no sequence
+at all, so it rendered the master whatever you had open. That was right and unsaid: the
+button's tooltip was empty, and with sequence tabs you can now spend an hour inside a
+sub-sequence before pressing it.
+
+So the button's tooltip names what it will render, and a second picker appears beside the
+preset **only when the open sequence is not the master** — until then there is nothing to
+choose and a dropdown saying so is noise. It offers "master" (the default, as in the
+daemon) or "open"; the choice is one of those two words rather than a sequence id, so it
+survives switching tabs and relabels itself. The daemon is unchanged: leaving `sequence`
+out still means the master, so the client never has to know which entry that is.
+
+A dedicated render view — queue, range, per-sequence outputs — is the obvious next step
+and is not built.
+
+**The workbench edits the entry, never a placement** — adopted. It creates no clip, moves
+no playhead and reads none: the length under the stage and the frame beside it are view
+state, not document values, and the entry model has no field for either (a clip is what
+gives an overlay a length). `Place at playhead` is the one thing that writes, and it uses
+that length so what you were looking at is what lands.
+
+**Vars stay in the inspector** — adopted; a properties panel inside the workbench was
+rejected. A bin entry has one editor for what it is, and duplicating the var controls
+would mean keeping two generated forms in step for no new ability. Opening an entry
+selects it, which is what puts its vars on the right.
+
+**Previewing an unplaced entry is a route, not a synthetic clip** — adopted.
+`/overlay-entry/{id}` renders the same contract as `/overlay-preview/{clip}` with the
+length from the query and no clip id. The alternative — minting a hidden clip so the
+existing route would work — would have put a placement in the document that the user never
+asked for, and undo would have had to know it was not real.
+
+`?width=`/`?height=` render it into another frame. The template contract *requires* a
+template to look right at 1920×1080 and 1080×1920 alike, and before this the only way to
+check was to flip the whole project. Clamped rather than validated, because nothing is
+stored: a silly number costs one render.
+
+**Playing an overlay here is `requestAnimationFrame`, not MLT** — adopted. The document is
+already loaded and an overlay is a pure function of time, so playback is a seek per
+animation frame and needs no engine — which also means it works on a machine where the
+preview engine does not build. It loops, because deciding whether an animation is right
+never happens on one viewing.
+
+**The monitor you are not looking at stops playing** — adopted. Leaving the sequence tab
+while the engine is streaming pauses it rather than decoding JPEGs into a hidden canvas.
+
+**The timeline stays visible under the workbench** — adopted. The tabs are over the centre
+only, as Kdenlive's monitor tabs are, so `Place at playhead` has somewhere visible to land
+and the tracks do not disappear and reappear as you flip.
+
+**An agent can look at an unplaced entry too** — adopted, and the reason it is not a
+footnote: the editor gained a way to iterate on an overlay that the agent half of the
+product could not see. `sample_frames` took a sequence and a time, so checking an animation
+meant placing a clip, sampling, and removing it — an edit, an undo entry and a revision
+bump for a *look*.
+
+It now takes `overlay` (a bin id), with `duration` and `backdrop`. What that builds is a
+throwaway project whose master is one overlay clip over a colour, compiled and sampled
+through the ordinary path — a mechanism that wants generalising to every bin entry, which
+is its own item under *Still open* — same bake, same compiler, same melt — so the frames are the
+composite the render would produce rather than a second rendering path that could disagree
+with the first. It is never stored and never validated: it is well formed by construction
+and lives for one compile. The alternative, patching a hidden clip in and out around the
+sample, would have put a placement in the document nobody asked for and made undo answer
+for it.
+
+The synthetic sequence's id carries a hash of the length and backdrop because it is part
+of the frame cache's key: the same entry at the same frame over black and over white are
+two pictures, and one must not be served for the other. `overlay` and `sequence` together
+are refused rather than ranked — the times would mean different things — and so is an
+entry that is not an overlay.
+
+Still open here: the workbench shows the overlay as the template renders it, not as the
+compiler will composite it — there is no clip, so there are no clip effects to approximate.
+The exact answer is a sample, which is now available for an unplaced entry as well.
+Template *markup* is still edited outside the editor; `Reload` is the loop, not an editor.
+
+## Overlay authoring: checked, scaffolded, and shown moving
+
+Three changes made after reading through [OpenDesign](https://github.com/nexu-io/open-design),
+whose four-axis split — functional skills, rendering templates, brand `DESIGN.md`
+packages, and universal `craft/` rules injected into the prompt — is the same problem kuma
+has with one asset kind instead of four.
+
+**The contract is enforced, not just written** — adopted. `library/overlays/CLAUDE.md`
+described rules nothing checked, and every one of them fails far from its cause: no
+`data-no-timeline` waits 45 s for a timeline that never registers, `Date.now()` renders a
+wrong frame with no error, an undeclared var arrives as `undefined`. `Baker::lint` reads
+the staged document — the same staging the bake uses, extracted so the two cannot drift —
+and adds hyperframes' own linter, which was installed all along and never called.
+
+Two of its findings are suppressed rather than shown: it looks for a literal
+`window.__timelines` assignment, which kuma templates reach through `timeline()` in
+`_vendor/kuma.js` (every shipped template tripped it), and it reports `Math.random()` a
+second time in its own words. A report full of false positives is a report nobody reads.
+Comments are stripped before the behaviour rules run, because the scaffold *warns* about
+`Date.now()` in one and failed its own check.
+
+**A scaffold, not a blank file** — adopted, straight from OpenDesign's "use the
+deterministic scaffold and edit only what the prompt changes". `kuma new-template` writes
+a skeleton that passes the check; a test pins that, so the example an agent copies cannot
+drift from the contract it illustrates.
+
+**A preview that moves** — adopted. Every overlay is an animation and both places that
+showed one picked a single frame about a second in, which is the settled pose: the least
+informative moment. The `thumbs` job now also writes an animated WebP with alpha, and
+`preview.webp` joins `thumb.png` as a file that is neither staged nor hashed — without
+that, generating a preview would change the template's content hash and invalidate every
+bake of it.
+
+**Motion discipline in the contract** — adopted, as documentation. OpenDesign's
+`craft/animation-discipline.md` and its `review-animations` skill are written for
+interfaces: interruptibility, hover frequency, GPU-only properties, reduced-motion. Almost
+none of that survives the move to baked video, where nobody hovers, nothing can be
+interrupted and every frame is rendered offline. What does survive — animate arrival,
+departure and change; out-curves for entrances; never scale from zero — is now in
+`library/overlays/CLAUDE.md` with numbers, beside the thing that has no UI equivalent at
+all: how long a line must stay on screen to be read.
+
+## Design systems
+
+**A design system is a document copied into the project** — adopted, and deliberately not
+a project field or a runtime cascade.
+
+OpenDesign ships 154 brand packages, each a `DESIGN.md` plus a compiled `tokens.css`, and
+its agents paste the `:root` block into the artifact they generate; there is no global
+stylesheet at runtime. kuma takes the same shape at 1/77th the scale: `kuma design-system
+<id>` copies one into `<project>/design-system/`, an agent reads it there, and applying it
+is an ordinary edit to a template or to an entry's vars.
+
+The alternative — a `theme` on the project, injected into every overlay document beside
+the per-entry `--var-…` — was considered and turned down. It would re-style finished
+videos the moment the theme changed, which is the same objection already recorded against
+shared overlay configurations under *Still open*: vars are project-owned editing
+decisions, and they must stay a revision-checked, undoable patch rather than a value that
+arrives from elsewhere. Injection also hides where a colour came from, and a template that
+only looks right inside kuma has stopped being a plain HTML file.
+
+What this costs: changing the system does not propagate, so a video already made keeps
+what it had. That is the intended trade, not an oversight.
+
+**No starter set ships** — decided after writing one. Two were written (`studio`, dark and
+accent-led; `broadcast`, light and editorial) and removed before merge: the mechanism is
+what the change is for, and an opinionated pair of design systems is *content*, which
+wants its own review rather than riding in on a mechanism change. What stays is the way in
+and the guide — `library/design-systems/CLAUDE.md` says what belongs in one, and it is
+video-specific where a web design system would not be: lengths in kuma's `--u` so they
+survive both orientations, safe margins, when a scrim is required, and how long a line
+must stay on screen to be read.
+
+**A starter set is owed before any public release.** A feature whose first run lists
+nothing teaches nobody what it is for: the guide describes a shape, and a shape is not an
+example. At least two, far enough apart to show that the system is a choice rather than a
+default — the removed pair is a reasonable starting point, in a change that is about them
+and nothing else.
+
 ## Thumbnails
 
 **A thumbnail belongs to the configured entry** — adopted.
@@ -732,7 +924,18 @@ Three tiers, cheapest first. **All three are built.**
    when `kuma init` writes something unreadable — including that the folder is rolled back
    so the name is free to retry, which is the bug as it was reported. A shell script
    stands in for a stale `kuma`, so no Rust build is involved.
-3. **The composite, in a browser — done** (`ui/test/composite.test.mjs`). A fixture
+3. **The browser — done** (`ui/test/`, over a shared `harness.mjs`: finding the browser
+   and the binary, a daemon on a loopback port, and a CDP driver over Node's own
+   WebSocket, which needs no automation library). Two suites.
+
+   **The tab strip** (`ui/test/tabs.test.mjs`) drives the tabs and asserts against
+   `/api/sequence`, because which sequence the daemon has open is the state a sequence tab
+   switches, and a strip that disagrees with it shows a timeline nobody is editing. It
+   exists because a × inside a tab, whose click also reached the tab, closed and
+   immediately reopened it — which the screenshot-only harness could never have caught,
+   since it cannot click.
+
+   **The composite** (`ui/test/composite.test.mjs`). A fixture
    project with a half-red, half-transparent overlay, the editor screenshotted by the
    browser the baker already uses, and two assertions: the red reaches the page, and
    nothing on it is white. Reintroducing the dark root turns the second into 106,323
@@ -767,6 +970,141 @@ Nested sequences are done and the editor is an application now, so this list is 
 of what is next on the *model and compiler*; the desktop shell's own loose ends are at the
 end of its section above. The item this list gained from the sequence work comes first,
 because it is the part deliberately left out.
+
+- **One pipeline for every bin entry, not just sequences** — agreed direction, not built,
+  and the largest thing on this list.
+
+  Today `sample_frames` takes a *sequence* or an *overlay entry*, and the overlay case
+  builds a throwaway one-clip project and runs the ordinary path — same bake, same
+  compiler, same melt. That mechanism generalises; the interface does not. It grew two
+  ways in because the API had two fields, and then a rule refusing both at once.
+
+  **A sequence is a bin entry.** So there are not two kinds of thing to look at, only one,
+  and the rule is a sentence: *a subject is a bin entry; if it is already a timeline you
+  compile it, and if it is not you put it on one.* Written that way the `sequence`/
+  `overlay` split folds into a single `id` and the either/or rule is deleted rather than
+  generalised.
+
+  ```rust
+  pub struct Subject { id: Option<BinId>, length: Option<f64>, frame: Option<(u32, u32)>, backdrop: Option<String> }
+  pub fn view(state, doc, subject) -> Result<View /* (Project, root BinId) */, SubjectError>
+  ```
+
+  `None` is the master, which is a bin entry like any other. `length` and `backdrop`
+  describe the timeline *built for* an entry that has not got one, so they are refused for
+  a sequence rather than ignored — two readings, so ask for one, as the old `overlay` plus
+  `sequence` combination was refused. `frame` applies to either: it is the profile size,
+  which the compiler already varies for the preview scale.
+
+  Time on an entry subject is time **into the thing itself** — for media that means `t` is
+  time into the file, which is what a colour-grading editor wants to scrub, and it needs no
+  extra parameter because the built timeline's axis *is* the source's.
+
+  Which track an entry goes on is the one thing that varies per kind, and that table is
+  already written twice: open-coded in `validate.rs` (an overlay track takes overlay
+  entries and nothing else) and as `TRACK_FOR` in the UI. It belongs in `kuma-core`, shared
+  by all three — otherwise the builder can construct a document the validator would refuse.
+
+  **Melt always**, decided rather than assumed. Sampling a transparent overlay could skip
+  melt entirely, since the baked frames are already RGBA at the right size, and it was
+  turned down: one rendering path is what makes "what you sample is what renders" true, and
+  a second compositor would have to be kept in agreement with the first forever. No subject
+  kind gets its own path, however cheap its frames look.
+
+  **The obvious alternative — put the temporary sequence in the bin** — was considered and
+  turned down, and it is worth writing down because it is the first thing anyone proposes.
+  Adding a real scratch entry when a tab opens would need *no* new machinery at all:
+  sampling, rendering, compiling and baking are untouched, every tab becomes a sequence
+  tab, and the UI's live-DOM overlay layer works unchanged because it reads the tracks out
+  of the document. That last point is the one real deficit of doing it in session.
+
+  It breaks a rule the project is built on: looking at something is not an edit. A bin
+  entry arrives by patch, and a patch writes the project file before it swaps it in memory
+  (`state::commit`), pushes an undo step (`state::edit`), and bumps the revision — so
+  opening a tab would save scratch to `myvideo.kuma.json`, put "opened a tab" in the undo
+  stack, and hand an agent a `409` on its next `base_revision` because a human clicked
+  something. `bake_all` walks every clip in every sequence, so `kuma bake` would bake
+  scratch; the validator walks every sequence, so broken scratch would block unrelated
+  edits. Keeping those out means a hidden-entry flag, and then the *model* knows about tab
+  state — exactly what the open sequence is kept out of the document to avoid. A crash
+  would leave orphans in someone's bin.
+
+  What the session version owes in exchange is one endpoint: the resolved view (subject,
+  root and its tracks) so the UI can draw a timeline that is not in the document — a
+  generalisation it needs anyway. And it gains something the bin version cannot have:
+  keeping a scratch arrangement becomes one deliberate patch ("promote this to a
+  sequence") instead of everything you glanced at living in the file until something
+  cleans it up.
+
+  What it unlocks is the reason to do it. The daemon's session state is an open *sequence*;
+  make it a subject and the engine, the snapshot fallback, sampling and rendering all point
+  at the same thing — so a bin-entry editor for video (colour correction, say) gets the
+  preview engine for free, and the overlay workbench's live-DOM iframe reads as what it is:
+  an optimisation of one subject kind, the way live-DOM overlays are an optimisation for
+  the open sequence. `render` on an entry falls out with the output naming already in
+  place, which means an overlay rendered to ProRes 4444 with alpha for somebody else's
+  editor.
+
+  Three phases, only the first of which is free: `Subject` plus the resolver, with the old
+  fields as sugar and no behaviour change (the existing tests are the proof, ~120 lines net
+  and half of it moved); then entry subjects for media and colour entries, with a test per
+  kind that the synthetic project compiles; then the session state and the UI's tab strip,
+  where `state.sequences` and `state.overlays` collapse into one list of subjects.
+
+  Invariants to keep whichever way it is built: nothing synthetic is ever stored or
+  validated (it is well formed by construction and lives for one compile — the test that
+  sampling an entry leaves the document byte-identical should gain a case per kind); the
+  cache key covers the whole subject, because two views of one entry are two pictures; and
+  a sequence subject must not be wrapped in a synthetic root, since a nested sequence's
+  background is transparent and wrapping would give it one that compiling it as root does
+  not.
+
+- **Ship a starter set of design systems** before any public release. The mechanism is in
+  and nothing is in it, which makes the feature invisible to anyone who has not read the
+  guide; see *Design systems* above for what such a set has to demonstrate.
+
+- **Templates and overlays are the same word today and will not be** — a discussion to
+  have, deliberately not a decision, and best had *before* the second kind of template
+  exists rather than after.
+
+  Today "template" means exactly one thing: a folder with `template.json` and `index.html`
+  that bakes to an overlay. That meaning is wired in everywhere — `TemplateManifest`,
+  `/api/templates`, `list_templates`, `template_guide`, `kuma new-template`, `kuma lint`,
+  the Templates tab — and, most consequentially, in the document: an overlay bin entry is
+  `{ "template": "<id>", "vars": {…} }`, where `template` names an HTML template and
+  nothing else could go there.
+
+  The word is about to widen. Effect templates and sequence templates (a skeleton you
+  stamp out — tracks, placeholder clips, an intro pattern) are both plausible next, and
+  neither is HTML. When they arrive, either "template" becomes the genus and today's
+  meaning becomes one kind of it, or it stays the HTML thing and something else has to be
+  the genus. The first matches how people will speak; it also means `source.template` is
+  misnamed the moment a second kind exists, and the format has no upgrade path, so it is a
+  `PROJECT_VERSION` bump — which is the real reason to decide early.
+
+  Two things are already tangled and worth naming before the discussion starts. **"Preset"
+  is overloaded now**: `/api/presets` is export presets (a `const` table in Rust) and
+  `/api/presets/effects` is effect presets (JSON on the library search path), and they
+  have nothing in common but the word. And **the genus partly exists in code already**:
+  `VarSpec` is shared by overlay templates and effect presets, the UI renders both with
+  one `varInput`, so "an asset with typed parameters that is instantiated into a project"
+  is a concept the codebase has without having named it.
+
+  What such a discussion has to settle, beyond the word:
+
+  - **What varies per kind.** Discovery and precedence are already per-kind directories and
+    work well (`overlays/`, `presets/`, `design-systems/`) — OpenDesign's four-axis split
+    is evidence for keeping them separate rather than one bag with a `kind` field.
+    Instantiation is where they genuinely differ: an overlay template mints a bin entry, an
+    effect preset appends effects to a clip, a sequence template mints a sequence, a design
+    system is copied into the project and never referenced at all.
+  - **What "check this" means per kind.** `Baker::lint` stages HTML and runs hyperframes;
+    an effect template would validate against the effect schema and a sequence template
+    against the model. One dispatch point, designed once, or four unrelated commands.
+  - **Whether a configured overlay is a template.** *A configured overlay cannot be shared
+    between projects* (below) wants to put `{ name, source: { template, vars } }` on the
+    library path. That is a fourth shape — an instance, not a template — and whether it
+    lives under the same roof is the same question in miniature.
 
 - **Speed on a sequence clip**, refused today. The mechanism is known to work (see the
   spike above): write the sub-sequence to its own `.mlt` in the cache and hand `timewarp`

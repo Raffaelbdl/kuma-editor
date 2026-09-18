@@ -1,4 +1,4 @@
-import type { DaemonEvent, EffectPreset, Issue, PatchOp, Preset, Project, SequenceState, TemplateInfo } from "./types";
+import type { DaemonEvent, EffectPreset, Issue, LintReport, PatchOp, Preset, Project, SequenceState, TemplateInfo } from "./types";
 
 async function json<T>(url: string, init?: RequestInit): Promise<T> {
   const r = await fetch(url, { headers: { "content-type": "application/json" }, ...init });
@@ -25,6 +25,8 @@ export const api = {
   presets: () => json<Preset[]>("/api/presets"),
   effectPresets: () => json<EffectPreset[]>("/api/presets/effects"),
   thumbs: () => json<{ job: number }>("/api/templates/thumbs", { method: "POST", body: "{}" }),
+  /** Check a template against the authoring contract. Reads only. */
+  lintTemplate: (id: string) => json<LintReport>(`/api/templates/${encodeURIComponent(id)}/lint`),
   reloadTemplates: () => json<TemplateInfo[]>("/api/templates", { method: "POST", body: "{}" }),
   addMedia: (path: string, base_revision: number) =>
     json<{ id: string; revision: number }>("/api/bin", { method: "POST", body: JSON.stringify({ path, base_revision, origin: "ui: add media" }) }),
@@ -35,8 +37,16 @@ export const api = {
    *  against the project as it is when the words are in. */
   transcribe: (req: ({ bin: string } | { clip: string }) & { id?: string; language?: string; replace?: boolean }) =>
     json<{ job: number }>("/api/transcribe", { method: "POST", body: JSON.stringify({ ...req, origin: "ui: transcribe" }) }),
-  render: (preset: string) => json<{ job: number }>("/api/render", { method: "POST", body: JSON.stringify({ preset }) }),
+  /** Render `sequence`, or the project's master when it is left out — the daemon's own
+   *  default, so the two agree without the client having to know which is the master. */
+  render: (preset: string, sequence?: string) =>
+    json<{ job: number }>("/api/render", { method: "POST", body: JSON.stringify({ preset, sequence }) }),
   previewReload: (scale?: number) => json<{ mlt: string; scale: number }>("/api/preview/reload", { method: "POST", body: JSON.stringify(scale === undefined ? {} : { scale }) }),
+  /** The live document for an overlay **bin entry**, at the length and in the frame the
+   *  workbench is looking at. No clip: an entry is editable before anything places it.
+   *  `rev` only defeats the browser cache when the iframe is recreated. */
+  overlayEntryUrl: (id: string, duration: number, width: number, height: number, rev: number) =>
+    `/overlay-entry/${encodeURIComponent(id)}?duration=${duration.toFixed(3)}&width=${width}&height=${height}&rev=${rev}`,
   snapshotUrl: (t: number, width = 960) => `/api/snapshot?t=${t.toFixed(3)}&width=${width}&_=${Date.now()}`,
 };
 

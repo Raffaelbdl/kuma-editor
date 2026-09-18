@@ -330,6 +330,7 @@ function rebuildMenu() {
         { type: "separator" },
         { label: "Add Media…", click: () => sendCommand("add-media") },
         { label: "New Sequence…", click: () => sendCommand("new-sequence") },
+        { label: "New Overlay…", click: () => sendCommand("new-overlay") },
         { label: "Switch Orientation", click: () => sendCommand("swap-orientation") },
         { type: "separator" },
         { label: "Reload Preview", click: () => sendCommand("reload-preview") },

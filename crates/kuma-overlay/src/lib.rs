@@ -9,10 +9,14 @@
 
 pub mod bake;
 pub mod inject;
+pub mod lint;
 pub mod media;
+pub mod scaffold;
 pub mod transcribe;
 
 pub use bake::{BakeError, BakeRequest, Baker, BakeResult};
+pub use lint::{Finding, Level, LintReport};
 pub use inject::Contract;
 pub use media::{probe, Probe};
+pub use scaffold::new_template;
 pub use transcribe::{Cue, TranscribeOptions, Transcriber};

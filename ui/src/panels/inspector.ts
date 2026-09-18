@@ -124,6 +124,12 @@ export class Inspector {
       (open as HTMLButtonElement).disabled = id === store.state.sequence;
       actions.appendChild(open);
     }
+    // The same gesture for the other kind of entry that has an editor of its own.
+    if (isOverlaySource(item.source)) {
+      const open = button("Open", () => store.openOverlay(id), "Iterate on it in the overlay workbench");
+      (open as HTMLButtonElement).disabled = id === store.state.tab;
+      actions.appendChild(open);
+    }
     const remove = button("Remove from bin", () => {
       if (places) return toast(`${id} is placed by ${plural(places, "clip")}`, "err");
       const kids = childrenOf(p, id).length;
@@ -177,9 +183,14 @@ export class Inspector {
     // whose look is the point, so it moves here rather than being dropped. Absent until
     // the `thumbs` job has run, and it removes itself when there is nothing to show.
     const thumb = el("img", "insp-thumb");
-    thumb.src = `/api/bin/${encodeURIComponent(id)}/thumb.png`;
+    // The entry's own moving preview when the `thumbs` job has made one, its still
+    // otherwise, and nothing at all until then.
+    thumb.src = `/api/bin/${encodeURIComponent(id)}/preview.webp`;
     thumb.alt = "";
-    thumb.onerror = () => thumb.remove();
+    thumb.onerror = () => {
+      if (thumb.src.endsWith("preview.webp")) thumb.src = `/api/bin/${encodeURIComponent(id)}/thumb.png`;
+      else thumb.remove();
+    };
     this.host.appendChild(thumb);
 
     const vars = source.vars ?? {};

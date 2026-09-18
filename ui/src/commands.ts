@@ -51,6 +51,7 @@ export const Cmd = {
   redo: "project.redo",
   render: "project.render",
   newSequence: "project.new-sequence",
+  newOverlay: "project.new-overlay",
   swapOrientation: "project.swap-orientation",
   transcribe: "project.transcribe",
   addMedia: "project.add-media",
@@ -60,4 +61,6 @@ export const Cmd = {
   deleteClip: "timeline.delete-clip",
   addTrack: "timeline.add-track",
   previewScale: "preview.scale",
+  overlayTogglePlay: "overlay.toggle-play",
+  overlayStep: "overlay.step",
 } as const;

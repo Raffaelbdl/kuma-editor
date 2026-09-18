@@ -39,6 +39,49 @@ impl Config {
     pub fn all_preset_dirs(&self) -> Vec<PathBuf> {
         self.library_dirs.iter().map(|d| d.join("presets")).chain([self.project_root().join("presets")]).collect()
     }
+    /// Where installed design systems are looked for. Unlike templates and presets these
+    /// are not read at runtime: one is **copied into the project** and the agent reads it
+    /// there, so the project is the destination rather than the last search path entry.
+    pub fn design_system_dirs(&self) -> Vec<PathBuf> {
+        self.library_dirs.iter().map(|d| d.join("design-systems")).collect()
+    }
+    /// The design system this project carries, if it has been given one.
+    pub fn project_design_system(&self) -> Option<PathBuf> {
+        let d = self.project_root().join("design-system/DESIGN.md");
+        d.is_file().then_some(d)
+    }
+    /// Design systems installed on the search path, by id: the folder and the title from
+    /// its `DESIGN.md` (the first heading). Later directories win, as they do for
+    /// templates. A folder without a `DESIGN.md` is not one.
+    pub fn installed_design_systems(&self) -> BTreeMap<String, (PathBuf, String)> {
+        let mut out = BTreeMap::new();
+        for dir in self.design_system_dirs() {
+            let Ok(rd) = std::fs::read_dir(&dir) else { continue };
+            for e in rd.flatten().map(|e| e.path()) {
+                let Ok(text) = std::fs::read_to_string(e.join("DESIGN.md")) else { continue };
+                let Some(id) = e.file_name().and_then(|s| s.to_str()) else { continue };
+                let title = text.lines().find_map(|l| l.strip_prefix("# ")).unwrap_or(id).trim().to_string();
+                out.insert(id.to_string(), (e.clone(), title));
+            }
+        }
+        out
+    }
+}
+
+/// Copy a folder, recursively. Shared by the library install and the design-system copy;
+/// the baker has its own because it also filters what it stages.
+pub fn copy_tree(src: &Path, dst: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for e in std::fs::read_dir(src)? {
+        let e = e?;
+        let target = dst.join(e.file_name());
+        if e.path().is_dir() {
+            copy_tree(&e.path(), &target)?;
+        } else {
+            std::fs::copy(e.path(), target)?;
+        }
+    }
+    Ok(())
 }
 
 /// The user's asset library: `$XDG_DATA_HOME/kuma` (`~/.local/share/kuma`), holding
@@ -102,6 +145,8 @@ pub struct TemplateInfo {
     pub id: String,
     pub manifest: TemplateManifest,
     pub has_thumb: bool,
+    /// An animated WebP of it beside the still, from the same job.
+    pub has_preview: bool,
 }
 
 /// Locks guard data that is only ever swapped whole, so a panic while holding one leaves
@@ -177,7 +222,12 @@ impl AppState {
         read(&self.templates)
             .loaded
             .iter()
-            .map(|(id, (dir, m))| TemplateInfo { id: id.clone(), manifest: m.clone(), has_thumb: dir.join("thumb.png").is_file() })
+            .map(|(id, (dir, m))| TemplateInfo {
+                id: id.clone(),
+                manifest: m.clone(),
+                has_thumb: dir.join("thumb.png").is_file(),
+                has_preview: dir.join("preview.webp").is_file(),
+            })
             .collect()
     }
 
@@ -299,5 +349,50 @@ impl AppState {
                 Err(e)
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn config(dir: &Path, libraries: Vec<PathBuf>) -> Config {
+        Config { project_file: dir.join("p/t.kuma.json"), repo_root: dir.to_path_buf(), library_dirs: libraries, bind: "127.0.0.1:0".parse().unwrap() }
+    }
+
+    /// Later libraries shadow earlier ones by id, the title is the first heading, and a
+    /// folder without a `DESIGN.md` is not a design system.
+    #[test]
+    fn design_systems_are_found_by_their_design_md() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (a, b) = (tmp.path().join("a"), tmp.path().join("b"));
+        for (lib, id, title) in [(&a, "studio", "Studio"), (&a, "old", "Old"), (&b, "studio", "Studio (mine)")] {
+            let d = lib.join("design-systems").join(id);
+            std::fs::create_dir_all(&d).unwrap();
+            std::fs::write(d.join("DESIGN.md"), format!("# {title}\n\nprose")).unwrap();
+        }
+        std::fs::create_dir_all(a.join("design-systems/not-one")).unwrap();
+
+        let found = config(tmp.path(), vec![a.clone(), b.clone()]).installed_design_systems();
+        assert_eq!(found.keys().cloned().collect::<Vec<_>>(), ["old", "studio"]);
+        assert_eq!(found["studio"].1, "Studio (mine)", "the later library wins");
+        assert_eq!(found["studio"].0, b.join("design-systems/studio"));
+        assert!(config(tmp.path(), vec![a]).project_design_system().is_none());
+    }
+
+    #[test]
+    fn copy_tree_copies_nested_folders() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("src");
+        std::fs::create_dir_all(src.join("fonts")).unwrap();
+        std::fs::write(src.join("DESIGN.md"), "# X").unwrap();
+        std::fs::write(src.join("fonts/a.woff2"), b"\0").unwrap();
+        let dst = tmp.path().join("p/design-system");
+        copy_tree(&src, &dst).unwrap();
+        assert_eq!(std::fs::read_to_string(dst.join("DESIGN.md")).unwrap(), "# X");
+        assert!(dst.join("fonts/a.woff2").is_file());
+        // And the project now has one.
+        let cfg = config(tmp.path(), vec![]);
+        assert_eq!(cfg.project_design_system(), Some(dst.join("DESIGN.md")));
     }
 }

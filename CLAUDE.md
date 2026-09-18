@@ -16,12 +16,13 @@ crates/kuma-mlt       JSON → MLT XML compiler (the only place MLT's rules live
 crates/kuma-overlay   hyperframes bake driver, content-hash cache, ffprobe helpers
 crates/kuma-daemon    HTTP/WS API, undo, jobs, overlay live-preview routes, preview engine transport
 crates/kuma-mcp       rmcp stdio MCP server proxying the daemon
-crates/kuma-cli       `kuma` binary: serve | mcp | render | bake | sample | library | …
+crates/kuma-cli       `kuma` binary: serve | mcp | render | bake | sample | lint | design-system | library | …
 engine/               C++ libmlt++ preview engine (JPEG over stdout, SDL2-paced audio)
 ui/                   Vite + TypeScript editor (no framework)
 app/                  Electron shell: project launcher, windows, daemon lifecycle
 library/overlays/     starter overlay templates (folder = template) + `_vendor/{gsap.min.js,kuma.js,kuma.css}`
 library/presets/      starter effect presets (typed params + `$expr` substitution)
+library/design-systems/ design systems (`DESIGN.md` + `tokens.css`) copied into a project; none ship yet
 ```
 
 Templates and presets are user assets, not code: at runtime kuma reads
@@ -66,6 +67,20 @@ Chrome headless shell if hyperframes should not download one.
   tractor however often it is placed; each placement is a wrapper playlist carrying its own
   cut and filters, and a nested sequence's background is transparent. The daemon holds the
   open sequence as session state — never in the document.
+- The centre of the editor is tabbed: one tab per **open sequence**, and one per overlay
+  entry open in the **workbench** (`ui/src/panels/workbench.ts`). Sequence tabs are a list
+  of timelines one click away, never several at once — the daemon holds which one is open
+  and the engine holds its compiled timeline, so clicking a tab is a round trip and the
+  last tab cannot be closed. The workbench edits an entry,
+  never a placement — it creates no clip, moves no playhead, and its length and frame are
+  view state, not document values. Vars stay in the inspector: an entry has one editor for
+  what it is, and it is not this panel. An agent sees the same thing through `sample_frames`
+  with `overlay`: a synthetic one-clip timeline, compiled and never stored, so looking at
+  an overlay is never an edit.
+- **Render means the master** unless a sequence is named: `render` and `sample_frames`
+  default to it on every surface, and no session state leaks into either. The editor's
+  Render button is the one place a person can choose otherwise, and only once the open
+  sequence differs from the master.
 - Overlays are live DOM on the sequence you have open and **baked** in the sequences it
   nests, which is what puts them in the preview at all; the two sets are disjoint, so none
   is drawn twice. Preview bakes are best effort — a template that will not bake costs that
@@ -79,6 +94,15 @@ Chrome headless shell if hyperframes should not download one.
   transitions, A/B lanes for dissolves) stays in `crates/kuma-mlt/src/compile.rs`.
   `tests/fixtures/reference.mlt` is a golden file: regenerate with
   `UPDATE_GOLDEN=1 cargo test -p kuma-mlt` and read the diff.
+- A **design system** is a document, not a runtime layer: `kuma design-system <id>` copies
+  one into `<project>/design-system/` and an agent reads it there. Nothing injects it, so
+  applying it is an ordinary edit to a template or to an entry's vars — do not add a
+  cascade that would re-style finished videos behind the editor's back.
+- A template is **checked, not discovered to be broken**: `Baker::lint` reads the staged
+  document (contract injected, `_vendor/` in place) and adds hyperframes' own linter, and
+  `kuma new-template` writes a skeleton that passes it. A test lints every shipped
+  template and the scaffold, so the starter library cannot drift from the contract it
+  documents. New contract rule → a rule in `lint.rs`, or nothing enforces it.
 - Overlay bakes run hyperframes with **one worker**; multi-worker capture was measured
   to be non-deterministic on GSAP-driven transforms.
 - Subtitles are not a model concept: a transcript is the `cues` var of a `subtitles`

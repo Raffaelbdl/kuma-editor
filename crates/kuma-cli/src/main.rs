@@ -59,6 +59,20 @@ enum Cmd {
         /// Sequence (bin id) to use instead of the project's master.
         #[arg(long)]
         sequence: Option<String>,
+        /// Sample one overlay bin entry on its own instead of a timeline — what the
+        /// editor's overlay workbench shows. Times are seconds into the overlay.
+        #[arg(long)]
+        overlay: Option<String>,
+        /// How long to run that overlay for (default: the template's own).
+        #[arg(long)]
+        duration: Option<f64>,
+        /// Colour behind it, e.g. `#102030` or `transparent` (default black).
+        #[arg(long)]
+        backdrop: Option<String>,
+        /// With --overlay: render it into another frame, `WxH` (e.g. 1080x1920), to check
+        /// the orientation the project is not in.
+        #[arg(long)]
+        frame: Option<String>,
     },
     /// Write the compiled MLT XML to stdout (overlays skipped unless baked).
     Compile {
@@ -70,9 +84,32 @@ enum Cmd {
     Validate,
     /// Check the installation: repo, tools, engine, library, daemon, MCP config.
     Doctor,
+    /// Scaffold a contract-abiding overlay template in the project's `overlays/`.
+    NewTemplate {
+        /// Folder name and id: [A-Za-z_][A-Za-z0-9_-]*
+        id: String,
+        /// Name for the library browser (defaults to the id).
+        #[arg(long)]
+        name: Option<String>,
+        #[arg(long)]
+        description: Option<String>,
+        /// Write it to the user library instead of this project.
+        #[arg(long)]
+        library: bool,
+    },
+    /// Check overlay templates against the contract (all, or the given ids). Exit 1 on errors.
+    Lint { templates: Vec<String> },
     /// Generate `thumb.png` for overlay templates (all, or the given ids).
     Thumbs { templates: Vec<String> },
-    /// Install the starter templates and presets into the user library (`~/.local/share/kuma`).
+    /// Copy a design system into the project for the agent to read (`design-system/`).
+    /// With no id, list what is installed.
+    DesignSystem {
+        id: Option<String>,
+        /// Replace the project's current one.
+        #[arg(long)]
+        force: bool,
+    },
+    /// Install the starter templates, presets and design systems into the user library (`~/.local/share/kuma`).
     Library {
         /// Overwrite templates that already exist in the library.
         #[arg(long)]
@@ -204,7 +241,7 @@ async fn main() -> anyhow::Result<()> {
                 println!("{k}\t{}", b.resource.display());
             }
         }
-        Cmd::Sample { t0, t1, count, rect, width, sequence } => {
+        Cmd::Sample { t0, t1, count, rect, width, sequence, overlay, duration, backdrop, frame } => {
             let state = open(&cli)?;
             let rect = rect
                 .as_deref()
@@ -214,7 +251,27 @@ async fn main() -> anyhow::Result<()> {
                     Ok::<_, anyhow::Error>(kuma_core::template::Region { x: v[0], y: v[1], w: v[2], h: v[3] })
                 })
                 .transpose()?;
-            let req = kuma_daemon::jobs::SampleRequest { t0: *t0, t1: *t1, count: *count, rect, width: *width, overlays: Default::default(), sequence: sequence.clone() };
+            let frame = frame
+                .as_deref()
+                .map(|s| {
+                    let (w, h) = s.split_once(['x', 'X', ',']).ok_or_else(|| anyhow::anyhow!("--frame takes WxH, e.g. 1080x1920"))?;
+                    anyhow::Ok((w.trim().parse::<u32>()?, h.trim().parse::<u32>()?))
+                })
+                .transpose()?;
+            let req = kuma_daemon::jobs::SampleRequest {
+                t0: *t0,
+                t1: *t1,
+                count: *count,
+                rect,
+                width: *width,
+                sequence: sequence.clone(),
+                overlay: overlay.clone(),
+                duration: *duration,
+                backdrop: backdrop.clone(),
+                frame_width: frame.map(|(w, _)| w),
+                frame_height: frame.map(|(_, h)| h),
+                ..Default::default()
+            };
             let samples = tokio::task::spawn_blocking(move || kuma_daemon::jobs::sample_frames(&state, &req, &|_, _| {})).await??;
             println!("{}", serde_json::to_string_pretty(&samples)?);
         }
@@ -234,6 +291,48 @@ async fn main() -> anyhow::Result<()> {
                 std::process::exit(1);
             }
         }
+        Cmd::NewTemplate { id, name, description, library } => {
+            let state = open(&cli)?;
+            // The project's own `overlays/` is where a one-off for this video belongs and
+            // is last on the search path; `--library` is for one meant to be reused.
+            let dir = if *library {
+                // The user library is the first search path entry — the one `kuma library`
+                // installs into — not whatever `KUMA_LIBRARY` appended last.
+                default_library_dirs().remove(0).join("overlays")
+            } else {
+                state.config.project_root().join("overlays")
+            };
+            let out = kuma_overlay::new_template(&dir, id, name.as_deref().unwrap_or(""), description.as_deref().unwrap_or("")).map_err(anyhow::Error::msg)?;
+            state.reload_templates();
+            println!("{}", out.display());
+            let report = kuma_daemon::jobs::lint_template(&state, id)?;
+            for line in report.lines() {
+                println!("  {line}");
+            }
+        }
+        Cmd::Lint { templates } => {
+            let state = open(&cli)?;
+            let ids: Vec<String> = {
+                let all = state.templates.read().unwrap().loaded.clone();
+                if templates.is_empty() { all.keys().cloned().collect() } else { templates.clone() }
+            };
+            let mut errors = 0;
+            for id in ids {
+                let report = kuma_daemon::jobs::lint_template(&state, &id)?;
+                errors += report.errors();
+                let status = if report.ok() { "ok" } else { "FAILED" };
+                println!("{id}: {status} ({} error(s), {} warning(s))", report.errors(), report.warnings());
+                for line in report.lines() {
+                    println!("  {line}");
+                }
+                if let Some(why) = &report.renderer_skipped {
+                    println!("  (hyperframes' own linter did not run: {why})");
+                }
+            }
+            if errors > 0 {
+                std::process::exit(1);
+            }
+        }
         Cmd::Thumbs { templates } => {
             let state = open(&cli)?;
             let all = state.templates.read().unwrap().loaded.clone();
@@ -243,6 +342,33 @@ async fn main() -> anyhow::Result<()> {
                 state.baker.thumbnail(dir, manifest, &empty, &out).map_err(|e| anyhow::anyhow!("{id}: {e}"))?;
                 println!("{id:16} {}", out.display());
             }
+        }
+        Cmd::DesignSystem { id, force } => {
+            let state = open(&cli)?;
+            let installed = state.config.installed_design_systems();
+            let Some(id) = id else {
+                if installed.is_empty() {
+                    println!("no design systems installed — none ship yet; write one under `<library>/design-systems/<id>/` (`DESIGN.md` + `tokens.css`), or point KUMA_LIBRARY at a folder of them");
+                }
+                for (id, (dir, title)) in &installed {
+                    let here = state.config.project_design_system().is_some_and(|p| std::fs::read_to_string(p).ok().as_deref() == std::fs::read_to_string(dir.join("DESIGN.md")).ok().as_deref());
+                    println!("{id}\t{title}{}", if here { "  (this project's)" } else { "" });
+                }
+                return Ok(());
+            };
+            let (src, title) = installed.get(id).cloned().ok_or_else(|| anyhow::anyhow!("unknown design system `{id}` — `kuma design-system` lists what is installed"))?;
+            // One fixed place, so the contract can say where it is and the agent can look
+            // without being told: `<project>/design-system/`.
+            let dst = state.config.project_root().join("design-system");
+            if dst.exists() && !*force {
+                anyhow::bail!("{} already exists — pass --force to replace it", dst.display());
+            }
+            if dst.exists() {
+                std::fs::remove_dir_all(&dst)?;
+            }
+            kuma_daemon::copy_tree(&src, &dst)?;
+            println!("{title} → {}", dst.display());
+            println!("The agent reads `design-system/DESIGN.md`; templates copy the `:root` block from `tokens.css`.");
         }
         Cmd::Library { force } => {
             let src = repo_root(&cli)?.join("library");
@@ -331,6 +457,12 @@ async fn doctor(cli: &Cli) -> anyhow::Result<()> {
         let (loaded, errors) = kuma_core::template::TemplateManifest::load_all(&d);
         println!("templates     {} — {} loaded{}", d.display(), loaded.len(), if errors.is_empty() { String::new() } else { format!(", {} failed: {}", errors.len(), errors[0]) });
     }
+    println!(
+        "design system {}",
+        cfg.project_design_system()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|| format!("none in this project — `kuma design-system` lists {} installed", cfg.installed_design_systems().len()))
+    );
     println!("ui            {}", ok(cfg.repo_root.join("ui/dist").is_dir(), "ui/dist", "cd ui && npm run build"));
     println!("engine        {}", ok(cfg.repo_root.join("engine/build/kuma-preview").is_file(), "engine/build/kuma-preview", "cmake -S engine -B engine/build && cmake --build engine/build -j"));
     println!("melt          {}", ok(kuma_mlt::melt::melt_available(), "ok", "apt install melt"));
@@ -356,21 +488,8 @@ async fn doctor(cli: &Cli) -> anyhow::Result<()> {
 /// Copy `<src>/{overlays,presets}` into the library, skipping entries that already exist
 /// unless `force`. Returns the number of entries written.
 fn install_library(src: &Path, dst: &Path, force: bool) -> anyhow::Result<usize> {
-    fn copy_dir(src: &Path, dst: &Path) -> std::io::Result<()> {
-        std::fs::create_dir_all(dst)?;
-        for e in std::fs::read_dir(src)? {
-            let e = e?;
-            let target = dst.join(e.file_name());
-            if e.path().is_dir() {
-                copy_dir(&e.path(), &target)?;
-            } else {
-                std::fs::copy(e.path(), target)?;
-            }
-        }
-        Ok(())
-    }
     let mut n = 0;
-    for kind in ["overlays", "presets"] {
+    for kind in ["overlays", "presets", "design-systems"] {
         let Ok(rd) = std::fs::read_dir(src.join(kind)) else { continue };
         for e in rd.flatten() {
             let target = dst.join(kind).join(e.file_name());
@@ -378,7 +497,7 @@ fn install_library(src: &Path, dst: &Path, force: bool) -> anyhow::Result<usize>
                 continue;
             }
             if e.path().is_dir() {
-                copy_dir(&e.path(), &target)?;
+                kuma_daemon::copy_tree(&e.path(), &target)?;
             } else {
                 std::fs::create_dir_all(target.parent().unwrap())?;
                 std::fs::copy(e.path(), &target)?;

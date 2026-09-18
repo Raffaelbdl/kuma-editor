@@ -60,6 +60,7 @@ impl Client {
         Self::check(self.http.post(self.url(path)).json(body).send().await?).await
     }
 
+
     /// Poll a job until it finishes (or `timeout` elapses, returning it still running).
     pub async fn wait_job(&self, id: u64, timeout: Duration) -> anyhow::Result<Value> {
         let start = std::time::Instant::now();

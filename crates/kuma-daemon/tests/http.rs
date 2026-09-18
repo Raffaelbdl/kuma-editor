@@ -35,6 +35,16 @@ async fn daemon() -> (Arc<AppState>, String, tempfile::TempDir) {
     std::fs::create_dir_all(&tpl).unwrap();
     std::fs::write(tpl.join("template.json"), r#"{ "id": "probe", "name": "Probe" }"#).unwrap();
     std::fs::write(tpl.join("index.html"), "<html><body data-composition-id=\"root\"></body></html>").unwrap();
+    // The shared `_vendor/` every template references, as `kuma library` installs it.
+    // Without one, a scaffold is (rightly) told its `_vendor/…` files are missing.
+    let vendor = dir.path().join("library/overlays/_vendor");
+    std::fs::create_dir_all(&vendor).unwrap();
+    for f in ["gsap.min.js", "kuma.js"] {
+        std::fs::write(vendor.join(f), "").unwrap();
+    }
+    // The real `kuma.css` is what turns the `size` var into `--u`; a stub that did not
+    // read `--var-size` would make the scaffold's `size` look unused, which it is not.
+    std::fs::write(vendor.join("kuma.css"), ":root { --u: calc(1vh * var(--var-size, 1)); }").unwrap();
 
     let ui = dir.path().join("repo/ui/dist");
     std::fs::create_dir_all(&ui).unwrap();
@@ -50,32 +60,50 @@ async fn daemon() -> (Arc<AppState>, String, tempfile::TempDir) {
     (state, addr.to_string(), dir)
 }
 
-/// One HTTP/1.1 GET: the status line and the headers, lowercased. Hand-rolled rather than
-/// adding a client crate for a test. Stops at the blank line ending the headers — reading
-/// to EOF waits for a close the server need not do, and hangs instead of failing.
-fn get(addr: &str, path: &str) -> (String, std::collections::HashMap<String, String>) {
+/// One HTTP/1.1 request: the status line, the headers (lowercased) and the body.
+/// Hand-rolled rather than adding a client crate for a test. The body is read by
+/// `content-length`, exactly — reading to EOF would wait on a close the server need not
+/// do, and hang instead of failing.
+fn request(addr: &str, method: &str, path: &str, body: &str) -> (String, std::collections::HashMap<String, String>, String) {
     use std::io::Read as _;
     let mut s = std::net::TcpStream::connect(addr).unwrap();
     s.set_read_timeout(Some(std::time::Duration::from_secs(10))).unwrap();
-    write!(s, "GET {path} HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n").unwrap();
+    write!(s, "{method} {path} HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}", body.len()).unwrap();
     let mut raw = Vec::new();
     let mut byte = [0u8; 1];
     while !raw.ends_with(b"\r\n\r\n") {
         match s.read(&mut byte) {
             Ok(0) => break,
             Ok(_) => raw.push(byte[0]),
+            // A handler that spawns a subprocess (the lint does) reaps it with a signal,
+            // and a signal interrupts this blocking read. `read_exact` below retries for
+            // itself; this loop has to say so. Without it the suite fails only when the
+            // tests that spawn and the tests that read overlap, which is to say randomly.
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
             Err(e) => panic!("{path}: reading the response headers: {e}"),
         }
     }
-    let text = String::from_utf8_lossy(&raw).into_owned();
-    let head = text.trim_end().to_string();
+    let head = String::from_utf8_lossy(&raw).trim_end().to_string();
     let mut lines = head.lines();
     let status = lines.next().unwrap_or_default().to_string();
-    let headers = lines
+    let headers: std::collections::HashMap<String, String> = lines
         .filter_map(|l| l.split_once(':'))
         .map(|(k, v)| (k.trim().to_ascii_lowercase(), v.trim().to_ascii_lowercase()))
         .collect();
+    let len: usize = headers.get("content-length").and_then(|v| v.parse().ok()).unwrap_or(0);
+    let mut body = vec![0u8; len];
+    s.read_exact(&mut body).unwrap_or_else(|e| panic!("{path}: reading {len} bytes of body: {e}"));
+    (status, headers, String::from_utf8_lossy(&body).into_owned())
+}
+
+fn get(addr: &str, path: &str) -> (String, std::collections::HashMap<String, String>) {
+    let (status, headers, _) = request(addr, "GET", path, "");
     (status, headers)
+}
+
+fn get_body(addr: &str, path: &str) -> (String, String) {
+    let (status, _, body) = request(addr, "GET", path, "");
+    (status, body)
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -102,4 +130,58 @@ async fn a_handler_that_says_no_store_keeps_it() {
     let (status, headers) = get(&addr, "/overlay-preview/o1c1");
     assert!(status.contains("200"), "{status}");
     assert_eq!(headers.get("cache-control").map(String::as_str), Some("no-store"), "{headers:?}");
+}
+
+/// The overlay workbench iterates on a bin **entry**, which exists before any clip places
+/// it — so previewing one must not need a clip, and the length it is looking at comes
+/// from the request rather than from a placement.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_overlay_entry_previews_without_a_placement() {
+    let (_state, addr, _dir) = daemon().await;
+    let (status, headers) = get(&addr, "/overlay-entry/tag");
+    assert!(status.contains("200"), "{status}");
+    // Live DOM being iterated on: the same "never reuse this" the clip route promises.
+    assert_eq!(headers.get("cache-control").map(String::as_str), Some("no-store"), "{headers:?}");
+
+    let (_, body) = get_body(&addr, "/overlay-entry/tag?duration=3");
+    assert!(body.contains("\"duration\":3.0"), "the requested length did not reach the contract: {body}");
+    // A template must look right in either orientation, so the workbench can ask for a
+    // frame the project is not in. Nothing about the project changes with it.
+    let (_, body) = get_body(&addr, "/overlay-entry/tag?width=1080&height=1920");
+    assert!(body.contains("\"width\":1080") && body.contains("\"height\":1920"), "the requested frame did not reach the contract: {body}");
+
+    // Nothing else may be reachable through it: the base href and the file route are the
+    // template's folder, and only an overlay entry has one.
+    let (status, _) = get(&addr, "/overlay-entry/main");
+    assert!(status.contains("400"), "a sequence entry is not an overlay: {status}");
+    let (status, _) = get(&addr, "/overlay-entry/nope");
+    assert!(status.contains("404"), "{status}");
+}
+
+/// The two authoring routes, over the wire: a check that finds nothing on the fixture
+/// template, a refusal for a template that is not there, and a scaffold that lands in the
+/// project's own `overlays/`, is picked up without a rescan, and refuses to be repeated.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_template_is_checked_and_scaffolded_over_http() {
+    let (state, addr, _dir) = daemon().await;
+    let (status, body) = get_body(&addr, "/api/templates/probe/lint");
+    assert!(status.contains("200"), "{status}");
+    let report: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(report["template"], "probe");
+    assert!(report["findings"].is_array());
+    let (status, _) = get(&addr, "/api/templates/nope/lint");
+    assert!(status.contains("400"), "{status}");
+
+    let (status, body) = {
+        let (s, _, b) = request(&addr, "POST", "/api/templates/fresh", r#"{ "name": "Fresh" }"#);
+        (s, b)
+    };
+    assert!(status.contains("200"), "{status}: {body}");
+    let made: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(made["id"], "fresh");
+    assert!(state.config.project_root().join("overlays/fresh/index.html").is_file());
+    assert!(state.template_infos().iter().any(|t| t.id == "fresh"), "not loaded after scaffolding");
+    assert_eq!(made["lint"]["findings"].as_array().map(Vec::len), Some(0), "the scaffold is not clean: {}", made["lint"]);
+    let (status, _, _) = request(&addr, "POST", "/api/templates/fresh", "{}");
+    assert!(status.contains("400"), "a second scaffold overwrote the first: {status}");
 }

@@ -45,7 +45,7 @@ export class Inspector {
     if (!f) {
       this.host.innerHTML = `<h3>Inspector</h3>
         <p class="muted">Select a <b>bin entry</b> to change what it is, or a <b>clip</b> to change where and how it plays. Drag from the bin onto the timeline to place one.</p>
-        <h3>Shortcuts</h3><p class="muted"><kbd>Space</kbd> play/pause · <kbd>←</kbd><kbd>→</kbd> frame step · <kbd>Del</kbd> delete · <kbd>Ctrl+Z</kbd>/<kbd>Ctrl+Shift+Z</kbd> undo/redo · <kbd>Ctrl+wheel</kbd> zoom · <kbd>S</kbd> split at playhead</p>
+        <h3>Shortcuts</h3><p class="muted"><kbd>Space</kbd> play/pause · <kbd>←</kbd><kbd>→</kbd> frame step (<kbd>Shift</kbd> a second, <kbd>Alt</kbd> to the next cut) · <kbd>Home</kbd>/<kbd>End</kbd> ends · <kbd>Del</kbd> delete · <kbd>Ctrl+Z</kbd>/<kbd>Ctrl+Shift+Z</kbd> undo/redo · <kbd>Ctrl+wheel</kbd> zoom · <kbd>S</kbd> split at playhead</p>
         <p class="muted"><kbd>Ctrl+C</kbd>/<kbd>Ctrl+X</kbd>/<kbd>Ctrl+V</kbd> copy, cut and paste clips — a paste lands at the playhead, on the track you last clicked. <kbd>Ctrl+click</kbd> a clip to select more than one; those keep their own tracks and spacing.</p>`;
       return;
     }

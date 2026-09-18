@@ -58,6 +58,7 @@ export const Cmd = {
   reloadPreview: "preview.reload",
   togglePlay: "preview.toggle-play",
   split: "timeline.split",
+  seekEdge: "timeline.seek-edge",
   deleteClip: "timeline.delete-clip",
   copyClip: "timeline.copy-clip",
   cutClip: "timeline.cut-clip",

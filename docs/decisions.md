@@ -860,6 +860,26 @@ document index in `data-ti`, and every track edit (mute, hide, remove, a clip dr
 another track) is addressed by that index as before. `ui/test/timeline.test.mjs` pins both
 halves at once: the screen says one order, the document still says the other.
 
+## Moving the playhead
+
+**The arrows are frames, Alt is cuts** — adopted.
+A frame is the fine move and was already what an arrow did; the coarse move people
+actually reach for is not "ten frames" but "the next place something changes", so Alt+←/→
+walks the **cuts**: every clip start and end on the sequence on screen, whichever track it
+is on, plus 0. Shift keeps the second it always was. Nothing that way means staying put,
+rather than sliding to an end that is not there, and the search ignores anything within
+half a frame of where the playhead already is — `seek` rounds to the frame grid, so an
+edge closer than that would round straight back and look like a key that did nothing.
+
+**Every seek takes the key away from the browser** — adopted, after it looked like a bug in
+the timeline. The arrows had no `preventDefault`, so the browser also scrolled — and what
+it scrolls is the nearest scrollable box around whatever has focus, which after clicking a
+track's mute button is the timeline. Pressing an arrow appeared to make the whole timeline
+run sideways. Two halves to the fix: the seeks are all `preventDefault` now, and the
+"a field owns its keys" guard stopped counting **buttons** as fields for every key — a
+button owns Space and Enter, which press it, and nothing else. Before that, the last thing
+you clicked could swallow the arrows entirely.
+
 ## Icons
 
 **Shapes, not characters** — adopted, after `⏮` gave the game away.

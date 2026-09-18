@@ -23,13 +23,20 @@ const BINDINGS: Binding[] = [
   // Transport means the surface you are looking at: on the workbench it is that overlay's
   // own time, not the sequence's. Everything below here is the same key on the timeline.
   { when: (e) => e.code === "Space" && onOverlay(), action: Cmd.overlayTogglePlay, preventDefault: true },
-  { when: (e) => e.key === "ArrowLeft" && onOverlay(), action: (e) => run(Cmd.overlayStep, e.shiftKey ? -store.fps : -1) },
-  { when: (e) => e.key === "ArrowRight" && onOverlay(), action: (e) => run(Cmd.overlayStep, e.shiftKey ? store.fps : 1) },
+  { when: (e) => e.key === "ArrowLeft" && onOverlay(), action: (e) => run(Cmd.overlayStep, e.shiftKey ? -store.fps : -1), preventDefault: true },
+  { when: (e) => e.key === "ArrowRight" && onOverlay(), action: (e) => run(Cmd.overlayStep, e.shiftKey ? store.fps : 1), preventDefault: true },
   { when: (e) => e.code === "Space", action: Cmd.togglePlay, preventDefault: true },
-  { when: (e) => e.key === "ArrowLeft", action: (e) => store.seek(store.state.playhead - (e.shiftKey ? 1 : frame())) },
-  { when: (e) => e.key === "ArrowRight", action: (e) => store.seek(store.state.playhead + (e.shiftKey ? 1 : frame())) },
-  { when: (e) => e.key === "Home", action: () => store.seek(0) },
-  { when: (e) => e.key === "End", action: () => store.seek(store.duration) },
+  // Alt is the coarse jump: to the next place something starts or ends. Before the plain
+  // arrows, because the first match wins.
+  { when: (e) => e.key === "ArrowLeft" && e.altKey, action: () => run(Cmd.seekEdge, -1), preventDefault: true },
+  { when: (e) => e.key === "ArrowRight" && e.altKey, action: () => run(Cmd.seekEdge, 1), preventDefault: true },
+  // Every seek takes the key away from the browser: an arrow it is left to scrolls the
+  // panel the last click focused something in, which looks like the timeline running away
+  // from you and is the reason `preventDefault` is on all of these.
+  { when: (e) => e.key === "ArrowLeft", action: (e) => store.seek(store.state.playhead - (e.shiftKey ? 1 : frame())), preventDefault: true },
+  { when: (e) => e.key === "ArrowRight", action: (e) => store.seek(store.state.playhead + (e.shiftKey ? 1 : frame())), preventDefault: true },
+  { when: (e) => e.key === "Home", action: () => store.seek(0), preventDefault: true },
+  { when: (e) => e.key === "End", action: () => store.seek(store.duration), preventDefault: true },
   { when: (e) => e.key.toLowerCase() === "s" && !mod(e) && !e.altKey, action: Cmd.split },
   { when: (e) => e.key === "Delete" || e.key === "Backspace", action: Cmd.deleteClip },
   // The clipboard is the timeline's, so it is bound off the workbench only: the workbench
@@ -45,8 +52,14 @@ const BINDINGS: Binding[] = [
 
 export function installShortcuts(): void {
   window.addEventListener("keydown", (e) => {
-    // Typing in a field is typing, not a shortcut.
-    if ((e.target as HTMLElement).closest?.("input, textarea, select, button, [contenteditable]")) return;
+    const target = e.target as HTMLElement;
+    // Typing in a field is typing, not a shortcut. A slider is the same: the arrows are
+    // how it is dragged from the keyboard.
+    if (target.closest?.("input, textarea, select, [contenteditable]")) return;
+    // A button owns only the keys that press it. It used to own all of them, which meant
+    // that after clicking a track's mute — the last thing clicked keeps the focus — the
+    // arrows did nothing here and scrolled the timeline instead.
+    if (target.closest?.("button") && (e.code === "Space" || e.key === "Enter")) return;
     const b = BINDINGS.find((x) => x.when(e));
     if (!b) return;
     if (b.preventDefault) e.preventDefault();

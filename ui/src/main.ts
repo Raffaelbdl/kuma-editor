@@ -27,6 +27,7 @@ function projectCommands() {
   command(Cmd.transcribe, "Transcribe → Subtitles", () => transcribe());
   command(Cmd.addMedia, "Add Media…", () => pickAndAddMedia());
   command(Cmd.split, "Split at Playhead", () => splitAtPlayhead());
+  command(Cmd.seekEdge, "Go to Clip Edge", (dir) => store.seekEdge(Number(dir) < 0 ? -1 : 1));
   command(Cmd.deleteClip, "Delete Clips", () => deleteSelectedClips());
   command(Cmd.copyClip, "Copy Clips", () => copySelection());
   command(Cmd.cutClip, "Cut Clips", () => cutSelection());

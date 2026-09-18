@@ -341,6 +341,23 @@ class Store {
     return Math.max(0, Math.round(t * f) / f);
   }
 
+  /**
+   * Jump to the nearest cut before or after the playhead — Alt+←/→. The cuts are every
+   * clip start and end on the sequence on screen, whichever track they are on, plus 0, so
+   * this walks the timeline the way an editor reads it: by where something changes.
+   *
+   * Nothing that way means staying put, rather than sliding to the end of a clip that is
+   * not there. The half-frame margin keeps the playhead from picking the edge it is
+   * already standing on, which `seek`'s rounding would put it back on.
+   */
+  seekEdge(dir: -1 | 1) {
+    const p = this.state.playhead;
+    const margin = 0.5 / this.fps;
+    const edges = [0, ...this.tracks.flatMap((t) => t.clips.flatMap((c) => [c.start, c.end]))];
+    const ahead = edges.filter((e) => (dir < 0 ? e < p - margin : e > p + margin));
+    if (ahead.length) this.seek(dir < 0 ? Math.max(...ahead) : Math.min(...ahead));
+  }
+
   /** Move the playhead; it may sit past the last clip (that is where new clips go). */
   seek(t: number) {
     this.set({ playhead: this.snap(Math.min(Math.max(0, t), this.duration + 10)) });

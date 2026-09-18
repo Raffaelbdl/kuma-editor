@@ -127,7 +127,9 @@ kuma serve                                               # open http://127.0.0.1
 
 Drag bin entries onto the timeline, scrub, edit vars in the inspector, press **Render**.
 Tracks are drawn overlays on top, then video, then audio at the bottom — how they
-composite, rather than the order the document happens to store them in.
+composite, rather than the order the document happens to store them in. `←`/`→` step a
+frame, `Shift` makes it a second, and `Alt` jumps to the next **cut** — the start or end of
+any clip on the sequence, whichever track it is on.
 Output lands in `renders/`. Render means the **master** — the sequence `master` names, which
 is the whole video; while you are editing another sequence a picker appears beside the
 export preset to render that one instead, and it lands beside the other as

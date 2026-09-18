@@ -428,7 +428,7 @@ and the values live with the rest of the project's decisions.
 - Compiler: dissolves (A/B lanes + luma), wipes (generated PGM lumas), timewarp speed,
   crop, transform, blur and colour correction — each keyframable, linear, held or smooth
   per key — fade, blend modes (discrete keyframes on `qtblend`),
-  colour, PiP stills, overlay PNG sequences; golden-file + DTD + real `melt` render tests.
+  solid-colour clips, PiP stills, overlay PNG sequences; golden-file + DTD + real `melt` render tests.
 - Daemon + MCP end to end: patch/undo/409 on stale revisions, `sample_frames` returning
   image blocks, background render jobs.
 - Preview engine: seek/play at ~23 fps for a 960×540 composite on 4 CPU cores, audio as

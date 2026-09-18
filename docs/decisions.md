@@ -666,6 +666,22 @@ The last sequence tab cannot be closed. The daemon always has a sequence open, s
 with none would misrepresent what the preview is showing; closing the one being edited
 falls back to a neighbour, which is another round trip.
 
+**Render means the master, and says so** — adopted. `render` (and `sample_frames`) take a
+sequence and default to the master on every surface; the editor's button sent no sequence
+at all, so it rendered the master whatever you had open. That was right and unsaid: the
+button's tooltip was empty, and with sequence tabs you can now spend an hour inside a
+sub-sequence before pressing it.
+
+So the button's tooltip names what it will render, and a second picker appears beside the
+preset **only when the open sequence is not the master** — until then there is nothing to
+choose and a dropdown saying so is noise. It offers "master" (the default, as in the
+daemon) or "open"; the choice is one of those two words rather than a sequence id, so it
+survives switching tabs and relabels itself. The daemon is unchanged: leaving `sequence`
+out still means the master, so the client never has to know which entry that is.
+
+A dedicated render view — queue, range, per-sequence outputs — is the obvious next step
+and is not built.
+
 **The workbench edits the entry, never a placement** — adopted. It creates no clip, moves
 no playhead and reads none: the length under the stage and the frame beside it are view
 state, not document values, and the entry model has no field for either (a clip is what

@@ -77,6 +77,10 @@ Chrome headless shell if hyperframes should not download one.
   what it is, and it is not this panel. An agent sees the same thing through `sample_frames`
   with `overlay`: a synthetic one-clip timeline, compiled and never stored, so looking at
   an overlay is never an edit.
+- **Render means the master** unless a sequence is named: `render` and `sample_frames`
+  default to it on every surface, and no session state leaks into either. The editor's
+  Render button is the one place a person can choose otherwise, and only once the open
+  sequence differs from the master.
 - Overlays are live DOM on the sequence you have open and **baked** in the sequences it
   nests, which is what puts them in the preview at all; the two sets are disjoint, so none
   is drawn twice. Preview bakes are best effort — a template that will not bake costs that

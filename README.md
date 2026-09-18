@@ -126,7 +126,10 @@ kuma serve                                               # open http://127.0.0.1
 ```
 
 Drag bin entries onto the timeline, scrub, edit vars in the inspector, press **Render**.
-Output lands in `renders/`. Overlays are iterated on in their own tab — see *The overlay
+Output lands in `renders/`. Render means the **master** — the sequence `master` names, which
+is the whole video; while you are editing another sequence a picker appears beside the
+export preset to render that one instead, and it lands beside the other as
+`<name>-<sequence>-<preset>.<ext>`. Overlays are iterated on in their own tab — see *The overlay
 workbench* below — rather than by scrubbing the timeline to where they happen to be.
 
 **The overlay workbench.** The centre of the window is tabbed, Kdenlive style. A

@@ -1,4 +1,5 @@
-// The editor's tab strip, in a real browser against a real daemon.
+// Which sequence the editor is acting on, in a real browser against a real daemon: the
+// tab strip that switches it, and the Render control that has to agree with it.
 //
 // What it pins is the thing a Rust test cannot see: which sequence the daemon has open is
 // *the* state a sequence tab switches, so a strip that disagrees with it is showing a
@@ -37,7 +38,7 @@ const TEMPLATE = `<!doctype html><html><head></head><body>
 
 const why = missing();
 
-describe("editor tabs", { skip: why ? `skipping: ${why}` : false }, () => {
+describe("the open sequence", { skip: why ? `skipping: ${why}` : false }, () => {
   let tmp, daemon, page;
 
   /** The tabs as `name` / `name*` for the active one. */
@@ -94,6 +95,49 @@ describe("editor tabs", { skip: why ? `skipping: ${why}` : false }, () => {
     await page.eval(closeTab("Intro"));
     await page.until(`${TABS} === "Main*"`);
     assert.equal(await page.eval(OPEN_SEQUENCE), "main", "the daemon must follow the tab that took over");
+  });
+
+  it("renders the master by default, and offers the open sequence once they differ", async () => {
+    // The request is captured rather than run: what is under test is which timeline the
+    // button asks for, and a real render would need melt and a minute.
+    await page.eval(`window.__rendered = null; window.__realFetch = window.fetch;
+      window.fetch = (u, o) => (String(u).includes("/api/render")
+        ? (window.__rendered = JSON.parse(o.body), Promise.resolve(new Response('{"job":1}', { headers: { "content-type": "application/json" } })))
+        : window.__realFetch(u, o));`);
+    const renderBtn = `document.querySelector("#topbar button.primary")`;
+    const targetSel = `[...document.querySelectorAll("#topbar select")].find(s => s.title === "Which timeline to render")`;
+
+    // On the master there is nothing to choose, so nothing is offered.
+    await page.until(`${TABS} === "Main*"`);
+    assert.equal(await page.eval(`${targetSel}.hidden`), true);
+    await page.eval(`${renderBtn}.click()`);
+    assert.deepEqual(await page.until(`window.__rendered`), { preset: "youtube-1080p" }, "no sequence means the master, the daemon's own default");
+
+    // Editing another sequence is when the question arises.
+    await page.eval(`(() => { const s = document.querySelector("#topbar select"); s.value = "intro"; s.dispatchEvent(new Event("change", { bubbles: true })); })()`);
+    await page.until(`${TABS} === "Main | Intro*"`);
+    assert.equal(await page.eval(`${targetSel}.hidden`), false);
+    assert.equal(await page.eval(`${targetSel}.value`), "master", "the master stays the default");
+    assert.deepEqual(await page.eval(`[...${targetSel}.options].map(o => o.textContent)`), ["master · Main", "open · Intro"]);
+
+    await page.eval(`window.__rendered = null; ${renderBtn}.click()`);
+    assert.deepEqual(await page.until(`window.__rendered`), { preset: "youtube-1080p" }, "still the master until asked otherwise");
+
+    await page.eval(`(() => { const t = ${targetSel}; t.value = "open"; t.dispatchEvent(new Event("change", { bubbles: true })); })()`);
+    await page.eval(`window.__rendered = null; ${renderBtn}.click()`);
+    assert.deepEqual(await page.until(`window.__rendered`), { preset: "youtube-1080p", sequence: "intro" });
+    assert.match(await page.eval(`${renderBtn}.title`), /Intro — this sequence on its own/);
+
+    // Back on the master the control goes away, and with it the choice.
+    await page.eval(clickTab("Main"));
+    await page.until(`${targetSel}.hidden === true`);
+    await page.eval(`window.__rendered = null; ${renderBtn}.click()`);
+    assert.deepEqual(await page.until(`window.__rendered`), { preset: "youtube-1080p" });
+
+    // Put the page back as it was found: these cases share one browser, in order.
+    await page.eval(`window.fetch = window.__realFetch`);
+    await page.eval(closeTab("Intro"));
+    await page.until(`${TABS} === "Main*"`);
   });
 
   it("holds sequence and overlay tabs together, and shows one editor at a time", async () => {

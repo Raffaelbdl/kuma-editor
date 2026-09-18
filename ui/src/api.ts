@@ -37,7 +37,10 @@ export const api = {
    *  against the project as it is when the words are in. */
   transcribe: (req: ({ bin: string } | { clip: string }) & { id?: string; language?: string; replace?: boolean }) =>
     json<{ job: number }>("/api/transcribe", { method: "POST", body: JSON.stringify({ ...req, origin: "ui: transcribe" }) }),
-  render: (preset: string) => json<{ job: number }>("/api/render", { method: "POST", body: JSON.stringify({ preset }) }),
+  /** Render `sequence`, or the project's master when it is left out — the daemon's own
+   *  default, so the two agree without the client having to know which is the master. */
+  render: (preset: string, sequence?: string) =>
+    json<{ job: number }>("/api/render", { method: "POST", body: JSON.stringify({ preset, sequence }) }),
   previewReload: (scale?: number) => json<{ mlt: string; scale: number }>("/api/preview/reload", { method: "POST", body: JSON.stringify(scale === undefined ? {} : { scale }) }),
   /** The live document for an overlay **bin entry**, at the length and in the frame the
    *  workbench is looking at. No clip: an entry is editable before anything places it.

@@ -134,9 +134,8 @@ export preset to render that one instead, and it lands beside the other as
 `<name>-<sequence>-<preset>.<ext>`. Overlays are iterated on in their own tab — see *The overlay
 workbench* below — rather than by scrubbing the timeline to where they happen to be.
 
-**Copy, cut and paste.** `Ctrl/Cmd+C`, `Ctrl/Cmd+X` and `Ctrl/Cmd+V` — also the buttons
-beside *Split*, and the Project menu in the app — move clips around a timeline, or onto
-another one. A paste of **one** clip needs a *where* as well as a *when*: the playhead
+**Copy, cut and paste.** `Ctrl/Cmd+C`, `Ctrl/Cmd+X` and `Ctrl/Cmd+V` — also the Project
+menu in the app — move clips around a timeline, or onto another one. A paste of **one** clip needs a *where* as well as a *when*: the playhead
 answers the second half and **clicking a track** answers the first, so a clip copied from
 *Video* lands on *Video 2* by clicking *Video 2* and pasting. Any track of the kind it was
 copied from will take it, in this sequence or in another one you switch to first; with no
@@ -150,8 +149,9 @@ the clicked track does not come into it, and the group moves together to the fir
 all of it fits. Each track they came from is matched by id in the sequence being pasted
 into, else by kind, and a track is added when there is nothing to match — two of them
 never collapse onto one. Delete and `S` (split at the playhead) apply to the whole
-selection too, each in a single undoable patch; dragging and the inspector's fields are
-still one clip at a time, the last one you clicked.
+selection too, each in a single undoable patch; the transport strip says how many are
+selected, and dragging and the inspector's fields are still one clip at a time, the last
+one you clicked.
 
 What travels is the placement — `in`, speed, volume, label, effects — never the bin entry:
 both clips play the same entry, which is what the model's split already means.

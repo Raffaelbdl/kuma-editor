@@ -828,6 +828,14 @@ every transition naming a clip it removes, in the same patch, the way a clip dra
 another track already did. Removals go highest index first, because removing a clip
 renumbers the ones after it on its track.
 
+**Buttons for copy, cut and paste in the transport strip** — tried, removed.
+They were there to say the editor had a clipboard at all, which is a real problem for a
+gesture with no menu bar of its own. But three buttons for the three key combinations
+every editor already uses is a lot of strip to spend on being told, and the strip is a
+*transport*. What survives is the part a person cannot work out by looking: how many clips
+are selected, which the outlines make you count. The keys, the inspector's shortcut list
+and the app's Project menu carry the actions.
+
 **Ctrl+C/X/V are bound off the workbench only** — adopted.
 The workbench edits a bin entry and has no track to paste onto, so a paste there would
 edit a timeline nobody is looking at. The bindings sit in `shortcuts.ts` with the rest,

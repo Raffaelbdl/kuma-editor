@@ -2,7 +2,7 @@
 // commands; the two pickers pass their value as the command's argument.
 
 import { Cmd, run } from "../commands";
-import { button, el, options } from "../dom";
+import { button, el, options, plural } from "../dom";
 import { fmtTime, store } from "../store";
 import type { TrackKind } from "../types";
 
@@ -30,17 +30,16 @@ export function mountTransport(host: HTMLElement): void {
   options(quality, [{ value: "0.5", label: "preview ½" }, { value: "0.75", label: "preview ¾" }, { value: "1", label: "preview full" }]);
   quality.onchange = () => run(Cmd.previewScale, Number(quality.value));
 
-  // The clipboard, where the other timeline actions are: the keys are the fast way, but
-  // nothing else on screen says the editor has one.
-  const copy = button("Copy", () => run(Cmd.copyClip), "Copy the selected clip (Ctrl/Cmd+C)");
-  const cut = button("Cut", () => run(Cmd.cutClip), "Cut the selected clip (Ctrl/Cmd+X)");
-  const paste = button("Paste", () => run(Cmd.pasteClip), "Paste at the playhead, on the track you last clicked (Ctrl/Cmd+V)");
+  // How many clips a keypress would act on. Copy, cut and paste had buttons here and lost
+  // them: three more buttons for gestures everyone already knows the keys for, and the
+  // strip is a transport. What is worth saying is the thing the outlines make you count.
+  const selected = el("span", "muted sel-count");
 
   host.append(
     button("⏮", () => store.seek(0)),
     play, time,
     button("Split (S)", () => run(Cmd.split)),
-    copy, cut, paste,
+    selected,
     addTrackSel, quality,
     el("span", "muted", "zoom"), zoom,
   );
@@ -49,21 +48,10 @@ export function mountTransport(host: HTMLElement): void {
     play.textContent = s.playing ? "⏸" : "▶";
     time.textContent = `${fmtTime(s.playhead, store.fps)} / ${fmtTime(store.duration, store.fps)}`;
     zoom.value = String(s.zoom);
-    // Say what is possible, and to how much, rather than explaining it after the click.
+    // One clip is visible as one outline; several are worth counting for you. The
+    // clipboard's own count stays out of it — it is not what this strip is about.
     const n = store.selectedClips.length;
-    copy.disabled = !n;
-    cut.disabled = !n;
-    copy.textContent = n > 1 ? `Copy (${n})` : "Copy";
-    cut.textContent = n > 1 ? `Cut (${n})` : "Cut";
-    const held = s.clipboard?.entries ?? [];
-    paste.disabled = !held.length;
-    paste.textContent = held.length > 1 ? `Paste (${held.length})` : "Paste";
-    if (held.length > 1) {
-      paste.title = `Paste ${held.length} clips at the playhead, each on the track it was copied from (Ctrl/Cmd+V)`;
-    } else if (held.length) {
-      const kind = held[0].kind;
-      const track = store.tracks.find((t) => t.id === s.track && t.kind === kind) ?? store.tracks.find((t) => t.kind === kind);
-      paste.title = `Paste onto ${track ? track.name || track.id : `a new ${kind} track`} at the playhead (Ctrl/Cmd+V)`;
-    }
+    selected.textContent = n > 1 ? `${plural(n, "clip")} selected` : "";
+    selected.title = n > 1 ? "Copy, cut, delete and split act on all of them" : "";
   });
 }

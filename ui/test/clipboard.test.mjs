@@ -193,6 +193,8 @@ describe("the timeline clipboard", { skip: why ? `skipping: ${why}` : false }, (
     await page.eval(selectClip("i1"));
     await page.eval(addClipOn("v3"));
     await page.until(`document.querySelectorAll("#timeline .clip.selected").length === 2`);
+    // The one place the editor says how many: two outlines are countable, ten are not.
+    assert.equal(await page.eval(`document.querySelector("#transport .sel-count").textContent`), "2 clips selected");
     await page.eval(key("c"));
 
     await page.eval(seek(10));

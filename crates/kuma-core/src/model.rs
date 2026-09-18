@@ -570,26 +570,37 @@ impl Ease {
     }
 }
 
-/// A keyframed transform sample. Fields not set (`null`) fall back to the effect's
-/// static values. Always serialized in full so a patch can `replace` one axis.
+/// One keyframe of any effect: when, how it reaches the next one, and whichever of the
+/// effect's numeric parameters it sets, by the names the static fields have —
+/// `{ "t": 1.5, "x": 120, "scale": 1.2 }`.
+///
+/// A parameter a key leaves out means **the effect's static value**, not "unchanged": the
+/// compiler reads `k.or("x", x)`, and so does the editor. That is what lets a key written
+/// by hand set one parameter, and it is why a key the editor writes carries every animated
+/// parameter — inserting one must not move the picture. Names are checked against
+/// [`Effect::animatable`] by the validator, which is why this struct cannot
+/// `deny_unknown_fields` itself: the parameters *are* its unknown fields.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct TransformKeyframe {
+pub struct Keyframe {
     /// Time relative to clip start, seconds.
     pub t: f64,
-    #[serde(default)]
-    pub x: Option<f64>,
-    #[serde(default)]
-    pub y: Option<f64>,
-    #[serde(default)]
-    pub scale: Option<f64>,
-    #[serde(default)]
-    pub rotation: Option<f64>,
-    #[serde(default)]
-    pub opacity: Option<f64>,
     /// How this key reaches the next one.
     #[serde(default, skip_serializing_if = "Ease::is_linear")]
     pub ease: Ease,
+    /// The parameters this key sets.
+    #[serde(flatten)]
+    pub values: BTreeMap<String, f64>,
+}
+
+impl Keyframe {
+    pub fn get(&self, name: &str) -> Option<f64> {
+        self.values.get(name).copied()
+    }
+
+    /// The parameter, or `stat` — the effect's static value — when this key leaves it out.
+    pub fn or(&self, name: &str, stat: f64) -> f64 {
+        self.get(name).unwrap_or(stat)
+    }
 }
 
 /// Blend modes, mapped by the compiler onto the compositor's modes.
@@ -630,7 +641,7 @@ pub enum Effect {
         opacity: f64,
         /// Optional keyframes; when present they override the static values over time.
         #[serde(default)]
-        keyframes: Vec<TransformKeyframe>,
+        keyframes: Vec<Keyframe>,
     },
     /// Crop as fractions of the frame (0..1) from each edge, with optional rounded corners.
     Crop {
@@ -645,11 +656,17 @@ pub enum Effect {
         /// Corner radius as a fraction of the shorter side (0..1).
         #[serde(default)]
         radius: f64,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        keyframes: Vec<Keyframe>,
     },
     /// Blend mode used when compositing this clip over the tracks below.
     Blend { mode: BlendMode },
     /// Gaussian blur, radius in pixels.
-    Blur { radius: f64 },
+    Blur {
+        radius: f64,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        keyframes: Vec<Keyframe>,
+    },
     /// Basic colour correction. All default to neutral.
     Color {
         #[serde(default)]
@@ -660,6 +677,8 @@ pub enum Effect {
         saturation: f64,
         #[serde(default = "one")]
         gamma: f64,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        keyframes: Vec<Keyframe>,
     },
     /// Opacity fade in/out, durations in seconds.
     Fade {
@@ -668,8 +687,10 @@ pub enum Effect {
         #[serde(default, rename = "out")]
         fade_out: f64,
     },
-    /// Keyframed audio gain (linear). `t` relative to clip start.
-    Volume { keyframes: Vec<VolumeKeyframe> },
+    /// Keyframed audio gain (linear), as `gain` on each key; a key without one means 1,
+    /// the clip as recorded. There is no static gain here because the clip already has
+    /// one, and this multiplies it.
+    Volume { keyframes: Vec<Keyframe> },
     /// Escape hatch: any MLT filter by service name with raw properties.
     Mlt {
         service: String,
@@ -678,14 +699,32 @@ pub enum Effect {
     },
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct VolumeKeyframe {
-    pub t: f64,
-    pub gain: f64,
-    /// How this key reaches the next one.
-    #[serde(default, skip_serializing_if = "Ease::is_linear")]
-    pub ease: Ease,
+impl Effect {
+    /// The parameters a keyframe of this kind may set, by the names its static fields
+    /// have. One table, so the validator, the compiler and the editor agree on what is
+    /// animatable without each keeping a list.
+    pub fn animatable(&self) -> &'static [&'static str] {
+        match self {
+            Effect::Transform { .. } => &["x", "y", "scale", "rotation", "opacity"],
+            Effect::Crop { .. } => &["left", "right", "top", "bottom", "radius"],
+            Effect::Blur { .. } => &["radius"],
+            Effect::Color { .. } => &["brightness", "contrast", "saturation", "gamma"],
+            Effect::Volume { .. } => &["gain"],
+            Effect::Blend { .. } | Effect::Fade { .. } | Effect::Mlt { .. } => &[],
+        }
+    }
+
+    /// This effect's keyframes; empty for a kind that has none, or has none set.
+    pub fn keyframes(&self) -> &[Keyframe] {
+        match self {
+            Effect::Transform { keyframes, .. }
+            | Effect::Crop { keyframes, .. }
+            | Effect::Blur { keyframes, .. }
+            | Effect::Color { keyframes, .. }
+            | Effect::Volume { keyframes } => keyframes,
+            Effect::Blend { .. } | Effect::Fade { .. } | Effect::Mlt { .. } => &[],
+        }
+    }
 }
 
 /// A transition between two adjacent media clips on the same track. The cut point is the
@@ -765,6 +804,28 @@ mod tests {
 
     fn seq(tracks: Value) -> Value {
         json!({ "source": { "tracks": tracks } })
+    }
+
+    /// One keyframe type for every effect: the parameters are its flattened fields, so a
+    /// transform's `{ t, x, scale }` and a volume's `{ t, gain }` are both instances of
+    /// it — and come back out exactly as they went in, `ease` included only when set.
+    #[test]
+    fn a_keyframe_round_trips_as_the_effects_own_parameter_names() {
+        let k: Keyframe = serde_json::from_value(json!({ "t": 1.5, "x": 120, "scale": 1.2 })).unwrap();
+        assert_eq!(k.get("x"), Some(120.0));
+        assert_eq!(k.or("y", 7.0), 7.0, "a parameter the key leaves out is the static value");
+        assert_eq!(serde_json::to_value(&k).unwrap(), json!({ "t": 1.5, "scale": 1.2, "x": 120.0 }));
+        let held: Keyframe = serde_json::from_value(json!({ "t": 0, "gain": 0.5, "ease": "hold" })).unwrap();
+        assert_eq!(serde_json::to_value(&held).unwrap(), json!({ "t": 0.0, "ease": "hold", "gain": 0.5 }));
+        // A parameter that is not a number is not a parameter.
+        assert!(serde_json::from_value::<Keyframe>(json!({ "t": 0, "x": "far" })).is_err());
+        // A kind that takes keyframes accepts them; the format is what the field says.
+        let e: Effect = serde_json::from_value(json!({ "type": "color", "keyframes": [ { "t": 0, "brightness": -0.2 } ] })).unwrap();
+        assert_eq!(e.keyframes()[0].or("brightness", 0.0), -0.2);
+        assert_eq!(e.animatable(), ["brightness", "contrast", "saturation", "gamma"]);
+        // …and none is written when there are none, so a file without them is unchanged.
+        let e: Effect = serde_json::from_value(json!({ "type": "blur", "radius": 3 })).unwrap();
+        assert_eq!(serde_json::to_value(&e).unwrap(), json!({ "type": "blur", "radius": 3.0 }));
     }
 
     /// A sequence is just a fourth kind of bin entry, so everything a clip already does

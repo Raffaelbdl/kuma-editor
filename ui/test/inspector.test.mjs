@@ -348,6 +348,34 @@ describe("keyframes", { skip: why ? `skipping: ${why}` : false }, () => {
     assert.equal(await page.eval(X), "140", "and the picture must not move for it");
   });
 
+  it("animates a blur the same way — one parameter, one key shape", async () => {
+    // Every keyframed kind shares the type and the panel: add a blur, and it offers to
+    // animate exactly as the transform did.
+    await page.eval(`(() => { const s = [...document.querySelectorAll("#inspector select")].find(s => s.options[0]?.textContent === "+ add effect…"); s.value = "blur"; s.dispatchEvent(new Event("change", { bubbles: true })); return true; })()`);
+    await page.until(`document.querySelectorAll(".effect").length === 2`);
+    await settled();
+    const box = `[...document.querySelectorAll(".effect")][1]`;
+    const BLUR = `fetch("/api/project").then(r => r.json()).then(p => JSON.stringify(p.bin.main.source.tracks[0].clips[0].effects[1].keyframes ?? null))`;
+    const blurIs = async (json) => {
+      try { await page.until(`${BLUR}.then(s => s === ${JSON.stringify(json)})`, 8000); }
+      catch { assert.equal(await page.eval(BLUR), json); }
+      await settled();
+    };
+
+    await page.eval(seek(5)); // three seconds in
+    await page.eval(`[...${box}.querySelectorAll("button")].find(b => b.textContent.trim() === "◆ Animate").click()`);
+    // The key carries the kind's animatable parameters — for a blur, its radius — and
+    // nothing else: no ease (linear is unwritten), no fields the kind does not have.
+    await blurIs('[{"t":3,"radius":4}]');
+    assert.equal(await page.eval(`document.querySelectorAll('.clip[data-id="c1"] .kf-lane.blur .kf').length`), 1, "and the clip shows the blur's keys in a lane of their own");
+
+    await page.eval(seek(9)); // seven seconds in
+    await page.eval(`(() => { const i = ${box}.querySelector('[data-prop="radius"] input'); i.value = "20"; i.dispatchEvent(new Event("change", { bubbles: true })); return true; })()`);
+    await blurIs('[{"t":3,"radius":4},{"t":7,"radius":20}]');
+    await page.eval(seek(7)); // five seconds in: halfway
+    await page.until(`${box}.querySelector('[data-prop="radius"] input').value === "12"`);
+  });
+
   it("writes no ease at all for the default", async () => {
     await page.eval(seek(5));
     await page.until(`document.querySelector(".kf-ease").value === "hold"`);

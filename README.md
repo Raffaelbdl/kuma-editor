@@ -169,8 +169,8 @@ fields are edited the same way; an effect declares which shape each of its field
 one table in `ui/src/panels/inspector.ts`, and the bounds there are the model's own, so the
 panel cannot offer a value the daemon would refuse.
 
-**Keyframes are pointed at, not typed.** A `transform` or `volume` effect starts as plain
-numbers with a **◆ Animate** button; press it and it gains one key at the playhead holding
+**Keyframes are pointed at, not typed.** Every effect with numbers to animate — transform,
+crop, blur, colour, volume — starts as plain numbers with a **◆ Animate** button; press it and it gains one key at the playhead holding
 what it already does — nothing moves until you move something. From then on the fields are
 the value **at the playhead**: scrub, change a number, and the key under the playhead takes
 it, or a new one is made there carrying every other value as it already was. A strip under
@@ -426,8 +426,8 @@ and the values live with the rest of the project's decisions.
 - 60 s 1080p30 overlay bake to ProRes 4444 / PNG sequence with exact straight alpha;
   4K supersampling; byte-identical repeat bakes with one worker.
 - Compiler: dissolves (A/B lanes + luma), wipes (generated PGM lumas), timewarp speed,
-  crop, keyframed transform (linear, held or smooth per key), fade, blend modes (discrete
-  keyframes on `qtblend`), blur,
+  crop, transform, blur and colour correction — each keyframable, linear, held or smooth
+  per key — fade, blend modes (discrete keyframes on `qtblend`),
   colour, PiP stills, overlay PNG sequences; golden-file + DTD + real `melt` render tests.
 - Daemon + MCP end to end: patch/undo/409 on stale revisions, `sample_frames` returning
   image blocks, background render jobs.

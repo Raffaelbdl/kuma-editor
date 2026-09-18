@@ -247,27 +247,49 @@ fn check_sequence<'a>(
                 if kind != "mlt" && !kinds.insert(kind.clone()) {
                     issues.push(Issue::error(ep.clone(), format!("duplicate `{kind}` effect on this clip")));
                 }
-                match e {
-                    Effect::Crop { left, right, top, bottom, radius } => {
-                        if left + right >= 1.0 || top + bottom >= 1.0 {
-                            issues.push(Issue::error(ep.clone(), "crop leaves nothing visible"));
+                // Keyframes, for every kind that takes them: times in order, and names the
+                // kind knows. A key naming a parameter the kind does not have is refused
+                // here rather than by serde — the parameters *are* a keyframe's unknown
+                // fields — and this error can say what the kind's parameters are.
+                let keys = e.keyframes();
+                check_keyframes(issues, &ep, c, keys.iter().map(|k| k.t));
+                for (ki, k) in keys.iter().enumerate() {
+                    for name in k.values.keys() {
+                        if !e.animatable().contains(&name.as_str()) {
+                            issues.push(Issue::error(
+                                format!("{ep}/keyframes/{ki}/{name}"),
+                                format!("`{kind}` has no parameter `{name}`; its keyframes may set {}", e.animatable().join(", ")),
+                            ));
                         }
-                        if [left, right, top, bottom, radius].iter().any(|v| **v < 0.0 || **v > 1.0) {
-                            issues.push(Issue::error(ep.clone(), "crop values must be within 0..1"));
+                    }
+                }
+                // Then the bounds each kind has, checked on every sample the effect will be
+                // evaluated at: the statics, and each key as the compiler reads it.
+                match e {
+                    Effect::Crop { left, right, top, bottom, radius, keyframes } => {
+                        for (path, v) in samples(&ep, keyframes, &[("left", *left), ("right", *right), ("top", *top), ("bottom", *bottom), ("radius", *radius)]) {
+                            if v[0] + v[1] >= 1.0 || v[2] + v[3] >= 1.0 {
+                                issues.push(Issue::error(path.clone(), "crop leaves nothing visible"));
+                            }
+                            if v.iter().any(|x| *x < 0.0 || *x > 1.0) {
+                                issues.push(Issue::error(path, "crop values must be within 0..1"));
+                            }
                         }
                     }
                     Effect::Transform { keyframes, opacity, scale, .. } => {
-                        if !(0.0..=1.0).contains(opacity) {
-                            issues.push(Issue::error(format!("{ep}/opacity"), "opacity must be 0..1"));
+                        for (path, v) in samples(&ep, keyframes, &[("opacity", *opacity), ("scale", *scale)]) {
+                            if !(0.0..=1.0).contains(&v[0]) {
+                                issues.push(Issue::error(format!("{path}/opacity"), "opacity must be 0..1"));
+                            }
+                            if !(v[1].is_finite() && v[1] > 0.0) {
+                                issues.push(Issue::error(format!("{path}/scale"), "scale must be > 0"));
+                            }
                         }
-                        let good_scale = |s: f64| s.is_finite() && s > 0.0;
-                        if !good_scale(*scale) {
-                            issues.push(Issue::error(format!("{ep}/scale"), "scale must be > 0"));
-                        }
-                        check_keyframes(issues, &ep, c, keyframes.iter().map(|k| k.t));
-                        for (ki, k) in keyframes.iter().enumerate() {
-                            if k.scale.is_some_and(|s| !good_scale(s)) {
-                                issues.push(Issue::error(format!("{ep}/keyframes/{ki}/scale"), "scale must be > 0"));
+                    }
+                    Effect::Blur { radius, keyframes } => {
+                        for (path, v) in samples(&ep, keyframes, &[("radius", *radius)]) {
+                            if v[0] < 0.0 {
+                                issues.push(Issue::error(path, "blur radius must be >= 0"));
                             }
                         }
                     }
@@ -276,16 +298,10 @@ fn check_sequence<'a>(
                             issues.push(Issue::warn(ep.clone(), "fade in + out exceed the clip duration"));
                         }
                     }
-                    Effect::Blur { radius } => {
-                        if *radius < 0.0 {
-                            issues.push(Issue::error(ep.clone(), "blur radius must be >= 0"));
-                        }
-                    }
                     Effect::Volume { keyframes } => {
                         if keyframes.is_empty() {
                             issues.push(Issue::error(ep.clone(), "volume needs at least one keyframe"));
                         }
-                        check_keyframes(issues, &ep, c, keyframes.iter().map(|k| k.t));
                     }
                     Effect::Mlt { service, .. } => {
                         if service.trim().is_empty() {
@@ -401,6 +417,18 @@ fn source_duration(p: &Project, c: &Clip) -> Option<f64> {
 }
 
 /// Keyframe times must be non-negative and sorted; beyond the clip end they are pointless.
+/// An effect's parameters at every point it is evaluated — its static values, then each
+/// keyframe with the statics filling in what the key leaves out — each paired with the
+/// path an issue about that sample should name. Bounds are checked on these, so a key
+/// cannot smuggle in a value the static field would have been refused for.
+fn samples(ep: &str, keys: &[Keyframe], stat: &[(&str, f64)]) -> Vec<(String, Vec<f64>)> {
+    let mut out = vec![(ep.to_string(), stat.iter().map(|(_, v)| *v).collect())];
+    for (ki, k) in keys.iter().enumerate() {
+        out.push((format!("{ep}/keyframes/{ki}"), stat.iter().map(|(n, v)| k.or(n, *v)).collect()));
+    }
+    out
+}
+
 fn check_keyframes(issues: &mut Vec<Issue>, ep: &str, c: &Clip, times: impl Iterator<Item = f64>) {
     let mut last = f64::NEG_INFINITY;
     for (ki, t) in times.enumerate() {
@@ -496,6 +524,39 @@ mod tests {
 
     fn messages(p: &Project) -> Vec<String> {
         validate(p, &ValidationContext::default()).into_iter().map(|i| i.message).collect()
+    }
+
+    /// A keyframe's parameters are its unknown fields, so the validator is what says a
+    /// name is wrong — and it says which names are right.
+    #[test]
+    fn a_keyframe_may_only_set_parameters_its_effect_has() {
+        let p = project(json!({
+            "bin": { "x": { "source": { "path": "x.mp4" } } },
+            "tracks": [{ "id": "v1", "clips": [{ "id": "a", "start": 0, "end": 5, "bin": "x", "effects": [
+                { "type": "blur", "radius": 2, "keyframes": [ { "t": 0, "radius": 0 }, { "t": 1, "sigma": 9 } ] }
+            ] }] }]
+        }));
+        let m = messages(&p);
+        assert!(m.iter().any(|m| m.contains("`blur` has no parameter `sigma`") && m.contains("radius")), "{m:?}");
+    }
+
+    /// The bounds a static value gets, a key gets too — on what the key *means*, with the
+    /// statics filling in what it leaves out.
+    #[test]
+    fn a_keyframe_is_held_to_the_same_bounds_as_the_static_value() {
+        let p = project(json!({
+            "bin": { "x": { "source": { "path": "x.mp4" } } },
+            "tracks": [{ "id": "v1", "clips": [{ "id": "a", "start": 0, "end": 5, "bin": "x", "effects": [
+                // Static crop is fine; the second key, with `right` filled in from the
+                // static 0.5, leaves nothing visible.
+                { "type": "crop", "left": 0.2, "right": 0.5, "keyframes": [ { "t": 0, "left": 0.2 }, { "t": 2, "left": 0.6 } ] },
+                { "type": "blur", "radius": 2, "keyframes": [ { "t": 0, "radius": -1 } ] }
+            ] }] }]
+        }));
+        let issues = validate(&p, &ValidationContext::default());
+        assert!(issues.iter().any(|i| i.path.ends_with("/effects/0/keyframes/1") && i.message.contains("nothing visible")), "{issues:?}");
+        assert!(issues.iter().any(|i| i.path.ends_with("/effects/1/keyframes/0") && i.message.contains(">= 0")), "{issues:?}");
+        assert!(!issues.iter().any(|i| i.path.ends_with("/effects/0/keyframes/0")), "the first key is within bounds: {issues:?}");
     }
 
     #[test]

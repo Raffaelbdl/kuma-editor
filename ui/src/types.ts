@@ -36,16 +36,33 @@ export interface Track {
  *  decides that segment's shape, so the last key's ease never means anything. */
 export type Ease = "linear" | "hold" | "smooth";
 
-export interface TransformKeyframe { t: number; x?: number; y?: number; scale?: number; rotation?: number; opacity?: number; ease?: Ease }
+/** One keyframe of any effect: when, how it reaches the next one, and whichever of the
+ *  effect's numeric parameters it sets, by the names the static fields have. A parameter
+ *  a key leaves out means the effect's static value — the same rule as `compile.rs`. */
+export type Keyframe = { t: number; ease?: Ease } & { [param: string]: number | Ease | undefined };
+
+/**
+ * What each effect can animate, and what a parameter means when the effect does not state
+ * it (its own default — a volume effect has no static gain, and a key without one is 1,
+ * the clip as recorded). Mirrors `Effect::animatable` in `model.rs`; a kind absent here
+ * takes no keyframes.
+ */
+export const ANIMATABLE: Partial<Record<Effect["type"], Record<string, number>>> = {
+  transform: { x: 0, y: 0, scale: 1, rotation: 0, opacity: 1 },
+  crop: { left: 0, right: 0, top: 0, bottom: 0, radius: 0 },
+  blur: { radius: 0 },
+  color: { brightness: 0, contrast: 1, saturation: 1, gamma: 1 },
+  volume: { gain: 1 },
+};
 
 export type Effect =
-  | { type: "transform"; x?: number; y?: number; scale?: number; rotation?: number; opacity?: number; keyframes?: TransformKeyframe[] }
-  | { type: "crop"; left?: number; right?: number; top?: number; bottom?: number; radius?: number }
+  | { type: "transform"; x?: number; y?: number; scale?: number; rotation?: number; opacity?: number; keyframes?: Keyframe[] }
+  | { type: "crop"; left?: number; right?: number; top?: number; bottom?: number; radius?: number; keyframes?: Keyframe[] }
   | { type: "blend"; mode: string }
-  | { type: "blur"; radius: number }
-  | { type: "color"; brightness?: number; contrast?: number; saturation?: number; gamma?: number }
+  | { type: "blur"; radius: number; keyframes?: Keyframe[] }
+  | { type: "color"; brightness?: number; contrast?: number; saturation?: number; gamma?: number; keyframes?: Keyframe[] }
   | { type: "fade"; in?: number; out?: number }
-  | { type: "volume"; keyframes: { t: number; gain: number; ease?: Ease }[] }
+  | { type: "volume"; keyframes: Keyframe[] }
   | { type: "mlt"; service: string; properties?: Record<string, string> };
 
 /** A placement of a bin entry: when it plays, not what it is. */
@@ -343,41 +360,59 @@ export function easeAt(kfs: { t: number; ease?: Ease }[], t: number): Ease {
 
 export type TransformSample = { x: number; y: number; scale: number; rotation: number; opacity: number };
 
-/** The transform effect's values at `local` seconds, keyframes applied. Field by field,
- *  because a key that leaves one out means the effect's static value for it. */
+/** An effect's keyframes, for any kind — empty for one that takes none. */
+export const keyframesOf = (e: Effect): Keyframe[] => ((e as unknown as { keyframes?: Keyframe[] }).keyframes ?? []);
+
+/** What the effect states for a parameter, or what the parameter means unstated. */
+export const staticOf = (e: Effect, param: string): number => {
+  const v = (e as unknown as Record<string, unknown>)[param];
+  return typeof v === "number" ? v : (ANIMATABLE[e.type]?.[param] ?? 0);
+};
+
+/**
+ * One parameter of an effect at `local` seconds into the clip: its keyframes read the way
+ * the compiler reads them (a key that leaves the parameter out means the static value),
+ * or simply the static value when it has none. Every consumer — the live preview, the
+ * inspector, a split — asks here, so they cannot disagree about what a clip does at 1.3s.
+ */
+export function paramAt(e: Effect, param: string, local: number): number {
+  const stat = staticOf(e, param);
+  const kfs = keyframesOf(e);
+  if (!kfs.length) return stat;
+  return sampleTrack(kfs.map((k) => ({ t: k.t, v: (k[param] as number | undefined) ?? stat, ease: k.ease })), local);
+}
+
+/** Every animatable parameter at `local`, plus the ease in force there: what a key inserted
+ *  at that moment carries, so that inserting it moves nothing. */
+export function sampleEffect(e: Effect, local: number): Keyframe {
+  const key: Keyframe = { t: local };
+  for (const param of Object.keys(ANIMATABLE[e.type] ?? {})) key[param] = paramAt(e, param, local);
+  const ease = easeAt(keyframesOf(e), local);
+  if (ease !== "linear") key.ease = ease;
+  return key;
+}
+
+/** The transform effect's values at `local` seconds, keyframes applied. */
 export function transformAt(e: Extract<Effect, { type: "transform" }>, local: number): TransformSample {
-  const base: TransformSample = { x: e.x ?? 0, y: e.y ?? 0, scale: e.scale ?? 1, rotation: e.rotation ?? 0, opacity: e.opacity ?? 1 };
-  const kfs = e.keyframes ?? [];
-  if (!kfs.length) return base;
-  const track = (field: keyof TransformSample) => sampleTrack(kfs.map((k) => ({ t: k.t, v: k[field] ?? base[field], ease: k.ease })), local);
-  return { x: track("x"), y: track("y"), scale: track("scale"), rotation: track("rotation"), opacity: track("opacity") };
+  return { x: paramAt(e, "x", local), y: paramAt(e, "y", local), scale: paramAt(e, "scale", local), rotation: paramAt(e, "rotation", local), opacity: paramAt(e, "opacity", local) };
 }
 
 /** Re-base a time-relative effect for a clip that starts `cut` seconds later (the right
  *  half of a split): keyframes shift, the value at the cut becomes the first keyframe. */
 export function shiftEffect(e: Effect, cut: number): Effect {
   if (e.type === "fade") return { ...e, in: 0 };
-  // The key the cut lands in carries that segment's ease, or a half cut out of a hold
-  // would come back interpolating.
-  if (e.type === "transform" && e.keyframes?.length) {
-    return { ...e, keyframes: [{ ...transformAt(e, cut), t: 0, ease: easeAt(e.keyframes, cut) }, ...e.keyframes.filter((k) => k.t > cut).map((k) => ({ ...k, t: k.t - cut }))] };
-  }
-  if (e.type === "volume") {
-    const gain = sampleTrack(e.keyframes.map((k) => ({ t: k.t, v: k.gain, ease: k.ease })), cut);
-    return { ...e, keyframes: [{ t: 0, gain, ease: easeAt(e.keyframes, cut) }, ...e.keyframes.filter((k) => k.t > cut).map((k) => ({ ...k, t: k.t - cut }))] };
-  }
-  return e;
+  const kfs = keyframesOf(e);
+  if (!kfs.length) return e;
+  // The key the cut lands in carries that segment's ease (`sampleEffect` does), or a half
+  // cut out of a hold would come back interpolating.
+  // Only a kind that takes keyframes has any, so the spread lands on one that can hold them.
+  return { ...e, keyframes: [{ ...sampleEffect(e, cut), t: 0 }, ...kfs.filter((k) => k.t > cut).map((k) => ({ ...k, t: k.t - cut }))] } as Effect;
 }
 
 /** The complementary trim for the left half: keep keyframes up to the cut, then hold. */
 export function trimEffect(e: Effect, cut: number): Effect {
   if (e.type === "fade") return { ...e, out: 0 };
-  if (e.type === "transform" && e.keyframes?.some((k) => k.t > cut)) {
-    return { ...e, keyframes: [...e.keyframes.filter((k) => k.t <= cut), { ...transformAt(e, cut), t: cut, ease: easeAt(e.keyframes, cut) }] };
-  }
-  if (e.type === "volume" && e.keyframes.some((k) => k.t > cut)) {
-    const gain = sampleTrack(e.keyframes.map((k) => ({ t: k.t, v: k.gain, ease: k.ease })), cut);
-    return { ...e, keyframes: [...e.keyframes.filter((k) => k.t <= cut), { t: cut, gain, ease: easeAt(e.keyframes, cut) }] };
-  }
-  return e;
+  const kfs = keyframesOf(e);
+  if (!kfs.some((k) => k.t > cut)) return e;
+  return { ...e, keyframes: [...kfs.filter((k) => k.t <= cut), sampleEffect(e, cut)] } as Effect;
 }

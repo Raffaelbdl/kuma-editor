@@ -25,12 +25,11 @@
 // different model (and MLT packs x, y, scale and opacity into one `rect` property anyway).
 
 import { store } from "./store";
-import type { Clip, Ease } from "./types";
-import { easeAt, sampleTrack } from "./types";
+import type { Clip, Ease, Keyframe } from "./types";
+import { easeAt, keyframesOf, sampleTrack } from "./types";
 
-/** A keyframe as the model has them: a time, an ease, and whichever numeric fields it
- *  carries. `ease` is how it reaches the next key — see `types.ts`. */
-export type Key = { t: number; ease?: Ease } & Record<string, number | Ease | undefined>;
+/** A keyframe as the model has them — `types.ts` defines it; this is the panel's name. */
+export type Key = Keyframe;
 
 /**
  * One field's value at clip-local `t`, read the way the compiler reads it: linear between
@@ -205,7 +204,5 @@ export class Animation {
 /** The keyframed effects of a clip, as the timeline draws them: which effect, and where
  *  its keys are in clip-local seconds. */
 export function keysOf(clip: Clip): { type: string; times: number[] }[] {
-  return clip.effects
-    .map((e) => ({ type: e.type, times: (((e as unknown as Record<string, unknown>).keyframes as Key[] | undefined) ?? []).map((k) => k.t) }))
-    .filter((k) => k.times.length > 0);
+  return clip.effects.map((e) => ({ type: e.type, times: keyframesOf(e).map((k) => k.t) })).filter((k) => k.times.length > 0);
 }

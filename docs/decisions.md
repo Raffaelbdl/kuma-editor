@@ -991,6 +991,44 @@ so "the upgrade changes nothing about what is rendered" is checked rather than a
 with the same operator — not by frames. The check to run where melt exists is the one the
 blur ramp got: render a smooth scale ramp over sixty frames and look at them.
 
+**Every keyframed effect uses one `Keyframe` type; crop, blur and colour take it too** —
+adopted, format version 3, superseding the shape agreed under *Still open* below.
+That entry agreed a parameter should be "a number or a list of keyed values"
+(`radius: [ { "t": 0, "v": 0 } ]`), one track per parameter. Building the transform's
+editor first (A and B above) turned up the two things that decide against it:
+
+- **MLT packs parameters.** A transform's x, y, scale and opacity are one `rect`
+  property, and so are a crop's four edges. Independent per-parameter tracks would have to
+  be resampled into full keys at the union of their times before either could be emitted —
+  machinery that exists only to undo a shape the model chose.
+- **The two keyframe shapes that already existed were the same shape.** A transform's
+  `{ t, x?, scale?, … }` and a volume's `{ t, gain }` are both "a time, plus whichever of
+  the effect's parameters this key sets". Name that and there is nothing left to design.
+
+So `Keyframe { t, ease, values }`, with the values `#[serde(flatten)]`ed under the
+parameter's own names, replaces both, reads every existing document unchanged, and is what
+crop, blur and colour now carry as an optional, unwritten-when-empty `keyframes`. The
+goals the earlier entry set are all met by it — one type, one validator path, a bare
+number keeps meaning what it means, seconds and numbers only, not exposed until asked — and
+one is met better: a key that leaves a parameter out means the effect's static value, so a
+hand-written key can set one thing, while a key the editor writes carries every animatable
+parameter of its kind (`Effect::animatable`, mirrored by `ANIMATABLE` in the UI), which is
+what keeps "adding a key changes nothing" true for every kind at once.
+
+The parameters are a keyframe's unknown fields, so the type cannot `deny_unknown_fields`;
+the validator checks the names instead and, unlike serde, says which ones the kind has.
+It also holds a key to the same bounds as the static value — on what the key *means*, with
+the statics filling in what it leaves out — so a keyframe cannot smuggle in a crop that
+leaves nothing visible. The compiler writes every animated property through one `anim`
+helper; the golden file is unchanged; a compiler test pins the crop, blur and colour
+strings. The UI's `paramAt` is the one place a parameter is read at a time, and the live
+preview, the inspector and a split all ask it. Volume keeps its `min: 1` and gains a
+meaning for a key without `gain`: 1, the clip as recorded.
+
+Not rendered here, as with B: `avfilter.eq` and `qtcrop` taking animation strings is
+pinned by the compiler test and by the record's own earlier note (blur's `sigma` ramp
+was rendered and looked at; colour "should be checked rather than assumed"). Still should.
+
 **The panel does not re-render as the playhead moves** — adopted, and it took a bug to get
 right. A keyed field follows the playhead through one `store.select` per effect that sets
 values in place; rebuilding the inspector 25 times a second is exactly what that helper
@@ -1385,12 +1423,14 @@ because it is the part deliberately left out.
   sequence, regenerated on every compile and at every size, since the preview compiles at
   half resolution and would need its own copy.
 
-- **Every numeric effect parameter keyframable, through one shared type** — agreed, not
-  built. Today only `transform` and `volume` take keyframes, so a "go blurry" ramp needs
-  the `mlt` escape hatch. The shape agreed: a parameter is either a number or a list of
-  keyed values, as an untagged enum, so the JSON stays backward compatible and a bare
-  number keeps meaning exactly what it means now. `Fps` already uses that trick to accept
-  several spellings.
+- **Every numeric effect parameter keyframable, through one shared type** — **built**,
+  with a different shape from the one agreed here: see *Every keyframed effect uses one
+  `Keyframe` type* under *Keyframes you can point at*, which says why. The rest of this
+  entry is kept as the reasoning that led there. Originally: only `transform` and `volume`
+  took keyframes, so a "go blurry" ramp needed the `mlt` escape hatch. The shape agreed
+  then: a parameter is either a number or a list of keyed values, as an untagged enum, so
+  the JSON stays backward compatible and a bare number keeps meaning exactly what it means
+  now. `Fps` already uses that trick to accept several spellings.
 
   ```json
   { "type": "blur", "radius": 4 }

@@ -16,7 +16,7 @@ import { Animation } from "../keyframes";
 import { icon } from "../icons";
 import type { NumberOpts } from "../props";
 import { keyStrip, numberField, sliderField, vectorField } from "../props";
-import { binItem, binPath, canPlace, canTimeWarp, childrenOf, expandPreset, hasAudio, isColorSource, isFileSource, isFolderSource, isOverlaySource, isSequenceSource, isTimedMedia, placementsOf, seqDuration, wouldNest } from "../types";
+import { ANIMATABLE, binItem, binPath, canPlace, canTimeWarp, childrenOf, expandPreset, hasAudio, isColorSource, isFileSource, isFolderSource, isOverlaySource, isSequenceSource, isTimedMedia, placementsOf, seqDuration, staticOf, wouldNest } from "../types";
 
 const presetsPromise = api.effectPresets().catch(() => []);
 
@@ -31,8 +31,9 @@ type PropSpec =
   | { kind: "text"; key: string; label?: string }
   | { kind: "json"; key: string; label?: string }
   /** This effect's keyframes: the row of buttons and the strip, and the fact that the
-   *  fields above it are then values *at the playhead*. `fields` is what a key carries. */
-  | { kind: "keys"; key: string; fields: string[]; min?: number };
+   *  fields above it are then values *at the playhead*. What a key carries is the kind's
+   *  `ANIMATABLE` set; `min` is how many keys must remain. */
+  | { kind: "keys"; min?: number };
 
 /** Per effect kind: the value `+ add effect` inserts, and the properties it shows, in the
  *  order they are shown. Adding an effect kind is one row here plus the Rust model; a kind
@@ -56,7 +57,7 @@ const EFFECTS: Partial<Record<Effect["type"], EffectSpec>> = {
       { kind: "num", key: "scale", step: 0.01, min: 0.01, suffix: "×", title: "Multiplies the composition size" },
       { kind: "num", key: "rotation", step: 1, suffix: "°" },
       { kind: "slider", key: "opacity", min: 0, max: 1, step: 0.01 },
-      { kind: "keys", key: "keyframes", fields: ["x", "y", "scale", "rotation", "opacity"] },
+      { kind: "keys" },
     ],
   },
   crop: {
@@ -69,10 +70,11 @@ const EFFECTS: Partial<Record<Effect["type"], EffectSpec>> = {
         { key: "bottom", tag: "B", axis: "w", step: 0.01, min: 0, max: 1, title: "Fraction cut off the bottom edge" },
       ] },
       { kind: "slider", key: "radius", min: 0, max: 1, step: 0.01, title: "Corner radius, as a fraction of the shorter side" },
+      { kind: "keys" },
     ],
   },
   blend: { add: { type: "blend", mode: "screen" }, props: [{ kind: "enum", key: "mode", options: BLEND_MODES }] },
-  blur: { add: { type: "blur", radius: 4 }, props: [{ kind: "num", key: "radius", step: 0.5, min: 0, suffix: "px" }] },
+  blur: { add: { type: "blur", radius: 4 }, props: [{ kind: "num", key: "radius", step: 0.5, min: 0, suffix: "px" }, { kind: "keys" }] },
   color: {
     add: { type: "color", brightness: 0, contrast: 1, saturation: 1, gamma: 1 },
     // Neutral is 0, 1, 1, 1. The ranges are what the eye uses; `soft` lets a typed value
@@ -82,6 +84,7 @@ const EFFECTS: Partial<Record<Effect["type"], EffectSpec>> = {
       { kind: "slider", key: "contrast", min: 0, max: 3, step: 0.01, soft: true },
       { kind: "slider", key: "saturation", min: 0, max: 3, step: 0.01, soft: true },
       { kind: "slider", key: "gamma", min: 0.1, max: 4, step: 0.01, soft: true },
+      { kind: "keys" },
     ],
   },
   fade: {
@@ -97,7 +100,7 @@ const EFFECTS: Partial<Record<Effect["type"], EffectSpec>> = {
     add: { type: "volume", keyframes: [{ t: 0, gain: 1 }] },
     props: [
       { kind: "num", key: "gain", step: 0.05, min: 0, title: "Gain at the playhead: 1 is the clip as recorded" },
-      { kind: "keys", key: "keyframes", fields: ["gain"], min: 1 },
+      { kind: "keys", min: 1 },
     ],
   },
   mlt: { add: { type: "mlt", service: "frei0r.vignette", properties: {} }, props: [{ kind: "text", key: "service" }, { kind: "json", key: "properties" }] },
@@ -133,7 +136,7 @@ function propRow(p: PropSpec, ctx: PropCtx): HTMLElement {
   const row = build(p, ctx);
   // What this row edits, on the row: the panel styles by it, and a test can name a
   // property rather than counting divs.
-  row.dataset.prop = p.kind === "vec" ? p.label.toLowerCase() : p.key;
+  row.dataset.prop = p.kind === "vec" ? p.label.toLowerCase() : p.kind === "keys" ? "keys" : p.key;
   return row;
 }
 
@@ -427,12 +430,15 @@ export class Inspector {
       // Keyframes, when this kind has them: the fields above the strip then read and write
       // the value *at the playhead* rather than a static one.
       const keySpec = (spec.props ?? []).find((p) => p.kind === "keys") as Extract<PropSpec, { kind: "keys" }> | undefined;
+      const animatable = ANIMATABLE[e.type] ?? {};
       const anim = keySpec && new Animation({
         effect: rec,
-        keyField: keySpec.key,
-        fields: keySpec.fields,
+        keyField: "keyframes",
+        fields: Object.keys(animatable),
         min: keySpec.min ?? 0,
-        base: (f) => Number(cur(f) ?? 0),
+        // What a key that leaves a parameter out means: the effect's static value, or
+        // the parameter's own meaning when the effect does not state one (a volume's gain).
+        base: (f) => staticOf(e, f),
         clip,
         commit: (next, note) => replace(next, note),
       });

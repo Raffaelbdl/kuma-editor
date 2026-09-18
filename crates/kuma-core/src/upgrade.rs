@@ -31,6 +31,12 @@ fn upgrade(v: &mut Value) {
         // the stamp is the whole migration.
         v["version"] = Value::from(2);
     }
+    if v["version"] == 2 {
+        // 2 → 3: crop, blur and color took `keyframes`, defaulting to none; and a
+        // transform's or volume's keyframes were already the shape the shared type
+        // reads. A stamp again.
+        v["version"] = Value::from(3);
+    }
 }
 
 #[cfg(test)]
@@ -49,6 +55,16 @@ mod tests {
         assert_eq!(p.version, crate::PROJECT_VERSION);
         let issues = crate::validate(&p, &crate::ValidationContext { root: std::path::PathBuf::from("."), templates: None, check_files: false });
         assert!(!crate::validate::has_errors(&issues), "{issues:?}");
+    }
+
+    /// Each step is a stamp so far, and each is taken in turn: a version 2 file lands on
+    /// the current version too, not on 3-as-of-when-it-was-written.
+    #[test]
+    fn every_older_version_climbs_to_the_current_one() {
+        for from in [1, 2] {
+            let text = V1.replace("\"version\": 1", &format!("\"version\": {from}"));
+            assert_eq!(parse_project(&text).expect("parse").version, crate::PROJECT_VERSION, "from {from}");
+        }
     }
 
     #[test]

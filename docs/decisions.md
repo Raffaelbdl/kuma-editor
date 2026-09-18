@@ -996,6 +996,31 @@ because it is the part deliberately left out.
   a second compositor would have to be kept in agreement with the first forever. No subject
   kind gets its own path, however cheap its frames look.
 
+  **The obvious alternative — put the temporary sequence in the bin** — was considered and
+  turned down, and it is worth writing down because it is the first thing anyone proposes.
+  Adding a real scratch entry when a tab opens would need *no* new machinery at all:
+  sampling, rendering, compiling and baking are untouched, every tab becomes a sequence
+  tab, and the UI's live-DOM overlay layer works unchanged because it reads the tracks out
+  of the document. That last point is the one real deficit of doing it in session.
+
+  It breaks a rule the project is built on: looking at something is not an edit. A bin
+  entry arrives by patch, and a patch writes the project file before it swaps it in memory
+  (`state::commit`), pushes an undo step (`state::edit`), and bumps the revision — so
+  opening a tab would save scratch to `myvideo.kuma.json`, put "opened a tab" in the undo
+  stack, and hand an agent a `409` on its next `base_revision` because a human clicked
+  something. `bake_all` walks every clip in every sequence, so `kuma bake` would bake
+  scratch; the validator walks every sequence, so broken scratch would block unrelated
+  edits. Keeping those out means a hidden-entry flag, and then the *model* knows about tab
+  state — exactly what the open sequence is kept out of the document to avoid. A crash
+  would leave orphans in someone's bin.
+
+  What the session version owes in exchange is one endpoint: the resolved view (subject,
+  root and its tracks) so the UI can draw a timeline that is not in the document — a
+  generalisation it needs anyway. And it gains something the bin version cannot have:
+  keeping a scratch arrangement becomes one deliberate patch ("promote this to a
+  sequence") instead of everything you glanced at living in the file until something
+  cleans it up.
+
   What it unlocks is the reason to do it. The daemon's session state is an open *sequence*;
   make it a subject and the engine, the snapshot fallback, sampling and rendering all point
   at the same thing — so a bin-entry editor for video (colour correction, say) gets the
@@ -1018,6 +1043,49 @@ because it is the part deliberately left out.
   a sequence subject must not be wrapped in a synthetic root, since a nested sequence's
   background is transparent and wrapping would give it one that compiling it as root does
   not.
+
+- **Templates and overlays are the same word today and will not be** — a discussion to
+  have, deliberately not a decision, and best had *before* the second kind of template
+  exists rather than after.
+
+  Today "template" means exactly one thing: a folder with `template.json` and `index.html`
+  that bakes to an overlay. That meaning is wired in everywhere — `TemplateManifest`,
+  `/api/templates`, `list_templates`, `template_guide`, `kuma new-template`, `kuma lint`,
+  the Templates tab — and, most consequentially, in the document: an overlay bin entry is
+  `{ "template": "<id>", "vars": {…} }`, where `template` names an HTML template and
+  nothing else could go there.
+
+  The word is about to widen. Effect templates and sequence templates (a skeleton you
+  stamp out — tracks, placeholder clips, an intro pattern) are both plausible next, and
+  neither is HTML. When they arrive, either "template" becomes the genus and today's
+  meaning becomes one kind of it, or it stays the HTML thing and something else has to be
+  the genus. The first matches how people will speak; it also means `source.template` is
+  misnamed the moment a second kind exists, and the format has no upgrade path, so it is a
+  `PROJECT_VERSION` bump — which is the real reason to decide early.
+
+  Two things are already tangled and worth naming before the discussion starts. **"Preset"
+  is overloaded now**: `/api/presets` is export presets (a `const` table in Rust) and
+  `/api/presets/effects` is effect presets (JSON on the library search path), and they
+  have nothing in common but the word. And **the genus partly exists in code already**:
+  `VarSpec` is shared by overlay templates and effect presets, the UI renders both with
+  one `varInput`, so "an asset with typed parameters that is instantiated into a project"
+  is a concept the codebase has without having named it.
+
+  What such a discussion has to settle, beyond the word:
+
+  - **What varies per kind.** Discovery and precedence are already per-kind directories and
+    work well (`overlays/`, `presets/`, `design-systems/`) — OpenDesign's four-axis split
+    is evidence for keeping them separate rather than one bag with a `kind` field.
+    Instantiation is where they genuinely differ: an overlay template mints a bin entry, an
+    effect preset appends effects to a clip, a sequence template mints a sequence, a design
+    system is copied into the project and never referenced at all.
+  - **What "check this" means per kind.** `Baker::lint` stages HTML and runs hyperframes;
+    an effect template would validate against the effect schema and a sequence template
+    against the model. One dispatch point, designed once, or four unrelated commands.
+  - **Whether a configured overlay is a template.** *A configured overlay cannot be shared
+    between projects* (below) wants to put `{ name, source: { template, vars } }` on the
+    library path. That is a fourth shape — an instance, not a template — and whether it
+    lives under the same roof is the same question in miniature.
 
 - **Speed on a sequence clip**, refused today. The mechanism is known to work (see the
   spike above): write the sub-sequence to its own `.mlt` in the cache and hand `timewarp`

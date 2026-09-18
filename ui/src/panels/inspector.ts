@@ -327,19 +327,33 @@ function keyRow(anim: Animation, id: string, follow: (fn: () => void) => void): 
   // when the playhead is not on one.
   const ease = selectInput(EASES.map((value) => ({ value })), anim.ease, (v) => anim.setEase(v as Ease));
   ease.className = "kf-ease";
-  ease.title = "How this key reaches the next one: a straight line, a hold, or a curve through its neighbours";
-  wrap.appendChild(field("Ease", ease));
+  ease.title = "How the key under the playhead reaches the next one: a straight line, a hold, or a curve through its neighbours. It takes effect as you pick it.";
+  // "Ease → next", not "Ease": it is a property of the *segment* this key opens, which
+  // is the one thing about easing that has to be said out loud. Saying only "Ease" reads
+  // as "this key's easing", and then setting it on the last key looks like a bug.
+  wrap.appendChild(field("Ease → next", ease));
 
   wrap.appendChild(curveHost);
   showCurve();
 
   const hint = el("div", "muted tiny kf-hint");
   const refresh = () => {
-    add.disabled = !anim.inside || anim.index >= 0;
-    del.disabled = !anim.inside || anim.index < 0 || anim.keys.length <= anim.min;
-    ease.disabled = anim.index < 0;
+    const i = anim.index;
+    // The last key opens no segment, so its ease has nothing to describe. Rather than let
+    // it be set and do nothing — which is what it looked like — the control is off there
+    // and says where the ease you want lives.
+    const last = i >= 0 && i === anim.keys.length - 1;
+    add.disabled = !anim.inside || i >= 0;
+    del.disabled = !anim.inside || i < 0 || anim.keys.length <= anim.min;
+    ease.disabled = i < 0 || last;
     ease.value = anim.ease;
-    hint.textContent = anim.inside ? "" : "The playhead is outside this clip — click the strip, or use ‹ ›, to edit a key.";
+    hint.textContent = !anim.inside
+      ? "The playhead is outside this clip — click the strip, or use ‹ ›, to edit a key."
+      : i < 0
+        ? "Ease belongs to a key: go to one with ‹ › to set how it reaches the next."
+        : last
+          ? "The last key reaches nothing, so it has no ease. Set it on the key before (‹) to shape the run into this one."
+          : "";
   };
   refresh();
   follow(refresh);

@@ -476,4 +476,19 @@ describe("keyframes", { skip: why ? `skipping: ${why}` : false }, () => {
       assert.equal(head, key, `${where}: the playhead and the key it sits on`);
     }
   });
+
+  it("has no ease on the last key, and says where the one you want lives", async () => {
+    // Ease describes the run from a key to the next, so the last key has none — and the
+    // panel says so instead of letting it be set and quietly doing nothing, which is how
+    // "how do I apply the ease?" gets asked.
+    const times = await page.eval(`${EFFECT}.then(e => e.keyframes.map(k => k.t))`);
+    await page.eval(seek(2 + times[times.length - 1])); // the clip starts at 2s
+    await page.until(`document.querySelector(".kf-ease").disabled === true`);
+    assert.match(await page.eval(`document.querySelector(".kf-hint").textContent`), /last key reaches nothing/);
+    // On any earlier key it is settable, and the row says what it eases towards.
+    await page.eval(seek(2 + times[0]));
+    await page.until(`document.querySelector(".kf-ease").disabled === false`);
+    assert.equal(await page.eval(`document.querySelector(".kf-hint").textContent`), "");
+    assert.equal(await page.eval(`[...document.querySelectorAll(".effect label")].some(l => l.textContent === "Ease → next")`), true);
+  });
 });

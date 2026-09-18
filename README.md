@@ -129,9 +129,12 @@ Drag bin entries onto the timeline, scrub, edit vars in the inspector, press **R
 Output lands in `renders/`. Overlays are iterated on in their own tab — see *The overlay
 workbench* below — rather than by scrubbing the timeline to where they happen to be.
 
-**The overlay workbench.** The centre of the window is tabbed, Kdenlive style: one tab is
-the sequence being edited — the engine's picture with that sequence's overlays live on top
-— and every other tab is one **overlay entry**, open on its own. `+ overlay` (or the
+**The overlay workbench.** The centre of the window is tabbed, Kdenlive style. A
+**sequence** tab is a timeline you have open — the engine's picture with that sequence's
+overlays live on top, driven by the timeline below; the topbar picker opens one and gives
+it a tab, and clicking between them switches which sequence is being edited (a round trip:
+the daemon holds that choice, so switching recompiles, and the last tab stays put because
+something is always open). Every other tab is one **overlay entry**, open on its own. `+ overlay` (or the
 Templates tab's *Open in workbench*, or double-clicking an overlay in the bin, or **New
 Overlay…** in the Project menu) mints a configured overlay and opens it there **without
 placing it**: creating an overlay and deciding where it plays are two decisions, and the

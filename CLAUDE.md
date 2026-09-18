@@ -67,8 +67,11 @@ Chrome headless shell if hyperframes should not download one.
   tractor however often it is placed; each placement is a wrapper playlist carrying its own
   cut and filters, and a nested sequence's background is transparent. The daemon holds the
   open sequence as session state — never in the document.
-- The centre of the editor is tabbed: the sequence monitor, and one tab per overlay entry
-  open in the **workbench** (`ui/src/panels/workbench.ts`). The workbench edits an entry,
+- The centre of the editor is tabbed: one tab per **open sequence**, and one per overlay
+  entry open in the **workbench** (`ui/src/panels/workbench.ts`). Sequence tabs are a list
+  of timelines one click away, never several at once — the daemon holds which one is open
+  and the engine holds its compiled timeline, so clicking a tab is a round trip and the
+  last tab cannot be closed. The workbench edits an entry,
   never a placement — it creates no clip, moves no playhead, and its length and frame are
   view state, not document values. Vars stay in the inspector: an entry has one editor for
   what it is, and it is not this panel. An agent sees the same thing through `sample_frames`

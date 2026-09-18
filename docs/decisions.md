@@ -651,10 +651,20 @@ sentinel cannot collide with an entry. `state.overlays` is which workbench tabs 
 pruned on every refresh exactly as the open sequence is, because an agent edit or an undo
 can remove the entry a tab is showing.
 
-**One tab per *open sequence*, Kdenlive's timeline tabs** — not built. The daemon holds
-the open sequence as session state and the preview compiles that one timeline, so a second
-sequence tab would either be a lie or a second engine. The topbar picker already switches
-it, and opening a sequence now brings the monitor tab forward with it.
+**One tab per open sequence, Kdenlive's timeline tabs** — adopted, superseding this
+entry's own earlier reading that it should not be built. That reading conflated two
+things: several sequences *running* at once, which would indeed be a second engine and is
+still not built, and several sequences *one click away*, which is all a tab strip has to
+be. Kdenlive's timeline tabs show one timeline at a time too.
+
+So `state.sequences` is the list of tabs and `state.sequence` — the daemon's — is which of
+them is being edited. Clicking one is the round trip the topbar picker already made, and
+the strip is honest about the cost: switching recompiles. The picker stays, because it is
+how a sequence that has no tab is found; opening from it adds one.
+
+The last sequence tab cannot be closed. The daemon always has a sequence open, so a strip
+with none would misrepresent what the preview is showing; closing the one being edited
+falls back to a neighbour, which is another round trip.
 
 **The workbench edits the entry, never a placement** — adopted. It creates no clip, moves
 no playhead and reads none: the length under the stage and the frame beside it are view
@@ -882,7 +892,18 @@ Three tiers, cheapest first. **All three are built.**
    when `kuma init` writes something unreadable — including that the folder is rolled back
    so the name is free to retry, which is the bug as it was reported. A shell script
    stands in for a stale `kuma`, so no Rust build is involved.
-3. **The composite, in a browser — done** (`ui/test/composite.test.mjs`). A fixture
+3. **The browser — done** (`ui/test/`, over a shared `harness.mjs`: finding the browser
+   and the binary, a daemon on a loopback port, and a CDP driver over Node's own
+   WebSocket, which needs no automation library). Two suites.
+
+   **The tab strip** (`ui/test/tabs.test.mjs`) drives the tabs and asserts against
+   `/api/sequence`, because which sequence the daemon has open is the state a sequence tab
+   switches, and a strip that disagrees with it shows a timeline nobody is editing. It
+   exists because a × inside a tab, whose click also reached the tab, closed and
+   immediately reopened it — which the screenshot-only harness could never have caught,
+   since it cannot click.
+
+   **The composite** (`ui/test/composite.test.mjs`). A fixture
    project with a half-red, half-transparent overlay, the editor screenshotted by the
    browser the baker already uses, and two assertions: the red reaches the page, and
    nothing on it is white. Reintroducing the dark root turns the second into 106,323

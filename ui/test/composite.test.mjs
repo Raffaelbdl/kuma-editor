@@ -12,51 +12,13 @@
 
 import { strict as assert } from "node:assert";
 import { after, before, describe, it } from "node:test";
-import { execFileSync, spawn } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
-import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 
 import { count, decodePng } from "./png.mjs";
-
-const REPO = path.resolve(import.meta.dirname, "..", "..");
-
-/** The same browser the baker uses, so a machine that can bake can run this. */
-function findBrowser() {
-  const env = process.env.HYPERFRAMES_BROWSER_PATH;
-  if (env && fs.existsSync(env)) return env;
-  for (const root of ["/opt/pw-browsers", path.join(os.homedir(), ".cache/ms-playwright")]) {
-    let entries = [];
-    try { entries = fs.readdirSync(root); } catch { continue; }
-    for (const e of entries.filter((x) => x.startsWith("chromium"))) {
-      for (const rel of ["chrome-linux/headless_shell", "chrome-linux/chrome"]) {
-        const p = path.join(root, e, rel);
-        if (fs.existsSync(p)) return p;
-      }
-    }
-  }
-  for (const dir of (process.env.PATH ?? "").split(path.delimiter)) {
-    for (const name of ["chromium", "chromium-browser", "google-chrome"]) {
-      const p = path.join(dir, name);
-      if (dir && fs.existsSync(p)) return p;
-    }
-  }
-  return null;
-}
-
-const findKuma = () =>
-  ["target/release/kuma", "target/debug/kuma"].map((p) => path.join(REPO, p)).find((p) => fs.existsSync(p)) ?? null;
-
-const freePort = () =>
-  new Promise((resolve, reject) => {
-    const srv = net.createServer();
-    srv.once("error", reject);
-    srv.listen(0, "127.0.0.1", () => {
-      const { port } = srv.address();
-      srv.close(() => resolve(port));
-    });
-  });
+import { findBrowser, missing, startDaemon } from "./harness.mjs";
 
 /** A half-red, half-transparent overlay. The reset is inline so the fixture does not
  *  depend on a `_vendor/` being installed; what is under test is the compositing. */
@@ -82,10 +44,7 @@ const PROJECT = JSON.stringify({
   },
 }, null, 2);
 
-const browser = findBrowser();
-const kumaBin = findKuma();
-const uiBuilt = fs.existsSync(path.join(REPO, "ui/dist/index.html"));
-const why = !kumaBin ? "no kuma binary (cargo build --release)" : !uiBuilt ? "ui/dist is not built" : !browser ? "no Chromium" : null;
+const why = missing();
 
 describe("preview compositing", { skip: why ? `skipping: ${why}` : false }, () => {
   let tmp, daemon, url, shot;
@@ -99,22 +58,10 @@ describe("preview compositing", { skip: why ? `skipping: ${why}` : false }, () =
     const projectFile = path.join(tmp, "composite.kuma.json");
     fs.writeFileSync(projectFile, PROJECT);
 
-    const port = await freePort();
-    url = `http://127.0.0.1:${port}`;
-    daemon = spawn(kumaBin, ["serve", "--project", projectFile, "--bind", `127.0.0.1:${port}`], {
-      env: { ...process.env, KUMA_REPO: REPO, KUMA_LIBRARY: path.join(tmp, "library") },
-      stdio: "ignore",
-    });
-    const deadline = Date.now() + 30_000;
-    for (;;) {
-      const ok = await fetch(`${url}/api/health`).then((r) => r.ok).catch(() => false);
-      if (ok) break;
-      assert.ok(Date.now() < deadline, "the daemon never answered");
-      await new Promise((r) => setTimeout(r, 200));
-    }
+    ({ url, proc: daemon } = await startDaemon(projectFile, path.join(tmp, "library")));
 
     shot = path.join(tmp, "shot.png");
-    execFileSync(browser, [
+    execFileSync(findBrowser(), [
       "--headless", "--disable-gpu", "--no-sandbox", "--hide-scrollbars",
       "--window-size=1280,800", "--virtual-time-budget=15000",
       `--screenshot=${shot}`, url,

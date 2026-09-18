@@ -12,8 +12,10 @@ import { button, checkbox, el, options, plural, row, selectInput } from "../dom"
 import { store, toast } from "../store";
 import type { BinItem, Clip, Cue, Effect, PatchOp, Project, VarSpec } from "../types";
 import { moveBinItem, placeBinItem } from "../edits";
+import { Animation } from "../keyframes";
+import { icon } from "../icons";
 import type { NumberOpts } from "../props";
-import { numberField, sliderField, vectorField } from "../props";
+import { keyStrip, numberField, sliderField, vectorField } from "../props";
 import { binItem, binPath, canPlace, canTimeWarp, childrenOf, expandPreset, hasAudio, isColorSource, isFileSource, isFolderSource, isOverlaySource, isSequenceSource, isTimedMedia, placementsOf, seqDuration, wouldNest } from "../types";
 
 const presetsPromise = api.effectPresets().catch(() => []);
@@ -27,7 +29,10 @@ type PropSpec =
   | { kind: "vec"; label: string; parts: ({ key: string } & NumberOpts)[] }
   | { kind: "enum"; key: string; label?: string; options: string[] }
   | { kind: "text"; key: string; label?: string }
-  | { kind: "json"; key: string; label?: string };
+  | { kind: "json"; key: string; label?: string }
+  /** This effect's keyframes: the row of buttons and the strip, and the fact that the
+   *  fields above it are then values *at the playhead*. `fields` is what a key carries. */
+  | { kind: "keys"; key: string; fields: string[]; min?: number };
 
 /** Per effect kind: the value `+ add effect` inserts, and the properties it shows, in the
  *  order they are shown. Adding an effect kind is one row here plus the Rust model; a kind
@@ -50,7 +55,7 @@ const EFFECTS: Partial<Record<Effect["type"], EffectSpec>> = {
       { kind: "num", key: "scale", step: 0.01, min: 0.01, suffix: "×", title: "Multiplies the composition size" },
       { kind: "num", key: "rotation", step: 1, suffix: "°" },
       { kind: "slider", key: "opacity", min: 0, max: 1, step: 0.01 },
-      { kind: "json", key: "keyframes", label: "Keyframes" },
+      { kind: "keys", key: "keyframes", fields: ["x", "y", "scale", "rotation", "opacity"] },
     ],
   },
   crop: {
@@ -85,47 +90,141 @@ const EFFECTS: Partial<Record<Effect["type"], EffectSpec>> = {
       { key: "out", tag: "Out", step: 0.1, min: 0, suffix: "s" },
     ] }],
   },
-  volume: { add: { type: "volume", keyframes: [{ t: 0, gain: 1 }] }, props: [{ kind: "json", key: "keyframes", label: "Keyframes" }] },
+  // A volume effect is its keyframes — the model refuses one with none, so `min` is 1 and
+  // there is no un-animating it; removing the effect is how you stop.
+  volume: {
+    add: { type: "volume", keyframes: [{ t: 0, gain: 1 }] },
+    props: [
+      { kind: "num", key: "gain", step: 0.05, min: 0, title: "Gain at the playhead: 1 is the clip as recorded" },
+      { kind: "keys", key: "keyframes", fields: ["gain"], min: 1 },
+    ],
+  },
   mlt: { add: { type: "mlt", service: "frei0r.vignette", properties: {} }, props: [{ kind: "text", key: "service" }, { kind: "json", key: "properties" }] },
 };
+
+/** Whether the playhead is inside the selected clip. */
+function playheadInClip(): boolean {
+  const f = store.findClip(store.selectedClip);
+  return !!f && store.state.playhead >= f.clip.start && store.state.playhead < f.clip.end;
+}
 
 /** A key as a label: `brightness` → `Brightness`, `in` → `In`. */
 const title = (key: string) => key.charAt(0).toUpperCase() + key.slice(1);
 
-/** One property row, whatever shape it is. `cur` reads the effect (falling back to the
- *  kind's default) and `set` writes one key of it as a patch. */
-function propRow(p: PropSpec, cur: (key: string) => unknown, set: (key: string, v: unknown) => void): HTMLElement {
-  const row = build(p, cur, set);
+/**
+ * How a row reads and writes its effect. Without keyframes that is the effect's own
+ * fields; with them it is the value *at the playhead*, and writing goes into the key
+ * there — which is the whole of the keyframe UI as far as a field is concerned.
+ */
+interface PropCtx {
+  read: (key: string) => unknown;
+  write: (key: string, v: unknown) => void;
+  /** This field is keyed, so it is a value in time rather than a value. */
+  animated: (key: string) => boolean;
+  /** …and the playhead is not in the clip, so there is no "now" to write to. */
+  frozen: boolean;
+  /** A setter for a keyed field to follow the playhead with, or undefined. */
+  live: (key: string) => NumberOpts["live"];
+}
+
+/** One property row, whatever shape it is. */
+function propRow(p: PropSpec, ctx: PropCtx): HTMLElement {
+  const row = build(p, ctx);
   // What this row edits, on the row: the panel styles by it, and a test can name a
   // property rather than counting divs.
   row.dataset.prop = p.kind === "vec" ? p.label.toLowerCase() : p.key;
   return row;
 }
 
-function build(p: PropSpec, cur: (key: string) => unknown, set: (key: string, v: unknown) => void): HTMLDivElement {
-  const num = (key: string) => Number(cur(key) ?? 0);
+function build(p: PropSpec, ctx: PropCtx): HTMLDivElement {
+  const { read, write } = ctx;
+  const num = (key: string) => Number(read(key) ?? 0);
+  /** What a numeric field needs on top of its own spec when the value is keyed. */
+  const timed = (key: string) => ({ readOnly: ctx.animated(key) && ctx.frozen, live: ctx.live(key) });
   switch (p.kind) {
     case "vec":
-      return field(p.label, vectorField(p.parts.map((part) => ({ ...part, value: num(part.key), commit: (v: number) => set(part.key, v) }))));
+      return field(p.label, vectorField(p.parts.map((part) => ({ ...part, ...timed(part.key), value: num(part.key), commit: (v: number) => write(part.key, v) }))));
     case "num":
-      return field(p.label ?? title(p.key), numberField(num(p.key), (v) => set(p.key, v), p));
+      return field(p.label ?? title(p.key), numberField(num(p.key), (v) => write(p.key, v), { ...p, ...timed(p.key) }));
     case "slider":
-      return field(p.label ?? title(p.key), sliderField(num(p.key), (v) => set(p.key, v), p));
+      return field(p.label ?? title(p.key), sliderField(num(p.key), (v) => write(p.key, v), { ...p, ...timed(p.key) }));
     case "enum":
-      return field(p.label ?? title(p.key), selectInput(p.options.map((value) => ({ value })), String(cur(p.key)), (v) => set(p.key, v)));
+      return field(p.label ?? title(p.key), selectInput(p.options.map((value) => ({ value })), String(read(p.key)), (v) => write(p.key, v)));
     case "text":
-      return field(p.label ?? title(p.key), textInput(String(cur(p.key) ?? ""), (v) => set(p.key, v)));
+      return field(p.label ?? title(p.key), textInput(String(read(p.key) ?? ""), (v) => write(p.key, v)));
     case "json":
-      return field(p.label ?? title(p.key), jsonInput(cur(p.key) ?? null, (v) => set(p.key, v)));
+      return field(p.label ?? title(p.key), jsonInput(read(p.key) ?? null, (v) => write(p.key, v)));
+    case "keys":
+      // Built by `keyRow`, which needs the Animation rather than one field's value.
+      return el("div");
   }
 }
 
+/**
+ * The keyframe row: what there is to do to an effect's keys, and where they are. It is
+ * one row of buttons and a strip — the panel deliberately does not grow a track editor,
+ * and the clip in the timeline carries the same keys so you can see them while scrubbing.
+ */
+function keyRow(anim: Animation, follow: (fn: () => void) => void): HTMLElement {
+  const wrap = el("div");
+  wrap.dataset.prop = "keys";
+  if (!anim.animated) {
+    wrap.appendChild(field("Keys", button("◆ Animate", () => anim.animate(), "Keyframe this effect: adds a key at the playhead holding the values it has now")));
+    return wrap;
+  }
+
+  // The toolbar takes the whole width rather than sitting in the value column: it is about
+  // the effect's timing, not about one of its values, and four buttons do not fit there.
+  const tools = el("div", "kf-tools");
+  const prev = button(icon("chevron-left", 12), () => anim.step(-1), "Previous key", "icon");
+  const next = button(icon("chevron-right", 12), () => anim.step(1), "Next key", "icon");
+  const add = button("+ key", () => anim.addKey(), "Add a key at the playhead, holding the values it has there");
+  const del = button("− key", () => anim.removeKey(), "Remove the key at the playhead");
+  tools.append(el("span", "muted tiny", "keys"), prev, add, del, next, el("span", "spacer"));
+  // A volume effect must keep a key, so it has no "stop animating" — removing the effect is
+  // how that is said.
+  if (anim.min === 0) tools.append(button("Clear", () => anim.clear(), "Stop keyframing, keeping the values at the playhead"));
+  wrap.appendChild(tools);
+
+  wrap.appendChild(keyStrip({
+    duration: anim.duration,
+    keys: anim.keys.map((k) => k.t),
+    playhead: anim.inside ? anim.local : null,
+    onSeek: (t) => anim.seek(t),
+    onMove: (i, t) => anim.moveKey(i, t),
+    onAdd: (t) => anim.addKey(t),
+    snap: (t) => store.snap(t),
+    live: (set) => follow(() => set(anim.inside ? anim.local : null)),
+  }));
+
+  const hint = el("div", "muted tiny kf-hint");
+  const refresh = () => {
+    add.disabled = !anim.inside || anim.index >= 0;
+    del.disabled = !anim.inside || anim.index < 0 || anim.keys.length <= anim.min;
+    hint.textContent = anim.inside ? "" : "The playhead is outside this clip — click the strip, or use ‹ ›, to edit a key.";
+  };
+  refresh();
+  follow(refresh);
+  wrap.appendChild(hint);
+  return wrap;
+}
+
 export class Inspector {
+  /** Subscriptions this render made — keyed values following the playhead — dropped when
+   *  the panel is rebuilt, or they would pile up one per render. */
+  private off: (() => void)[] = [];
+
   constructor(private host: HTMLElement) {
-    store.select((s) => [s.project, s.selection, s.templates, s.sequence], () => this.render());
+    // The playhead is in here as a *flag*, not as a value: whether it is inside the
+    // selected clip decides what the panel can edit at all — a keyed value has no "now" to
+    // write to from outside it — and that flips rarely. The values themselves follow the
+    // playhead without a re-render; see `renderEffects`.
+    store.select((s) => [s.project, s.selection, s.templates, s.sequence, playheadInClip()], () => this.render());
   }
 
   private render() {
+    for (const stop of this.off) stop();
+    this.off = [];
     const sel = store.state.selection;
     this.host.innerHTML = "";
     if (sel?.kind === "bin") return this.renderBinEntry(sel.id);
@@ -298,17 +397,44 @@ export class Inspector {
 
   private renderEffects(clip: Clip, path: string) {
     this.host.appendChild(el("h3", "", "Effects"));
+    // Everything that follows the playhead without the panel being rebuilt for it.
+    const followers: (() => void)[] = [];
     clip.effects.forEach((e, ei) => {
       const box = el("div", "effect");
       const head = el("div", "head");
       head.append(el("span", "", title(e.type)), button("×", () => store.patch([{ op: "remove", path: `${path}/effects/${ei}` }], `remove ${e.type}`), `Remove this ${e.type}`));
       box.appendChild(head);
-      const set = (key: string, v: unknown) => store.patch([{ op: "replace", path: `${path}/effects/${ei}`, value: { ...e, [key]: v } }], `${e.type}.${key}`);
       const rec = e as unknown as Record<string, unknown>;
       const spec = EFFECTS[e.type] ?? { add: e };
       const defaults = spec.add as unknown as Record<string, unknown>;
       const cur = (key: string) => rec[key] ?? defaults[key];
-      for (const p of spec.props ?? []) box.appendChild(propRow(p, cur, set));
+      const replace = (value: unknown, note: string) => void store.patch([{ op: "replace", path: `${path}/effects/${ei}`, value }], `${e.type} ${note}`);
+      const set = (key: string, v: unknown) => replace({ ...e, [key]: v }, `${key}`);
+
+      // Keyframes, when this kind has them: the fields above the strip then read and write
+      // the value *at the playhead* rather than a static one.
+      const keySpec = (spec.props ?? []).find((p) => p.kind === "keys") as Extract<PropSpec, { kind: "keys" }> | undefined;
+      const anim = keySpec && new Animation({
+        effect: rec,
+        keyField: keySpec.key,
+        fields: keySpec.fields,
+        min: keySpec.min ?? 0,
+        base: (f) => Number(cur(f) ?? 0),
+        clip,
+        commit: (next, note) => replace(next, note),
+      });
+      const timed = (key: string) => !!anim?.animated && anim.fields.includes(key);
+      const ctx: PropCtx = {
+        read: (key) => (timed(key) ? anim!.at(key) : cur(key)),
+        write: (key, v) => (timed(key) ? anim!.setAt(key, Number(v)) : set(key, v)),
+        animated: timed,
+        frozen: !!anim && !anim.inside,
+        // A keyed field follows the playhead: one subscription per effect updates the
+        // values in place, because re-rendering this panel 25 times a second is what
+        // `store.select` exists to prevent.
+        live: (key) => (timed(key) ? (set) => followers.push(() => set(anim!.at(key))) : undefined),
+      };
+      for (const p of spec.props ?? []) box.appendChild(p.kind === "keys" ? keyRow(anim!, (fn) => followers.push(fn)) : propRow(p, ctx));
       this.host.appendChild(box);
     });
     const add = el("select");
@@ -320,6 +446,7 @@ export class Inspector {
     };
     this.host.appendChild(add);
     this.host.appendChild(this.presetPicker(path));
+    if (followers.length) this.off.push(store.select((s) => [s.playhead], () => { for (const f of followers) f(); }));
   }
 
   /** Presets expand to ordinary effects; their params are edited here before applying. */

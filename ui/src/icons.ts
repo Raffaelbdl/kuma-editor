@@ -22,6 +22,9 @@ const ICONS = {
   pause: [shape("rect", { x: 6, y: 4, width: 4, height: 16, rx: 1 }), shape("rect", { x: 14, y: 4, width: 4, height: 16, rx: 1 })],
   /** To the start: the bar it stops against, then the triangle running into it. */
   "skip-back": [shape("rect", { x: 5, y: 4, width: 3, height: 16, rx: 1 }), shape("polygon", { points: "20,4 20,20 9,12" })],
+  /** Step back and forward — over keyframes, on the buttons beside a keyframe strip. */
+  "chevron-left": [shape("polygon", { points: "16,4 18,6 12,12 18,18 16,20 8,12" })],
+  "chevron-right": [shape("polygon", { points: "8,4 6,6 12,12 6,18 8,20 16,12" })],
 };
 
 export type IconName = keyof typeof ICONS;

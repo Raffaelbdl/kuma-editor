@@ -926,6 +926,54 @@ past either end, because clamping to a range the model does not have would be th
 lying about the document. The rules a field cannot express (a crop's left + right < 1, a
 speed's ±[0.01, 20] with a hole in the middle) stay the daemon's to refuse.
 
+## Keyframes you can point at
+
+Keyframes were a `<textarea>` of JSON, which is not an editor, it is a hole in one. The
+model needed nothing: times in clip-local seconds, linear between them, already shared by
+the compiler and the live preview. What was missing was the pointing.
+
+**The playhead is the clock, and the fields are the editor** — adopted, from Kdenlive.
+A keyed field shows what its value *is at the playhead*, and writing it writes the key
+under the playhead — making one there when there is none. There is no "which keyframe am I
+editing" to hold in your head, because the answer is always "the one you are looking at",
+and the drag-to-scrub fields from the previous change work on animation unmodified.
+
+**Animation is opt-in, per effect** — adopted, from Godot's key button, and it is what the
+model's own agreed direction already says ("a parameter stays a plain number field until
+asked to animate"). An effect with no keys shows **◆ Animate**; pressing it writes one key
+holding what the effect already does, so turning animation on changes nothing. **Clear**
+turns it off by writing the values at the playhead back into the static fields — anything
+else snaps the picture back to whatever the statics were before the first key, which is
+never what was meant.
+
+**A key is a full sample** — forced by the model, and worth writing down because it looks
+like a limitation. A keyframe that omits a field does not mean "leave that field alone", it
+means "use the effect's static value" (`k.x.unwrap_or(*x)` in the compiler, the same
+fallback in `transformAt`). So inserting a key writes *every* animated field at that
+moment, which is exactly what makes inserting one a no-op until you move something. Real
+per-property tracks would be a different model, and MLT packs x, y, scale and opacity into
+one `rect` property anyway, so they would have to be resampled into full keys to be
+emitted. Not worth it.
+
+**The panel gets a strip; the clip gets dots** — adopted, and this is the answer to "does
+this belong in a separate panel". Godot keeps properties in the inspector and puts keys in
+a separate bottom **Animation** panel, with its own timeline and its own playhead; Kdenlive
+keeps them together in the effect stack, on a ruler the width of the clip. kuma has no room
+for Godot's split — the bottom of the window is already a timeline, with the same clock and
+the same clip — so the keys live in two places by *role*: a compact strip in the panel,
+where the values are and where editing happens, and read-only diamonds along the bottom of
+the clip in the timeline, where time is and where you scrub past them. One place to edit,
+one glance to see. A curve editor, keys draggable in the timeline itself, and per-key
+easing are all deliberately not here yet.
+
+**The panel does not re-render as the playhead moves** — adopted, and it took a bug to get
+right. A keyed field follows the playhead through one `store.select` per effect that sets
+values in place; rebuilding the inspector 25 times a second is exactly what that helper
+exists to prevent. But *whether the playhead is inside the clip* is a different question —
+outside it there is no "now" to write to, so the fields are read-only — and that is in the
+panel's subscription as a flag. Without it, selecting a clip while the playhead was
+elsewhere left the fields frozen after scrubbing into it.
+
 ## Icons
 
 **Shapes, not characters** — adopted, after `⏮` gave the game away.

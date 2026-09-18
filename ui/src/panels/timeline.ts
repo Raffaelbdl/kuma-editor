@@ -2,6 +2,7 @@
 
 import { button, dragPayload, el } from "../dom";
 import { placeBinItem, addFromLibrary } from "../edits";
+import { keysOf } from "../keyframes";
 import { store } from "../store";
 import type { Clip, PatchOp, Project, Track, TrackKind } from "../types";
 import { binItem, clipKind, isOverlaySource, isSequenceSource, isTimedMedia, seqDuration, sequenceOf } from "../types";
@@ -152,6 +153,18 @@ export class Timeline {
     const hl = el("div", "handle l");
     const hr = el("div", "handle r");
     box.append(el("div", "", c.label || name), el("div", "sub", String(sub)), hl, hr);
+    // Keyframed effects are drawn along the bottom of the clip: an animated clip says so
+    // at a glance, and the keys go past under the playhead while you scrub. They take no
+    // pointer events — editing them is the inspector's, where the values are.
+    for (const k of keysOf(c)) {
+      const lane = el("div", `kf-lane ${k.type}`);
+      for (const t of k.times) {
+        const key = el("div", "kf");
+        key.style.left = `${t * store.state.zoom}px`;
+        lane.appendChild(key);
+      }
+      box.appendChild(lane);
+    }
     box.addEventListener("pointerdown", (e) => {
       e.stopPropagation();
       // Clicking a clip is also clicking the track it is on, so a copy followed by a

@@ -169,6 +169,18 @@ fields are edited the same way; an effect declares which shape each of its field
 one table in `ui/src/panels/inspector.ts`, and the bounds there are the model's own, so the
 panel cannot offer a value the daemon would refuse.
 
+**Keyframes are pointed at, not typed.** A `transform` or `volume` effect starts as plain
+numbers with a **◆ Animate** button; press it and it gains one key at the playhead holding
+what it already does — nothing moves until you move something. From then on the fields are
+the value **at the playhead**: scrub, change a number, and the key under the playhead takes
+it, or a new one is made there carrying every other value as it already was. A strip under
+the effect shows where the keys are (click to go to one, drag to retime, double-click to
+add), `‹ ›` step between them, `+ key` / `− key` add and remove one where you are, and
+**Clear** stops animating while keeping the value you are looking at. The same keys are
+drawn along the bottom of the clip in the timeline, so an animated clip says so at a glance
+and you watch them go past while scrubbing. With the playhead outside the clip there is no
+"now" to write to, so the fields read the nearest end and say so rather than pretending.
+
 **The overlay workbench.** The centre of the window is tabbed, Kdenlive style. A
 **sequence** tab is a timeline you have open — the engine's picture with that sequence's
 overlays live on top, driven by the timeline below; the topbar picker opens one and gives

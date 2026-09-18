@@ -209,6 +209,12 @@ body.has-titlebar #titlebar {
 .clip.tiny .handle { display: none; } /* too narrow to grab the body otherwise */
 .clip .sub { color: rgba(255,255,255,0.7); font-size: 10px; }
 .clip.ghost { opacity: 0.6; pointer-events: none; }
+/* Keyframes on the clip: one lane per keyed effect, stacked up from the bottom edge.
+   Read-only here — the inspector is where a value lives, so that is where keys are made. */
+.clip .kf-lane { position: absolute; left: 0; right: 0; bottom: 0; height: 7px; pointer-events: none; }
+.clip .kf-lane ~ .kf-lane { bottom: 7px; }
+.clip .kf { position: absolute; top: 1px; width: 5px; height: 5px; margin-left: -3px; background: var(--sel); transform: rotate(45deg); }
+.clip .kf-lane.volume .kf { background: var(--fg); }
 .tl-playhead { position: absolute; top: 0; bottom: 0; width: 0; border-left: 2px solid var(--accent); z-index: 4; pointer-events: none; }
 .tl-playhead::before { content: ""; position: absolute; top: 0; left: -6px; border: 6px solid transparent; border-top: 8px solid var(--accent); }
 .tl-marker { position: absolute; top: 22px; bottom: 0; border-left: 1px dashed var(--sel); z-index: 1; pointer-events: none; }
@@ -286,6 +292,23 @@ button.linkish:hover { text-decoration: underline; }
 .num input { flex: 1 1 0; min-width: 0; border: 0; background: none; padding: 3px 5px; font: 12px var(--mono); cursor: ew-resize; }
 .num input:focus { cursor: text; outline: 1px solid var(--sel); outline-offset: -1px; border-radius: 4px; }
 .num .suffix { flex: none; padding-right: 5px; font-size: 10px; color: var(--fg-2); cursor: ew-resize; }
+/* ---- the keyframe strip (see ui/src/keyframes.ts) ---------------------------------
+   The clip's own length, with its keys on it. Small on purpose: it says where the keys
+   are and lets you reach one, and is not trying to be a curve editor. */
+.kfs { margin: 0 0 6px; }
+.kfs-lane { position: relative; height: 18px; border: 1px solid var(--line); border-radius: 5px; background: var(--bg); cursor: pointer; }
+.kfs-track { position: absolute; top: 0; bottom: 0; left: 6px; right: 6px; }
+.kfs-key { position: absolute; top: 4px; width: 8px; height: 8px; margin-left: -4px; background: var(--sel); border: 1px solid rgba(0, 0, 0, 0.45); transform: rotate(45deg); cursor: ew-resize; }
+.kfs-key:hover { background: #fff; }
+.kfs-head { position: absolute; top: 0; bottom: 0; width: 0; border-left: 2px solid var(--accent); pointer-events: none; }
+.kf-tools { display: flex; align-items: center; gap: 4px; margin: 0 0 5px; }
+.kf-tools .spacer { flex: 1; }
+.kf-tools button { padding: 3px 6px; font-size: 11px; white-space: nowrap; }
+.kf-tools button:disabled { opacity: 0.4; cursor: default; }
+.kf-hint:not(:empty) { margin: -2px 0 4px; }
+/* A field showing a keyed value with the playhead outside the clip: readable, not editable. */
+.num.off { opacity: 0.6; }
+.num.off input { cursor: default; }
 /* A vector is one line of them, sharing the width evenly. */
 .vec { display: flex; gap: 4px; min-width: 0; }
 .vec .num { flex: 1 1 0; }

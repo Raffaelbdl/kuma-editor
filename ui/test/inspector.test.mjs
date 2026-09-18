@@ -138,3 +138,146 @@ describe("the inspector's property fields", { skip: why ? `skipping: ${why}` : f
     assert.equal(await page.eval(reads(".effect .num.axis-y")), "-42.5");
   });
 });
+
+// ---------------------------------------------------------------------------------
+// Keyframes. The clip starts at 2s, so every assertion here is also a check that the
+// panel counts keyframe time from the clip rather than from the timeline.
+
+const KEYED = JSON.stringify({
+  version: 1, name: "keys", master: "main",
+  fps: { num: 30, den: 1 }, width: 1920, height: 1080, sample_rate: 48000,
+  bin: {
+    red: { name: "Red", source: { color: "#ff0000" } },
+    main: { name: "Main", source: { markers: [], tracks: [
+      { id: "v1", kind: "video", name: "Video", muted: false, hidden: false, transitions: [], clips: [
+        { id: "c1", start: 2, end: 10, bin: "red", in: 0, speed: 1, volume: 1, muted: false, label: "", effects: [
+          { type: "transform", x: 0, y: 0, scale: 1, rotation: 0, opacity: 1, keyframes: [
+            { t: 0, x: 0, y: 0, scale: 1, rotation: 0, opacity: 1 },
+            { t: 4, x: 100, y: 0, scale: 1, rotation: 0, opacity: 1 },
+          ] },
+        ] },
+      ] },
+    ] } },
+  },
+}, null, 2);
+
+describe("keyframes", { skip: why ? `skipping: ${why}` : false }, () => {
+  let tmp, daemon, page;
+
+  const EFFECT = `fetch("/api/project").then(r => r.json()).then(p => p.bin.main.source.tracks[0].clips[0].effects[0])`;
+  /** The keys as `t:x`, which is the whole question: when, and what. */
+  const KEYS = `${EFFECT}.then(e => e.keyframes.map(k => k.t + ":" + k.x).join(" "))`;
+  const X = `document.querySelector(".effect .num.axis-x input").value`;
+  const button = (text) => `[...document.querySelectorAll(".effect button")].find(b => b.textContent.trim() === ${JSON.stringify(text)})`;
+
+  const keysAre = async (expected) => {
+    try {
+      await page.until(`${KEYS}.then(s => s === ${JSON.stringify(expected)})`, 8000);
+    } catch {
+      assert.equal(await page.eval(KEYS), expected);
+    }
+  };
+  /** Move the playhead in timeline time; the clip starts at 2s, so 4s is 2s into it. */
+  const seek = (t) => `(() => {
+    const tl = document.querySelector(".tl"), ruler = document.querySelector(".tl-ruler");
+    const zoom = Number(document.querySelector("#transport input[type=range]").value);
+    const r = tl.getBoundingClientRect();
+    ruler.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, clientX: r.left + 136 + ${t} * zoom, clientY: r.top + 2 }));
+    window.dispatchEvent(new PointerEvent("pointerup", { bubbles: true }));
+    return document.querySelector("#transport .time").textContent;
+  })()`;
+  const type = (value) => `(() => { const i = document.querySelector(".effect .num.axis-x input"); i.value = ${JSON.stringify(value)}; i.dispatchEvent(new Event("change", { bubbles: true })); return true; })()`;
+
+  before(async () => {
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), "kuma-keys-"));
+    const projectFile = path.join(tmp, "keys.kuma.json");
+    fs.writeFileSync(projectFile, KEYED);
+    daemon = await startDaemon(projectFile);
+    page = await driver(daemon.url);
+    await page.until(`!!document.querySelector('.clip[data-id="c1"]')`);
+    await page.eval(`(() => { const c = document.querySelector('.clip[data-id="c1"]'); const r = c.getBoundingClientRect();
+      c.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, clientX: r.left + 20, clientY: r.top + 2 }));
+      window.dispatchEvent(new PointerEvent("pointerup", { bubbles: true })); return true; })()`);
+    await page.until(`!!document.querySelector(".effect .kfs-key")`);
+  });
+
+  after(() => {
+    page?.close();
+    daemon?.proc.kill("SIGTERM");
+    if (tmp) fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it("draws a key per keyframe, in the panel and on the clip", async () => {
+    assert.equal(await page.eval(`document.querySelectorAll(".effect .kfs-key").length`), 2);
+    // …and on the clip itself, so an animated clip says so without opening anything.
+    assert.equal(await page.eval(`document.querySelectorAll('.clip[data-id="c1"] .kf-lane .kf').length`), 2);
+  });
+
+  it("shows the value at the playhead, not a static one", async () => {
+    await page.eval(seek(4)); // two seconds into the clip: halfway between the keys
+    await page.until(`${X} === "50"`);
+    await page.eval(seek(6)); // on the second key
+    await page.until(`${X} === "100"`);
+    await page.eval(seek(2)); // the clip's own start, where the first key is
+    await page.until(`${X} === "0"`);
+  });
+
+  it("writes into the key under the playhead", async () => {
+    await page.eval(seek(6));
+    await page.until(`${X} === "100"`);
+    await page.eval(type("140"));
+    await keysAre("0:0 4:140");
+  });
+
+  it("makes a key where there is none, carrying every field", async () => {
+    await page.eval(seek(4));
+    await page.until(`${X} === "70"`); // halfway to the edited key
+    await page.eval(type("10"));
+    await keysAre("0:0 2:10 4:140");
+    // A new key is a full sample — a key that left `scale` out would mean "the static
+    // value" to the compiler, which would yank it.
+    assert.deepEqual(await page.eval(`${EFFECT}.then(e => e.keyframes[1])`), { t: 2, x: 10, y: 0, scale: 1, rotation: 0, opacity: 1 });
+  });
+
+  it("adds a key that does not move the picture", async () => {
+    await page.eval(seek(3)); // one second in: between the keys at 0 and 2
+    await page.until(`${X} === "5"`);
+    await page.eval(`${button("+ key")}.click()`);
+    await keysAre("0:0 1:5 2:10 4:140");
+    assert.equal(await page.eval(X), "5", "adding a key must leave the value where it was");
+  });
+
+  it("drags a key to another time", async () => {
+    // The strip spans the clip, so the time a pixel is worth is the test's to compute.
+    const to = await page.eval(`(() => {
+      const keys = [...document.querySelectorAll(".effect .kfs-key")];
+      const key = keys[1], track = document.querySelector(".effect .kfs-track");
+      const r = key.getBoundingClientRect(), box = track.getBoundingClientRect();
+      const dx = 30, x = r.left + 4, y = r.top + 4;
+      key.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0, clientX: x, clientY: y }));
+      for (const f of [0.5, 1]) window.dispatchEvent(new PointerEvent("pointermove", { bubbles: true, clientX: x + dx * f, clientY: y }));
+      window.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, clientX: x + dx, clientY: y }));
+      // Where it was let go, in the clip's own time, on the frame grid — the same sum the
+      // strip makes, rather than an assumption about where a rotated diamond's box starts.
+      return Math.round((((x + dx) - box.left) / box.width) * 8 * 30) / 30;
+    })()`);
+    await keysAre(`0:0 ${to}:5 2:10 4:140`);
+  });
+
+  it("clears the keys and keeps the value where the playhead is", async () => {
+    await page.eval(seek(6));
+    await page.until(`${X} === "140"`);
+    await page.eval(`${button("Clear")}.click()`);
+    await keysAre("");
+    assert.equal(await page.eval(`${EFFECT}.then(e => [e.x, e.scale])`).then(JSON.stringify), JSON.stringify([140, 1]));
+    // …and the row goes back to offering animation rather than a strip.
+    await page.until(`!document.querySelector(".effect .kfs-key") && !!${button("◆ Animate")}`);
+  });
+
+  it("starts keyframing from what the effect already does", async () => {
+    await page.eval(seek(5)); // three seconds in
+    await page.eval(`${button("◆ Animate")}.click()`);
+    await keysAre("3:140");
+    assert.deepEqual(await page.eval(`${EFFECT}.then(e => e.keyframes[0])`), { t: 3, x: 140, y: 0, scale: 1, rotation: 0, opacity: 1 });
+  });
+});

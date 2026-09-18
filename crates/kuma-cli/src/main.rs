@@ -348,7 +348,7 @@ async fn main() -> anyhow::Result<()> {
             let installed = state.config.installed_design_systems();
             let Some(id) = id else {
                 if installed.is_empty() {
-                    println!("no design systems installed — run `kuma library` (or point KUMA_LIBRARY at a folder of them)");
+                    println!("no design systems installed — none ship yet; write one under `<library>/design-systems/<id>/` (`DESIGN.md` + `tokens.css`), or point KUMA_LIBRARY at a folder of them");
                 }
                 for (id, (dir, title)) in &installed {
                     let here = state.config.project_design_system().is_some_and(|p| std::fs::read_to_string(p).ok().as_deref() == std::fs::read_to_string(dir.join("DESIGN.md")).ok().as_deref());

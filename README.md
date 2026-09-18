@@ -358,16 +358,19 @@ like one video.
 
 ```
 kuma design-system                          # what is installed
-kuma design-system studio                   # copy it to <project>/design-system/ (--force to replace)
+kuma design-system <id>                     # copy it to <project>/design-system/ (--force to replace)
 ```
 
 `design-system/DESIGN.md` is what an agent reads before authoring or restyling an overlay;
 `design-system/tokens.css` is the same values as a `:root { --ds-… }` block to copy into a
 template's first `<style>`. **Nothing is injected at runtime** — applying a design system
 is an edit to the template or to an entry's vars, so a template stays readable on its own
-and the values live with the rest of the project's decisions. The starter pair is `studio`
-(dark, one saturated accent — the look of the shipped templates) and `broadcast` (light,
-editorial, no bounce); `library/design-systems/CLAUDE.md` says how to write another.
+and the values live with the rest of the project's decisions.
+
+**None ship yet** — the mechanism is here and the starter set is not, so
+`kuma design-system` lists whatever you have written or installed yourself.
+`library/design-systems/CLAUDE.md` is the guide: two files, `DESIGN.md` for the prose and
+`tokens.css` for the same values as a `:root` block.
 
 ## What works (verified in this repo's tests and smoke runs)
 

@@ -22,7 +22,7 @@ ui/                   Vite + TypeScript editor (no framework)
 app/                  Electron shell: project launcher, windows, daemon lifecycle
 library/overlays/     starter overlay templates (folder = template) + `_vendor/{gsap.min.js,kuma.js,kuma.css}`
 library/presets/      starter effect presets (typed params + `$expr` substitution)
-library/design-systems/ starter design systems: `DESIGN.md` + `tokens.css`, copied into a project
+library/design-systems/ design systems (`DESIGN.md` + `tokens.css`) copied into a project; none ship yet
 ```
 
 Templates and presets are user assets, not code: at runtime kuma reads

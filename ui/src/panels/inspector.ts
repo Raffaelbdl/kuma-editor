@@ -132,9 +132,15 @@ function curveView(anim: Animation, param: string, onParam: (p: string) => void,
   const plot = el("div", "kf-plot");
   const dur = anim.duration;
 
+  // Sampled on a grid, and at every key — and a hair before every key, so a hold draws as
+  // the step it is rather than a slant one grid-cell wide, and every key lies on the
+  // line whatever its time.
+  const times = new Set<number>(Array.from({ length: CURVE_POINTS + 1 }, (_, i) => (i / CURVE_POINTS) * dur));
+  for (const k of anim.keys) { times.add(Math.max(0, k.t - 1e-6)); times.add(k.t); }
+  const grid = [...times].sort((a, b) => a - b).map((t) => ({ t, v: anim.at(param, t) }));
+  const samples = grid.map((g) => g.v);
   // The value axis fits what is there — the curve and the keys — with a little room, and
   // a flat line gets a unit of room either side rather than a division by nothing.
-  const samples = Array.from({ length: CURVE_POINTS + 1 }, (_, i) => anim.at(param, (i / CURVE_POINTS) * dur));
   const values = [...samples, ...anim.keys.map((k) => (k[param] as number | undefined) ?? anim.at(param, k.t))];
   let lo = Math.min(...values);
   let hi = Math.max(...values);
@@ -150,7 +156,7 @@ function curveView(anim: Animation, param: string, onParam: (p: string) => void,
   svg.setAttribute("viewBox", "0 0 100 100");
   svg.setAttribute("preserveAspectRatio", "none");
   const line = document.createElementNS(NS, "polyline");
-  line.setAttribute("points", samples.map((v, i) => `${(i / CURVE_POINTS) * 100},${yPct(v)}`).join(" "));
+  line.setAttribute("points", grid.map((g) => `${xPct(g.t)},${yPct(g.v)}`).join(" "));
   svg.appendChild(line);
   plot.appendChild(svg);
 

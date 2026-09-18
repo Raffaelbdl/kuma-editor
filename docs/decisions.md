@@ -1056,6 +1056,14 @@ drawing one would be drawing a promise the render cannot keep. It is off until a
 effect, and remembers being open across the re-render every edit causes, so the panel
 grows a graph only where someone put one.
 
+It earned its keep on the first screenshot: a key sat a sample to the left of the curve's
+corner, and the reason was the sampler, not the drawing. At exactly a key's time
+`sampleTrack` stayed in the segment that *ends* there rather than the one the key opens —
+invisible with linear keys, since both segments meet at the same value, and wrong after a
+hold, where the field, the preview and the curve all read the held value at the instant
+the key should have taken over. A `>` that should have been `>=`; now pinned by a test at
+that instant, and the curve samples at every key time as well as on its grid.
+
 **The panel does not re-render as the playhead moves** — adopted, and it took a bug to get
 right. A keyed field follows the playhead through one `store.select` per effect that sets
 values in place; rebuilding the inspector 25 times a second is exactly what that helper

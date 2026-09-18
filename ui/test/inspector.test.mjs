@@ -353,6 +353,11 @@ describe("keyframes", { skip: why ? `skipping: ${why}` : false }, () => {
     // …and the value stops moving between them, which is the whole point of it.
     await page.eval(seek(6.5));
     await page.until(`${X} === "140"`);
+    // At the next key's own time the value is that key's, not the held one: the key
+    // opens its segment, it does not close the last. (The curve view once drew the jump
+    // one sample late because of exactly this.)
+    await page.eval(seek(8));
+    await page.until(`${X} === "40"`);
     // The shape says so: a square holds, a diamond runs straight to the next key.
     await page.until(`[...document.querySelectorAll(".effect .kfs-key")].map(k => k.className).join("|") === "kfs-key hold|kfs-key"`);
   });

@@ -341,8 +341,10 @@ const catmull = (p0: number, p1: number, p2: number, p3: number, u: number) => {
 export function sampleTrack(pts: TrackPoint[], t: number): number {
   if (!pts.length) return 0;
   if (t <= pts[0].t) return pts[0].v;
+  // At a key's own time the value is the key's: the segment it *opens*, not the one
+  // that ends there. This is the whole difference after a hold, and `>` had it wrong.
   let i = 0;
-  while (i < pts.length - 1 && t > pts[i + 1].t) i++;
+  while (i < pts.length - 1 && t >= pts[i + 1].t - 1e-9) i++;
   const a = pts[i];
   const b = pts[i + 1];
   if (!b) return a.v;

@@ -451,4 +451,29 @@ describe("keyframes", { skip: why ? `skipping: ${why}` : false }, () => {
     // …and the view is still open after the edit re-rendered the panel.
     assert.equal(await page.eval(`${box}.querySelectorAll(".kf-point").length`), 3);
   });
+
+  it("lands every marker for one instant on the same pixel", async () => {
+    // Clicking a key in the strip seeks to it, so the playhead is exactly on that key and
+    // every marker drawn for that instant must agree: the line in the strip, the line in
+    // the curve, and the playhead over the key on the clip. They were out by half a pixel
+    // to a pixel and a half, each for its own reason — a 2px line drawn *from* the
+    // position rather than across it, a diamond a half-pixel off centre, a lane that
+    // started inside the clip's border.
+    await page.eval(`(() => { const k = document.querySelector(".effect .kfs-key"); const r = k.getBoundingClientRect();
+      k.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0, clientX: r.left + 4, clientY: r.top + 4 }));
+      window.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, clientX: r.left + 4, clientY: r.top + 4 })); return true; })()`);
+    await page.until(`[...document.querySelectorAll(".effect button")].find(b => b.textContent.trim() === "− key").disabled === false`);
+    const mids = await page.eval(`(() => {
+      const mid = (sel) => { const e = document.querySelector(sel); if (!e) return null; const r = e.getBoundingClientRect(); return +((r.left + r.right) / 2).toFixed(2); };
+      return {
+        strip: [mid(".effect .kfs-head"), mid(".effect .kfs-key")],
+        curve: [mid(".kf-plot-head"), mid(".kf-point")],
+        timeline: [mid(".tl-playhead"), mid('.clip[data-id="c1"] .kf-lane.transform .kf')],
+      };
+    })()`);
+    for (const [where, [head, key]] of Object.entries(mids)) {
+      assert.ok(head !== null && key !== null, `${where}: both markers are drawn`);
+      assert.equal(head, key, `${where}: the playhead and the key it sits on`);
+    }
+  });
 });

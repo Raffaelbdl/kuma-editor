@@ -212,18 +212,23 @@ body.has-titlebar #titlebar {
 /* Keyframes on the clip: one lane per keyed effect, stacked up from the bottom edge. The
    lane lets the clip's own gestures through; the keys take the pointer, to be dragged in
    time or clicked. Values stay the inspector's. */
-.clip .kf-lane { position: absolute; left: 0; right: 0; bottom: 0; height: 9px; pointer-events: none; }
+.clip .kf-lane { position: absolute; left: -1px; right: -1px; bottom: 0; height: 9px; pointer-events: none; }
 .clip .kf-lane ~ .kf-lane { bottom: 9px; }
-.clip .kf { position: absolute; top: 1px; width: 7px; height: 7px; margin-left: -4px; background: var(--sel); transform: rotate(45deg); pointer-events: auto; cursor: ew-resize; }
+.clip .kf { position: absolute; top: 1px; width: 7px; height: 7px; margin-left: -3.5px; background: var(--sel); transform: rotate(45deg); pointer-events: auto; cursor: ew-resize; }
 .clip .kf:hover { background: #fff; }
 .clip .kf-lane.volume .kf { background: var(--fg); }
 /* Record mode: the button is red, and so is the top edge of the panel the recording
    edits are made in — you should not have to look at the strip to know. */
 #transport button.rec.on { background: #b3261e; border-color: #b3261e; color: #fff; }
 body.autokey #inspector { box-shadow: inset 0 3px 0 #b3261e; }
-.tl-playhead { position: absolute; top: 0; bottom: 0; width: 0; border-left: 2px solid var(--accent); z-index: 4; pointer-events: none; }
+/* A marker *at* a moment is centred on it — a 2px line straddles the position, a diamond's
+   middle is the position — so the playhead and a keyframe at the same instant land on the
+   same pixel. Every line and dot below follows it; they disagreed by half a pixel to a
+   pixel and a half before, each for its own accidental reason, which reads as "not quite
+   aligned" and is hard to name. */
+.tl-playhead { position: absolute; top: 0; bottom: 0; width: 0; margin-left: -1px; border-left: 2px solid var(--accent); z-index: 4; pointer-events: none; }
 .tl-playhead::before { content: ""; position: absolute; top: 0; left: -6px; border: 6px solid transparent; border-top: 8px solid var(--accent); }
-.tl-marker { position: absolute; top: 22px; bottom: 0; border-left: 1px dashed var(--sel); z-index: 1; pointer-events: none; }
+.tl-marker { position: absolute; top: 22px; bottom: 0; margin-left: -0.5px; border-left: 1px dashed var(--sel); z-index: 1; pointer-events: none; }
 .tl-xfade { position: absolute; top: 2px; height: 10px; background: repeating-linear-gradient(45deg, var(--sel), var(--sel) 2px, transparent 2px, transparent 5px); opacity: 0.8; border-radius: 3px; z-index: 1; }
 
 /* The bin is a list, not a stack of cards: one line per entry, name and kind. Detail
@@ -310,7 +315,7 @@ button.linkish:hover { text-decoration: underline; }
    square holds until it, a circle curves through its neighbours. */
 .kfs-key.hold { transform: none; border-radius: 1px; }
 .kfs-key.smooth { transform: none; border-radius: 50%; }
-.kfs-head { position: absolute; top: 0; bottom: 0; width: 0; border-left: 2px solid var(--accent); pointer-events: none; }
+.kfs-head { position: absolute; top: 0; bottom: 0; width: 0; margin-left: -1px; border-left: 2px solid var(--accent); pointer-events: none; }
 .kf-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 3px; margin: 0 0 5px; }
 .kf-tools .spacer { flex: 1; }
 .kf-tools button { padding: 3px 5px; font-size: 11px; white-space: nowrap; }
@@ -322,8 +327,8 @@ button.linkish:hover { text-decoration: underline; }
 .kf-plot { position: relative; height: 84px; border: 1px solid var(--line); border-radius: 5px; background: var(--bg); overflow: visible; }
 .kf-plot svg { position: absolute; inset: 0; width: 100%; height: 100%; }
 .kf-plot polyline { fill: none; stroke: var(--sel); stroke-width: 1.5; vector-effect: non-scaling-stroke; }
-.kf-plot-head { position: absolute; top: 0; bottom: 0; width: 0; border-left: 2px solid var(--accent); pointer-events: none; }
-.kf-point { position: absolute; width: 9px; height: 9px; margin: -5px 0 0 -5px; background: var(--sel); border: 1px solid rgba(0, 0, 0, 0.45); transform: rotate(45deg); cursor: move; }
+.kf-plot-head { position: absolute; top: 0; bottom: 0; width: 0; margin-left: -1px; border-left: 2px solid var(--accent); pointer-events: none; }
+.kf-point { position: absolute; width: 9px; height: 9px; margin: -4.5px 0 0 -4.5px; background: var(--sel); border: 1px solid rgba(0, 0, 0, 0.45); transform: rotate(45deg); cursor: move; }
 .kf-point:hover { background: #fff; }
 .kf-point.hold { transform: none; border-radius: 1px; }
 .kf-point.smooth { transform: none; border-radius: 50%; }

@@ -1056,7 +1056,16 @@ drawing one would be drawing a promise the render cannot keep. It is off until a
 effect, and remembers being open across the re-render every edit causes, so the panel
 grows a graph only where someone put one.
 
-It earned its keep on the first screenshot: a key sat a sample to the left of the curve's
+It earned its keep twice on screenshots. Once for a pixel: the playhead in the strip sat
+a pixel to the right of the key it was on, and the curve and the timeline were out too, by
+different amounts and each for its own accidental reason — a 2px line drawn *from* a
+position rather than across it, a 9px diamond given an 5px offset, a key lane whose origin
+was inside the clip's 1px border. One rule now, stated in `style.css` where the first
+marker is defined: **a marker at a moment is centred on it**. A test asserts the three
+surfaces agree to the pixel for one instant, because this is the kind of wrong that is
+seen long before it can be named.
+
+And once for the sampler: a key sat a sample to the left of the curve's
 corner, and the reason was the sampler, not the drawing. At exactly a key's time
 `sampleTrack` stayed in the segment that *ends* there rather than the one the key opens —
 invisible with linear keys, since both segments meet at the same value, and wrong after a

@@ -23,7 +23,7 @@
 // an undo history of them; the field shows the number moving and sends one edit — the
 // same bargain the timeline's clip drag makes.
 
-import { el } from "./dom";
+import { DEAD_ZONE, dragPointer, el } from "./dom";
 
 export type Axis = "x" | "y" | "z" | "w";
 
@@ -50,9 +50,6 @@ export interface NumberOpts {
 
 /** A value with its own field: `{ value, commit }` plus how to show and step it. */
 export type NumberPart = NumberOpts & { value: number; commit: (v: number) => void };
-
-/** Under this many pixels a press is a click (put a caret in it), not a drag. */
-const DEAD_ZONE = 3;
 
 /** Fine with Shift, coarse with Alt — the same on the drag and on the arrow keys. */
 const scaleOf = (e: { shiftKey: boolean; altKey: boolean }) => (e.shiftKey ? 0.1 : e.altKey ? 10 : 1);
@@ -104,7 +101,10 @@ export function numberField(initial: number, commit: (v: number) => void, opts: 
   // A value that follows the playhead, never while it is being typed in or dragged.
   live?.((v: number) => {
     if (dragging || document.activeElement === input) return;
-    value = clamp(v);
+    const next = clamp(v);
+    // Nothing to do on a held segment, and this runs per playhead tick.
+    if (next === value && shown === value) return;
+    value = next;
     show(value);
   });
 
@@ -116,40 +116,32 @@ export function numberField(initial: number, commit: (v: number) => void, opts: 
   wrap.addEventListener("pointerdown", (e) => {
     // Already typing in it: the press is a caret, not a drag.
     if (e.button !== 0 || document.activeElement === input) return;
-    // Take the press outright — no focus, no text selection — and give it back on release
-    // if it turned out to be a click.
-    e.preventDefault();
+    // The press is taken outright — no focus, no text selection — and given back on
+    // release if it turned out to be a click.
     const base = shown;
-    const startX = e.clientX;
-    let moved = false;
     dragging = true;
-    const move = (ev: PointerEvent) => {
-      const dx = ev.clientX - startX;
-      if (!moved && Math.abs(dx) < DEAD_ZONE) return;
-      if (!moved) {
-        moved = true;
-        wrap.classList.add("dragging");
-        // The cursor belongs to the whole window while a drag is on: the pointer leaves
-        // the field almost immediately and must not look like it has let go.
-        document.body.classList.add("scrubbing");
-      }
-      // The dead zone is taken off the travel rather than added to it: without that the
-      // value jumps three steps the moment a drag is recognised, which with Alt is thirty.
-      const travel = dx - Math.sign(dx) * DEAD_ZONE;
-      const q = step * scaleOf(ev);
-      show(clamp(quantise(base + travel * q, q)));
-    };
-    const up = () => {
-      window.removeEventListener("pointermove", move);
-      window.removeEventListener("pointerup", up);
-      wrap.classList.remove("dragging");
-      document.body.classList.remove("scrubbing");
-      dragging = false;
-      if (moved) accept();
-      else { input.focus(); input.select(); }
-    };
-    window.addEventListener("pointermove", move);
-    window.addEventListener("pointerup", up);
+    dragPointer(e, {
+      move: (dx, _dy, ev) => {
+        if (!wrap.classList.contains("dragging")) {
+          wrap.classList.add("dragging");
+          // The cursor belongs to the whole window while a drag is on: the pointer leaves
+          // the field almost immediately and must not look like it has let go.
+          document.body.classList.add("scrubbing");
+        }
+        // The dead zone is taken off the travel rather than added to it: without that the
+        // value jumps three steps the moment a drag is recognised, which with Alt is thirty.
+        const travel = dx - Math.sign(dx) * DEAD_ZONE;
+        const q = step * scaleOf(ev);
+        show(clamp(quantise(base + travel * q, q)));
+      },
+      end: (moved) => {
+        wrap.classList.remove("dragging");
+        document.body.classList.remove("scrubbing");
+        dragging = false;
+        if (moved) accept();
+        else { input.focus(); input.select(); }
+      },
+    });
   });
 
   input.onkeydown = (e) => {
@@ -204,7 +196,8 @@ export function sliderField(value: number, commit: (v: number) => void, opts: Nu
   // The slider follows whatever the field follows, so a keyed value moves both.
   const live = opts.live && ((set: (v: number) => void) => opts.live!((v) => {
     set(v);
-    if (document.activeElement !== range) range.value = String(v);
+    const next = String(v);
+    if (document.activeElement !== range && range.value !== next) range.value = next;
   }));
   const num = numberField(value, commit, { ...opts, live, ...(opts.soft ? { min: undefined, max: undefined } : {}) });
   const input = num.querySelector("input")!;
@@ -267,24 +260,11 @@ export function keyStrip(o: KeyStripOpts): HTMLElement {
     key.addEventListener("pointerdown", (e) => {
       // The lane's own click is a seek; a key's is the key's.
       e.stopPropagation();
-      e.preventDefault();
-      const startX = e.clientX;
       let at = t;
-      let moved = false;
-      const move = (ev: PointerEvent) => {
-        if (!moved && Math.abs(ev.clientX - startX) < 3) return;
-        moved = true;
-        at = timeAt(ev.clientX);
-        key.style.left = pct(at);
-      };
-      const up = () => {
-        window.removeEventListener("pointermove", move);
-        window.removeEventListener("pointerup", up);
-        if (moved && at !== t) o.onMove(i, at);
-        else o.onSeek(t);
-      };
-      window.addEventListener("pointermove", move);
-      window.addEventListener("pointerup", up);
+      dragPointer(e, {
+        move: (_dx, _dy, ev) => { at = timeAt(ev.clientX); key.style.left = pct(at); },
+        end: (moved) => { if (moved && at !== t) o.onMove(i, at); else o.onSeek(t); },
+      });
     });
     track.appendChild(key);
   });

@@ -8,16 +8,16 @@
 
 import { api } from "../api";
 import { Cmd, run } from "../commands";
-import { button, checkbox, el, options, plural, row, selectInput } from "../dom";
+import { button, capitalize, checkbox, dragPointer, el, options, plural, row, selectInput } from "../dom";
 import { store, toast } from "../store";
 import type { BinItem, Clip, Cue, Ease, Effect, PatchOp, Project, VarSpec } from "../types";
 import { moveBinItem, placeBinItem } from "../edits";
 import type { Animation } from "../keyframes";
 import { animationOf } from "../keyframes";
-import { icon } from "../icons";
+import { icon, svgEl } from "../icons";
 import type { NumberOpts } from "../props";
 import { keyStrip, numberField, showNumber, sliderField, vectorField } from "../props";
-import { binItem, binPath, canPlace, canTimeWarp, childrenOf, expandPreset, hasAudio, isColorSource, isFileSource, isFolderSource, isOverlaySource, isSequenceSource, isTimedMedia, placementsOf, seqDuration, wouldNest } from "../types";
+import { ANIMATABLE, binItem, binPath, canPlace, canTimeWarp, childrenOf, covers, expandPreset, hasAudio, isColorSource, isFileSource, isFolderSource, isOverlaySource, isSequenceSource, isTimedMedia, placementsOf, seqDuration, wouldNest } from "../types";
 
 const presetsPromise = api.effectPresets().catch(() => []);
 
@@ -30,15 +30,13 @@ type PropSpec =
   | { kind: "vec"; label: string; parts: ({ key: string } & NumberOpts)[] }
   | { kind: "enum"; key: string; label?: string; options: string[] }
   | { kind: "text"; key: string; label?: string }
-  | { kind: "json"; key: string; label?: string }
-  /** This effect's keyframes: the row of buttons and the strip, and the fact that the
-   *  fields above it are then values *at the playhead*. What a key carries is the kind's
-   *  `ANIMATABLE` set; `min` is how many keys must remain. */
-  | { kind: "keys" };
+  | { kind: "json"; key: string; label?: string };
 
 /** Per effect kind: the value `+ add effect` inserts, and the properties it shows, in the
  *  order they are shown. Adding an effect kind is one row here plus the Rust model; a kind
- *  the daemon knows but this table does not renders with no fields.
+ *  the daemon knows but this table does not renders with no fields. A kind in `ANIMATABLE`
+ *  gets the keyframe row after its fields, and those fields then read and write the value
+ *  *at the playhead*.
  *
  *  The units are the model's, and the tooltips say so where it is not obvious: transform
  *  offsets are pixels from the centred position, a crop is a fraction of each edge, a
@@ -48,7 +46,7 @@ const EASES: Ease[] = ["linear", "hold", "smooth"];
 const BLEND_MODES = ["normal", "multiply", "screen", "overlay", "darken", "lighten", "color_dodge", "color_burn", "hard_light", "soft_light", "difference", "exclusion"];
 const EFFECTS: Partial<Record<Effect["type"], EffectSpec>> = {
   transform: {
-    add: { type: "transform", x: 0, y: 0, scale: 1, rotation: 0, opacity: 1, keyframes: [] },
+    add: { type: "transform", ...ANIMATABLE.transform, keyframes: [] },
     props: [
       { kind: "vec", label: "Position", parts: [
         { key: "x", tag: "X", axis: "x", step: 1, suffix: "px", title: "Pixels right of the centred position" },
@@ -58,11 +56,10 @@ const EFFECTS: Partial<Record<Effect["type"], EffectSpec>> = {
       { kind: "num", key: "scale", step: 0.01, min: 0.01, suffix: "×", title: "Multiplies the composition size" },
       { kind: "num", key: "rotation", step: 1, suffix: "°" },
       { kind: "slider", key: "opacity", min: 0, max: 1, step: 0.01 },
-      { kind: "keys" },
     ],
   },
   crop: {
-    add: { type: "crop", left: 0, right: 0, top: 0, bottom: 0, radius: 0 },
+    add: { type: "crop", ...ANIMATABLE.crop },
     props: [
       { kind: "vec", label: "Edges", parts: [
         { key: "left", tag: "L", axis: "x", step: 0.01, min: 0, max: 1, title: "Fraction cut off the left edge" },
@@ -71,13 +68,12 @@ const EFFECTS: Partial<Record<Effect["type"], EffectSpec>> = {
         { key: "bottom", tag: "B", axis: "w", step: 0.01, min: 0, max: 1, title: "Fraction cut off the bottom edge" },
       ] },
       { kind: "slider", key: "radius", min: 0, max: 1, step: 0.01, title: "Corner radius, as a fraction of the shorter side" },
-      { kind: "keys" },
     ],
   },
   blend: { add: { type: "blend", mode: "screen" }, props: [{ kind: "enum", key: "mode", options: BLEND_MODES }] },
-  blur: { add: { type: "blur", radius: 4 }, props: [{ kind: "num", key: "radius", step: 0.5, min: 0, suffix: "px" }, { kind: "keys" }] },
+  blur: { add: { type: "blur", radius: 4 }, props: [{ kind: "num", key: "radius", step: 0.5, min: 0, suffix: "px" }] },
   color: {
-    add: { type: "color", brightness: 0, contrast: 1, saturation: 1, gamma: 1 },
+    add: { type: "color", ...ANIMATABLE.color },
     // Neutral is 0, 1, 1, 1. The ranges are what the eye uses; `soft` lets a typed value
     // go past them, because the filter underneath takes more than the slider offers.
     props: [
@@ -85,7 +81,6 @@ const EFFECTS: Partial<Record<Effect["type"], EffectSpec>> = {
       { kind: "slider", key: "contrast", min: 0, max: 3, step: 0.01, soft: true },
       { kind: "slider", key: "saturation", min: 0, max: 3, step: 0.01, soft: true },
       { kind: "slider", key: "gamma", min: 0.1, max: 4, step: 0.01, soft: true },
-      { kind: "keys" },
     ],
   },
   fade: {
@@ -101,7 +96,6 @@ const EFFECTS: Partial<Record<Effect["type"], EffectSpec>> = {
     add: { type: "volume", keyframes: [{ t: 0, gain: 1 }] },
     props: [
       { kind: "num", key: "gain", step: 0.05, min: 0, title: "Gain at the playhead: 1 is the clip as recorded" },
-      { kind: "keys" },
     ],
   },
   mlt: { add: { type: "mlt", service: "frei0r.vignette", properties: {} }, props: [{ kind: "text", key: "service" }, { kind: "json", key: "properties" }] },
@@ -139,11 +133,11 @@ function curveView(anim: Animation, param: string, onParam: (p: string) => void,
   for (const k of anim.keys) { times.add(Math.max(0, k.t - 1e-6)); times.add(k.t); }
   const grid = [...times].sort((a, b) => a - b).map((t) => ({ t, v: anim.at(param, t) }));
   const samples = grid.map((g) => g.v);
-  // The value axis fits what is there — the curve and the keys — with a little room, and
-  // a flat line gets a unit of room either side rather than a division by nothing.
-  const values = [...samples, ...anim.keys.map((k) => (k[param] as number | undefined) ?? anim.at(param, k.t))];
-  let lo = Math.min(...values);
-  let hi = Math.max(...values);
+  // The value axis fits what is there — the curve, which passes through every key — with
+  // a little room, and a flat line gets a unit of room either side rather than a division
+  // by nothing.
+  let lo = Math.min(...samples);
+  let hi = Math.max(...samples);
   if (hi - lo < 1e-9) { lo -= 1; hi += 1; }
   const pad = (hi - lo) * 0.12;
   lo -= pad;
@@ -152,12 +146,8 @@ function curveView(anim: Animation, param: string, onParam: (p: string) => void,
   const yPct = (v: number) => (1 - (v - lo) / (hi - lo)) * 100;
 
   // The line is SVG stretched to the box; the points are HTML, so they keep their shape.
-  const svg = document.createElementNS(NS, "svg");
-  svg.setAttribute("viewBox", "0 0 100 100");
-  svg.setAttribute("preserveAspectRatio", "none");
-  const line = document.createElementNS(NS, "polyline");
-  line.setAttribute("points", grid.map((g) => `${xPct(g.t)},${yPct(g.v)}`).join(" "));
-  svg.appendChild(line);
+  const svg = svgEl("svg", { viewBox: "0 0 100 100", preserveAspectRatio: "none" });
+  svg.appendChild(svgEl("polyline", { points: grid.map((g) => `${xPct(g.t)},${yPct(g.v)}`).join(" ") }));
   plot.appendChild(svg);
 
   const head = el("div", "kf-plot-head");
@@ -167,36 +157,29 @@ function curveView(anim: Animation, param: string, onParam: (p: string) => void,
   plot.appendChild(head);
 
   anim.keys.forEach((k, i) => {
-    const v = (k[param] as number | undefined) ?? anim.at(param, k.t);
+    const v = anim.at(param, k.t);
     const point = el("div", `kf-point${k.ease && k.ease !== "linear" ? ` ${k.ease}` : ""}`);
     point.style.left = `${xPct(k.t)}%`;
     point.style.top = `${yPct(v)}%`;
     point.title = `${k.t.toFixed(2)}s · ${showNumber(v)} — drag: sideways for when, up and down for how much`;
     point.addEventListener("pointerdown", (e) => {
-      e.preventDefault();
       e.stopPropagation();
       const r = plot.getBoundingClientRect();
-      const startX = e.clientX;
-      const startY = e.clientY;
-      let moved = false;
       let at = k.t;
       let val = v;
-      const move = (ev: PointerEvent) => {
-        if (!moved && Math.abs(ev.clientX - startX) < 3 && Math.abs(ev.clientY - startY) < 3) return;
-        moved = true;
-        at = Math.min(dur, Math.max(0, k.t + ((ev.clientX - startX) / r.width) * dur));
-        val = Number((v - ((ev.clientY - startY) / r.height) * (hi - lo)).toFixed(3));
-        point.style.left = `${xPct(at)}%`;
-        point.style.top = `${yPct(val)}%`;
-      };
-      const up = () => {
-        window.removeEventListener("pointermove", move);
-        window.removeEventListener("pointerup", up);
-        if (moved) anim.updateKey(i, { t: at, [param]: val });
-        else anim.seek(k.t);
-      };
-      window.addEventListener("pointermove", move);
-      window.addEventListener("pointerup", up);
+      dragPointer(e, {
+        axes: "xy",
+        move: (dx, dy) => {
+          at = Math.min(dur, Math.max(0, k.t + (dx / r.width) * dur));
+          val = Number((v - (dy / r.height) * (hi - lo)).toFixed(3));
+          point.style.left = `${xPct(at)}%`;
+          point.style.top = `${yPct(val)}%`;
+        },
+        end: (moved) => {
+          if (moved) anim.updateKey(i, { t: at, [param]: val });
+          else anim.seek(k.t);
+        },
+      });
     });
     plot.appendChild(point);
   });
@@ -209,16 +192,14 @@ function curveView(anim: Animation, param: string, onParam: (p: string) => void,
   return wrap;
 }
 
-const NS = "http://www.w3.org/2000/svg";
-
 /** Whether the playhead is inside the selected clip. */
 function playheadInClip(): boolean {
   const f = store.findClip(store.selectedClip);
-  return !!f && store.state.playhead >= f.clip.start && store.state.playhead < f.clip.end;
+  return !!f && covers(f.clip, store.state.playhead);
 }
 
 /** A key as a label: `brightness` → `Brightness`, `in` → `In`. */
-const title = (key: string) => key.charAt(0).toUpperCase() + key.slice(1);
+const title = capitalize;
 
 /**
  * How a row reads and writes its effect. Without keyframes that is the effect's own
@@ -228,45 +209,42 @@ const title = (key: string) => key.charAt(0).toUpperCase() + key.slice(1);
 interface PropCtx {
   read: (key: string) => unknown;
   write: (key: string, v: unknown) => void;
-  /** This field is keyed, so it is a value in time rather than a value. */
-  animated: (key: string) => boolean;
-  /** …and the playhead is not in the clip, so there is no "now" to write to. */
-  frozen: boolean;
-  /** A setter for a keyed field to follow the playhead with, or undefined. */
-  live: (key: string) => NumberOpts["live"];
+  /** What a numeric field needs on top of its own spec when the value is keyed: it is
+   *  read-only while the playhead is outside the clip (there is no "now" to write to),
+   *  and it follows the playhead. Empty for a field that is not keyed. */
+  timed: (key: string) => Pick<NumberOpts, "readOnly" | "live">;
 }
 
-/** One property row, whatever shape it is. */
+/** One property row, whatever shape it is. What it edits is on the row: the panel styles
+ *  by it, and a test can name a property rather than counting divs. */
 function propRow(p: PropSpec, ctx: PropCtx): HTMLElement {
-  const row = build(p, ctx);
-  // What this row edits, on the row: the panel styles by it, and a test can name a
-  // property rather than counting divs.
-  row.dataset.prop = p.kind === "vec" ? p.label.toLowerCase() : p.kind === "keys" ? "keys" : p.key;
-  return row;
-}
-
-function build(p: PropSpec, ctx: PropCtx): HTMLDivElement {
-  const { read, write } = ctx;
+  const { read, write, timed } = ctx;
   const num = (key: string) => Number(read(key) ?? 0);
-  /** What a numeric field needs on top of its own spec when the value is keyed. */
-  const timed = (key: string) => ({ readOnly: ctx.animated(key) && ctx.frozen, live: ctx.live(key) });
+  const label = p.kind === "vec" ? p.label : p.label ?? title(p.key);
+  let input: HTMLElement;
   switch (p.kind) {
     case "vec":
-      return field(p.label, vectorField(p.parts.map((part) => ({ ...part, ...timed(part.key), value: num(part.key), commit: (v: number) => write(part.key, v) }))));
+      input = vectorField(p.parts.map((part) => ({ ...part, ...timed(part.key), value: num(part.key), commit: (v: number) => write(part.key, v) })));
+      break;
     case "num":
-      return field(p.label ?? title(p.key), numberField(num(p.key), (v) => write(p.key, v), { ...p, ...timed(p.key) }));
+      input = numberField(num(p.key), (v) => write(p.key, v), { ...p, ...timed(p.key) });
+      break;
     case "slider":
-      return field(p.label ?? title(p.key), sliderField(num(p.key), (v) => write(p.key, v), { ...p, ...timed(p.key) }));
+      input = sliderField(num(p.key), (v) => write(p.key, v), { ...p, ...timed(p.key) });
+      break;
     case "enum":
-      return field(p.label ?? title(p.key), selectInput(p.options.map((value) => ({ value })), String(read(p.key)), (v) => write(p.key, v)));
+      input = selectInput(p.options.map((value) => ({ value })), String(read(p.key)), (v) => write(p.key, v));
+      break;
     case "text":
-      return field(p.label ?? title(p.key), textInput(String(read(p.key) ?? ""), (v) => write(p.key, v)));
+      input = textInput(String(read(p.key) ?? ""), (v) => write(p.key, v));
+      break;
     case "json":
-      return field(p.label ?? title(p.key), jsonInput(read(p.key) ?? null, (v) => write(p.key, v)));
-    case "keys":
-      // Built by `keyRow`, which needs the Animation rather than one field's value.
-      return el("div");
+      input = jsonInput(read(p.key) ?? null, (v) => write(p.key, v));
+      break;
   }
+  const row = field(label, input);
+  row.dataset.prop = p.kind === "vec" ? p.label.toLowerCase() : p.key;
+  return row;
 }
 
 /**
@@ -297,10 +275,16 @@ function keyRow(anim: Animation, id: string, follow: (fn: () => void) => void): 
     else openCurves.set(id, anim.fields[0]);
     showCurve();
   }, "Show this effect's values over the clip as a graph, with the keys to drag");
+  // One follower for whichever curve is showing: the view is rebuilt on every toggle and
+  // parameter pick, and each build must not leave its predecessor's playhead marker
+  // following along behind a detached graph.
+  let curveFollower: (() => void) | null = null;
+  follow(() => curveFollower?.());
   const showCurve = () => {
     const param = openCurves.get(id);
     curve.classList.toggle("on", !!param);
-    curveHost.replaceChildren(...(param ? [curveView(anim, param, (p) => { openCurves.set(id, p); showCurve(); }, follow)] : []));
+    curveFollower = null;
+    curveHost.replaceChildren(...(param ? [curveView(anim, param, (p) => { openCurves.set(id, p); showCurve(); }, (fn) => { curveFollower = fn; })] : []));
   };
   // No caption: the strip under it says what these are, and the width is spoken for.
   tools.append(prev, add, del, next, curve, el("span", "spacer"));
@@ -346,7 +330,7 @@ function keyRow(anim: Animation, id: string, follow: (fn: () => void) => void): 
     add.disabled = !anim.inside || i >= 0;
     del.disabled = !anim.inside || i < 0 || anim.keys.length <= anim.min;
     ease.disabled = i < 0 || last;
-    ease.value = anim.ease;
+    ease.value = anim.keys[i]?.ease ?? "linear";
     hint.textContent = !anim.inside
       ? "The playhead is outside this clip — click the strip, or use ‹ ›, to edit a key."
       : i < 0
@@ -563,26 +547,26 @@ export class Inspector {
       const replace = (value: unknown, note: string) => void store.patch([{ op: "replace", path: `${path}/effects/${ei}`, value }], `${e.type} ${note}`);
       const set = (key: string, v: unknown) => replace({ ...e, [key]: v }, `${key}`);
 
-      // Keyframes, when this kind has them: the fields above the strip then read and write
-      // the value *at the playhead* rather than a static one.
-      const keyed = (spec.props ?? []).some((p) => p.kind === "keys");
-      const anim = keyed ? animationOf(clip.id, ei) ?? undefined : undefined;
-      const timed = (key: string) => !!anim?.animated && anim.fields.includes(key);
+      // Keyframes, when this kind takes them: an animatable field reads through the one
+      // sampler (which is the static value until there are keys), and once there are keys
+      // it writes the value *at the playhead* rather than a static one.
+      const anim = ANIMATABLE[e.type] ? animationOf(clip.id, ei) : null;
+      const animatable = (key: string) => !!anim && anim.fields.includes(key);
+      const timed = (key: string) => animatable(key) && anim!.animated;
       // Auto-key: with it on, a change to any animatable parameter is a key at the
       // playhead, whether or not the effect had keys — Godot's record button. Read when
       // the write happens, not when the row is built, so the toggle needs no re-render.
-      const recording = (key: string) => store.state.autoKey && !!anim && anim.fields.includes(key) && anim.inside;
+      const recording = (key: string) => store.state.autoKey && animatable(key) && anim!.inside;
       const ctx: PropCtx = {
-        read: (key) => (timed(key) ? anim!.at(key) : cur(key)),
+        read: (key) => (animatable(key) ? anim!.at(key) : cur(key)),
         write: (key, v) => (timed(key) || recording(key) ? anim!.setAt(key, Number(v)) : set(key, v)),
-        animated: timed,
-        frozen: !!anim && !anim.inside,
         // A keyed field follows the playhead: one subscription per effect updates the
         // values in place, because re-rendering this panel 25 times a second is what
         // `store.select` exists to prevent.
-        live: (key) => (timed(key) ? (set) => followers.push(() => set(anim!.at(key))) : undefined),
+        timed: (key) => (timed(key) ? { readOnly: !anim!.inside, live: (set) => followers.push(() => set(anim!.at(key))) } : {}),
       };
-      for (const p of spec.props ?? []) box.appendChild(p.kind === "keys" ? keyRow(anim!, `${clip.id}/${ei}`, (fn) => followers.push(fn)) : propRow(p, ctx));
+      for (const p of spec.props ?? []) box.appendChild(propRow(p, ctx));
+      if (anim) box.appendChild(keyRow(anim, `${clip.id}/${ei}`, (fn) => followers.push(fn)));
       this.host.appendChild(box);
     });
     const add = el("select");
@@ -639,12 +623,6 @@ function field(label: string, input: HTMLElement): HTMLDivElement {
   return row;
 }
 
-/** Every plain number in the panel, so a cue's start and a preset's parameter are dragged
- *  the way an effect's fields are. */
-function numInput(value: number, onChange: (v: number) => void, step = 1): HTMLElement {
-  return numberField(value, onChange, { step });
-}
-
 function textInput(value: string, onChange: (v: string) => void): HTMLInputElement {
   const i = el("input");
   i.type = "text";
@@ -668,8 +646,8 @@ function cuesInput(cues: Cue[], onChange: (v: Cue[]) => void): HTMLElement {
   const drop = (i: number) => onChange(cues.filter((_, j) => j !== i));
   cues.forEach((c, i) => {
     wrap.appendChild(row("cue-row",
-      numInput(c.start, (v) => change(i, { start: v }), 0.01),
-      numInput(c.end, (v) => change(i, { end: v }), 0.01),
+      numberField(c.start, (v) => change(i, { start: v }), { step: 0.01 }),
+      numberField(c.end, (v) => change(i, { end: v }), { step: 0.01 }),
       textInput(c.text, (v) => change(i, { text: v })),
       button("×", () => drop(i), "Remove this cue"),
     ));

@@ -649,7 +649,16 @@ fn anim(keys: &[Keyframe], at: &dyn Fn(f64) -> i64, stat: String, value_of: impl
     if keys.is_empty() {
         return stat;
     }
-    keys.iter().map(|k| format!("{}{}{}", at(k.t), k.ease.op(), value_of(k))).collect::<Vec<_>>().join(";")
+    keys.iter().map(|k| format!("{}{}{}", at(k.t), ease_op(k.ease), value_of(k))).collect::<Vec<_>>().join(";")
+}
+
+/// The operator MLT writes an ease with in an animation string.
+fn ease_op(ease: Ease) -> &'static str {
+    match ease {
+        Ease::Linear => "=",
+        Ease::Hold => "|=",
+        Ease::Smooth => "~=",
+    }
 }
 
 /// qtcrop `rect` = "left%/top%:width%xheight%", from fractions cut off each edge.

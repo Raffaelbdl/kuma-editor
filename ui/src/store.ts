@@ -1,6 +1,9 @@
 import { api, subscribeEvents } from "./api";
 import type { Clip, DaemonEvent, Job, PatchOp, Project, TemplateInfo, Track, TrackKind } from "./types";
-import { allClips, fpsValue, freeId, isOverlaySource, seqDuration, seqPath, sequenceIds, sequenceOf } from "./types";
+import { allClips, clipPathOf, fpsValue, freeId, isOverlaySource, nearest, seqDuration, seqPath, sequenceIds, sequenceOf } from "./types";
+
+/** A clip found in the project: where it is, as the record every edit of it starts from. */
+export interface Found { seq: string; track: Track; ti: number; clip: Clip; ci: number }
 
 /**
  * What the inspector is showing. A clip and a bin entry are different things to inspect,
@@ -229,16 +232,18 @@ class Store {
     this.set({ selection: kind === "clip" ? { kind: "clip", ids: [id] } : { kind: "bin", id } });
   }
 
-  /** Point the inspector at several clips at once — what a paste of several leaves behind. */
-  selectClips(ids: string[]) {
-    this.set({ selection: ids.length ? { kind: "clip", ids } : null });
+  /** Point the inspector at several clips at once — what a paste of several leaves behind —
+   *  and, given one, aim the next paste at a track in the same update: clicking a clip is
+   *  also clicking its track, and one notification is what every panel should get for it. */
+  selectClips(ids: string[], track?: string) {
+    this.set({ selection: ids.length ? { kind: "clip", ids } : null, ...(track === undefined ? {} : { track }) });
   }
 
   /** Add a clip to the selection, or take it out again: Ctrl/Cmd- or Shift-click. The one
    *  just clicked goes last, so it is the one the inspector edits. */
-  toggleClip(id: string) {
+  toggleClip(id: string, track?: string) {
     const ids = this.selectedClips.filter((x) => x !== id);
-    this.selectClips(ids.length === this.selectedClips.length ? [...ids, id] : ids);
+    this.selectClips(ids.length === this.selectedClips.length ? [...ids, id] : ids, track);
   }
 
   /** Aim the next paste at a track. Clicking a track is the whole gesture: a paste needs
@@ -308,7 +313,7 @@ class Store {
   /** Find a clip anywhere in the project; ids are unique across every sequence. Stops at
    *  the match rather than building the whole project's clip list: the preview calls this
    *  for every visible overlay on every frame. */
-  findClip(id: string | null): { seq: string; track: Track; ti: number; clip: Clip; ci: number } | null {
+  findClip(id: string | null): Found | null {
     const p = this.state.project;
     if (!p || !id) return null;
     for (const seq of sequenceIds(p)) {
@@ -321,9 +326,19 @@ class Store {
     return null;
   }
 
+  /** The clips of `ids` that are in the project, in the same order; the rest are skipped. */
+  findClips(ids: string[]): Found[] {
+    return ids.map((id) => this.findClip(id)).filter((f): f is Found => f !== null);
+  }
+
+  /** The selected clips as records, in click order. */
+  get selectedFound(): Found[] {
+    return this.findClips(this.selectedClips);
+  }
+
   clipPath(id: string): string | null {
     const f = this.findClip(id);
-    return f ? `${seqPath(f.seq)}/tracks/${f.ti}/clips/${f.ci}` : null;
+    return f ? clipPathOf(f) : null;
   }
 
   /** A clip id free across the whole project: clip ids are global, not per sequence.
@@ -339,27 +354,27 @@ class Store {
     return freeId(prefix, [...sequenceIds(p).flatMap((id) => sequenceOf(p, id)!.tracks.map((t) => t.id)), ...minted]);
   }
 
+  /** Half a frame: the tolerance for "on the same frame", since the playhead is on the
+   *  frame grid and a keyframe or a cut need not be. */
+  get halfFrame(): number {
+    return 0.5 / this.fps;
+  }
+
   /** Round to the frame grid. */
   snap(t: number): number {
     const f = this.fps;
     return Math.max(0, Math.round(t * f) / f);
   }
 
-  /**
-   * Jump to the nearest cut before or after the playhead — Alt+←/→. The cuts are every
-   * clip start and end on the sequence on screen, whichever track they are on, plus 0, so
-   * this walks the timeline the way an editor reads it: by where something changes.
-   *
-   * Nothing that way means staying put, rather than sliding to the end of a clip that is
-   * not there. The half-frame margin keeps the playhead from picking the edge it is
-   * already standing on, which `seek`'s rounding would put it back on.
-   */
+  /** Jump to the nearest cut before or after the playhead — Alt+←/→. The cuts are every
+   *  clip start and end on the sequence on screen, whichever track they are on, plus 0, so
+   *  this walks the timeline the way an editor reads it: by where something changes.
+   *  Nothing that way means staying put, rather than sliding to the end of a clip that is
+   *  not there. */
   seekEdge(dir: -1 | 1) {
-    const p = this.state.playhead;
-    const margin = 0.5 / this.fps;
     const edges = [0, ...this.tracks.flatMap((t) => t.clips.flatMap((c) => [c.start, c.end]))];
-    const ahead = edges.filter((e) => (dir < 0 ? e < p - margin : e > p + margin));
-    if (ahead.length) this.seek(dir < 0 ? Math.max(...ahead) : Math.min(...ahead));
+    const t = nearest(edges, this.state.playhead, dir, this.halfFrame);
+    if (t !== undefined) this.seek(t);
   }
 
   /** Move the playhead; it may sit past the last clip (that is where new clips go). */

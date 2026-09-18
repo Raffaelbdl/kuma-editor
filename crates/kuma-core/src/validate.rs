@@ -266,29 +266,31 @@ fn check_sequence<'a>(
                 // Then the bounds each kind has, checked on every sample the effect will be
                 // evaluated at: the statics, and each key as the compiler reads it.
                 match e {
-                    Effect::Crop { left, right, top, bottom, radius, keyframes } => {
-                        for (path, v) in samples(&ep, keyframes, &[("left", *left), ("right", *right), ("top", *top), ("bottom", *bottom), ("radius", *radius)]) {
-                            if v[0] + v[1] >= 1.0 || v[2] + v[3] >= 1.0 {
+                    Effect::Crop { left, right, top, bottom, radius, .. } => {
+                        for (path, k) in samples(&ep, e) {
+                            let (l, r, t, b, rad) = (at(k, "left", *left), at(k, "right", *right), at(k, "top", *top), at(k, "bottom", *bottom), at(k, "radius", *radius));
+                            if l + r >= 1.0 || t + b >= 1.0 {
                                 issues.push(Issue::error(path.clone(), "crop leaves nothing visible"));
                             }
-                            if v.iter().any(|x| *x < 0.0 || *x > 1.0) {
+                            if [l, r, t, b, rad].iter().any(|x| *x < 0.0 || *x > 1.0) {
                                 issues.push(Issue::error(path, "crop values must be within 0..1"));
                             }
                         }
                     }
-                    Effect::Transform { keyframes, opacity, scale, .. } => {
-                        for (path, v) in samples(&ep, keyframes, &[("opacity", *opacity), ("scale", *scale)]) {
-                            if !(0.0..=1.0).contains(&v[0]) {
+                    Effect::Transform { opacity, scale, .. } => {
+                        for (path, k) in samples(&ep, e) {
+                            if !(0.0..=1.0).contains(&at(k, "opacity", *opacity)) {
                                 issues.push(Issue::error(format!("{path}/opacity"), "opacity must be 0..1"));
                             }
-                            if !(v[1].is_finite() && v[1] > 0.0) {
+                            let s = at(k, "scale", *scale);
+                            if !(s.is_finite() && s > 0.0) {
                                 issues.push(Issue::error(format!("{path}/scale"), "scale must be > 0"));
                             }
                         }
                     }
-                    Effect::Blur { radius, keyframes } => {
-                        for (path, v) in samples(&ep, keyframes, &[("radius", *radius)]) {
-                            if v[0] < 0.0 {
+                    Effect::Blur { radius, .. } => {
+                        for (path, k) in samples(&ep, e) {
+                            if at(k, "radius", *radius) < 0.0 {
                                 issues.push(Issue::error(path, "blur radius must be >= 0"));
                             }
                         }
@@ -416,19 +418,21 @@ fn source_duration(p: &Project, c: &Clip) -> Option<f64> {
     }
 }
 
-/// Keyframe times must be non-negative and sorted; beyond the clip end they are pointless.
-/// An effect's parameters at every point it is evaluated — its static values, then each
-/// keyframe with the statics filling in what the key leaves out — each paired with the
-/// path an issue about that sample should name. Bounds are checked on these, so a key
-/// cannot smuggle in a value the static field would have been refused for.
-fn samples(ep: &str, keys: &[Keyframe], stat: &[(&str, f64)]) -> Vec<(String, Vec<f64>)> {
-    let mut out = vec![(ep.to_string(), stat.iter().map(|(_, v)| *v).collect())];
-    for (ki, k) in keys.iter().enumerate() {
-        out.push((format!("{ep}/keyframes/{ki}"), stat.iter().map(|(n, v)| k.or(n, *v)).collect()));
-    }
-    out
+/// Every point an effect is evaluated at — its static values (`None`), then each keyframe
+/// — with the path an issue about that sample should name. Read a parameter there with
+/// [`at`]: bounds are checked on every sample, so a key cannot smuggle in a value the
+/// static field would have been refused for.
+fn samples<'a>(ep: &'a str, e: &'a Effect) -> impl Iterator<Item = (String, Option<&'a Keyframe>)> + 'a {
+    std::iter::once((ep.to_string(), None)).chain(e.keyframes().iter().enumerate().map(move |(ki, k)| (format!("{ep}/keyframes/{ki}"), Some(k))))
 }
 
+/// A parameter at a sample: the static value, or what the key says with the static
+/// filling in what it leaves out — exactly as the compiler reads it.
+fn at(k: Option<&Keyframe>, name: &str, stat: f64) -> f64 {
+    k.map_or(stat, |k| k.or(name, stat))
+}
+
+/// Keyframe times must be non-negative and sorted; beyond the clip end they are pointless.
 fn check_keyframes(issues: &mut Vec<Issue>, ep: &str, c: &Clip, times: impl Iterator<Item = f64>) {
     let mut last = f64::NEG_INFINITY;
     for (ki, t) in times.enumerate() {

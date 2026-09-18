@@ -1,6 +1,6 @@
 // Timeline: tracks, clips (move/trim), transitions, playhead, zoom.
 
-import { button, dragPayload, el } from "../dom";
+import { button, dragPayload, dragPointer, el } from "../dom";
 import { placeBinItem, addFromLibrary } from "../edits";
 import { animationOf, keysOf } from "../keyframes";
 import { store } from "../store";
@@ -122,7 +122,7 @@ export class Timeline {
     const lane = el("div", "tl-lane");
     // An empty lane is the plainest way to say "this track, this moment": it aims the
     // paste and takes the playhead with it, which is both halves of where a paste goes.
-    lane.addEventListener("pointerdown", (e) => { if (e.target === lane) { store.set({ selection: null, track: t.id }); this.scrub(e); } });
+    lane.addEventListener("pointerdown", (e) => { if (e.target === lane) { store.selectClips([], t.id); this.scrub(e); } });
     for (const c of t.clips) lane.appendChild(this.clipEl(p, t, ti, c));
     for (const x of t.transitions) {
       const b = t.clips.find((c) => c.id === x.to);
@@ -165,25 +165,20 @@ export class Timeline {
         key.addEventListener("pointerdown", (e) => {
           // This press is the key's: the clip under it must not start moving.
           e.stopPropagation();
-          e.preventDefault();
+          const anim = animationOf(c.id, k.index);
+          if (!anim) return;
           const zoom = store.state.zoom;
-          const startX = e.clientX;
           let at = t;
-          let moved = false;
-          const move = (ev: PointerEvent) => {
-            if (!moved && Math.abs(ev.clientX - startX) < 3) return;
-            moved = true;
-            at = store.snap(Math.min(c.end - c.start, Math.max(0, t + (ev.clientX - startX) / zoom)));
-            key.style.left = `${at * zoom}px`;
-          };
-          const up = () => {
-            window.removeEventListener("pointermove", move);
-            window.removeEventListener("pointerup", up);
-            if (moved) animationOf(c.id, k.index)?.moveKey(i, at);
-            else store.seek(c.start + t);
-          };
-          window.addEventListener("pointermove", move);
-          window.addEventListener("pointerup", up);
+          dragPointer(e, {
+            move: (dx) => {
+              at = anim.clampT(t + dx / zoom);
+              key.style.left = `${at * zoom}px`;
+            },
+            end: (moved) => {
+              if (moved) anim.moveKey(i, at);
+              else store.seek(c.start + t);
+            },
+          });
         });
         lane.appendChild(key);
       });
@@ -193,17 +188,16 @@ export class Timeline {
       e.stopPropagation();
       // Clicking a clip is also clicking the track it is on, so a copy followed by a
       // paste with nothing else clicked lands back on the track it came from.
-      store.focusTrack(t.id);
       // Ctrl/Cmd or Shift builds a selection of several clips, and does not drag: adding a
       // clip to a selection and moving one are different intentions, and a drag that
       // started on the modifier would move one clip out of a group that looks joined.
       if (e.ctrlKey || e.metaKey || e.shiftKey) {
-        store.toggleClip(c.id);
+        store.toggleClip(c.id, t.id);
         return;
       }
       const kind = e.target === hl ? "trim-l" : e.target === hr ? "trim-r" : "move";
       this.beginDrag(e, kind, c, ti, box);
-      store.selectItem("clip", c.id);
+      store.selectClips([c.id], t.id);
     });
     return box;
   }

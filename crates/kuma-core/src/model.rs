@@ -537,10 +537,10 @@ impl Clip {
     }
 }
 
-/// How a keyframe reaches the **next** one — MLT's own three, and MLT's own rule: the
-/// interpolation of a segment is decided by the keyframe that opens it, so the last one's
-/// `ease` never means anything. Absent is `linear`, which is what every keyframe did
-/// before this existed.
+/// How a keyframe reaches the **next** one. The shape of a segment is decided by the
+/// keyframe that opens it, so the last one's `ease` never means anything. Absent is
+/// `linear`, which is what every keyframe did before this existed. (These are the three
+/// shapes the render engine interpolates natively; how it spells them is the compiler's.)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Ease {
@@ -554,15 +554,6 @@ pub enum Ease {
 }
 
 impl Ease {
-    /// The operator MLT writes it with in an animation string.
-    pub fn op(self) -> &'static str {
-        match self {
-            Ease::Linear => "=",
-            Ease::Hold => "|=",
-            Ease::Smooth => "~=",
-        }
-    }
-
     /// Serialization skips the default, so a project that does not ease is unchanged by
     /// this field existing.
     pub fn is_linear(&self) -> bool {

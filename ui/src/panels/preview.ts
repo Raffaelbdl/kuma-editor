@@ -13,7 +13,7 @@ import { Cmd, command } from "../commands";
 import { seekOverlay } from "../overlay";
 import { SEQUENCE_TAB, store, toast } from "../store";
 import type { Clip, Project } from "../types";
-import { binItem, isOverlayClip, paramAt, transformAt } from "../types";
+import { binItem, covers, isOverlayClip, paramAt, transformAt } from "../types";
 
 interface OverlayView {
   clipId: string;
@@ -363,7 +363,7 @@ export class Preview {
       const f = store.findClip(v.clipId);
       if (!f) continue;
       const c = f.clip;
-      const visible = playhead >= c.start && playhead < c.end;
+      const visible = covers(c, playhead);
       v.wrap.style.display = visible ? "" : "none";
       if (!visible || !v.ready) continue;
       const local = (playhead - c.start) * Math.abs(c.speed || 1);

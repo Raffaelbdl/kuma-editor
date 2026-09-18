@@ -29,20 +29,19 @@ const ICONS = {
 
 export type IconName = keyof typeof ICONS;
 
+/** An SVG element with its attributes — the namespaced `el`, for the icons here and the
+ *  odd graph elsewhere. */
+export function svgEl<K extends keyof SVGElementTagNameMap>(tag: K, attrs: Record<string, string | number> = {}): SVGElementTagNameMap[K] {
+  const node = document.createElementNS(NS, tag);
+  for (const [k, v] of Object.entries(attrs)) node.setAttribute(k, String(v));
+  return node;
+}
+
 /** One icon, `size` CSS pixels square, in the colour of the text around it. */
 export function icon(name: IconName, size = 14): SVGSVGElement {
-  const svg = document.createElementNS(NS, "svg");
-  svg.setAttribute("viewBox", "0 0 24 24");
-  svg.setAttribute("width", String(size));
-  svg.setAttribute("height", String(size));
-  svg.setAttribute("fill", "currentColor");
-  // Decoration: what the button does is in its `title`, and a screen reader reading
-  // "image" between them would only get in the way.
-  svg.setAttribute("aria-hidden", "true");
-  for (const [tag, attrs] of ICONS[name]) {
-    const node = document.createElementNS(NS, tag);
-    for (const [k, v] of Object.entries(attrs)) node.setAttribute(k, String(v));
-    svg.appendChild(node);
-  }
+  // Decoration (`aria-hidden`): what the button does is in its `title`, and a screen
+  // reader reading "image" between them would only get in the way.
+  const svg = svgEl("svg", { viewBox: "0 0 24 24", width: size, height: size, fill: "currentColor", "aria-hidden": "true" });
+  for (const [tag, attrs] of ICONS[name]) svg.appendChild(svgEl(tag as keyof SVGElementTagNameMap, attrs));
   return svg;
 }

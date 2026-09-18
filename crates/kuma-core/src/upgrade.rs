@@ -24,19 +24,20 @@ pub fn parse_project(text: &str) -> serde_json::Result<Project> {
 /// left exactly as it is: the validator is what says so, and it says it in words.
 fn upgrade(v: &mut Value) {
     // A missing version means "the current one" to serde, so it means that here too.
-    let Some(version) = v.get("version").and_then(Value::as_u64) else { return };
+    let Some(mut version) = v.get("version").and_then(Value::as_u64) else { return };
     if version == 1 {
         // 1 → 2: keyframes gained `ease`, whose default — `linear` — is exactly what a
         // version 1 keyframe always did. So nothing in the document has to change, and
         // the stamp is the whole migration.
-        v["version"] = Value::from(2);
+        version = 2;
     }
-    if v["version"] == 2 {
+    if version == 2 {
         // 2 → 3: crop, blur and color took `keyframes`, defaulting to none; and a
         // transform's or volume's keyframes were already the shape the shared type
         // reads. A stamp again.
-        v["version"] = Value::from(3);
+        version = 3;
     }
+    v["version"] = Value::from(version);
 }
 
 #[cfg(test)]

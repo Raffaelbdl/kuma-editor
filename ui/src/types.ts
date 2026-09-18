@@ -286,6 +286,10 @@ export const canTimeWarp = (item: BinItem | undefined): boolean => !item || item
 const segment = (id: string) => id.replace(/~/g, "~0").replace(/\//g, "~1");
 export const binPath = (binId: string) => `/bin/${segment(binId)}`;
 export const seqPath = (seqId: string) => `${binPath(seqId)}/source`;
+/** …and to a found clip's track and to the clip itself, from where `findClip` says it is:
+ *  the one spelling of `/bin/<seq>/source/tracks/<i>/clips/<j>`. */
+export const trackPathOf = (f: { seq: string; ti: number }): string => `${seqPath(f.seq)}/tracks/${f.ti}`;
+export const clipPathOf = (f: { seq: string; ti: number; ci: number }): string => `${trackPathOf(f)}/clips/${f.ci}`;
 
 /** The entry a clip plays, if it resolves. */
 export const binItem = (p: Project, c: Clip): BinItem | undefined => p.bin[c.bin];
@@ -322,9 +326,6 @@ export function freeId(prefix: string, taken: Iterable<string>): string {
   return `${prefix}${n}`;
 }
 
-/** One point of a scalar keyframe track: when, what, and how it reaches the next one. */
-export interface TrackPoint { t: number; v: number; ease?: Ease }
-
 /** Catmull-Rom through four values — MLT's `~=`, and the same formula, so the preview
  *  curves the way the render will. */
 const catmull = (p0: number, p1: number, p2: number, p3: number, u: number) => {
@@ -336,22 +337,23 @@ const catmull = (p0: number, p1: number, p2: number, p3: number, u: number) => {
  * Sample a scalar track at `t` (seconds from the clip's start), reading it the way MLT
  * reads an animation string: **the preceding key's ease decides the segment** — held to
  * the next key, a straight line to it, or a curve through the neighbours. Before the first
- * key and after the last, the track holds.
+ * key and after the last, the track holds. `value` reads a key's value, so the keys are
+ * sampled as they are rather than copied first: the preview asks this per parameter per
+ * frame.
  */
-export function sampleTrack(pts: TrackPoint[], t: number): number {
-  if (!pts.length) return 0;
-  if (t <= pts[0].t) return pts[0].v;
+export function sampleTrack<K extends { t: number; ease?: Ease }>(keys: K[], t: number, value: (k: K) => number): number {
+  if (!keys.length) return 0;
+  if (t <= keys[0].t) return value(keys[0]);
   // At a key's own time the value is the key's: the segment it *opens*, not the one
   // that ends there. This is the whole difference after a hold, and `>` had it wrong.
   let i = 0;
-  while (i < pts.length - 1 && t >= pts[i + 1].t - 1e-9) i++;
-  const a = pts[i];
-  const b = pts[i + 1];
-  if (!b) return a.v;
-  if (a.ease === "hold") return a.v;
+  while (i < keys.length - 1 && t >= keys[i + 1].t - 1e-9) i++;
+  const a = keys[i];
+  const b = keys[i + 1];
+  if (!b || a.ease === "hold") return value(a);
   const u = (t - a.t) / Math.max(1e-9, b.t - a.t);
-  if (a.ease !== "smooth") return a.v + (b.v - a.v) * u;
-  return catmull((pts[i - 1] ?? a).v, a.v, b.v, (pts[i + 2] ?? b).v, u);
+  if (a.ease !== "smooth") return value(a) + (value(b) - value(a)) * u;
+  return catmull(value(keys[i - 1] ?? a), value(a), value(b), value(keys[i + 2] ?? b), u);
 }
 
 /** The ease in force at `t`: the key that opens the segment `t` falls in. */
@@ -385,7 +387,18 @@ export function paramAt(e: Effect, param: string, local: number): number {
   const stat = staticOf(e, param);
   const kfs = keyframesOf(e);
   if (!kfs.length) return stat;
-  return sampleTrack(kfs.map((k) => ({ t: k.t, v: (k[param] as number | undefined) ?? stat, ease: k.ease })), local);
+  return sampleTrack(kfs, local, (k) => (k[param] as number | undefined) ?? stat);
+}
+
+/** Whether `t` falls inside the clip: `end` is exclusive, as everywhere in the model. */
+export const covers = (c: { start: number; end: number }, t: number): boolean => t >= c.start && t < c.end;
+
+/** The nearest of `times` that way from `from`, ignoring any within `margin` of it — the
+ *  one the playhead may already be standing on. Undefined when there is none. */
+export function nearest(times: number[], from: number, dir: -1 | 1, margin: number): number | undefined {
+  const ahead = dir < 0 ? times.filter((t) => t < from - margin) : times.filter((t) => t > from + margin);
+  if (!ahead.length) return undefined;
+  return dir < 0 ? Math.max(...ahead) : Math.min(...ahead);
 }
 
 /** Every animatable parameter at `local`, plus the ease in force there: what a key inserted

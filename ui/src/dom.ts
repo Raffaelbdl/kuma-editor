@@ -35,7 +35,43 @@ export function checkbox(checked: boolean, onChange?: (v: boolean) => void): HTM
 /** `3 clips`, `1 entry`, `2 entries`. */
 export const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 
-/** A `<select>` with its change handler, the way `numInput`/`textInput` wrap theirs. */
+/** `brightness` → `Brightness`: a key or a kind as a label. */
+export const capitalize = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
+
+/** Under this many pixels a press is a click, not a drag. */
+export const DEAD_ZONE = 3;
+
+/**
+ * The press-drag-or-click gesture, from a `pointerdown`: the window's `pointermove` and
+ * `pointerup` are taken for the duration and let go on release, and a press that travels
+ * under the dead zone is reported as a click rather than as a drag of nothing. `move` gets
+ * the travel from the press, and `end` whether there was any — a drag commits, a click
+ * does what a click does. The press itself is taken (no focus, no text selection) unless
+ * the caller says otherwise. Most drags here are sideways — a time, a number — so only
+ * `dx` counts towards the dead zone unless `axes` says both do.
+ */
+export function dragPointer(e: PointerEvent, h: { move: (dx: number, dy: number, ev: PointerEvent) => void; end: (moved: boolean) => void; axes?: "x" | "xy"; keepDefault?: boolean }): void {
+  if (!h.keepDefault) e.preventDefault();
+  const startX = e.clientX;
+  const startY = e.clientY;
+  let moved = false;
+  const move = (ev: PointerEvent) => {
+    const dx = ev.clientX - startX;
+    const dy = ev.clientY - startY;
+    if (!moved && Math.abs(dx) < DEAD_ZONE && (h.axes !== "xy" || Math.abs(dy) < DEAD_ZONE)) return;
+    moved = true;
+    h.move(dx, dy, ev);
+  };
+  const up = () => {
+    window.removeEventListener("pointermove", move);
+    window.removeEventListener("pointerup", up);
+    h.end(moved);
+  };
+  window.addEventListener("pointermove", move);
+  window.addEventListener("pointerup", up);
+}
+
+/** A `<select>` with its change handler, the way `textInput` wraps its own. */
 export function selectInput(items: { value: string; label?: string; title?: string }[], selected: string | undefined, onChange: (v: string) => void, placeholder?: string): HTMLSelectElement {
   const s = el("select");
   options(s, items, selected, placeholder);

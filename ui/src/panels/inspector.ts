@@ -12,25 +12,113 @@ import { button, checkbox, el, options, plural, row, selectInput } from "../dom"
 import { store, toast } from "../store";
 import type { BinItem, Clip, Cue, Effect, PatchOp, Project, VarSpec } from "../types";
 import { moveBinItem, placeBinItem } from "../edits";
+import type { NumberOpts } from "../props";
+import { numberField, sliderField, vectorField } from "../props";
 import { binItem, binPath, canPlace, canTimeWarp, childrenOf, expandPreset, hasAudio, isColorSource, isFileSource, isFolderSource, isOverlaySource, isSequenceSource, isTimedMedia, placementsOf, seqDuration, wouldNest } from "../types";
 
 const presetsPromise = api.effectPresets().catch(() => []);
 
-/** Per effect kind: the value to add and how each field is edited (numeric with a step,
- *  a choice, free text, or JSON). Adding an effect kind is one row here plus the Rust
- *  model; a kind the daemon knows but this table does not renders with no fields. */
-interface EffectSpec { add: Effect; num?: [string, number][]; enum?: [string, string[]][]; text?: string[]; json?: string[] }
+/** What one field of an effect looks like. The shapes come from `props.ts` — a number you
+ *  drag, a vector wearing its axis colours, a bounded amount with a slider — and this says
+ *  which shape each field is. Nothing else in the panel needs to know. */
+type PropSpec =
+  | ({ kind: "num"; key: string; label?: string } & NumberOpts)
+  | ({ kind: "slider"; key: string; label?: string; min: number; max: number; /** The range is a suggestion, not a limit: the field may be typed past it. */ soft?: boolean } & NumberOpts)
+  | { kind: "vec"; label: string; parts: ({ key: string } & NumberOpts)[] }
+  | { kind: "enum"; key: string; label?: string; options: string[] }
+  | { kind: "text"; key: string; label?: string }
+  | { kind: "json"; key: string; label?: string };
+
+/** Per effect kind: the value `+ add effect` inserts, and the properties it shows, in the
+ *  order they are shown. Adding an effect kind is one row here plus the Rust model; a kind
+ *  the daemon knows but this table does not renders with no fields.
+ *
+ *  The units are the model's, and the tooltips say so where it is not obvious: transform
+ *  offsets are pixels from the centred position, a crop is a fraction of each edge, a
+ *  blur radius is pixels. */
+interface EffectSpec { add: Effect; props?: PropSpec[] }
 const BLEND_MODES = ["normal", "multiply", "screen", "overlay", "darken", "lighten", "color_dodge", "color_burn", "hard_light", "soft_light", "difference", "exclusion"];
 const EFFECTS: Partial<Record<Effect["type"], EffectSpec>> = {
-  transform: { add: { type: "transform", x: 0, y: 0, scale: 1, rotation: 0, opacity: 1, keyframes: [] }, num: [["x", 1], ["y", 1], ["scale", 0.05], ["rotation", 1], ["opacity", 0.05]], json: ["keyframes"] },
-  crop: { add: { type: "crop", left: 0, right: 0, top: 0, bottom: 0, radius: 0 }, num: [["left", 0.01], ["right", 0.01], ["top", 0.01], ["bottom", 0.01], ["radius", 0.01]] },
-  blend: { add: { type: "blend", mode: "screen" }, enum: [["mode", BLEND_MODES]] },
-  blur: { add: { type: "blur", radius: 4 }, num: [["radius", 0.5]] },
-  color: { add: { type: "color", brightness: 0, contrast: 1, saturation: 1, gamma: 1 }, num: [["brightness", 0.05], ["contrast", 0.05], ["saturation", 0.05], ["gamma", 0.05]] },
-  fade: { add: { type: "fade", in: 0.5, out: 0.5 }, num: [["in", 0.1], ["out", 0.1]] },
-  volume: { add: { type: "volume", keyframes: [{ t: 0, gain: 1 }] }, json: ["keyframes"] },
-  mlt: { add: { type: "mlt", service: "frei0r.vignette", properties: {} }, text: ["service"], json: ["properties"] },
+  transform: {
+    add: { type: "transform", x: 0, y: 0, scale: 1, rotation: 0, opacity: 1, keyframes: [] },
+    props: [
+      { kind: "vec", label: "Position", parts: [
+        { key: "x", tag: "X", axis: "x", step: 1, suffix: "px", title: "Pixels right of the centred position" },
+        { key: "y", tag: "Y", axis: "y", step: 1, suffix: "px", title: "Pixels down from the centred position" },
+      ] },
+      // The model's own bound: a scale of 0 is refused, so the field stops at one step.
+      { kind: "num", key: "scale", step: 0.01, min: 0.01, suffix: "×", title: "Multiplies the composition size" },
+      { kind: "num", key: "rotation", step: 1, suffix: "°" },
+      { kind: "slider", key: "opacity", min: 0, max: 1, step: 0.01 },
+      { kind: "json", key: "keyframes", label: "Keyframes" },
+    ],
+  },
+  crop: {
+    add: { type: "crop", left: 0, right: 0, top: 0, bottom: 0, radius: 0 },
+    props: [
+      { kind: "vec", label: "Edges", parts: [
+        { key: "left", tag: "L", axis: "x", step: 0.01, min: 0, max: 1, title: "Fraction cut off the left edge" },
+        { key: "right", tag: "R", axis: "y", step: 0.01, min: 0, max: 1, title: "Fraction cut off the right edge" },
+        { key: "top", tag: "T", axis: "z", step: 0.01, min: 0, max: 1, title: "Fraction cut off the top edge" },
+        { key: "bottom", tag: "B", axis: "w", step: 0.01, min: 0, max: 1, title: "Fraction cut off the bottom edge" },
+      ] },
+      { kind: "slider", key: "radius", min: 0, max: 1, step: 0.01, title: "Corner radius, as a fraction of the shorter side" },
+    ],
+  },
+  blend: { add: { type: "blend", mode: "screen" }, props: [{ kind: "enum", key: "mode", options: BLEND_MODES }] },
+  blur: { add: { type: "blur", radius: 4 }, props: [{ kind: "num", key: "radius", step: 0.5, min: 0, suffix: "px" }] },
+  color: {
+    add: { type: "color", brightness: 0, contrast: 1, saturation: 1, gamma: 1 },
+    // Neutral is 0, 1, 1, 1. The ranges are what the eye uses; `soft` lets a typed value
+    // go past them, because the filter underneath takes more than the slider offers.
+    props: [
+      { kind: "slider", key: "brightness", min: -1, max: 1, step: 0.01, soft: true },
+      { kind: "slider", key: "contrast", min: 0, max: 3, step: 0.01, soft: true },
+      { kind: "slider", key: "saturation", min: 0, max: 3, step: 0.01, soft: true },
+      { kind: "slider", key: "gamma", min: 0.1, max: 4, step: 0.01, soft: true },
+    ],
+  },
+  fade: {
+    add: { type: "fade", in: 0.5, out: 0.5 },
+    props: [{ kind: "vec", label: "Duration", parts: [
+      { key: "in", tag: "In", step: 0.1, min: 0, suffix: "s" },
+      { key: "out", tag: "Out", step: 0.1, min: 0, suffix: "s" },
+    ] }],
+  },
+  volume: { add: { type: "volume", keyframes: [{ t: 0, gain: 1 }] }, props: [{ kind: "json", key: "keyframes", label: "Keyframes" }] },
+  mlt: { add: { type: "mlt", service: "frei0r.vignette", properties: {} }, props: [{ kind: "text", key: "service" }, { kind: "json", key: "properties" }] },
 };
+
+/** A key as a label: `brightness` → `Brightness`, `in` → `In`. */
+const title = (key: string) => key.charAt(0).toUpperCase() + key.slice(1);
+
+/** One property row, whatever shape it is. `cur` reads the effect (falling back to the
+ *  kind's default) and `set` writes one key of it as a patch. */
+function propRow(p: PropSpec, cur: (key: string) => unknown, set: (key: string, v: unknown) => void): HTMLElement {
+  const row = build(p, cur, set);
+  // What this row edits, on the row: the panel styles by it, and a test can name a
+  // property rather than counting divs.
+  row.dataset.prop = p.kind === "vec" ? p.label.toLowerCase() : p.key;
+  return row;
+}
+
+function build(p: PropSpec, cur: (key: string) => unknown, set: (key: string, v: unknown) => void): HTMLDivElement {
+  const num = (key: string) => Number(cur(key) ?? 0);
+  switch (p.kind) {
+    case "vec":
+      return field(p.label, vectorField(p.parts.map((part) => ({ ...part, value: num(part.key), commit: (v: number) => set(part.key, v) }))));
+    case "num":
+      return field(p.label ?? title(p.key), numberField(num(p.key), (v) => set(p.key, v), p));
+    case "slider":
+      return field(p.label ?? title(p.key), sliderField(num(p.key), (v) => set(p.key, v), p));
+    case "enum":
+      return field(p.label ?? title(p.key), selectInput(p.options.map((value) => ({ value })), String(cur(p.key)), (v) => set(p.key, v)));
+    case "text":
+      return field(p.label ?? title(p.key), textInput(String(cur(p.key) ?? ""), (v) => set(p.key, v)));
+    case "json":
+      return field(p.label ?? title(p.key), jsonInput(cur(p.key) ?? null, (v) => set(p.key, v)));
+  }
+}
 
 export class Inspector {
   constructor(private host: HTMLElement) {
@@ -64,15 +152,17 @@ export class Inspector {
 
     const item = binItem(store.state.project!, clip);
     const frame = 1 / store.fps;
-    this.host.appendChild(field("Start", numInput(clip.start, (v) => rep("/start", v, "start"), frame)));
-    this.host.appendChild(field("End", numInput(clip.end, (v) => rep("/end", v, "end"), frame)));
+    this.host.appendChild(field("Start", numberField(clip.start, (v) => void rep("/start", v, "start"), { step: frame, min: 0, suffix: "s" })));
+    this.host.appendChild(field("End", numberField(clip.end, (v) => void rep("/end", v, "end"), { step: frame, min: 0, suffix: "s" })));
     // MLT cannot time-warp a timeline, so the field would only ever be refused.
     if (canTimeWarp(item)) {
-      this.host.appendChild(field("Speed", numInput(clip.speed, (v) => rep("/speed", v, "speed"), 0.05)));
+      // ±[0.01, 20] in the model; the ends are what a field can say, and the daemon still
+      // has the last word on the gap in the middle.
+      this.host.appendChild(field("Speed", numberField(clip.speed, (v) => void rep("/speed", v, "speed"), { step: 0.05, min: -20, max: 20, suffix: "×" })));
     }
     if (isTimedMedia(item)) {
-      this.host.appendChild(field("Source in", numInput(clip.in ?? 0, (v) => rep("/in", v, "in"), frame)));
-      this.host.appendChild(field("Volume", numInput(clip.volume, (v) => rep("/volume", v, "volume"), 0.05)));
+      this.host.appendChild(field("Source in", numberField(clip.in ?? 0, (v) => void rep("/in", v, "in"), { step: frame, min: 0, suffix: "s" })));
+      this.host.appendChild(field("Volume", sliderField(clip.volume, (v) => void rep("/volume", v, "volume"), { min: 0, max: 2, step: 0.01, soft: true, title: "Gain: 1 is the clip as recorded" })));
       this.host.appendChild(field("Muted", checkbox(clip.muted, (v) => void rep("/muted", v, "mute"))));
     }
     this.host.appendChild(field("Label", textInput(clip.label, (v) => rep("/label", v, "label"))));
@@ -211,17 +301,14 @@ export class Inspector {
     clip.effects.forEach((e, ei) => {
       const box = el("div", "effect");
       const head = el("div", "head");
-      head.append(el("span", "", e.type), button("×", () => store.patch([{ op: "remove", path: `${path}/effects/${ei}` }], `remove ${e.type}`)));
+      head.append(el("span", "", title(e.type)), button("×", () => store.patch([{ op: "remove", path: `${path}/effects/${ei}` }], `remove ${e.type}`), `Remove this ${e.type}`));
       box.appendChild(head);
       const set = (key: string, v: unknown) => store.patch([{ op: "replace", path: `${path}/effects/${ei}`, value: { ...e, [key]: v } }], `${e.type}.${key}`);
       const rec = e as unknown as Record<string, unknown>;
       const spec = EFFECTS[e.type] ?? { add: e };
       const defaults = spec.add as unknown as Record<string, unknown>;
       const cur = (key: string) => rec[key] ?? defaults[key];
-      for (const [key, step] of spec.num ?? []) box.appendChild(field(key, numInput(Number(cur(key)), (v) => set(key, v), step)));
-      for (const [key, choices] of spec.enum ?? []) box.appendChild(field(key, selectInput(choices.map((value) => ({ value })), String(cur(key)), (v) => set(key, v))));
-      for (const key of spec.text ?? []) box.appendChild(field(key, textInput(String(cur(key) ?? ""), (v) => set(key, v))));
-      for (const key of spec.json ?? []) box.appendChild(field(key, jsonInput(cur(key) ?? null, (v) => set(key, v))));
+      for (const p of spec.props ?? []) box.appendChild(propRow(p, cur, set));
       this.host.appendChild(box);
     });
     const add = el("select");
@@ -277,13 +364,10 @@ function field(label: string, input: HTMLElement): HTMLDivElement {
   return row;
 }
 
-function numInput(value: number, onChange: (v: number) => void, step = 1): HTMLInputElement {
-  const i = el("input");
-  i.type = "number";
-  i.step = String(step);
-  i.value = Number.isFinite(value) ? String(Number(value.toFixed(4))) : "";
-  i.onchange = () => { const v = Number(i.value); if (Number.isFinite(v)) onChange(v); };
-  return i;
+/** Every plain number in the panel, so a cue's start and a preset's parameter are dragged
+ *  the way an effect's fields are. */
+function numInput(value: number, onChange: (v: number) => void, step = 1): HTMLElement {
+  return numberField(value, onChange, { step });
 }
 
 function textInput(value: string, onChange: (v: string) => void): HTMLInputElement {
@@ -322,19 +406,12 @@ function cuesInput(cues: Cue[], onChange: (v: Cue[]) => void): HTMLElement {
 
 function varInput(spec: VarSpec, cur: unknown, onChange: (v: unknown) => void): HTMLElement {
   switch (spec.type) {
-    case "number": {
-      const wrap = el("div", "row");
-      const r = el("input");
-      r.type = "range";
-      r.min = String(spec.min ?? 0); r.max = String(spec.max ?? 1); r.step = String(spec.step ?? 0.01);
-      r.value = String(cur);
-      const n = numInput(Number(cur), onChange, spec.step ?? 0.01);
-      n.style.width = "70px";
-      r.oninput = () => { n.value = r.value; };
-      r.onchange = () => onChange(Number(r.value));
-      wrap.append(r, n);
-      return wrap;
-    }
+    case "number":
+      // A var that named its bounds gets the slider; one that did not is a bare number,
+      // rather than a slider over a range nobody declared.
+      return spec.min !== undefined && spec.max !== undefined
+        ? sliderField(Number(cur), onChange, { min: spec.min, max: spec.max, step: spec.step ?? 0.01, soft: true })
+        : numberField(Number(cur), onChange, { step: spec.step ?? 0.01, min: spec.min, max: spec.max });
     case "color": {
       const c = el("input");
       c.type = "color";
@@ -347,10 +424,12 @@ function varInput(spec: VarSpec, cur: unknown, onChange: (v: unknown) => void): 
     case "enum":
       return selectInput((spec.options ?? []).map((value) => ({ value })), String(cur), onChange);
     case "point": {
+      // The same row a transform's position is: a point is a point wherever it turns up.
       const p = (cur ?? { x: 0.5, y: 0.5 }) as { x: number; y: number };
-      const wrap = el("div", "row");
-      wrap.append(numInput(p.x, (v) => onChange({ x: v, y: p.y }), 0.01), numInput(p.y, (v) => onChange({ x: p.x, y: v }), 0.01));
-      return wrap;
+      return vectorField([
+        { tag: "X", axis: "x", step: 0.01, value: p.x, commit: (v) => onChange({ x: v, y: p.y }) },
+        { tag: "Y", axis: "y", step: 0.01, value: p.y, commit: (v) => onChange({ x: p.x, y: v }) },
+      ]);
     }
     case "text": {
       const t = el("textarea", "wide");

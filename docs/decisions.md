@@ -880,6 +880,52 @@ run sideways. Two halves to the fix: the seeks are all `preventDefault` now, and
 button owns Space and Enter, which press it, and nothing else. Before that, the last thing
 you clicked could swallow the arrows entirely.
 
+## The inspector's property fields
+
+The effects panel was a column of `<input type="number">`: correct, and nothing you would
+want to *use*. Godot's inspector is the reference — not for looks, but because a parameter
+you can drag is a parameter you explore rather than guess at.
+
+**A number is a slider you can type in** — adopted.
+Press and drag sideways to change it, click without moving to put a caret in it. Shift is
+fine (a tenth of a step), Alt is coarse (ten), and the arrow keys step it while it has
+focus. The dead zone before a press counts as a drag is taken *off* the travel rather than
+added to it, or the value jumps three steps the moment the drag is recognised — thirty
+with Alt. A coarse drag snaps to the grid it is dragging on, which is what makes Alt the
+way back to round numbers.
+
+**A drag commits once, on release** — adopted, and it is the only honest option here.
+Every value in this panel is a revision-checked patch to the daemon: committing per
+pointermove would be a round trip per pixel and an undo history made of them. So the field
+shows the number moving and sends one edit when the pointer comes up — the same bargain
+`ui/src/panels/timeline.ts` already makes for dragging a clip, and the reason both of them
+keep a local "what it reads now" separate from "what the document says".
+
+**A vector is one row wearing its axis colours** — adopted.
+X red, Y green, Z blue, W amber, as a chip at the left of each field; a pair that is not
+spatial takes its own letters instead (a fade's In/Out). Reading `x` off a row of identical
+boxes is exactly the thing the colours remove. Past two fields the row takes the width
+under its label: four boxes beside a label in a 300px panel leave about twenty pixels of
+number each, which is how `0.05` came to read as `0` — found by screenshotting the panel
+rather than by reasoning about it.
+
+**The shapes live in `props.ts`; which shape a thing is lives with the thing** — adopted.
+`numberField`, `vectorField` and `sliderField` know nothing about effects. The effects
+table in the inspector says that a transform is a position vector, a scale, a rotation, an
+opacity slider and its keyframes; a template var's `spec.type` says the same for a var; a
+clip's own start, end, speed and volume say it inline. One control per shape, so `x` is
+dragged the same way wherever you meet it, and a new effect kind is still one row in one
+table.
+
+**The bounds in that table are the model's** — adopted, after the first draft shipped a
+field that could compose a refused patch. `scale` may not be 0 (the validator says `> 0`),
+so the field stops one step above it; `opacity` and a crop's edges are 0..1 there and
+0..1 here. Where the useful range and the legal one differ — a contrast, a gamma, a clip's
+gain — the slider covers the useful one and the field is `soft`: it will take a typed value
+past either end, because clamping to a range the model does not have would be the panel
+lying about the document. The rules a field cannot express (a crop's left + right < 1, a
+speed's ±[0.01, 20] with a hole in the middle) stay the daemon's to refuse.
+
 ## Icons
 
 **Shapes, not characters** — adopted, after `⏮` gave the game away.

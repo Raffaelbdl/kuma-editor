@@ -158,6 +158,17 @@ one you clicked.
 What travels is the placement — `in`, speed, volume, label, effects — never the bin entry:
 both clips play the same entry, which is what the model's split already means.
 
+**The inspector is a game engine's.** Every number in it is a field you **drag**: press and
+pull sideways to change it, `Shift` for a tenth of a step, `Alt` for ten, or click once and
+type. A drag is one edit — the field moves while you hold it and the document changes when
+you let go — so scrubbing a value costs one revision and one undo step, not one per pixel.
+Values that go together are one row wearing their axis colours (a transform's **X** red and
+**Y** green, a crop's four edges), and a value with a useful range gets a slider beside its
+field. The shapes live in `ui/src/props.ts`, so an effect, a template var and a clip's own
+fields are edited the same way; an effect declares which shape each of its fields is, in
+one table in `ui/src/panels/inspector.ts`, and the bounds there are the model's own, so the
+panel cannot offer a value the daemon would refuse.
+
 **The overlay workbench.** The centre of the window is tabbed, Kdenlive style. A
 **sequence** tab is a timeline you have open — the engine's picture with that sequence's
 overlays live on top, driven by the timeline below; the topbar picker opens one and gives

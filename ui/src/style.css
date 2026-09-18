@@ -10,6 +10,12 @@
   --overlay: #b0532a;
   --audio: #3f8a5c;
   --sel: #ffd166;
+  /* Axis colours, for the vector rows: X, Y, Z, and W for a fourth edge. Muted against a
+     game engine's neon — they sit beside a picture whose colours are the work. */
+  --axis-x: #d9576b;
+  --axis-y: #59c07a;
+  --axis-z: #5b8dd9;
+  --axis-w: #d2a24c;
   --mono: ui-monospace, "JetBrains Mono", "SF Mono", Menlo, monospace;
   --sans: Inter, system-ui, -apple-system, "Segoe UI", sans-serif;
 }
@@ -262,12 +268,39 @@ button.linkish:hover { text-decoration: underline; }
 .lib-add { display: flex; gap: 6px; margin-top: 6px; }
 
 .field { display: grid; grid-template-columns: 90px 1fr; gap: 6px; align-items: center; margin-bottom: 6px; }
+/* ---- property fields (see ui/src/props.ts) ----------------------------------------
+   A number is a thing you drag: the box says so with a resize cursor, and the letter on
+   its left says which number it is. Typing in it turns the cursor back into a caret. */
+.num { display: flex; align-items: center; min-width: 0; background: var(--bg); border: 1px solid var(--line); border-radius: 5px; }
+.num:hover { border-color: var(--fg-2); }
+.num.dragging { border-color: var(--accent); }
+.num .tag {
+  flex: none; align-self: stretch; display: flex; align-items: center; padding: 0 5px;
+  font: 10px var(--mono); color: var(--fg-2); background: rgba(255, 255, 255, 0.05);
+  border-right: 1px solid var(--line); border-radius: 4px 0 0 4px; cursor: ew-resize;
+}
+.num.axis-x .tag { color: var(--axis-x); background: color-mix(in srgb, var(--axis-x) 14%, transparent); }
+.num.axis-y .tag { color: var(--axis-y); background: color-mix(in srgb, var(--axis-y) 14%, transparent); }
+.num.axis-z .tag { color: var(--axis-z); background: color-mix(in srgb, var(--axis-z) 14%, transparent); }
+.num.axis-w .tag { color: var(--axis-w); background: color-mix(in srgb, var(--axis-w) 14%, transparent); }
+.num input { flex: 1 1 0; min-width: 0; border: 0; background: none; padding: 3px 5px; font: 12px var(--mono); cursor: ew-resize; }
+.num input:focus { cursor: text; outline: 1px solid var(--sel); outline-offset: -1px; border-radius: 4px; }
+.num .suffix { flex: none; padding-right: 5px; font-size: 10px; color: var(--fg-2); cursor: ew-resize; }
+/* A vector is one line of them, sharing the width evenly. */
+.vec { display: flex; gap: 4px; min-width: 0; }
+.vec .num { flex: 1 1 0; }
+/* The pointer leaves the field almost at once during a drag; the window keeps the cursor
+   and stops the drag selecting text on its way past. */
+body.scrubbing, body.scrubbing * { cursor: ew-resize !important; user-select: none; }
 .field label { color: var(--fg-2); font-size: 11px; }
-.field .row { display: flex; gap: 4px; }
+.field .row { display: flex; gap: 4px; align-items: center; }
+/* Slider then field: the slider takes what is left, the field stays readable. */
+.field .row input[type="range"] { flex: 1 1 0; min-width: 40px; }
+.field .row .num { flex: 0 0 76px; }
 /* An input that needs the width (a textarea, a list of rows) takes the row under its label. */
 .field > .wide { grid-column: 1 / -1; }
 .cue-row { display: grid; grid-template-columns: 58px 58px 1fr auto; gap: 4px; margin-bottom: 4px; }
-.cue-row input[type="number"] { padding: 4px 2px; }
+.cue-row .num input { padding: 3px 2px; }
 .effect { border: 1px solid var(--line); border-radius: 6px; padding: 6px; margin-bottom: 6px; background: var(--bg-3); }
 .effect .head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; font-weight: 600; }
 .effect .head button { padding: 0 6px; font-size: 11px; }

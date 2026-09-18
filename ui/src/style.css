@@ -35,6 +35,10 @@ html, body { height: 100%; margin: 0; background: var(--bg); color: var(--fg); f
 button, input, select, textarea { font: inherit; color: inherit; }
 button { background: var(--bg-3); border: 1px solid var(--line); border-radius: 6px; padding: 4px 10px; cursor: pointer; }
 button:hover { border-color: var(--fg-2); }
+/* A button whose whole label is an icon: no text to lay out, so the box is the icon plus
+   the padding that makes it the height of the buttons beside it (13px/1.4 text). */
+button.icon { padding: 6px 10px; line-height: 0; }
+button svg { display: block; }
 button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
 input, select, textarea { background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; width: 100%; }
 /* A tick is its own size: full width would leave it floating in the middle of the field. */

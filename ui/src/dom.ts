@@ -8,8 +8,10 @@ export function el<K extends keyof HTMLElementTagNameMap>(tag: K, className = ""
   return e;
 }
 
-export function button(label: string, onClick: () => void, title = "", className = ""): HTMLButtonElement {
-  const b = el("button", className, label);
+/** A button labelled with text, or with an icon node (see `icons.ts`). */
+export function button(label: string | Node, onClick: () => void, title = "", className = ""): HTMLButtonElement {
+  const b = el("button", className);
+  b.append(label);
   b.onclick = onClick;
   if (title) b.title = title;
   return b;

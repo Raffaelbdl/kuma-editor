@@ -25,6 +25,7 @@ import { api } from "../api";
 import { Cmd, command } from "../commands";
 import { button, el, selectInput } from "../dom";
 import { duplicateOverlay, overlayDuration, placeBinItem, templateOf } from "../edits";
+import { icon } from "../icons";
 import { seekOverlay } from "../overlay";
 import { fmtTime, isOverlayEntry, store, toast } from "../store";
 import type { Project } from "../types";
@@ -59,7 +60,7 @@ export class Workbench {
   private holder = el("div", "wb-holder");
   private iframe: HTMLIFrameElement | null = null;
   private foot = el("div", "wb-foot");
-  private play = button("▶", () => this.togglePlay(), "Play this overlay on its own (Space)");
+  private play = button(icon("play"), () => this.togglePlay(), "Play this overlay on its own (Space)", "icon");
   private clock = el("span", "time mono");
   private scrub = el("input");
   private lengthInput = el("input");
@@ -322,7 +323,7 @@ export class Workbench {
   private startPlaying() {
     if (!this.iframe) return;
     this.playing = true;
-    this.play.textContent = "⏸";
+    this.play.replaceChildren(icon("pause"));
     this.last = performance.now();
     const tick = (now: number) => {
       if (!this.playing) return;
@@ -337,7 +338,7 @@ export class Workbench {
 
   pause() {
     this.playing = false;
-    this.play.textContent = "▶";
+    this.play.replaceChildren(icon("play"));
     cancelAnimationFrame(this.raf);
   }
 }

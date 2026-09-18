@@ -3,11 +3,19 @@
 
 import { Cmd, run } from "../commands";
 import { button, el, options, plural } from "../dom";
+import { icon } from "../icons";
 import { fmtTime, store } from "../store";
 import type { TrackKind } from "../types";
 
 export function mountTransport(host: HTMLElement): void {
-  const play = button("▶", () => run(Cmd.togglePlay));
+  const play = button(icon("play"), () => run(Cmd.togglePlay), "Play/pause (Space)", "icon");
+  // The icon is swapped only when the state changes: this panel is subscribed to the whole
+  // store, which ticks with the playhead 25 times a second during playback.
+  const showPlaying = (playing: boolean) => {
+    if (play.dataset.playing === String(playing)) return;
+    play.dataset.playing = String(playing);
+    play.replaceChildren(icon(playing ? "pause" : "play"));
+  };
   const time = el("span", "time");
 
   const zoom = el("input");
@@ -36,7 +44,7 @@ export function mountTransport(host: HTMLElement): void {
   const selected = el("span", "muted sel-count");
 
   host.append(
-    button("⏮", () => store.seek(0)),
+    button(icon("skip-back"), () => store.seek(0), "Back to the start (Home)", "icon"),
     play, time,
     button("Split (S)", () => run(Cmd.split)),
     selected,
@@ -45,7 +53,7 @@ export function mountTransport(host: HTMLElement): void {
   );
 
   store.subscribe((s) => {
-    play.textContent = s.playing ? "⏸" : "▶";
+    showPlaying(s.playing);
     time.textContent = `${fmtTime(s.playhead, store.fps)} / ${fmtTime(store.duration, store.fps)}`;
     zoom.value = String(s.zoom);
     // One clip is visible as one outline; several are worth counting for you. The

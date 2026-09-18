@@ -860,6 +860,24 @@ document index in `data-ti`, and every track edit (mute, hide, remove, a clip dr
 another track) is addressed by that index as before. `ui/test/timeline.test.mjs` pins both
 halves at once: the screen says one order, the document still says the other.
 
+## Icons
+
+**Shapes, not characters** — adopted, after `⏮` gave the game away.
+The transport's buttons were glyphs, and one of them never matched the others: U+23EE has
+*emoji* presentation, so the browser reached past the UI font for the colour emoji one and
+drew a bigger, differently weighted picture beside a monochrome triangle — and drew a
+different one on each machine. CSS cannot reach that, because which font rendered a
+character is not the page's to choose. `ui/src/icons.ts` holds the three the editor uses
+as SVG shapes in `currentColor`, built as nodes rather than markup (`dom.ts` uses no
+`innerHTML`, and static icon data is not a reason to start).
+
+**An icon pack, not yet** — deferred, deliberately.
+Lucide, Feather, Phosphor and Tabler are all plain SVG and all usable without a framework,
+which is the question worth recording: nothing about this editor's no-framework UI rules
+one out. Three icons do not pay for a dependency and a build step that has none, and every
+caller goes through `icon(name)`, so the day this wants a dozen the pack goes in behind
+that function and no panel changes.
+
 ## Overlay authoring: checked, scaffolded, and shown moving
 
 Three changes made after reading through [OpenDesign](https://github.com/nexu-io/open-design),

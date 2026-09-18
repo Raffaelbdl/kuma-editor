@@ -30,10 +30,17 @@ export function mountTransport(host: HTMLElement): void {
   options(quality, [{ value: "0.5", label: "preview ½" }, { value: "0.75", label: "preview ¾" }, { value: "1", label: "preview full" }]);
   quality.onchange = () => run(Cmd.previewScale, Number(quality.value));
 
+  // The clipboard, where the other timeline actions are: the keys are the fast way, but
+  // nothing else on screen says the editor has one.
+  const copy = button("Copy", () => run(Cmd.copyClip), "Copy the selected clip (Ctrl/Cmd+C)");
+  const cut = button("Cut", () => run(Cmd.cutClip), "Cut the selected clip (Ctrl/Cmd+X)");
+  const paste = button("Paste", () => run(Cmd.pasteClip), "Paste at the playhead, on the track you last clicked (Ctrl/Cmd+V)");
+
   host.append(
     button("⏮", () => store.seek(0)),
     play, time,
     button("Split (S)", () => run(Cmd.split)),
+    copy, cut, paste,
     addTrackSel, quality,
     el("span", "muted", "zoom"), zoom,
   );
@@ -42,5 +49,14 @@ export function mountTransport(host: HTMLElement): void {
     play.textContent = s.playing ? "⏸" : "▶";
     time.textContent = `${fmtTime(s.playhead, store.fps)} / ${fmtTime(store.duration, store.fps)}`;
     zoom.value = String(s.zoom);
+    // Say what is possible rather than explaining it after the click.
+    const clip = s.selection?.kind === "clip";
+    copy.disabled = !clip;
+    cut.disabled = !clip;
+    paste.disabled = !s.clipboard;
+    if (s.clipboard) {
+      const track = store.tracks.find((t) => t.id === s.track && t.kind === s.clipboard!.kind) ?? store.tracks.find((t) => t.kind === s.clipboard!.kind);
+      paste.title = `Paste onto ${track ? track.name || track.id : `a new ${s.clipboard.kind} track`} at the playhead (Ctrl/Cmd+V)`;
+    }
   });
 }

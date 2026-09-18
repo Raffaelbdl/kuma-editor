@@ -24,6 +24,11 @@ export class Timeline {
       for (const c of this.root.querySelectorAll<HTMLElement>(".clip:not(.ghost)")) c.classList.toggle("selected", c.dataset.id === sel);
     });
     store.select((s) => [s.playhead], (s) => this.movePlayhead(s.playhead));
+    // Which track a paste lands on is a click away and must show, so it is toggled here
+    // rather than rebuilt: the same treatment the selection gets, for the same reason.
+    store.select((s) => [s.track], (s) => {
+      for (const row of this.root.querySelectorAll<HTMLElement>(".tl-track")) row.classList.toggle("focus", row.dataset.tid === s.track);
+    });
     host.addEventListener("wheel", (e) => {
       if (e.ctrlKey || e.metaKey) {
         e.preventDefault();
@@ -88,9 +93,13 @@ export class Timeline {
   }
 
   private trackEl(p: Project, t: Track, ti: number): HTMLDivElement {
-    const row = el("div", `tl-track ${t.kind}`);
+    const row = el("div", `tl-track ${t.kind}${store.state.track === t.id ? " focus" : ""}`);
     row.dataset.ti = String(ti);
+    row.dataset.tid = t.id;
     const head = el("div", "tl-head");
+    head.title = `${t.name || t.id} — click a track to paste onto it (Ctrl/Cmd+V pastes at the playhead)`;
+    // Anywhere on the head, buttons included: clicking a track is how a paste is aimed.
+    head.addEventListener("pointerdown", () => store.focusTrack(t.id));
     const label = el("div", "label");
     label.append(el("div", "kind", t.kind), el("div", "tname", t.name || t.id));
     const toggles = el("div", "toggles");
@@ -106,7 +115,9 @@ export class Timeline {
     row.appendChild(head);
 
     const lane = el("div", "tl-lane");
-    lane.addEventListener("pointerdown", (e) => { if (e.target === lane) { store.set({ selection: null }); this.scrub(e); } });
+    // An empty lane is the plainest way to say "this track, this moment": it aims the
+    // paste and takes the playhead with it, which is both halves of where a paste goes.
+    lane.addEventListener("pointerdown", (e) => { if (e.target === lane) { store.set({ selection: null, track: t.id }); this.scrub(e); } });
     for (const c of t.clips) lane.appendChild(this.clipEl(p, t, ti, c));
     for (const x of t.transitions) {
       const b = t.clips.find((c) => c.id === x.to);
@@ -141,6 +152,9 @@ export class Timeline {
       e.stopPropagation();
       const kind = e.target === hl ? "trim-l" : e.target === hr ? "trim-r" : "move";
       this.beginDrag(e, kind, c, ti, box);
+      // Clicking a clip is also clicking the track it is on, so a copy followed by a
+      // paste with nothing else clicked lands back on the track it came from.
+      store.focusTrack(t.id);
       store.selectItem("clip", c.id);
     });
     return box;

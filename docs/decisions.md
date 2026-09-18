@@ -744,6 +744,61 @@ compiler will composite it — there is no clip, so there are no clip effects to
 The exact answer is a sample, which is now available for an unplaced entry as well.
 Template *markup* is still edited outside the editor; `Reload` is the loop, not an editor.
 
+## The timeline clipboard
+
+Copy, cut and paste for a clip, the first of the quality-of-life gestures the editor was
+missing. The interesting part is not the copy; it is where a paste *lands*.
+
+**The clipboard is UI state, not document state** — adopted.
+Everything else in the editor is a revision-checked patch against the daemon's document,
+so a clipboard living in `store.ts` looks like the exception it is not: copying is not an
+edit. "This clip is on my clipboard" is nothing another process needs to see, and putting
+it in the document would spend a revision, an undo step and a line in every agent's view
+of the project on an act that changed nothing. The paste is the edit, and it is one patch
+like any other. The price is that the clipboard is per window and dies with it — already
+true of the selection, the playhead and which tab is open.
+
+**A paste needs a *where*, and clicking a track is it** — adopted.
+The playhead answers *when*, and nothing answered *where*: the first sketch pasted back
+onto the track the clip came from, which is no use for the thing actually wanted ("this
+clip, but on Video 2"). So the timeline remembers the track last clicked — the head, an
+empty lane, or a clip, all of which are ways of pointing at a track — and marks it in the
+head. It is remembered by **id** rather than by index, because indices shift the moment a
+track is added. A track of the wrong kind cannot take the clip, so a paste aimed at one
+falls back to the first track of the right kind, which is the rule a drop from the bin
+already follows; refusing would be correct and useless.
+
+**An occupied slot pushes the clip forward; it does not refuse** — adopted.
+A paste names a position, so the answer to "that one is taken" that keeps the gesture
+usable is *the next position that is free*. `firstFreeSlot` walks the track's clips in
+start order and returns the first gap long enough to hold the clip. Two consequences worth
+having: pasting twice in a row lays two clips end to end, and pasting onto the track a clip
+was copied from never lands on top of what is already there. Kdenlive refuses instead, and
+`place` (what a drop from the bin uses) sends the clip to the end of the track; neither
+answers the question the gesture asked.
+
+**The track kind travels with the clip** — adopted.
+`trackFor` would answer "video" for a video file, but a video file can be sitting on an
+audio track, and a paste of it belongs where it was copied from. So the clipboard holds the
+kind of the track the copy came off, and compatibility is that kind rather than the bin
+entry's.
+
+**What travels is the placement, and only the placement** — adopted, and it is the model's
+own split. The pasted clip carries `in`, speed, volume, label and effects; it does not copy
+the bin entry, because both clips play the same entry and that is what an entry is for.
+A transition stays behind: it names two clips on one track, and a copy of one of them has
+nothing to attach to. This is also what makes pasting into *another sequence* free — the
+entry is already project-wide — so the only check a cross-sequence paste needs is the
+recursion one `placeBinItem` already makes.
+
+**Ctrl+C/X/V are bound off the workbench only** — adopted.
+The workbench edits a bin entry and has no track to paste onto, so a paste there would
+edit a timeline nobody is looking at. The bindings sit in `shortcuts.ts` with the rest,
+which is what keeps a text field's own copy and paste working (the handler ignores events
+from fields), and the desktop app carries the same three actions in the Project menu with
+**no** accelerator — the Edit menu's `cut`/`copy`/`paste` roles are text editing and stay
+that way, for the reason recorded under *Desktop shell*.
+
 ## Overlay authoring: checked, scaffolded, and shown moving
 
 Three changes made after reading through [OpenDesign](https://github.com/nexu-io/open-design),
@@ -1227,6 +1282,10 @@ because it is the part deliberately left out.
   no reason and stops improvements reaching the copy. Same shape as the media search path
   below: the library wants to hold more kinds of thing than templates, and the two should
   be one mechanism.
+- Copy and paste move **one** clip, because one clip is all the editor can select. A
+  multiple selection would make "copy these three, paste them together" expressible, and
+  the paste would want to keep their relative starts and the transitions between them —
+  which is the same machinery "make a sequence from the selected clips" (below) needs.
 - Folders and search in the browser, now that the bin is the thing they organise. The bin
   now holds sequences too, which makes this more pressing than it was.
 - A thumbnail for a sequence entry. The `thumbs` job renders overlay entries with their

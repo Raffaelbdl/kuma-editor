@@ -32,6 +32,13 @@ const BINDINGS: Binding[] = [
   { when: (e) => e.key === "End", action: () => store.seek(store.duration) },
   { when: (e) => e.key.toLowerCase() === "s" && !mod(e) && !e.altKey, action: Cmd.split },
   { when: (e) => e.key === "Delete" || e.key === "Backspace", action: Cmd.deleteClip },
+  // The clipboard is the timeline's, so it is bound off the workbench only: the workbench
+  // edits an entry and has no track to paste onto, and a paste landing on a timeline you
+  // are not looking at is an edit out of sight. The guard above keeps Ctrl+C in a text
+  // field doing what it has always done.
+  { when: (e) => mod(e) && e.key.toLowerCase() === "c" && !onOverlay(), action: Cmd.copyClip, preventDefault: true },
+  { when: (e) => mod(e) && e.key.toLowerCase() === "x" && !onOverlay(), action: Cmd.cutClip, preventDefault: true },
+  { when: (e) => mod(e) && e.key.toLowerCase() === "v" && !onOverlay(), action: Cmd.pasteClip, preventDefault: true },
   { when: (e) => mod(e) && e.key.toLowerCase() === "z" && !e.shiftKey, action: Cmd.undo, preventDefault: true },
   { when: (e) => mod(e) && e.key.toLowerCase() === "z" && e.shiftKey, action: Cmd.redo, preventDefault: true },
 ];

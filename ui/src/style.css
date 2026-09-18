@@ -176,6 +176,10 @@ body.has-titlebar #titlebar {
 .tl-track.video .tl-head { --kind: var(--video); }
 .tl-track.overlay .tl-head { --kind: var(--overlay); }
 .tl-track.audio .tl-head { --kind: var(--audio); }
+/* The track a paste lands on, and so the one the last click chose. Deliberately quieter
+   than a selection: it is a target, not a thing being edited. */
+.tl-track.focus .tl-head { background: var(--bg-3); }
+.tl-track.focus .tl-head .tname { color: var(--fg); }
 .tl-head .label { min-width: 0; }
 .tl-head .kind { color: var(--kind, var(--fg-2)); text-transform: uppercase; font-size: 9px; letter-spacing: 0.06em; }
 .tl-head .tname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

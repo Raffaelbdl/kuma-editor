@@ -1,5 +1,5 @@
 import { api, subscribeEvents } from "./api";
-import type { Clip, DaemonEvent, Job, PatchOp, Project, TemplateInfo, Track } from "./types";
+import type { Clip, DaemonEvent, Job, PatchOp, Project, TemplateInfo, Track, TrackKind } from "./types";
 import { allClips, fpsValue, freeId, isOverlaySource, seqDuration, seqPath, sequenceIds, sequenceOf } from "./types";
 
 /**
@@ -8,6 +8,11 @@ import { allClips, fpsValue, freeId, isOverlaySource, seqDuration, seqPath, sequ
  * lives on the clip. One selection addresses either, so the panel never has to guess.
  */
 export type Selection = { kind: "clip"; id: string } | { kind: "bin"; id: string } | null;
+
+/** A clip taken off a timeline, waiting to be pasted. The kind of track it came off
+ *  travels with it rather than being derived from its bin entry: a video file placed on
+ *  an audio track is an audio clip, and that is where a paste of it belongs. */
+export interface Clipboard { clip: Clip; kind: TrackKind }
 
 /** The tab that shows the sequence being edited. Not a bin id — ids must match
  *  `[A-Za-z_][A-Za-z0-9_-]*`, so the empty string can never name an entry and the two
@@ -21,6 +26,15 @@ export interface State {
    *  is set through the API rather than locally. Empty until the first load. */
   sequence: string;
   selection: Selection;
+  /** The track a paste lands on: the one last clicked, by id, because indices shift when
+   *  a track is added. Null until a track has been clicked, and dropped when the one it
+   *  names leaves the open sequence. View state, like the selection. */
+  track: string | null;
+  /** The clip last copied or cut, if any. It is held here rather than in the document:
+   *  copying is not an edit, so it costs no revision and no undo step — the paste is the
+   *  edit. It survives switching sequences, which is what makes pasting into another
+   *  timeline the same gesture as pasting into this one. */
+  clipboard: Clipboard | null;
   playhead: number;
   playing: boolean;
   /** pixels per second */
@@ -40,7 +54,7 @@ export interface State {
 type Listener = (s: State) => void;
 
 class Store {
-  state: State = { project: null, templates: [], sequence: "", selection: null, playhead: 0, playing: false, zoom: 60, tab: SEQUENCE_TAB, sequences: [], overlays: [], connected: false, jobs: {} };
+  state: State = { project: null, templates: [], sequence: "", selection: null, track: null, clipboard: null, playhead: 0, playing: false, zoom: 60, tab: SEQUENCE_TAB, sequences: [], overlays: [], connected: false, jobs: {} };
   private listeners = new Set<Listener>();
   private refreshing: Promise<void> | null = null;
   private refreshAgain = false;
@@ -97,7 +111,7 @@ class Store {
       // The daemon has the last word on what is open (it falls back to the master for a
       // sequence that has gone), so the tab follows `current`, not what was asked for.
       // Opening a timeline is asking to look at it: the monitor comes forward with it.
-      this.set({ sequence: current, sequences: withId(this.state.sequences, current), selection: null, playhead: 0, tab: SEQUENCE_TAB });
+      this.set({ sequence: current, sequences: withId(this.state.sequences, current), selection: null, track: null, playhead: 0, tab: SEQUENCE_TAB });
     } catch (e) {
       toast((e as Error).message, "err");
     }
@@ -143,13 +157,15 @@ class Store {
           // daemon falls back to the master and so do we, rather than showing nothing.
           const sequence = sequenceOf(project, this.state.sequence) ? this.state.sequence : project.master;
           const selection = this.stillThere(project, this.state.selection);
+          // The focused track can go the same way the selection can (undo, an agent edit).
+          const track = sequenceOf(project, sequence)?.tracks.some((t) => t.id === this.state.track) ? this.state.track : null;
           // A tab's subject can be removed out from under us (undo, an agent edit), so
           // every tab is checked against the document it names — and the one being
           // edited always has a tab, whether it was opened or fallen back to.
           const sequences = withId(this.state.sequences.filter((id) => sequenceOf(project, id)), sequence);
           const overlays = this.state.overlays.filter((id) => isOverlayEntry(project, id));
           const tab = overlays.includes(this.state.tab) ? this.state.tab : SEQUENCE_TAB;
-          this.set({ project, sequence, sequences, selection, overlays, tab });
+          this.set({ project, sequence, sequences, selection, track, overlays, tab });
         } while (this.refreshAgain);
       } catch (e) {
         toast(`Cannot reload the project: ${(e as Error).message}`, "err");
@@ -194,6 +210,12 @@ class Store {
    *  helper; this one is the selection, and they are deliberately not the same word.) */
   selectItem(kind: "clip" | "bin", id: string) {
     this.set({ selection: { kind, id } as Selection });
+  }
+
+  /** Aim the next paste at a track. Clicking a track is the whole gesture: a paste needs
+   *  a *where* as well as a *when*, and the playhead only answers the second half. */
+  focusTrack(id: string | null) {
+    this.set({ track: id });
   }
 
   /** The selected clip, or null when a bin entry (or nothing) is selected. */

@@ -132,6 +132,17 @@ export preset to render that one instead, and it lands beside the other as
 `<name>-<sequence>-<preset>.<ext>`. Overlays are iterated on in their own tab — see *The overlay
 workbench* below — rather than by scrubbing the timeline to where they happen to be.
 
+**Copy, cut and paste.** `Ctrl/Cmd+C`, `Ctrl/Cmd+X` and `Ctrl/Cmd+V` — also the buttons
+beside *Split*, and the Project menu in the app — move a clip around a timeline, or onto
+another one. A paste needs a *where* as well as a *when*: the playhead answers the second
+half and **clicking a track** answers the first, so a clip copied from *Video* lands on
+*Video 2* by clicking *Video 2* and pasting. Any track of the kind it was copied from will
+take it, in this sequence or in another one you switch to first; with no track clicked it
+goes on the first of that kind. Where the playhead sits inside a clip the paste lands at
+the first free slot after it that is long enough, so pasting twice lays two clips end to
+end. What travels is the placement — `in`, speed, volume, label, effects — never the bin
+entry: both clips play the same entry, which is what the model's split already means.
+
 **The overlay workbench.** The centre of the window is tabbed, Kdenlive style. A
 **sequence** tab is a timeline you have open — the engine's picture with that sequence's
 overlays live on top, driven by the timeline below; the topbar picker opens one and gives

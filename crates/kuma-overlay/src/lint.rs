@@ -170,12 +170,10 @@ fn contract_findings(html: &str, manifest: &TemplateManifest, dir: &Path) -> Vec
     // Vars: the manifest is what the inspector shows and what the injection resolves, so
     // a var used but not declared arrives as `undefined` and one declared but unused is a
     // control that does nothing.
-    for name in used_vars(&own) {
-        if !manifest.vars.contains_key(&name) {
-            out.push(Finding::error("unknown_var", format!("`{name}` is read but not declared in template.json"), "declare it under `vars` with a type and a default, or stop reading it"));
-        }
-    }
     let used = used_vars(&own);
+    for name in used.iter().filter(|n| !manifest.vars.contains_key(*n)) {
+        out.push(Finding::error("unknown_var", format!("`{name}` is read but not declared in template.json"), "declare it under `vars` with a type and a default, or stop reading it"));
+    }
     for name in manifest.vars.keys() {
         if !used.contains(name) {
             out.push(Finding::warn("unused_var", format!("`{name}` is declared in template.json but never read"), "read it as `vars.<name>` or `var(--var-<name>)`, or remove it from the manifest"));

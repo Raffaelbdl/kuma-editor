@@ -641,14 +641,27 @@ pub struct EntryView {
     pub height: u32,
 }
 
-pub fn entry_view(state: &AppState, doc: &Project, id: &str, duration: Option<f64>, width: Option<u32>, height: Option<u32>) -> anyhow::Result<EntryView> {
-    let item = doc.bin.get(id).ok_or_else(|| anyhow::anyhow!("no bin entry `{id}`"))?;
+/// Why an entry cannot be viewed. Typed rather than a message, because the HTTP layer
+/// answers "gone" and "not that kind of thing" with different statuses and must not have
+/// to read a sentence to tell them apart.
+#[derive(Debug, thiserror::Error)]
+pub enum EntryError {
+    #[error("no bin entry `{0}`")]
+    NoEntry(String),
+    #[error("`{0}` is not an overlay entry")]
+    NotOverlay(String),
+    #[error("unknown template `{0}`")]
+    NoTemplate(String),
+}
+
+pub fn entry_view(state: &AppState, doc: &Project, id: &str, duration: Option<f64>, width: Option<u32>, height: Option<u32>) -> Result<EntryView, EntryError> {
+    let item = doc.bin.get(id).ok_or_else(|| EntryError::NoEntry(id.into()))?;
     let kuma_core::BinSource::Overlay { template, vars } = &item.source else {
-        anyhow::bail!("`{id}` is not an overlay entry");
+        return Err(EntryError::NotOverlay(id.into()));
     };
     let default = {
         let templates = read(&state.templates);
-        templates.loaded.get(template).ok_or_else(|| anyhow::anyhow!("unknown template `{template}`"))?.1.duration_default
+        templates.loaded.get(template).ok_or_else(|| EntryError::NoTemplate(template.clone()))?.1.duration_default
     };
     Ok(EntryView {
         template: template.clone(),

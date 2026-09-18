@@ -75,6 +75,11 @@ fn request(addr: &str, method: &str, path: &str, body: &str) -> (String, std::co
         match s.read(&mut byte) {
             Ok(0) => break,
             Ok(_) => raw.push(byte[0]),
+            // A handler that spawns a subprocess (the lint does) reaps it with a signal,
+            // and a signal interrupts this blocking read. `read_exact` below retries for
+            // itself; this loop has to say so. Without it the suite fails only when the
+            // tests that spawn and the tests that read overlap, which is to say randomly.
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
             Err(e) => panic!("{path}: reading the response headers: {e}"),
         }
     }

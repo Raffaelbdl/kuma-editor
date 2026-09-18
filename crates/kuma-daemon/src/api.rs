@@ -105,6 +105,17 @@ impl From<anyhow::Error> for ApiError {
     }
 }
 
+/// An entry that is not there — or names a template that is not — is gone; one that is
+/// there and is not an overlay is the wrong thing to have asked for.
+impl From<jobs::EntryError> for ApiError {
+    fn from(e: jobs::EntryError) -> Self {
+        match e {
+            jobs::EntryError::NotOverlay(_) => Self::bad_request(e),
+            _ => Self::not_found(e),
+        }
+    }
+}
+
 impl From<EditError> for ApiError {
     fn from(e: EditError) -> Self {
         match e {
@@ -605,22 +616,13 @@ struct EntryPreview {
 /// entry is, and that is editable before any clip plays it.
 async fn overlay_entry(State(st): S, Path(id): Path<String>, Query(q): Query<EntryPreview>) -> Result<Response, ApiError> {
     let project = read(&st.project).clone();
-    let view = jobs::entry_view(&st, &project, &id, q.duration, q.width, q.height).map_err(entry_error)?;
+    let view = jobs::entry_view(&st, &project, &id, q.duration, q.width, q.height)?;
     // Bin ids are validated to be URL-safe.
     let base = format!("/overlay-entry/{id}/");
     overlay_document(&st, &project, &view.template, &view.vars, view.duration, 1.0, None, &base, Some((view.width, view.height)))
 }
 
-/// `entry_view`'s refusals as statuses: an entry that is not there is a 404, one that is
-/// there and is not an overlay is a 400.
-fn entry_error(e: anyhow::Error) -> ApiError {
-    let msg = format!("{e:#}");
-    if msg.starts_with("no bin entry") || msg.starts_with("unknown template") {
-        ApiError::not_found(msg)
-    } else {
-        ApiError::bad_request(msg)
-    }
-}
+
 
 /// The template's markup with kuma's contract injected — the one place the live preview's
 /// document is built, whichever of the two routes above asked for it.
@@ -669,7 +671,7 @@ async fn overlay_file(State(st): S, Path((clip, rest)): Path<(String, String)>) 
 /// Files referenced by a previewed overlay entry, resolved against its template dir.
 async fn overlay_entry_file(State(st): S, Path((id, rest)): Path<(String, String)>) -> Result<Response, ApiError> {
     let project = read(&st.project).clone();
-    let view = jobs::entry_view(&st, &project, &id, None, None, None).map_err(entry_error)?;
+    let view = jobs::entry_view(&st, &project, &id, None, None, None)?;
     serve_template_file(&st, &view.template, &rest)
 }
 

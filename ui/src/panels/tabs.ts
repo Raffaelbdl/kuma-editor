@@ -59,7 +59,7 @@ export function mountTabs(host: HTMLElement): void {
         kind: "overlay",
         on: s.tab === id,
         title: name(id),
-        open: () => store.showTab(id),
+        open: () => store.openOverlay(id),
         close: { run: () => store.closeOverlay(id), title: "Close this tab (the entry stays in the bin)" },
       }));
     }

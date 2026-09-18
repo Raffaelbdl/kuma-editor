@@ -168,9 +168,11 @@ class Store {
   }
 
   /**
-   * Open an overlay entry in the workbench and bring its tab forward. Selecting it too is
-   * the point rather than a courtesy: the inspector is where a bin entry's vars are
-   * edited, and the workbench deliberately does not grow a second copy of them.
+   * Open an overlay entry in the workbench and bring its tab forward — from the bin, the
+   * inspector, or its own tab, which is the same act whether or not the tab is already
+   * there. Selecting it too is the point rather than a courtesy: the inspector is where a
+   * bin entry's vars are edited, and the workbench deliberately does not grow a second
+   * copy of them.
    */
   openOverlay(id: string) {
     if (!isOverlayEntry(this.state.project, id)) {
@@ -186,12 +188,6 @@ class Store {
     const overlays = this.state.overlays.filter((x) => x !== id);
     const tab = this.state.tab === id ? overlays.at(-1) ?? SEQUENCE_TAB : this.state.tab;
     this.set({ overlays, tab });
-  }
-
-  /** Show one of the open tabs (`SEQUENCE_TAB` for the sequence monitor). */
-  showTab(tab: string) {
-    if (tab !== SEQUENCE_TAB && !this.state.overlays.includes(tab)) return;
-    this.set({ tab, ...(tab === SEQUENCE_TAB ? {} : { selection: { kind: "bin", id: tab } as Selection }) });
   }
 
   /** Point the inspector at a clip or a bin entry. (`select` above is the subscription

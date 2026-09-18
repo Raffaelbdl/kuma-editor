@@ -50,12 +50,18 @@ function defaultDuration(item: BinItem, p: Project, binId: string): number {
   if (itemKind(item) === "sequence") return seqDuration(p, binId) || 4;
   // An overlay goes down at the length its template was authored for — the same number
   // `addFromLibrary` uses, so placing an entry and dragging in its template agree.
-  if (isOverlaySource(item.source)) return templateOf(item.source.template)?.manifest.duration_default ?? 4;
+  if (isOverlaySource(item.source)) return overlayDuration(item);
   return 4;
 }
 
 /** The loaded template an overlay entry points at, if its library is on the search path. */
 export const templateOf = (id: string) => store.state.templates.find((t) => t.id === id);
+
+/** How long an overlay runs when nothing says otherwise: the length its template was
+ *  authored for. The clip that places it and the workbench that previews it must agree,
+ *  so they ask here. */
+export const overlayDuration = (item: BinItem | undefined): number =>
+  (item && isOverlaySource(item.source) && templateOf(item.source.template)?.manifest.duration_default) || 4;
 
 /** `base`, or `base-2`, `base-3`… if taken. Bin ids allow letters, digits, `_` and `-`. */
 function uniqueId(base: string, taken: Iterable<string>): string {

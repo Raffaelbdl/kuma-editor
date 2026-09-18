@@ -24,7 +24,7 @@
 import { api } from "../api";
 import { Cmd, command } from "../commands";
 import { button, el, selectInput } from "../dom";
-import { duplicateOverlay, placeBinItem, templateOf } from "../edits";
+import { duplicateOverlay, overlayDuration, placeBinItem, templateOf } from "../edits";
 import { seekOverlay } from "../overlay";
 import { fmtTime, isOverlayEntry, store, toast } from "../store";
 import type { Project } from "../types";
@@ -77,8 +77,6 @@ export class Workbench {
   private backdropKind = "alpha";
   /** Everything the loaded document is a function of; when it changes, reload it. */
   private key = "";
-  /** The document the notes describe. */
-  private checkedKey = "";
   private ready = false;
   private playing = false;
   private raf = 0;
@@ -150,10 +148,7 @@ export class Workbench {
 
   private length(): number {
     const id = store.state.tab;
-    const p = store.state.project;
-    const item = p?.bin[id];
-    const fallback = item && isOverlaySource(item.source) ? templateOf(item.source.template)?.manifest.duration_default ?? 4 : 4;
-    return this.lengths.get(id) ?? fallback;
+    return this.lengths.get(id) ?? overlayDuration(store.state.project?.bin[id]);
   }
 
   private time(): number {
@@ -209,9 +204,8 @@ export class Workbench {
    *  scripts read `window.kuma` once, at load. */
   private mount(id: string, len: number, w: number, h: number, revision: number) {
     this.ready = false;
-    // A new document means the last check is about something else.
-    if (this.key !== this.checkedKey) this.notes = [];
-    this.checkedKey = this.key;
+    // Only reached when the document changed, and the last check was about the old one.
+    this.notes = [];
     this.iframe?.remove();
     const f = el("iframe");
     f.width = String(w);

@@ -245,12 +245,10 @@ to 1.
 
 **Themes.** The palette button in the top bar (or *View → Theme…* in the app) swaps the
 editor's colours: **Kuma**, the default, and **Tokyo Night**, retro neon on deep indigo.
-The choice is remembered in the browser, not in the project — it is how the editor looks
-to you, so it is never an edit, and two people opening one file can disagree. A theme
-dresses the editor and stops there: it reaches no template, no bake and no render, so the
-video looks the same whichever one is on. Styling the *video* is what a design system is
-for, below. A new theme is a block of tokens in `ui/src/themes.css` and a line in
-`ui/src/theme.ts`; a test fails if either half is missing.
+The choice lives in the browser, not the project, and stops at the editor's chrome — no
+template, bake or render sees it, so the video looks the same whichever one is on. Styling
+the *video* is what a design system is for, below. A new theme is a block of tokens in
+`ui/src/themes.css` plus a line in `ui/src/theme.ts`; a test fails if either half is missing.
 
 ### Desktop app
 

@@ -335,12 +335,9 @@ export class Preview {
       wrap.className = "ov";
       wrap.style.width = `${p.width}px`;
       wrap.style.height = `${p.height}px`;
-      // Hidden by **visibility**, never `display`. A `display: none` wrapper gives its
-      // iframe a 0×0 viewport, so a template that measures anything as it loads — a text
-      // fitted to its column, a layout read from `innerHeight` — measures nothing and
-      // keeps whatever it had. The bake loads the same page full-size, so the editor and
-      // the render disagreed. Laid out and unpainted costs the layout and skips the paint,
-      // which is the half that matters.
+      // Hidden by **visibility**, never `display`: a `display: none` wrapper gives its
+      // iframe a 0×0 viewport, so a template that measures itself as it loads would read
+      // zeros and keep whatever it had, while the bake — full-size — got it right.
       wrap.style.visibility = "hidden";
       const iframe = document.createElement("iframe");
       iframe.width = String(p.width);

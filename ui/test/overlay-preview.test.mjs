@@ -1,15 +1,12 @@
 // What an overlay template can measure in the preview, and when.
 //
-// A template is allowed to measure itself — fitting a line of text to the box it sits in
-// is the ordinary way to do it, and the bake loads the page full-size so it works there.
-// The preview has to agree, and it did not: the stage hid a clip that is not under the
-// playhead with `display: none`, which gives the iframe a 0×0 viewport, so a template
-// measuring as it loaded read zeros and kept whatever it had. The editor and the render
-// then disagreed about the same clip.
+// A template may measure itself — fitting a line of text to its box is the ordinary way —
+// and the bake loads the page full-size, so it works there. The preview did not agree: it
+// hid a clip that is not under the playhead with `display: none`, which gives the iframe a
+// 0×0 viewport, so the template read zeros and kept whatever it had.
 //
-// The clip here starts at 6s with the playhead at 0, which is the ordinary case: nothing
-// is under the playhead when a project opens. Only a real browser answers this — a 0×0
-// layout is something only a layout engine produces.
+// The clip here starts at 6s with the playhead at 0, the ordinary case. Only a real browser
+// answers this: a 0×0 layout is something only a layout engine produces.
 //
 // Skips, loudly, without a browser, a binary or `ui/dist`, as its neighbours do.
 

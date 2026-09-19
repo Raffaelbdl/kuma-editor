@@ -1,14 +1,10 @@
 // Themes: the palettes in `themes.css` against the list in `theme.ts`.
 //
-// A theme is written in two places on purpose — the colours belong in CSS, the label and
-// the note belong where the picker is built — and two places drift. Both ways of drifting
-// are silent, which is why this is a test rather than a convention:
-//
-// - A palette with no entry in `THEMES` is a theme nobody can choose; an entry with no
-//   palette is a theme that switches to the default and looks like a bug in the picker.
-// - A theme that leaves a token out does not fail anywhere. It inherits that one value
-//   from the default block, so a Tokyo Night editor keeps one orange playhead, and the
-//   only way to find out is to look at it.
+// A theme is written in two places on purpose — colours in CSS, label and note where the
+// picker is built — and every way of drifting is silent. A palette with no entry is a theme
+// nobody can choose; an entry with no palette switches to the default and reads as a bug in
+// the picker; a theme missing a token inherits the default's colour for it, so a Tokyo
+// Night editor keeps one orange playhead and only the eye finds out.
 //
 // Text in, text out: no browser, no daemon, no build. This one never skips.
 

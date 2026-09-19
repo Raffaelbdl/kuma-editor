@@ -1,22 +1,13 @@
 // Which palette the editor wears.
 //
-// A theme is a block of tokens in `themes.css` and an entry in the list below; applying
-// one is a `data-theme` on the root, so there is no second stylesheet to load and nothing
-// to rebuild. The choice is *this browser's*, not the project's: it is remembered in
-// `localStorage` beside the transcribe language, never patched into the document. A theme
-// is how the editor looks to you, and two people opening the same file may want different
-// answers — which is also why it is nowhere near the daemon.
+// A theme is a block of tokens in `themes.css` and an entry in `THEMES` below; applying one
+// is a `data-theme` on the root, so there is nothing to rebuild and no second sheet to
+// load. The choice is *this browser's* — `localStorage`, beside the transcribe language —
+// never the project's, because an editor's appearance is not an edit.
 //
-// One consequence, worth knowing rather than working around: storage is per origin, and a
-// daemon's origin is its port, so a project that opens on 7456 starts at the default even
-// though the one on 7455 is themed. The transcribe language has always had this. The shell
-// could carry the choice across its windows through the bridge, and that is the change to
-// make if it ever becomes annoying — not a value in the project file.
-//
-// What a theme is not, and what keeps this file small: it dresses the editor's chrome and
-// stops there. Overlays, bakes and renders never see these tokens, so the video looks the
-// same whichever theme is on. Styling a video is what a design system is for
-// (`kuma design-system`), and that is a document you edit, not a cascade.
+// It dresses the editor's chrome and stops there: no template, bake or render sees these
+// tokens, so the video looks the same whichever theme is on. Styling a video is what a
+// design system is for.
 
 import { Cmd, command } from "./commands";
 import { selectInput } from "./dom";
@@ -30,10 +21,9 @@ export interface Theme {
   note: string;
 }
 
-/** The themes offered, in the order the picker lists them. The first is the default —
- *  what an editor that has never been themed, or that was pointed at a theme that no
- *  longer exists, falls back to. Every id here needs a block in `themes.css`; the test
- *  holds the two together. */
+/** The themes offered, in picker order. The first is the default, and what an unknown or
+ *  missing id falls back to. Every id needs a block in `themes.css`; the test holds the two
+ *  together. */
 export const THEMES: Theme[] = [
   { id: "kuma", label: "Kuma", note: "The default: warm orange on charcoal, and nothing on screen brighter than the picture." },
   { id: "tokyo-night", label: "Tokyo Night", note: "Retro neon on deep indigo — hot pink playhead, violet overlays, and a glow where you look for the time." },
@@ -59,10 +49,8 @@ export function setTheme(id: string): void {
   try { localStorage.setItem(KEY, known(id)); } catch { /* no storage: this session only */ }
 }
 
-/**
- * Wear the remembered theme. Called before the panels mount — the document has already
- * painted the default palette by then, so anything later is a flash of the wrong colours.
- */
+/** Wear the remembered theme. Called before the panels mount: the document has already
+ *  painted the default by then, and anything later is a flash of the wrong colours. */
 export function initTheme(): void {
   let saved: string | null = null;
   try { saved = localStorage.getItem(KEY); } catch { /* no storage: the default, then */ }
@@ -80,7 +68,7 @@ export async function chooseTheme(): Promise<void> {
   );
   const ok = await askForm({
     title: "Theme",
-    note: "The editor only. What a theme changes is this window — never a template, a bake or a render, so the video looks the same whichever one is on.",
+    note: "The editor only: a theme never reaches a template, a bake or a render, so the video looks the same whichever one is on.",
     rows: [{ label: "Theme", input }],
     ok: "Use",
   });

@@ -1,25 +1,16 @@
 /* The editor's palettes.
  *
- * `style.css` says how the editor is laid out and never names a colour; this file says
- * what the colours are, once per theme. A theme is a block of the same tokens under a
- * `data-theme` on the root — `theme.ts` sets that attribute and remembers the choice —
- * so switching is one attribute write, with nothing to rebuild and no second stylesheet
- * to load.
+ * `style.css` says how the editor is laid out and never names a colour; this says what the
+ * colours are, once per theme, under a `data-theme` on the root that `theme.ts` sets.
  *
- * Adding one: copy the default block, change the values, and add it to `THEMES` in
- * `ui/src/theme.ts`. `ui/test/theme.test.mjs` holds the two halves together — it fails if
- * a palette here has no entry there, or if a theme leaves a token out and silently
- * inherits somebody else's colour for it.
+ * Adding one: copy the default block, change the values, add it to `THEMES` in `theme.ts`.
+ * `ui/test/theme.test.mjs` fails if the two drift, or if a theme leaves a token out and
+ * silently inherits the default's colour for it.
  *
- * Two rules that are load-bearing rather than stylistic:
- *
- * - **No `color-scheme` here, and none on `:root` anywhere.** A dark-scheme root stops
- *   Chromium compositing the overlay iframes, which paints a template's white canvas over
- *   the video (see the note in `style.css`). A theme changes the editor's chrome and
- *   nothing about how a frame is composited.
- * - **A theme is not a design system.** These tokens dress the editor; they never reach a
- *   template, an overlay bake or a render. Picking a theme cannot change what the video
- *   looks like, and `docs/decisions.md` explains why that line is worth keeping.
+ * **No `color-scheme` here, and none on `:root` anywhere.** A dark-scheme root stops
+ * Chromium compositing the overlay iframes, so a template's white canvas paints over the
+ * video (see the note in `style.css`). These tokens dress the editor's chrome only — no
+ * template, bake or render sees them.
  */
 
 /* ---------------------------------------------------------------- kuma (the default)
@@ -69,11 +60,9 @@
 }
 
 /* ---------------------------------------------------------------- tokyo night
-   Retro neon on deep indigo, after the Tokyo Night palette: hot pink where the default is
-   orange, and the track kinds as blue, violet and teal. The glow is the whole point of
-   the theme — it is on the playhead and the Render button, the two things you look for
-   rather than at, and nowhere else, because a neon editor is unreadable and a neon
-   playhead is a sign. */
+   Retro neon on deep indigo: hot pink where the default is orange, the track kinds blue,
+   violet and teal. The glow is on the playhead and the Render button and nowhere else —
+   the two things you look *for* rather than at. */
 :root[data-theme="tokyo-night"] {
   --bg-0: #0c0c14;
   --bg: #16161e;

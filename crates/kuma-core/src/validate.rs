@@ -1,6 +1,6 @@
 //! Structural validation. Errors reject an edit; warnings are surfaced to the UI/agent.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
@@ -145,8 +145,11 @@ pub fn validate(p: &Project, ctx: &ValidationContext) -> Vec<Issue> {
     // become MLT element ids in one compiled document and URL segments in one daemon.
     let mut track_ids = HashSet::new();
     let mut clip_ids = HashSet::new();
+    // Which sequence each group was first seen on: a group is an editing relation on one
+    // timeline, and a block cannot move on two at once.
+    let mut groups: HashMap<&str, &str> = HashMap::new();
     for (seq_id, seq) in p.sequences() {
-        check_sequence(&mut issues, p, ctx, seq_id, seq, &mut track_ids, &mut clip_ids);
+        check_sequence(&mut issues, p, ctx, seq_id, seq, &mut track_ids, &mut clip_ids, &mut groups);
     }
 
     issues
@@ -156,10 +159,11 @@ fn check_sequence<'a>(
     issues: &mut Vec<Issue>,
     p: &'a Project,
     ctx: &ValidationContext,
-    seq_id: &str,
+    seq_id: &'a str,
     seq: &'a Sequence,
     track_ids: &mut HashSet<&'a str>,
     clip_ids: &mut HashSet<&'a str>,
+    groups: &mut HashMap<&'a str, &'a str>,
 ) {
     let base = format!("/bin/{seq_id}/source");
     for (ti, t) in seq.tracks.iter().enumerate() {
@@ -170,6 +174,18 @@ fn check_sequence<'a>(
         for (ci, c) in &clips {
             let cp = format!("{tp}/clips/{ci}");
             check_id(issues, clip_ids, &c.id, format!("{cp}/id"), "clip");
+            if !c.group.is_empty() {
+                if !is_valid_id(&c.group) {
+                    issues.push(Issue::error(format!("{cp}/group"), format!("group id `{}` must match [A-Za-z_][A-Za-z0-9_-]*", c.group)));
+                } else if *groups.entry(&c.group).or_insert(seq_id) != seq_id {
+                    // Whichever sequence it was met on first is the group's; a member
+                    // anywhere else would be a clip the block can never take with it.
+                    issues.push(Issue::error(
+                        format!("{cp}/group"),
+                        format!("group `{}` is on sequence `{}`; a group's clips must be on one timeline", c.group, groups[c.group.as_str()]),
+                    ));
+                }
+            }
             if !(c.start >= 0.0 && c.end > c.start) {
                 issues.push(Issue::error(format!("{cp}/end"), "clip must have start >= 0 and end > start"));
             } else if c.duration() * p.fps.as_f64() < 1.0 - 1e-9 {
@@ -528,6 +544,42 @@ mod tests {
 
     fn messages(p: &Project) -> Vec<String> {
         validate(p, &ValidationContext::default()).into_iter().map(|i| i.message).collect()
+    }
+
+    /// A group holds clips together for editing, on one timeline: the same id on two
+    /// sequences names a block that could never move as one, so it is refused.
+    #[test]
+    fn a_group_must_be_on_one_timeline() {
+        let p = project(json!({
+            "master": "main",
+            "bin": {
+                "x": { "source": { "path": "x.mp4" } },
+                "other": { "source": { "markers": [], "tracks": [
+                    { "id": "v2", "clips": [{ "id": "b", "start": 0, "end": 5, "bin": "x", "group": "g1" }] }
+                ] } }
+            },
+            "tracks": [{ "id": "v1", "clips": [{ "id": "a", "start": 0, "end": 5, "bin": "x", "group": "g1" }] }]
+        }));
+        let m = messages(&p);
+        assert!(m.iter().any(|m| m.contains("group `g1`") && m.contains("one timeline")), "{m:?}");
+
+        // …and a group on one timeline, across its tracks, is the whole point.
+        let ok = project(json!({
+            "bin": { "x": { "source": { "path": "x.mp4" } } },
+            "tracks": [
+                { "id": "v1", "clips": [{ "id": "a", "start": 0, "end": 5, "bin": "x", "group": "g1" }] },
+                { "id": "a1", "kind": "audio", "clips": [{ "id": "b", "start": 0, "end": 5, "bin": "x", "group": "g1" }] },
+            ]
+        }));
+        assert!(!has_errors(&validate(&ok, &ValidationContext::default())), "{:?}", messages(&ok));
+    }
+
+    /// No group is the absent field, so grouping nothing writes nothing.
+    #[test]
+    fn a_group_is_not_written_when_there_is_none() {
+        let c: Clip = serde_json::from_value(json!({ "id": "a", "start": 0, "end": 5, "bin": "x" })).unwrap();
+        assert_eq!(c.group, "");
+        assert_eq!(serde_json::to_value(&c).unwrap().get("group"), None);
     }
 
     /// A keyframe's parameters are its unknown fields, so the validator is what says a

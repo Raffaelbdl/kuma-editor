@@ -375,7 +375,8 @@ export class Inspector {
       this.host.innerHTML = `<h3>Inspector</h3>
         <p class="muted">Select a <b>bin entry</b> to change what it is, or a <b>clip</b> to change where and how it plays. Drag from the bin onto the timeline to place one.</p>
         <h3>Shortcuts</h3><p class="muted"><kbd>Space</kbd> play/pause · <kbd>←</kbd><kbd>→</kbd> frame step (<kbd>Shift</kbd> a second, <kbd>Alt</kbd> to the next cut) · <kbd>Home</kbd>/<kbd>End</kbd> ends · <kbd>Del</kbd> delete · <kbd>Ctrl+Z</kbd>/<kbd>Ctrl+Shift+Z</kbd> undo/redo · <kbd>Ctrl+wheel</kbd> zoom · <kbd>S</kbd> split at playhead</p>
-        <p class="muted"><kbd>Ctrl+C</kbd>/<kbd>Ctrl+X</kbd>/<kbd>Ctrl+V</kbd> copy, cut and paste clips — a paste lands at the playhead, on the track you last clicked. <kbd>Ctrl+click</kbd> a clip to select more than one; those keep their own tracks and spacing.</p>`;
+        <p class="muted"><kbd>Ctrl+C</kbd>/<kbd>Ctrl+X</kbd>/<kbd>Ctrl+V</kbd> copy, cut and paste clips — a paste lands at the playhead, on the track you last clicked. <kbd>Ctrl+click</kbd> a clip to select more than one; those keep their own tracks and spacing.</p>
+        <p class="muted"><kbd>Ctrl+G</kbd> groups the selected clips, <kbd>Ctrl+Shift+G</kbd> ungroups them. Clicking any clip of a group selects them all, and dragging one moves the whole block — for a subtitle that belongs over its audio, or clips that overlap on purpose.</p>`;
       return;
     }
     const { clip } = f;
@@ -420,6 +421,13 @@ export class Inspector {
     const actions = el("div", "insp-actions");
     // The command reads the selection: from a clip the subtitles land over it, aligned.
     if (hasAudio(item)) actions.appendChild(button("Transcribe → subtitles", () => run(Cmd.transcribe), "Transcribe the audio and place aligned subtitles over this clip"));
+    // Grouping is Ctrl+G, and a keyboard shortcut is not a way to find out a feature
+    // exists — the desktop shell has a menu for it and a browser tab has nothing.
+    if (clip.group) {
+      actions.appendChild(button("Ungroup", () => run(Cmd.ungroup), `These ${plural(n, "clip")} move together (${clip.group}). Ungroup them (Ctrl/Cmd+Shift+G)`));
+    } else if (n > 1) {
+      actions.appendChild(button("Group", () => run(Cmd.group), "Hold these clips together: selecting one selects them all, and a drag moves the block (Ctrl/Cmd+G)"));
+    }
     actions.appendChild(button("Delete clip", () => store.patch([{ op: "remove", path }], `delete ${clip.id}`)));
     this.host.appendChild(actions);
   }

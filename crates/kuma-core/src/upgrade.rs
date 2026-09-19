@@ -37,6 +37,11 @@ fn upgrade(v: &mut Value) {
         // reads. A stamp again.
         version = 3;
     }
+    if version == 3 {
+        // 3 → 4: a clip may carry a `group`, and no group is the absent field. Nothing
+        // in an older document has to change, so this is a stamp too.
+        version = 4;
+    }
     v["version"] = Value::from(version);
 }
 
@@ -62,7 +67,7 @@ mod tests {
     /// the current version too, not on 3-as-of-when-it-was-written.
     #[test]
     fn every_older_version_climbs_to_the_current_one() {
-        for from in [1, 2] {
+        for from in [1, 2, 3] {
             let text = V1.replace("\"version\": 1", &format!("\"version\": {from}"));
             assert_eq!(parse_project(&text).expect("parse").version, crate::PROJECT_VERSION, "from {from}");
         }

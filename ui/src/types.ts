@@ -73,6 +73,9 @@ export type Effect =
 export interface Clip {
   id: string; start: number; end: number; bin: string; in?: number;
   speed: number; volume: number; muted: boolean; effects: Effect[]; label: string;
+  /** The group this clip belongs to, or absent. Clips sharing a group are selected
+   *  together and move together; the compiler never reads it. See `model.rs`. */
+  group?: string;
 }
 
 export interface Transition { from: string; to: string; kind: "dissolve" | "wipe"; duration: number; luma?: string | null; softness?: number }

@@ -880,6 +880,63 @@ run sideways. Two halves to the fix: the seeks are all `preventDefault` now, and
 button owns Space and Enter, which press it, and nothing else. Before that, the last thing
 you clicked could swallow the arrows entirely.
 
+## Clip groups
+
+A subtitle belongs over the audio it transcribes, and two clips that overlap do so on
+purpose. Both are relations the timeline had no way to say, so moving one half of a pair
+was a silent way to break it.
+
+**A group is a field on the clip, not a list on the sequence** — adopted.
+`clip.group` is an id; the members are whichever clips carry it. The alternative — a
+`groups: [[id, id], …]` beside `tracks` — makes the set explicit and then needs every
+member validated to exist and rewritten on every delete, which is exactly the upkeep
+`transitions` already costs (see `deleteSelectedClips`). The field goes with the clip, so
+deleting one leaves nothing dangling and splitting one gives both halves the group. It is
+the same shape as a clip naming its bin entry rather than the entry listing its clips.
+
+**A group is an editing relation; the compiler never reads it** — adopted, and it is what
+keeps the feature cheap. A grouped timeline and the same timeline ungrouped produce
+byte-identical MLT, so `compile.rs` needed no change and the golden file did not move. The
+model's whole side of this is one optional string and two validation rules.
+
+**A group lives on one timeline** — adopted, and the validator says so.
+A block that spans two sequences could never move as one, so the same id on two of them is
+refused rather than silently half-ignored by a UI that looks in the sequence it has open.
+
+**Selecting a member selects the group, in the store** — adopted.
+`selectClips` expands, so no gesture can forget: a click, a Ctrl-click, a paste and an
+agent edit all get the same answer. The group joins *in front of* the ids asked for, which
+keeps "the last one clicked" last — the inspector still edits the clip you pointed at, and
+says so when several are selected.
+
+**A drag moves the group, not the selection** — adopted.
+The block is gathered from the dragged clip's group rather than from what is selected, so
+dragging a grouped clip that is not selected still moves the block, and Ctrl-selecting
+three loose clips still moves only the one you drag. Moving a multi-selection as a block is
+a different feature and is not this one.
+
+Three rules follow from the block being real. It travels **one delta**, so the shape
+survives; it stops when its **earliest** member reaches 0, not when the dragged one does,
+or the daemon would refuse the whole patch for a negative start; and it never snaps to its
+own members, or it would stick to itself. It is **one patch** — half a group having moved
+is not a state anyone asked for. A group does not change track: a block spans the tracks
+its clips are on and there is no one track to drop it on, so a grouped drag moves in time
+only.
+
+**Trimming stays a clip's own** — adopted. "Move by block" is what was asked for and what
+is coherent; a group is not a claim that its clips are the same length, and resizing four
+clips from one handle is a different gesture with a different name.
+
+**A pasted copy gets a new group** — adopted, and it is the one place the id has to be
+re-minted. Keeping the old one would put the copy in the original's group, and the two
+would move together forever. A group only one of whose clips was copied arrives loose,
+because a group of one is not a group.
+
+**Ctrl+G and Ctrl+Shift+G**, the pair every editor and drawing program uses, off the
+workbench like the clipboard. Grouped clips carry a chain before the name and a brighter
+edge — not the selection's outline, which is what you have hold of rather than what these
+clips *are*.
+
 ## The inspector's property fields
 
 The effects panel was a column of `<input type="number">`: correct, and nothing you would

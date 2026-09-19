@@ -3,7 +3,7 @@
 
 import { Cmd, command } from "./commands";
 import { desktop, initDesktop, pickAndAddMedia } from "./desktop";
-import { addTrack, copySelection, cutSelection, deleteSelectedClips, pasteClipboard, promptNewOverlay, promptNewSequence, splitAtPlayhead, swapOrientation, transcribe } from "./edits";
+import { addTrack, copySelection, cutSelection, deleteSelectedClips, groupSelection, pasteClipboard, promptNewOverlay, promptNewSequence, splitAtPlayhead, swapOrientation, transcribe, ungroupSelection } from "./edits";
 import { Inspector } from "./panels/inspector";
 import { Library } from "./panels/library";
 import { Preview } from "./panels/preview";
@@ -32,6 +32,8 @@ function projectCommands() {
   command(Cmd.copyClip, "Copy Clips", () => copySelection());
   command(Cmd.cutClip, "Cut Clips", () => cutSelection());
   command(Cmd.pasteClip, "Paste Clips", () => pasteClipboard());
+  command(Cmd.group, "Group Clips", () => groupSelection());
+  command(Cmd.ungroup, "Ungroup Clips", () => ungroupSelection());
   command(Cmd.addTrack, "Add Track", (kind) => addTrack(kind as TrackKind));
 }
 

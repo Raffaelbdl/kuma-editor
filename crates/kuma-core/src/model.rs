@@ -525,6 +525,20 @@ pub struct Clip {
     /// Free-form label shown in the UI.
     #[serde(default)]
     pub label: String,
+    /// The group this clip belongs to, or empty for none.
+    ///
+    /// A group is an **editing relation**, not a render one: clips sharing a group are
+    /// selected together and move together, which is what holds a subtitle over the audio
+    /// it transcribes, or two clips that overlap on purpose. The compiler never reads it —
+    /// a grouped timeline and the same timeline ungrouped render identically.
+    ///
+    /// It lives on the clip rather than as a list on the sequence for the reason a clip
+    /// names its bin entry rather than the entry listing its clips: the membership goes
+    /// with the clip, so deleting one leaves nothing dangling to clean up. The members are
+    /// whichever clips carry the id, which is why a group belongs to one sequence — the
+    /// validator says so.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub group: String,
 }
 
 fn one() -> f64 {

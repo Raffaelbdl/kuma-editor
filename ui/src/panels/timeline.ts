@@ -2,6 +2,7 @@
 
 import { button, dragPayload, dragPointer, el } from "../dom";
 import { placeBinItem, addFromLibrary } from "../edits";
+import { icon } from "../icons";
 import { animationOf, keysOf } from "../keyframes";
 import { store } from "../store";
 import type { Clip, PatchOp, Project, Track, TrackKind } from "../types";
@@ -12,7 +13,15 @@ const HEAD = 136;
 export class Timeline {
   private root: HTMLDivElement;
   private playhead: HTMLDivElement | null = null;
-  private drag: null | { kind: "move" | "trim-l" | "trim-r"; clip: Clip; ti: number; startX: number; orig: { start: number; end: number; in: number }; ghost: HTMLDivElement; toTrack: number } = null;
+  /** A drag in progress. `block` is the clips moving with the one under the pointer — just
+   *  it, unless it is grouped — each with the position it started at and the ghost showing
+   *  where it would land. The dragged clip is `block[0]`, and it is the only one a trim
+   *  touches: a group moves as one, it does not resize as one. */
+  private drag: null | {
+    kind: "move" | "trim-l" | "trim-r"; clip: Clip; ti: number; startX: number;
+    orig: { start: number; end: number; in: number }; ghost: HTMLDivElement; toTrack: number;
+    block: { clip: Clip; ti: number; start: number; end: number; ghost: HTMLDivElement }[];
+  } = null;
 
   constructor(private host: HTMLElement) {
     this.root = el("div", "tl");
@@ -139,8 +148,9 @@ export class Timeline {
 
   private clipEl(p: Project, t: Track, ti: number, c: Clip): HTMLDivElement {
     const w = Math.max(4, (c.end - c.start) * store.state.zoom);
-    const box = el("div", `clip ${clipKind(p, c, t)}${store.selectedClip === c.id ? " selected" : ""}${w < 24 ? " tiny" : ""}`);
+    const box = el("div", `clip ${clipKind(p, c, t)}${store.selectedClip === c.id ? " selected" : ""}${w < 24 ? " tiny" : ""}${c.group ? " grouped" : ""}`);
     box.dataset.id = c.id;
+    if (c.group) box.dataset.group = c.group;
     box.style.left = `${this.x(c.start) - HEAD}px`;
     box.style.width = `${w}px`;
     const item = binItem(p, c);
@@ -149,10 +159,15 @@ export class Timeline {
     const template = item && isOverlaySource(item.source) && item.source.template !== name ? item.source.template : "";
     const seq = item && isSequenceSource(item.source) ? `sequence · ${seqDuration(p, c.bin).toFixed(1)}s` : "";
     const sub = c.speed !== 1 ? `${c.speed}×` : template || seq;
-    box.title = `${c.id}  ${c.start.toFixed(2)}–${c.end.toFixed(2)}s`;
+    box.title = `${c.id}  ${c.start.toFixed(2)}–${c.end.toFixed(2)}s${c.group ? ` · grouped (${c.group}) — selecting one selects them all, and a drag moves the block` : ""}`;
     const hl = el("div", "handle l");
     const hr = el("div", "handle r");
-    box.append(el("div", "", c.label || name), el("div", "sub", String(sub)), hl, hr);
+    const title = el("div", "cname");
+    // A chain before the name: a grouped clip has to say so where you are looking at it,
+    // or the first surprise is three clips moving when you dragged one.
+    if (c.group) title.appendChild(icon("link", 10));
+    title.append(c.label || name);
+    box.append(title, el("div", "sub", String(sub)), hl, hr);
     // Keyframed effects are drawn along the bottom of the clip: an animated clip says so
     // at a glance, and the keys go past under the playhead while you scrub. A key can be
     // dragged to another time here, or clicked to go there; its value is the inspector's.
@@ -214,19 +229,37 @@ export class Timeline {
   }
 
   private beginDrag(e: PointerEvent, kind: "move" | "trim-l" | "trim-r", clip: Clip, ti: number, el: HTMLDivElement) {
-    const ghost = el.cloneNode(true) as HTMLDivElement;
-    ghost.classList.add("ghost");
-    el.parentElement!.appendChild(ghost);
-    this.drag = { kind, clip, ti, startX: e.clientX, orig: { start: clip.start, end: clip.end, in: clip.in ?? 0 }, ghost, toTrack: ti };
+    const ghostFor = (box: HTMLElement) => {
+      const g = box.cloneNode(true) as HTMLDivElement;
+      g.classList.add("ghost");
+      box.parentElement!.appendChild(g);
+      return g;
+    };
+    const ghost = ghostFor(el);
+    // The block is the group, and only for a move: the clip under the pointer comes first
+    // so everything else can be measured against where *it* started. A trim is one clip's.
+    const block = [{ clip, ti, start: clip.start, end: clip.end, ghost }];
+    if (kind === "move" && clip.group) {
+      for (const [i, t] of store.tracks.entries()) {
+        for (const c of t.clips) {
+          if (c.group !== clip.group || c.id === clip.id) continue;
+          const box = this.root.querySelector<HTMLElement>(`.clip[data-id="${c.id}"]:not(.ghost)`);
+          if (box) block.push({ clip: c, ti: i, start: c.start, end: c.end, ghost: ghostFor(box) });
+        }
+      }
+    }
+    this.drag = { kind, clip, ti, startX: e.clientX, orig: { start: clip.start, end: clip.end, in: clip.in ?? 0 }, ghost, toTrack: ti, block };
     const move = (ev: PointerEvent) => this.onDragMove(ev);
     const up = () => { window.removeEventListener("pointermove", move); window.removeEventListener("pointerup", up); this.endDrag(); };
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", up);
   }
 
-  private snapT(t: number, self: Clip): number {
+  /** Snap to a cut, the playhead or 0 — never to a clip that is moving with this drag, or
+   *  a block would snap to its own members and stick. */
+  private snapT(t: number, moving: Set<string>): number {
     const thresh = 8 / store.state.zoom;
-    const cands = [0, store.state.playhead, ...store.tracks.flatMap((tr) => tr.clips.filter((c) => c.id !== self.id).flatMap((c) => [c.start, c.end]))];
+    const cands = [0, store.state.playhead, ...store.tracks.flatMap((tr) => tr.clips.filter((c) => !moving.has(c.id)).flatMap((c) => [c.start, c.end]))];
     for (const c of cands) if (Math.abs(c - t) < thresh) return c;
     return store.snap(t);
   }
@@ -235,13 +268,16 @@ export class Timeline {
     const d = this.drag;
     if (!d) return;
     const dt = (ev.clientX - d.startX) / store.state.zoom;
+    const moving = new Set(d.block.map((m) => m.clip.id));
     const dur = d.orig.end - d.orig.start;
     let start = d.orig.start, end = d.orig.end;
     if (d.kind === "move") {
-      start = Math.max(0, this.snapT(d.orig.start + dt, d.clip));
+      start = Math.max(0, this.snapT(d.orig.start + dt, moving));
       end = start + dur;
-      // Allow moving between tracks of the same kind.
-      const row = (ev.target as HTMLElement | null)?.closest?.(".tl-track") as HTMLElement | null;
+      // Allow moving between tracks of the same kind — one clip only. A block spans the
+      // tracks its clips are on, and there is no one track to drop it onto, so a group
+      // moves in time and stays where it is.
+      const row = d.block.length > 1 ? null : (ev.target as HTMLElement | null)?.closest?.(".tl-track") as HTMLElement | null;
       const target = row ? Number(row.dataset.ti) : d.ti;
       const same = store.tracks[target]?.kind === store.tracks[d.ti].kind;
       const to = same ? target : d.ti;
@@ -250,18 +286,31 @@ export class Timeline {
         this.root.querySelector(`[data-ti="${to}"] .tl-lane`)?.appendChild(d.ghost);
       }
     } else if (d.kind === "trim-l") {
-      start = Math.min(end - 1 / store.fps, Math.max(0, this.snapT(d.orig.start + dt, d.clip)));
+      start = Math.min(end - 1 / store.fps, Math.max(0, this.snapT(d.orig.start + dt, moving)));
       // Cannot reveal material before the source's first frame (handles scale with speed).
       const speed = Math.abs(d.clip.speed) || 1;
       const timed = isTimedMedia(binItem(store.state.project!, d.clip));
       if (timed && d.orig.in + (start - d.orig.start) * speed < 0) start = store.snap(d.orig.start - d.orig.in / speed);
     } else {
-      end = Math.max(start + 1 / store.fps, this.snapT(d.orig.end + dt, d.clip));
+      end = Math.max(start + 1 / store.fps, this.snapT(d.orig.end + dt, moving));
     }
-    d.ghost.style.left = `${this.x(start) - HEAD}px`;
-    d.ghost.style.width = `${Math.max(4, (end - start) * store.state.zoom)}px`;
-    d.ghost.dataset.start = String(start);
-    d.ghost.dataset.end = String(end);
+    // What the dragged clip actually travelled, which is what every other member of the
+    // block travels too — held back so that the earliest of them stops at 0 rather than
+    // the one under the pointer.
+    let delta = start - d.orig.start;
+    if (d.kind === "move" && d.block.length > 1) {
+      const floor = Math.min(...d.block.map((m) => m.start));
+      if (floor + delta < 0) delta = -floor;
+      start = d.orig.start + delta;
+      end = start + dur;
+    }
+    for (const m of d.block) {
+      const [from, to] = m.ghost === d.ghost ? [start, end] : [m.start + delta, m.end + delta];
+      m.ghost.style.left = `${this.x(from) - HEAD}px`;
+      m.ghost.style.width = `${Math.max(4, (to - from) * store.state.zoom)}px`;
+      m.ghost.dataset.start = String(from);
+      m.ghost.dataset.end = String(to);
+    }
   }
 
   private async endDrag() {
@@ -270,10 +319,20 @@ export class Timeline {
     if (!d) return;
     const start = Number(d.ghost.dataset.start ?? d.orig.start);
     const end = Number(d.ghost.dataset.end ?? d.orig.end);
-    d.ghost.remove();
+    const landed = d.block.map((m) => ({ m, start: Number(m.ghost.dataset.start ?? m.start), end: Number(m.ghost.dataset.end ?? m.end) }));
+    for (const m of d.block) m.ghost.remove();
     if (start === d.orig.start && end === d.orig.end && d.toTrack === d.ti) return;
     const path = store.clipPath(d.clip.id);
     if (!path) return; // the clip went away mid-drag (undo, agent edit)
+    // A block is one patch: half a group having moved is not a state anyone asked for.
+    if (d.block.length > 1) {
+      const ops = landed.flatMap(({ m, start: from, end: to }) => {
+        const p = store.clipPath(m.clip.id);
+        return p ? [{ op: "replace" as const, path: `${p}/start`, value: from }, { op: "replace" as const, path: `${p}/end`, value: to }] : [];
+      });
+      await store.patch(ops, `move ${d.clip.group}`);
+      return;
+    }
     const ops: PatchOp[] = [];
     if (d.kind === "trim-l" && isTimedMedia(binItem(store.state.project!, d.clip))) {
       ops.push({ op: "replace", path: `${path}/in`, value: Math.max(0, d.orig.in + (start - d.orig.start) * Math.abs(d.clip.speed)) });

@@ -25,6 +25,12 @@ const ICONS = {
   /** Step back and forward — over keyframes, on the buttons beside a keyframe strip. */
   "chevron-left": [shape("polygon", { points: "16,4 18,6 12,12 18,18 16,20 8,12" })],
   "chevron-right": [shape("polygon", { points: "8,4 6,6 12,12 6,18 8,20 16,12" })],
+  /** Two links of a chain: a clip that moves with others. Stroked rather than filled,
+   *  because a filled chain at 10px is a blob. */
+  link: [
+    shape("path", { d: "M10 14a4 4 0 0 0 6 0l3-3a4 4 0 0 0-6-6l-1 1", fill: "none", stroke: "currentColor", "stroke-width": 2.4, "stroke-linecap": "round" }),
+    shape("path", { d: "M14 10a4 4 0 0 0-6 0l-3 3a4 4 0 0 0 6 6l1-1", fill: "none", stroke: "currentColor", "stroke-width": 2.4, "stroke-linecap": "round" }),
+  ],
 };
 
 export type IconName = keyof typeof ICONS;

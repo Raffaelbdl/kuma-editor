@@ -323,6 +323,36 @@ export async function splitAtPlayhead() {
  *  the clips share it. */
 const tracksOf = (found: Found[]) => new Map(found.map((f) => [trackPathOf(f), f.track]));
 
+// ---- groups --------------------------------------------------------------------------
+//
+// A group holds clips together for editing: selecting one selects them all, and a drag
+// moves the block. It is a field on the clip rather than a list on the sequence, for the
+// reason a clip names its bin entry rather than the entry listing its clips — the
+// membership goes with the clip, so a delete leaves nothing dangling. The compiler never
+// reads it: a grouped timeline renders exactly as the ungrouped one does.
+
+/** Group the selected clips. Two or more, on the timeline you are looking at — a block
+ *  that could not move as one is not a group, which is what the validator says too. */
+export async function groupSelection() {
+  const found = store.selectedFound;
+  if (found.length < 2) { toast("Select two or more clips to group (Ctrl/Cmd+click)", ""); return; }
+  const seqs = new Set(found.map((f) => f.seq));
+  if (seqs.size > 1) { toast("A group's clips must be on one timeline", "err"); return; }
+  // Any group the selection already carries is absorbed into the new one, so grouping a
+  // group with a third clip makes one group of three rather than a group of a group.
+  const id = store.newGroupId();
+  await store.patch(found.map((f) => ({ op: "add" as const, path: `${clipPathOf(f)}/group`, value: id })), `group ${found.map((f) => f.clip.id).join(", ")}`);
+}
+
+/** Ungroup: the selection *is* the group (selecting a member selects them all), so this
+ *  clears the field on every clip selected. Empty is how the model says "no group", and it
+ *  is not written back, so an ungrouped project is the one it was before. */
+export async function ungroupSelection() {
+  const found = store.selectedFound.filter((f) => f.clip.group);
+  if (!found.length) { toast("Select a grouped clip to ungroup", ""); return; }
+  await store.patch(found.map((f) => ({ op: "add" as const, path: `${clipPathOf(f)}/group`, value: "" })), `ungroup ${found.map((f) => f.clip.id).join(", ")}`);
+}
+
 // ---- the timeline clipboard --------------------------------------------------------
 //
 // A copy is not an edit: nothing about it belongs in the document, so the clipboard is
@@ -395,9 +425,11 @@ export async function pasteClipboard() {
   const at = store.snap(store.state.playhead);
   const dt = freeOffset(targets, at - anchor);
 
+  const regroup = pasteGroups(entries);
   const pasted: Clip[] = [];
   for (const { entry, track } of targets) {
-    const clip: Clip = { ...structuredClone(entry.clip), id: store.newId(clipPrefix(entry.kind), pasted.map((c) => c.id)), start: entry.clip.start + dt, end: entry.clip.end + dt };
+    const clip: Clip = { ...structuredClone(entry.clip), id: store.newId(clipPrefix(entry.kind), pasted.map((c) => c.id)), start: entry.clip.start + dt, end: entry.clip.end + dt, group: regroup(entry.clip.group) };
+    if (!clip.group) delete clip.group;
     pasted.push(clip);
     // The indices are read off now, when nothing more will move: adding a track above
     // renumbered the ones after it.
@@ -408,6 +440,20 @@ export async function pasteClipboard() {
   // track it landed on is where the next paste goes, including one just created for it.
   store.selectClips(pasted.map((c) => c.id), entries.length === 1 ? targets[0].track.id : undefined);
   if (dt > at - anchor) toast(`The playhead was inside a clip — pasted at ${(anchor + dt).toFixed(2)}s`, "", 2500);
+}
+
+/**
+ * What each copied group becomes on the way in: a group of its own, so pasting a block
+ * gives you a second block rather than enlarging the first — the two copies would
+ * otherwise move together forever. A group only one of whose clips was copied is no group
+ * at all on arrival, so it arrives loose.
+ */
+function pasteGroups(entries: ClipboardEntry[]): (old: string | undefined) => string {
+  const size = new Map<string, number>();
+  for (const e of entries) if (e.clip.group) size.set(e.clip.group, (size.get(e.clip.group) ?? 0) + 1);
+  const minted = new Map<string, string>();
+  for (const [g, n] of size) if (n > 1) minted.set(g, store.newGroupId([...minted.values()]));
+  return (old) => (old && minted.get(old)) || "";
 }
 
 /** A track as a paste sees it: enough to match one, to add one, and to find room on one. */

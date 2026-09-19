@@ -234,16 +234,40 @@ class Store {
 
   /** Point the inspector at several clips at once — what a paste of several leaves behind —
    *  and, given one, aim the next paste at a track in the same update: clicking a clip is
-   *  also clicking its track, and one notification is what every panel should get for it. */
+   *  also clicking its track, and one notification is what every panel should get for it.
+   *
+   *  A clip in a group brings its group: that is what a group *is*, so it is done here
+   *  rather than in each gesture, and no caller can forget. */
   selectClips(ids: string[], track?: string) {
-    this.set({ selection: ids.length ? { kind: "clip", ids } : null, ...(track === undefined ? {} : { track }) });
+    const all = this.groupmates(ids);
+    this.set({ selection: all.length ? { kind: "clip", ids: all } : null, ...(track === undefined ? {} : { track }) });
   }
 
-  /** Add a clip to the selection, or take it out again: Ctrl/Cmd- or Shift-click. The one
-   *  just clicked goes last, so it is the one the inspector edits. */
+  /** Add a clip to the selection, or take it out again: Ctrl/Cmd- or Shift-click. A group
+   *  goes in and comes out whole. The one just clicked goes last, so it is the one the
+   *  inspector edits. */
   toggleClip(id: string, track?: string) {
-    const ids = this.selectedClips.filter((x) => x !== id);
-    this.selectClips(ids.length === this.selectedClips.length ? [...ids, id] : ids, track);
+    const mates = new Set(this.groupmates([id]));
+    const rest = this.selectedClips.filter((x) => !mates.has(x));
+    // Nothing dropped means it was not selected, so this click adds it (and its group).
+    this.selectClips(rest.length === this.selectedClips.length ? [...rest, id] : rest, track);
+  }
+
+  /**
+   * These clips and everything grouped with them. The ones asked for keep their order and
+   * stay last, because the last one clicked is the one a single-clip action means.
+   *
+   * Groups are looked for on the open sequence: a group is an editing relation on one
+   * timeline, which the validator holds it to.
+   */
+  groupmates(ids: string[]): string[] {
+    const groups = new Set(ids.map((id) => this.findClip(id)?.clip.group).filter(Boolean));
+    if (!groups.size) return ids;
+    const mates: string[] = [];
+    for (const t of this.tracks) {
+      for (const c of t.clips) if (c.group && groups.has(c.group) && !ids.includes(c.id)) mates.push(c.id);
+    }
+    return [...mates, ...ids];
   }
 
   /** Aim the next paste at a track. Clicking a track is the whole gesture: a paste needs
@@ -346,6 +370,13 @@ class Store {
    *  yet, and two clips of one paste sharing an id would be refused. */
   newId(prefix: string, minted: Iterable<string> = []): string {
     return freeId(prefix, [...allClips(this.state.project!).map((c) => c.id), ...minted]);
+  }
+
+  /** A group id free across the whole project. Groups live on one sequence, but minting
+   *  them project-wide keeps a pasted group from meeting its twin on another timeline. */
+  newGroupId(minted: Iterable<string> = []): string {
+    const p = this.state.project!;
+    return freeId("g", [...allClips(p).map((c) => c.group ?? "").filter(Boolean), ...minted]);
   }
 
   /** A track id free across the whole project, for the same reason, `minted` included. */

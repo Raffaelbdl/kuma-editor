@@ -240,7 +240,7 @@ pub fn transcribe(state: &AppState, req: &TranscribeRequest, progress: &dyn Fn(u
                     tracks.len()
                 }
             };
-            let placed = kuma_core::Clip { id: p.free_track_or_clip_id("subs"), start: c.start, end: c.end, bin: id.clone(), source_in: 0.0, speed: c.speed, volume: 1.0, muted: false, effects: vec![], label: String::new() };
+            let placed = kuma_core::Clip { id: p.free_track_or_clip_id("subs"), start: c.start, end: c.end, bin: id.clone(), source_in: 0.0, speed: c.speed, volume: 1.0, muted: false, effects: vec![], label: String::new(), group: String::new() };
             ops.push(add_op(&format!("/bin/{seq}/source/tracks/{ti}/clips/-"), serde_json::to_value(placed)?)?);
         }
         Ok((ops, (id, replacing, place.is_some())))
@@ -710,6 +710,7 @@ pub fn overlay_project(state: &AppState, doc: &Project, id: &str, req: &SampleRe
         muted: false,
         effects: Vec::new(),
         label: String::new(),
+        group: String::new(),
     };
     let track = |tid: &str, kind: kuma_core::TrackKind, clip: kuma_core::Clip| kuma_core::Track {
         id: tid.into(),

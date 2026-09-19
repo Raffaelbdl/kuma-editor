@@ -49,6 +49,8 @@ const MENU: Record<string, string> = {
   "copy-clip": Cmd.copyClip,
   "cut-clip": Cmd.cutClip,
   "paste-clip": Cmd.pasteClip,
+  "group-clips": Cmd.group,
+  "ungroup-clips": Cmd.ungroup,
 };
 
 export function initDesktop(): void {

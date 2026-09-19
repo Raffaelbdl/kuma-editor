@@ -334,6 +334,10 @@ function rebuildMenu() {
         { label: "Cut Clips", click: () => sendCommand("cut-clip") },
         { label: "Paste Clips", click: () => sendCommand("paste-clip") },
         { type: "separator" },
+        // Grouped clips are selected together and move as a block.
+        { label: "Group Clips", click: () => sendCommand("group-clips") },
+        { label: "Ungroup Clips", click: () => sendCommand("ungroup-clips") },
+        { type: "separator" },
         { label: "Add Media…", click: () => sendCommand("add-media") },
         { label: "New Sequence…", click: () => sendCommand("new-sequence") },
         { label: "New Overlay…", click: () => sendCommand("new-overlay") },

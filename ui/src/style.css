@@ -208,6 +208,12 @@ body.has-titlebar #titlebar {
 .clip .handle.l { left: 0; } .clip .handle.r { right: 0; }
 .clip.tiny .handle { display: none; } /* too narrow to grab the body otherwise */
 .clip .sub { color: rgba(255,255,255,0.7); font-size: 10px; }
+/* Grouped: a chain before the name, and a brighter edge so a block reads as one thing
+   across the tracks it spans. Not the selection's outline — a group is what these clips
+   *are*, the outline is what you have hold of. */
+.clip .cname { display: flex; align-items: center; gap: 4px; min-width: 0; overflow: hidden; }
+.clip .cname svg { flex: none; opacity: 0.85; }
+.clip.grouped { border-color: rgba(255,255,255,0.55); }
 .clip.ghost { opacity: 0.6; pointer-events: none; }
 /* Keyframes on the clip: one lane per keyed effect, stacked up from the bottom edge. The
    lane lets the clip's own gestures through; the keys take the pointer, to be dragged in

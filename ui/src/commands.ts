@@ -60,6 +60,8 @@ export const Cmd = {
   split: "timeline.split",
   seekEdge: "timeline.seek-edge",
   deleteClip: "timeline.delete-clip",
+  group: "timeline.group",
+  ungroup: "timeline.ungroup",
   copyClip: "timeline.copy-clip",
   cutClip: "timeline.cut-clip",
   pasteClip: "timeline.paste-clip",

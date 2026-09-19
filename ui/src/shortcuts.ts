@@ -46,6 +46,11 @@ const BINDINGS: Binding[] = [
   { when: (e) => mod(e) && e.key.toLowerCase() === "c" && !onOverlay(), action: Cmd.copyClip, preventDefault: true },
   { when: (e) => mod(e) && e.key.toLowerCase() === "x" && !onOverlay(), action: Cmd.cutClip, preventDefault: true },
   { when: (e) => mod(e) && e.key.toLowerCase() === "v" && !onOverlay(), action: Cmd.pasteClip, preventDefault: true },
+  // Ctrl/Cmd+G groups the selection, and with Shift ungroups it — the pair every editor
+  // and every drawing program uses. Off the workbench, like the clipboard, because a group
+  // is a relation between clips on a timeline.
+  { when: (e) => mod(e) && e.key.toLowerCase() === "g" && !e.shiftKey && !onOverlay(), action: Cmd.group, preventDefault: true },
+  { when: (e) => mod(e) && e.key.toLowerCase() === "g" && e.shiftKey && !onOverlay(), action: Cmd.ungroup, preventDefault: true },
   { when: (e) => mod(e) && e.key.toLowerCase() === "z" && !e.shiftKey, action: Cmd.undo, preventDefault: true },
   { when: (e) => mod(e) && e.key.toLowerCase() === "z" && e.shiftKey, action: Cmd.redo, preventDefault: true },
 ];

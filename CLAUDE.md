@@ -64,7 +64,10 @@ Chrome headless shell if hyperframes should not download one.
   changing it means bumping `PROJECT_VERSION` and adding a step there.
 - There is no project-level `tracks`: a timeline is a `Sequence` bin entry and `master`
   names the one that renders, so a clip lives at `/bin/<seq>/source/tracks/<i>/clips/<j>`.
-  Track and clip ids are unique across the whole project. A sequence compiles to one
+  Track and clip ids are unique across the whole project. A clip's `group` is an editing
+  relation and nothing else — clips sharing one are selected and moved together, the
+  members are whichever clips carry the id, they must be on one sequence, and the compiler
+  never reads it. A sequence compiles to one
   tractor however often it is placed; each placement is a wrapper playlist carrying its own
   cut and filters, and a nested sequence's background is transparent. The daemon holds the
   open sequence as session state — never in the document.

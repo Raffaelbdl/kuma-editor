@@ -1,21 +1,10 @@
+/* The palettes live in `themes.css`, one block of tokens per theme, and are switched by
+   a `data-theme` on the root (`ui/src/theme.ts`). Everything below names a token and
+   never a colour, which is what makes a new theme a block there rather than a sweep
+   through here. `@import` has to come first in the file. */
+@import "./themes.css";
+
 :root {
-  --bg: #121317;
-  --bg-2: #1a1c22;
-  --bg-3: #23262e;
-  --line: #2e323c;
-  --fg: #e6e7eb;
-  --fg-2: #9aa0ad;
-  --accent: #ff4f00;
-  --video: #3b6ea5;
-  --overlay: #b0532a;
-  --audio: #3f8a5c;
-  --sel: #ffd166;
-  /* Axis colours, for the vector rows: X, Y, Z, and W for a fourth edge. Muted against a
-     game engine's neon — they sit beside a picture whose colours are the work. */
-  --axis-x: #d9576b;
-  --axis-y: #59c07a;
-  --axis-z: #5b8dd9;
-  --axis-w: #d2a24c;
   --mono: ui-monospace, "JetBrains Mono", "SF Mono", Menlo, monospace;
   --sans: Inter, system-ui, -apple-system, "Segoe UI", sans-serif;
 }
@@ -45,7 +34,7 @@ button:hover { border-color: var(--fg-2); }
    the padding that makes it the height of the buttons beside it (13px/1.4 text). */
 button.icon { padding: 6px 10px; line-height: 0; }
 button svg { display: block; }
-button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+button.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); box-shadow: var(--glow); }
 input, select, textarea { background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; width: 100%; }
 /* A tick is its own size: full width would leave it floating in the middle of the field. */
 input[type="checkbox"] { width: auto; justify-self: start; }
@@ -86,7 +75,7 @@ body.has-titlebar #titlebar {
 }
 .tb-btn:hover { background: var(--bg-3); color: var(--fg); border-color: transparent; }
 /* Red on close only, the one destructive button — matching what every desktop does. */
-.tb-btn.close:hover { background: #e5484d; color: #fff; }
+.tb-btn.close:hover { background: var(--danger); color: #fff; }
 #topbar { display: flex; align-items: center; gap: 10px; padding: 0 12px; background: var(--bg-2); border-bottom: 1px solid var(--line); }
 #topbar .name { font-weight: 600; }
 #topbar .spacer { flex: 1; }
@@ -133,14 +122,14 @@ body.has-titlebar #titlebar {
 .wb-foot input[type="number"] { width: 70px; }
 .wb-hint { margin: 0; padding: 0 10px 8px; }
 .wb-hint:empty { display: none; }
-.wb-stage-host { position: relative; display: grid; place-items: center; overflow: hidden; background: #0b0c0f; }
+.wb-stage-host { position: relative; display: grid; place-items: center; overflow: hidden; background: var(--bg-0); }
 .wb-stage { position: relative; overflow: hidden; box-shadow: 0 0 0 1px var(--line); }
 .wb-backdrop { position: absolute; inset: 0; }
 /* Alpha reads as a checkerboard, as it does everywhere else: what the overlay does not
    cover is what a video would show through. */
 .wb-backdrop.alpha {
-  background-color: #1b1d23;
-  background-image: conic-gradient(#262a33 25%, #1b1d23 0 50%, #262a33 0 75%, #1b1d23 0);
+  background-color: var(--check-a);
+  background-image: conic-gradient(var(--check-b) 25%, var(--check-a) 0 50%, var(--check-b) 0 75%, var(--check-a) 0);
   background-size: 24px 24px;
 }
 .wb-backdrop.dark, .wb-backdrop.frame { background: #000; }
@@ -195,25 +184,25 @@ body.has-titlebar #titlebar {
 .tl-head .tname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tl-head .toggles { display: flex; gap: 3px; }
 .tl-head .toggles button { padding: 0 5px; font-size: 10px; line-height: 16px; }
-.tl-head .toggles button.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+.tl-head .toggles button.on { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
 .tl-lane { position: absolute; left: 136px; top: 0; right: 0; height: 100%; }
-.clip { position: absolute; top: 4px; bottom: 4px; border-radius: 5px; background: var(--video); border: 1px solid rgba(255,255,255,0.15); overflow: hidden; cursor: grab; padding: 3px 8px; font-size: 11px; white-space: nowrap; }
+.clip { position: absolute; top: 4px; bottom: 4px; border-radius: 5px; background: var(--video); border: 1px solid var(--clip-edge); overflow: hidden; cursor: grab; padding: 3px 8px; font-size: 11px; white-space: nowrap; }
 .clip.overlay { background: var(--overlay); }
 .clip.audio { background: var(--audio); }
-.clip.color { background: #555; }
+.clip.color { background: var(--color-clip); }
 /* A sequence clip is a timeline in its own right: striped so it reads as "more inside". */
-.clip.sequence { background: repeating-linear-gradient(135deg, #3b5c7a 0 10px, #33526e 10px 20px); }
+.clip.sequence { background: repeating-linear-gradient(135deg, var(--sequence) 0 10px, var(--sequence-2) 10px 20px); }
 .clip.selected { outline: 2px solid var(--sel); outline-offset: -1px; }
 .clip .handle { position: absolute; top: 0; bottom: 0; width: 7px; cursor: ew-resize; }
 .clip .handle.l { left: 0; } .clip .handle.r { right: 0; }
 .clip.tiny .handle { display: none; } /* too narrow to grab the body otherwise */
-.clip .sub { color: rgba(255,255,255,0.7); font-size: 10px; }
+.clip .sub { color: var(--clip-sub); font-size: 10px; }
 /* Grouped: a chain before the name, and a brighter edge so a block reads as one thing
    across the tracks it spans. Not the selection's outline — a group is what these clips
    *are*, the outline is what you have hold of. */
 .clip .cname { display: flex; align-items: center; gap: 4px; min-width: 0; overflow: hidden; }
 .clip .cname svg { flex: none; opacity: 0.85; }
-.clip.grouped { border-color: rgba(255,255,255,0.55); }
+.clip.grouped { border-color: var(--clip-edge-strong); }
 .clip.ghost { opacity: 0.6; pointer-events: none; }
 /* Keyframes on the clip: one lane per keyed effect, stacked up from the bottom edge. The
    lane lets the clip's own gestures through; the keys take the pointer, to be dragged in
@@ -221,18 +210,18 @@ body.has-titlebar #titlebar {
 .clip .kf-lane { position: absolute; left: -1px; right: -1px; bottom: 0; height: 9px; pointer-events: none; }
 .clip .kf-lane ~ .kf-lane { bottom: 9px; }
 .clip .kf { position: absolute; top: 1px; width: 7px; height: 7px; margin-left: -3.5px; background: var(--sel); transform: rotate(45deg); pointer-events: auto; cursor: ew-resize; }
-.clip .kf:hover { background: #fff; }
+.clip .kf:hover { background: var(--hot); }
 .clip .kf-lane.volume .kf { background: var(--fg); }
 /* Record mode: the button is red, and so is the top edge of the panel the recording
    edits are made in — you should not have to look at the strip to know. */
-#transport button.rec.on { background: #b3261e; border-color: #b3261e; color: #fff; }
-body.autokey #inspector { box-shadow: inset 0 3px 0 #b3261e; }
+#transport button.rec.on { background: var(--rec); border-color: var(--rec); color: #fff; }
+body.autokey #inspector { box-shadow: inset 0 3px 0 var(--rec); }
 /* A marker *at* a moment is centred on it — a 2px line straddles the position, a diamond's
    middle is the position — so the playhead and a keyframe at the same instant land on the
    same pixel. Every line and dot below follows it; they disagreed by half a pixel to a
    pixel and a half before, each for its own accidental reason, which reads as "not quite
    aligned" and is hard to name. */
-.tl-playhead { position: absolute; top: 0; bottom: 0; width: 0; margin-left: -1px; border-left: 2px solid var(--accent); z-index: 4; pointer-events: none; }
+.tl-playhead { position: absolute; top: 0; bottom: 0; width: 0; margin-left: -1px; border-left: 2px solid var(--accent); box-shadow: var(--glow); z-index: 4; pointer-events: none; }
 .tl-playhead::before { content: ""; position: absolute; top: 0; left: -6px; border: 6px solid transparent; border-top: 8px solid var(--accent); }
 .tl-marker { position: absolute; top: 22px; bottom: 0; margin-left: -0.5px; border-left: 1px dashed var(--sel); z-index: 1; pointer-events: none; }
 .tl-xfade { position: absolute; top: 2px; height: 10px; background: repeating-linear-gradient(45deg, var(--sel), var(--sel) 2px, transparent 2px, transparent 5px); opacity: 0.8; border-radius: 3px; z-index: 1; }
@@ -264,7 +253,7 @@ button.tab:hover { color: var(--fg); }
 button.tab.on { color: var(--fg); border-bottom-color: var(--accent); }
 
 .insp-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
-.insp-thumb { width: 100%; border-radius: 4px; margin: 6px 0; background: repeating-conic-gradient(#333 0 25%, #444 0 50%) 0 0 / 12px 12px; }
+.insp-thumb { width: 100%; border-radius: 4px; margin: 6px 0; background: repeating-conic-gradient(var(--check-a) 0 25%, var(--check-b) 0 50%) 0 0 / 12px 12px; }
 .tiny { font-size: 11px; margin: 2px 0 8px; }
 /* Navigation, not an edit: it moves the panel to the entry this clip plays. */
 button.linkish { background: none; border: 0; padding: 0; color: var(--sel); text-align: left; }
@@ -274,19 +263,19 @@ button.linkish:hover { text-decoration: underline; }
 .lib-item:hover { border-color: var(--fg-2); }
 .lib-item .title { font-weight: 600; }
 .lib-item .desc { color: var(--fg-2); font-size: 11px; margin-top: 2px; }
-.lib-item img { width: 100%; border-radius: 4px; margin-bottom: 6px; background: repeating-conic-gradient(#333 0 25%, #444 0 50%) 0 0 / 12px 12px; }
+.lib-item img { width: 100%; border-radius: 4px; margin-bottom: 6px; background: repeating-conic-gradient(var(--check-a) 0 25%, var(--check-b) 0 50%) 0 0 / 12px 12px; }
 .lib-item .actions { margin-top: 6px; display: flex; gap: 6px; }
 .lib-item .title { display: flex; align-items: center; gap: 6px; justify-content: space-between; }
 .badge-kind { font: 9px var(--mono); text-transform: uppercase; letter-spacing: 0.06em; padding: 1px 5px; border-radius: 3px; background: var(--line); color: var(--fg-2); font-weight: 400; flex: none; }
 .badge-kind.overlay { background: var(--overlay); color: #fff; }
 .badge-kind.video, .badge-kind.image { background: var(--video); color: #fff; }
 .badge-kind.audio { background: var(--audio); color: #fff; }
-.badge-kind.sequence { background: #3b5c7a; color: #fff; }
-.badge-kind.folder { background: #6b5a2a; color: #fff; }
+.badge-kind.sequence { background: var(--sequence); color: #fff; }
+.badge-kind.folder { background: var(--folder); color: #fff; }
 .bin-row .caret { width: 12px; padding: 0; font-size: 10px; line-height: 1; background: none; border: 0; color: var(--fg-2); text-align: center; }
-.bin-row.drop { border-color: var(--accent, #ff4f00); background: var(--bg-3); }
-.bin-row.drop-before { box-shadow: 0 -2px 0 0 var(--accent, #ff4f00); }
-.bin-row.drop-after { box-shadow: 0 2px 0 0 var(--accent, #ff4f00); }
+.bin-row.drop { border-color: var(--accent); background: var(--bg-3); }
+.bin-row.drop-before { box-shadow: 0 -2px 0 0 var(--accent); }
+.bin-row.drop-after { box-shadow: 0 2px 0 0 var(--accent); }
 .lib-item.open { outline: 1px solid var(--sel); }
 .lib-add { display: flex; gap: 6px; margin-top: 6px; }
 
@@ -299,7 +288,7 @@ button.linkish:hover { text-decoration: underline; }
 .num.dragging { border-color: var(--accent); }
 .num .tag {
   flex: none; align-self: stretch; display: flex; align-items: center; padding: 0 5px;
-  font: 10px var(--mono); color: var(--fg-2); background: rgba(255, 255, 255, 0.05);
+  font: 10px var(--mono); color: var(--fg-2); background: color-mix(in srgb, var(--fg) 5%, transparent);
   border-right: 1px solid var(--line); border-radius: 4px 0 0 4px; cursor: ew-resize;
 }
 .num.axis-x .tag { color: var(--axis-x); background: color-mix(in srgb, var(--axis-x) 14%, transparent); }
@@ -316,7 +305,7 @@ button.linkish:hover { text-decoration: underline; }
 .kfs-lane { position: relative; height: 18px; border: 1px solid var(--line); border-radius: 5px; background: var(--bg); cursor: pointer; }
 .kfs-track { position: absolute; top: 0; bottom: 0; left: 6px; right: 6px; }
 .kfs-key { position: absolute; top: 4px; width: 8px; height: 8px; margin-left: -4px; background: var(--sel); border: 1px solid rgba(0, 0, 0, 0.45); transform: rotate(45deg); cursor: ew-resize; }
-.kfs-key:hover { background: #fff; }
+.kfs-key:hover { background: var(--hot); }
 /* The shape is the ease, as in Kdenlive: a diamond runs straight to the next key, a
    square holds until it, a circle curves through its neighbours. */
 .kfs-key.hold { transform: none; border-radius: 1px; }
@@ -335,7 +324,7 @@ button.linkish:hover { text-decoration: underline; }
 .kf-plot polyline { fill: none; stroke: var(--sel); stroke-width: 1.5; vector-effect: non-scaling-stroke; }
 .kf-plot-head { position: absolute; top: 0; bottom: 0; width: 0; margin-left: -1px; border-left: 2px solid var(--accent); pointer-events: none; }
 .kf-point { position: absolute; width: 9px; height: 9px; margin: -4.5px 0 0 -4.5px; background: var(--sel); border: 1px solid rgba(0, 0, 0, 0.45); transform: rotate(45deg); cursor: move; }
-.kf-point:hover { background: #fff; }
+.kf-point:hover { background: var(--hot); }
 .kf-point.hold { transform: none; border-radius: 1px; }
 .kf-point.smooth { transform: none; border-radius: 50%; }
 .kf-axis { position: absolute; left: 4px; font-family: var(--mono); pointer-events: none; }
@@ -401,6 +390,6 @@ dialog.modal p { margin-bottom: 10px; }
 
 #toasts { position: fixed; right: 12px; bottom: 312px; display: flex; flex-direction: column; gap: 6px; z-index: 10; }
 .toast { background: var(--bg-3); border: 1px solid var(--line); border-left: 3px solid var(--accent); padding: 8px 10px; border-radius: 6px; max-width: 360px; font-size: 12px; }
-.toast.err { border-left-color: #e5484d; }
+.toast.err { border-left-color: var(--danger); }
 .toast.ok { border-left-color: var(--audio); }
 kbd { font: 10px var(--mono); border: 1px solid var(--line); border-radius: 3px; padding: 0 4px; color: var(--fg-2); }

@@ -50,6 +50,7 @@ const MENU: Record<string, string> = {
   "cut-clip": Cmd.cutClip,
   "paste-clip": Cmd.pasteClip,
   shortcuts: Cmd.shortcuts,
+  theme: Cmd.theme,
   "group-clips": Cmd.group,
   "ungroup-clips": Cmd.ungroup,
 };

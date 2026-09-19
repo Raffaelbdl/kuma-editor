@@ -1,0 +1,112 @@
+/* The editor's palettes.
+ *
+ * `style.css` says how the editor is laid out and never names a colour; this file says
+ * what the colours are, once per theme. A theme is a block of the same tokens under a
+ * `data-theme` on the root — `theme.ts` sets that attribute and remembers the choice —
+ * so switching is one attribute write, with nothing to rebuild and no second stylesheet
+ * to load.
+ *
+ * Adding one: copy the default block, change the values, and add it to `THEMES` in
+ * `ui/src/theme.ts`. `ui/test/theme.test.mjs` holds the two halves together — it fails if
+ * a palette here has no entry there, or if a theme leaves a token out and silently
+ * inherits somebody else's colour for it.
+ *
+ * Two rules that are load-bearing rather than stylistic:
+ *
+ * - **No `color-scheme` here, and none on `:root` anywhere.** A dark-scheme root stops
+ *   Chromium compositing the overlay iframes, which paints a template's white canvas over
+ *   the video (see the note in `style.css`). A theme changes the editor's chrome and
+ *   nothing about how a frame is composited.
+ * - **A theme is not a design system.** These tokens dress the editor; they never reach a
+ *   template, an overlay bake or a render. Picking a theme cannot change what the video
+ *   looks like, and `docs/decisions.md` explains why that line is worth keeping.
+ */
+
+/* ---------------------------------------------------------------- kuma (the default)
+   The original palette: warm orange on charcoal, with the track kinds in muted blue,
+   rust and green so they sit beside a picture whose colours are the work. */
+:root,
+:root[data-theme="kuma"] {
+  --bg-0: #0b0c0f;
+  --bg: #121317;
+  --bg-2: #1a1c22;
+  --bg-3: #23262e;
+  --line: #2e323c;
+  --fg: #e6e7eb;
+  --fg-2: #9aa0ad;
+  --accent: #ff4f00;
+  /* Text on top of `--accent` (the primary button, an active track toggle). */
+  --on-accent: #fff;
+  --video: #3b6ea5;
+  --overlay: #b0532a;
+  --audio: #3f8a5c;
+  /* A sequence clip is striped in two shades of one colour, so it reads as "more inside". */
+  --sequence: #3b5c7a;
+  --sequence-2: #33526e;
+  --folder: #6b5a2a;
+  --color-clip: #555;
+  --sel: #ffd166;
+  --danger: #e5484d;
+  --rec: #b3261e;
+  /* The brightest thing on screen: a keyframe under the pointer. */
+  --hot: #fff;
+  /* Alpha's checkerboard — what a video would show through. */
+  --check-a: #1b1d23;
+  --check-b: #262a33;
+  /* A clip's own edge, the brighter edge a grouped clip gets, and its second line. */
+  --clip-edge: rgba(255, 255, 255, 0.15);
+  --clip-edge-strong: rgba(255, 255, 255, 0.55);
+  --clip-sub: rgba(255, 255, 255, 0.7);
+  /* Axis colours, for the vector rows: X, Y, Z, and W for a fourth edge. Muted against a
+     game engine's neon — they sit beside a picture whose colours are the work. */
+  --axis-x: #d9576b;
+  --axis-y: #59c07a;
+  --axis-z: #5b8dd9;
+  --axis-w: #d2a24c;
+  /* The neon a theme can put on the playhead and the primary button. Off here: this
+     palette is flat by design, and a glow would be the one thing shouting in it. */
+  --glow: none;
+}
+
+/* ---------------------------------------------------------------- tokyo night
+   Retro neon on deep indigo, after the Tokyo Night palette: hot pink where the default is
+   orange, and the track kinds as blue, violet and teal. The glow is the whole point of
+   the theme — it is on the playhead and the Render button, the two things you look for
+   rather than at, and nowhere else, because a neon editor is unreadable and a neon
+   playhead is a sign. */
+:root[data-theme="tokyo-night"] {
+  --bg-0: #0c0c14;
+  --bg: #16161e;
+  --bg-2: #1a1b26;
+  --bg-3: #24283b;
+  --line: #2f3349;
+  --fg: #c0caf5;
+  /* Tokyo Night's own comment colour (#565f89) is too dim for a label you have to read at
+     11px; this is the same hue lifted until it is secondary text rather than a whisper. */
+  --fg-2: #7f8bb5;
+  --accent: #f7768e;
+  /* Pink is a light colour: the label on it is the background, not white. */
+  --on-accent: #16161e;
+  --video: #3d59a1;
+  --overlay: #8c5cc4;
+  --audio: #3f7d6a;
+  --sequence: #2f4b8f;
+  --sequence-2: #283f78;
+  --folder: #8a6a3a;
+  --color-clip: #414868;
+  --sel: #e0af68;
+  /* Distinct from `--accent`, which is pink here and used for things that are not wrong. */
+  --danger: #db4b4b;
+  --rec: #c53b3b;
+  --hot: #eef1ff;
+  --check-a: #1b1c28;
+  --check-b: #23253a;
+  --clip-edge: rgba(192, 202, 245, 0.18);
+  --clip-edge-strong: rgba(192, 202, 245, 0.6);
+  --clip-sub: rgba(230, 236, 255, 0.72);
+  --axis-x: #f7768e;
+  --axis-y: #9ece6a;
+  --axis-z: #7aa2f7;
+  --axis-w: #e0af68;
+  --glow: 0 0 9px rgba(247, 118, 142, 0.55);
+}

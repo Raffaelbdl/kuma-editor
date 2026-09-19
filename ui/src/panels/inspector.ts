@@ -654,7 +654,7 @@ function textInput(value: string, onChange: (v: string) => void): HTMLInputEleme
 function jsonInput(value: unknown, onChange: (v: unknown) => void): HTMLTextAreaElement {
   const t = el("textarea", "wide");
   t.value = JSON.stringify(value, null, 1);
-  t.onchange = () => { try { onChange(JSON.parse(t.value)); t.style.borderColor = ""; } catch { t.style.borderColor = "#e5484d"; } };
+  t.onchange = () => { try { onChange(JSON.parse(t.value)); t.style.borderColor = ""; } catch { t.style.borderColor = "var(--danger)"; } };
   return t;
 }
 

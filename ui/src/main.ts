@@ -12,6 +12,7 @@ import { mountTopbar } from "./panels/topbar";
 import { mountTransport } from "./panels/transport";
 import { installShortcuts } from "./shortcuts";
 import { store, toast } from "./store";
+import { installTheme } from "./theme";
 import { Timeline } from "./panels/timeline";
 import { initTitlebar } from "./panels/titlebar";
 import { Workbench } from "./panels/workbench";
@@ -38,6 +39,11 @@ function projectCommands() {
 }
 
 async function main() {
+  // First, before the document is painted with anything: a theme swapped after the panels
+  // are up is a flash of the wrong colours. It needs nothing from the daemon — the choice
+  // is this browser's, not the project's.
+  installTheme();
+
   await store.init();
   // Before the panels: the title bar adds a row to the grid, and settling the layout once
   // is tidier than having every panel measure itself and then measure again.

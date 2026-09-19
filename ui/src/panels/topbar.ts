@@ -5,6 +5,7 @@
 import { api } from "../api";
 import { Cmd, command, run } from "../commands";
 import { button, el, options } from "../dom";
+import { icon } from "../icons";
 import { keysFor } from "../shortcuts";
 import { startJob, store } from "../store";
 import { orientation, sequenceIds } from "../types";
@@ -60,6 +61,10 @@ export function mountTopbar(host: HTMLElement): void {
     el("span", "spacer"),
     presets, target, render,
     button("Reload preview", () => run(Cmd.reloadPreview)),
+    // Chosen once and then left alone, so it is an icon rather than a word: the bar is
+    // for what you reach for while editing. The desktop shell's View menu names the same
+    // command, and a browser has only this.
+    button(icon("palette"), () => run(Cmd.theme), "Theme — how the editor looks", "icon"),
     // What the keys are, where a person looks for it. The list is the bindings themselves
     // (`shortcuts.ts`), so it cannot go stale, and `?` opens the same one.
     button("?", () => run(Cmd.shortcuts), `Keyboard shortcuts (${keysFor(Cmd.shortcuts)})`),

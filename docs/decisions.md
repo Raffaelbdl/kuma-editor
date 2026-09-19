@@ -909,11 +909,20 @@ agent edit all get the same answer. The group joins *in front of* the ids asked 
 keeps "the last one clicked" last — the inspector still edits the clip you pointed at, and
 says so when several are selected.
 
-**A drag moves the group, not the selection** — adopted.
-The block is gathered from the dragged clip's group rather than from what is selected, so
-dragging a grouped clip that is not selected still moves the block, and Ctrl-selecting
-three loose clips still moves only the one you drag. Moving a multi-selection as a block is
-a different feature and is not this one.
+**A drag moves a block, and two things make one** — the selection when the dragged clip is
+part of a multi-selection, else the dragged clip's group, else just it. Groups came first
+and a selection borrowed the same machinery a day later, once it was obvious that
+Ctrl-clicking three clips and dragging one of them moving only that one was not a rule
+anyone would defend. Multi-select had been wired for copy, cut, delete and split since it
+landed, and never for the drag.
+
+The two differ in exactly one way, which is the reason to have both: a group is in the
+document and outlives everything, a selection lasts until you click elsewhere. So
+**pressing a clip that is already one of several selected keeps the selection** rather than
+collapsing to the clip pressed — otherwise the press that begins the drag would destroy the
+thing being dragged. A press that turns out to be a click, not a drag, collapses on release
+instead, or there would be no way back to a single clip except by clicking empty space
+first.
 
 Three rules follow from the block being real. It travels **one delta**, so the shape
 survives; it stops when its **earliest** member reaches 0, not when the dragged one does,
@@ -936,6 +945,22 @@ because a group of one is not a group.
 workbench like the clipboard. Grouped clips carry a chain before the name and a brighter
 edge — not the selection's outline, which is what you have hold of rather than what these
 clips *are*.
+
+## The shortcut list
+
+**The list is the bindings** — adopted, and it is the whole point.
+`shortcuts.ts` already held every key in one table; a binding now carries how it is written
+and what it does, and the list (`?`, or the button in the top bar) is built from that table.
+A hand-written list beside it would be a second copy of the same facts and would disagree
+within a week — which is exactly what the inspector's help paragraphs had become, so they
+are gone and point at this instead. A binding that is the mirror of the one above it — `→`
+of `←` — carries no text and is not listed twice.
+
+**Gestures are in the list too, and written as sentences** — adopted.
+Half of what this editor can do is done with the pointer, so a list of keys alone would be
+a lie by omission; they are the one part that cannot be derived, since a pointer handler is
+not a table. They render as the phrases they are rather than as key caps: "Drag a clip" is
+three words, not three keys to press, and the first draft drew it as `Drag` `a` `clip`.
 
 ## The inspector's property fields
 

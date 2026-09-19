@@ -365,6 +365,8 @@ function rebuildMenu() {
     {
       label: "Help",
       submenu: [
+        { label: "Keyboard Shortcuts", accelerator: "Shift+?", click: () => sendCommand("shortcuts") },
+        { type: "separator" },
         { label: "kuma on GitHub", click: () => shell.openExternal("https://github.com/raffaelbdl/kuma-editor") },
         {
           label: "About kuma",

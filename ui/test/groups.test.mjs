@@ -1,11 +1,14 @@
-// Clip groups, in a real browser against a real daemon: group two clips on two tracks,
-// watch one click select both, and drag one to move the block.
+// Moving clips as a block, in a real browser against a real daemon — and the two ways a
+// block comes about: a selection you made, and a group that makes itself.
 //
 // What it pins is the part no Rust test reaches. The model's side of a group is one string
 // on a clip, and it is inert — the compiler never reads it. Everything a group *does*
 // happens in the page: the selection expands, a drag gathers the members, the block keeps
-// its shape and stops at 0 as one, and the whole move is a single patch. Only the
-// assembled page has all of that.
+// its shape and stops at 0 as one, and the whole move is a single patch. A plain
+// multi-selection borrows the same block and differs in exactly one way, which is the
+// contrast these cases are next to each other for: it lasts until you click elsewhere.
+//
+// The shortcut list is here too, because it is the same bindings this file presses.
 //
 // Skips, loudly, without a browser, a binary or `ui/dist`, as its neighbours do.
 
@@ -100,6 +103,29 @@ describe("clip groups", { skip: why ? `skipping: ${why}` : false }, () => {
     if (tmp) fs.rmSync(tmp, { recursive: true, force: true });
   });
 
+  it("moves a selection of ungrouped clips as one", async () => {
+    await page.eval(selectClip("a"));
+    await page.eval(addClip("b"));
+    await page.until(`${SELECTED} === "a,b"`);
+    const before = await page.eval(REVISION);
+    await page.eval(dragClip("a", 120)); // two seconds at 60px/s
+    await clipsAre("a@3-7 b@2-6 c@6-8");
+    assert.equal(await page.eval(REVISION), before + 1, "one patch, as a group's move is");
+    // Pressing a clip that is already selected keeps the selection, so the block can be
+    // moved again without rebuilding it. Back where it started.
+    await page.until(`${SELECTED} === "a,b"`);
+    await page.eval(dragClip("a", -120));
+    await clipsAre("a@1-5 b@0-4 c@6-8");
+  });
+
+  it("collapses to the clip you pressed when the press turns out to be a click", async () => {
+    // The other half of keeping the selection through a press: without this there would be
+    // no way back to one clip except by clicking empty space first.
+    await page.until(`${SELECTED} === "a,b"`);
+    await page.eval(selectClip("a"));
+    await page.until(`${SELECTED} === "a"`);
+  });
+
   it("groups the selected clips, across the tracks they are on", async () => {
     await page.eval(selectClip("a"));
     await page.eval(addClip("b"));
@@ -155,6 +181,26 @@ describe("clip groups", { skip: why ? `skipping: ${why}` : false }, () => {
     assert.equal(groups.length, 2, "the copy is the whole group, because selecting one selected both");
     assert.equal(groups[0], groups[1], "and it is a group");
     assert.notEqual(groups[0], "g1", "its own, or the copy would move with the original forever");
+  });
+
+  it("lists the shortcuts, on ? and from the top bar", async () => {
+    await page.eval(`window.dispatchEvent(new KeyboardEvent("keydown", { key: "?", bubbles: true })) || true`);
+    await page.until(`!!document.querySelector("dialog.modal .shortcuts")`);
+    const rows = await page.eval(`[...document.querySelectorAll("dialog.modal .sc-row")].map(r => r.querySelector(".sc-keys").textContent + " = " + r.querySelector(".sc-what").textContent)`);
+    // The list is the bindings, so what this really asks is that they carry their own
+    // documentation — a key bound and undescribed simply would not be here.
+    assert.ok(rows.some((r) => r.startsWith("Ctrl+G ")), `grouping is listed: ${rows.join(" | ")}`);
+    assert.ok(rows.some((r) => r.startsWith("Space ")), "and so is the transport");
+    // The gestures too: half of what the editor does is done with the mouse.
+    assert.ok(rows.some((r) => r.startsWith("Drag a clip =")), `and the gestures: ${rows.join(" | ")}`);
+    assert.deepEqual(await page.eval(`[...document.querySelectorAll("dialog.modal h4")].map(h => h.textContent)`), ["Transport", "Editing", "Overlay workbench"]);
+    await page.eval(`document.querySelector("dialog.modal .modal-actions button").click()`);
+    await page.until(`!document.querySelector("dialog.modal")`);
+    // The button in the top bar is the same list.
+    await page.eval(`[...document.querySelectorAll("#topbar button")].find(b => b.textContent.trim() === "?").click()`);
+    await page.until(`!!document.querySelector("dialog.modal .shortcuts")`);
+    await page.eval(`document.querySelector("dialog.modal .modal-actions button").click()`);
+    await page.until(`!document.querySelector("dialog.modal")`);
   });
 
   it("ungroups, and leaves nothing behind in the document", async () => {

@@ -373,10 +373,11 @@ export class Inspector {
     const f = store.findClip(store.selectedClip);
     if (!f) {
       this.host.innerHTML = `<h3>Inspector</h3>
-        <p class="muted">Select a <b>bin entry</b> to change what it is, or a <b>clip</b> to change where and how it plays. Drag from the bin onto the timeline to place one.</p>
-        <h3>Shortcuts</h3><p class="muted"><kbd>Space</kbd> play/pause · <kbd>←</kbd><kbd>→</kbd> frame step (<kbd>Shift</kbd> a second, <kbd>Alt</kbd> to the next cut) · <kbd>Home</kbd>/<kbd>End</kbd> ends · <kbd>Del</kbd> delete · <kbd>Ctrl+Z</kbd>/<kbd>Ctrl+Shift+Z</kbd> undo/redo · <kbd>Ctrl+wheel</kbd> zoom · <kbd>S</kbd> split at playhead</p>
-        <p class="muted"><kbd>Ctrl+C</kbd>/<kbd>Ctrl+X</kbd>/<kbd>Ctrl+V</kbd> copy, cut and paste clips — a paste lands at the playhead, on the track you last clicked. <kbd>Ctrl+click</kbd> a clip to select more than one; those keep their own tracks and spacing.</p>
-        <p class="muted"><kbd>Ctrl+G</kbd> groups the selected clips, <kbd>Ctrl+Shift+G</kbd> ungroups them. Clicking any clip of a group selects them all, and dragging one moves the whole block — for a subtitle that belongs over its audio, or clips that overlap on purpose.</p>`;
+        <p class="muted">Select a <b>bin entry</b> to change what it is, or a <b>clip</b> to change where and how it plays. Drag from the bin onto the timeline to place one.</p>`;
+      // Not a list of keys copied out here: there is one, it is the bindings themselves,
+      // and two copies of it would disagree within a week.
+      this.host.appendChild(el("p", "muted", "Press ? for the keyboard shortcuts, or use the button in the top bar."));
+      this.host.appendChild(button("Shortcuts", () => run(Cmd.shortcuts), "Every key and gesture the editor has (?)"));
       return;
     }
     const { clip } = f;

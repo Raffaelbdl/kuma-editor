@@ -382,8 +382,19 @@ dialog.modal {
   border: 1px solid var(--line); border-radius: 10px; background: var(--bg-2); color: var(--fg);
   padding: 16px 18px; min-width: 320px; max-width: min(440px, 90vw); box-shadow: 0 16px 48px rgba(0, 0, 0, 0.5);
 }
+dialog.modal.wide { max-width: min(640px, 92vw); }
 dialog.modal::backdrop { background: rgba(0, 0, 0, 0.5); }
 dialog.modal h3 { margin-top: 0; }
+/* The shortcut list: keys in one column, what they do in the other, so the keys line up
+   and the eye can run down them. */
+.shortcuts { max-height: min(70vh, 620px); overflow: auto; }
+.shortcuts h4 { margin: 14px 0 4px; font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--fg-2); }
+.shortcuts h4:first-child { margin-top: 2px; }
+.sc-row { display: grid; grid-template-columns: 148px 1fr; gap: 10px; align-items: baseline; padding: 2px 0; }
+.sc-keys { display: flex; flex-wrap: wrap; align-items: center; gap: 3px; }
+.sc-what { color: var(--fg); }
+/* A gesture is a sentence, not a chord: no key boxes, and set apart from what it does. */
+.sc-does { color: var(--fg-2); font-style: italic; }
 dialog.modal .field { grid-template-columns: 70px 1fr; }
 dialog.modal p { margin-bottom: 10px; }
 .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }

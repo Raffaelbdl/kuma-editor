@@ -49,6 +49,7 @@ const MENU: Record<string, string> = {
   "copy-clip": Cmd.copyClip,
   "cut-clip": Cmd.cutClip,
   "paste-clip": Cmd.pasteClip,
+  shortcuts: Cmd.shortcuts,
   "group-clips": Cmd.group,
   "ungroup-clips": Cmd.ungroup,
 };

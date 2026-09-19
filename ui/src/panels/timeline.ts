@@ -13,14 +13,22 @@ const HEAD = 136;
 export class Timeline {
   private root: HTMLDivElement;
   private playhead: HTMLDivElement | null = null;
-  /** A drag in progress. `block` is the clips moving with the one under the pointer — just
-   *  it, unless it is grouped — each with the position it started at and the ghost showing
-   *  where it would land. The dragged clip is `block[0]`, and it is the only one a trim
-   *  touches: a group moves as one, it does not resize as one. */
+  /** A drag in progress. `block` is every clip moving with it, the one under the pointer
+   *  first, each with where it started and the ghost showing where it would land. A move's
+   *  block is the selection — the store has already made that the group when the clip is
+   *  in one — and a trim's is that clip alone: a block is a claim about *when* these clips
+   *  play together, not about how long they are. */
   private drag: null | {
-    kind: "move" | "trim-l" | "trim-r"; clip: Clip; ti: number; startX: number;
-    orig: { start: number; end: number; in: number }; ghost: HTMLDivElement; toTrack: number;
+    kind: "move" | "trim-l" | "trim-r"; startX: number;
+    /** The dragged clip's source in-point, which a left trim moves with the edge. */
+    in: number;
+    toTrack: number;
     block: { clip: Clip; ti: number; start: number; end: number; ghost: HTMLDivElement }[];
+    /** Every edge of a clip outside the block, to snap to. Fixed for the drag — a block
+     *  never snaps to its own members, or it would stick to itself. */
+    cuts: number[];
+    /** The block's earliest start: it stops when *this* reaches 0, not the pressed clip. */
+    floor: number;
     /** The press held a multi-selection together. If it turns out to be a click, that
      *  selection collapses to the clip that was pressed. */
     keep: boolean;
@@ -153,7 +161,6 @@ export class Timeline {
     const w = Math.max(4, (c.end - c.start) * store.state.zoom);
     const box = el("div", `clip ${clipKind(p, c, t)}${store.selectedClip === c.id ? " selected" : ""}${w < 24 ? " tiny" : ""}${c.group ? " grouped" : ""}`);
     box.dataset.id = c.id;
-    if (c.group) box.dataset.group = c.group;
     box.style.left = `${this.x(c.start) - HEAD}px`;
     box.style.width = `${w}px`;
     const item = binItem(p, c);
@@ -219,9 +226,10 @@ export class Timeline {
       // outside it selects that one first, as a click always did. A press that turns out
       // to be a click and not a drag collapses to it on release — see `endDrag`.
       const keep = store.selectedClips.length > 1 && store.selectedClips.includes(c.id);
-      this.beginDrag(e, kind, c, ti, box, keep);
       if (keep) store.focusTrack(t.id);
       else store.selectClips([c.id], t.id);
+      // Selected first: the selection is what a move takes with it.
+      this.beginDrag(e, kind, c, ti, box, keep);
     });
     return box;
   }
@@ -237,98 +245,82 @@ export class Timeline {
     window.addEventListener("pointerup", up);
   }
 
-  /**
-   * What moves with this clip. The selection when the clip is part of a multi-selection,
-   * else its group, else just it — and only for a move: a trim is one clip's own, because
-   * a block is a claim about *when* these clips play together, not about how long they are.
-   */
-  private blockIds(clip: Clip, kind: "move" | "trim-l" | "trim-r"): string[] {
-    if (kind !== "move") return [clip.id];
-    const sel = store.selectedClips;
-    if (sel.length > 1 && sel.includes(clip.id)) return sel;
-    return clip.group ? store.groupmates([clip.id]) : [clip.id];
-  }
-
-  private beginDrag(e: PointerEvent, kind: "move" | "trim-l" | "trim-r", clip: Clip, ti: number, el: HTMLDivElement, keep = false) {
+  private beginDrag(e: PointerEvent, kind: "move" | "trim-l" | "trim-r", clip: Clip, ti: number, el: HTMLDivElement, keep: boolean) {
     const ghostFor = (box: HTMLElement) => {
       const g = box.cloneNode(true) as HTMLDivElement;
       g.classList.add("ghost");
       box.parentElement!.appendChild(g);
       return g;
     };
-    const ghost = ghostFor(el);
     // The clip under the pointer comes first, so everything else can be measured against
     // where *it* started.
-    const block = [{ clip, ti, start: clip.start, end: clip.end, ghost }];
-    for (const id of this.blockIds(clip, kind)) {
-      if (id === clip.id) continue;
-      const f = store.findClip(id);
-      // Only what is drawn can be dragged: a clip on another sequence has no box here.
-      const box = this.root.querySelector<HTMLElement>(`.clip[data-id="${id}"]:not(.ghost)`);
-      if (f && box) block.push({ clip: f.clip, ti: f.ti, start: f.clip.start, end: f.clip.end, ghost: ghostFor(box) });
+    const block = [{ clip, ti, start: clip.start, end: clip.end, ghost: ghostFor(el) }];
+    if (kind === "move") {
+      for (const id of store.selectedClips) {
+        if (id === clip.id) continue;
+        const f = store.findClip(id);
+        // Only what is drawn can be dragged: a clip on another sequence has no box here.
+        const box = this.root.querySelector<HTMLElement>(`.clip[data-id="${id}"]:not(.ghost)`);
+        if (f && box) block.push({ clip: f.clip, ti: f.ti, start: f.clip.start, end: f.clip.end, ghost: ghostFor(box) });
+      }
     }
-    this.drag = { kind, clip, ti, startX: e.clientX, orig: { start: clip.start, end: clip.end, in: clip.in ?? 0 }, ghost, toTrack: ti, block, keep };
+    const moving = new Set(block.map((m) => m.clip.id));
+    const cuts = store.tracks.flatMap((tr) => tr.clips.filter((c) => !moving.has(c.id)).flatMap((c) => [c.start, c.end]));
+    this.drag = { kind, startX: e.clientX, in: clip.in ?? 0, toTrack: ti, block, cuts, floor: Math.min(...block.map((m) => m.start)), keep };
     const move = (ev: PointerEvent) => this.onDragMove(ev);
     const up = () => { window.removeEventListener("pointermove", move); window.removeEventListener("pointerup", up); this.endDrag(); };
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", up);
   }
 
-  /** Snap to a cut, the playhead or 0 — never to a clip that is moving with this drag, or
-   *  a block would snap to its own members and stick. */
-  private snapT(t: number, moving: Set<string>): number {
+  /** Snap to 0, the playhead or a cut outside the block; else to the frame. */
+  private snapT(t: number, cuts: number[]): number {
     const thresh = 8 / store.state.zoom;
-    const cands = [0, store.state.playhead, ...store.tracks.flatMap((tr) => tr.clips.filter((c) => !moving.has(c.id)).flatMap((c) => [c.start, c.end]))];
-    for (const c of cands) if (Math.abs(c - t) < thresh) return c;
-    return store.snap(t);
+    const near = (c: number) => Math.abs(c - t) < thresh;
+    if (near(0)) return 0;
+    if (near(store.state.playhead)) return store.state.playhead;
+    return cuts.find(near) ?? store.snap(t);
+  }
+
+  /** Put a ghost where its clip would land, and remember where that is for the drop. */
+  private placeGhost(ghost: HTMLDivElement, from: number, to: number) {
+    ghost.style.left = `${this.x(from) - HEAD}px`;
+    ghost.style.width = `${Math.max(4, (to - from) * store.state.zoom)}px`;
+    ghost.dataset.start = String(from);
+    ghost.dataset.end = String(to);
   }
 
   private onDragMove(ev: PointerEvent) {
     const d = this.drag;
     if (!d) return;
     const dt = (ev.clientX - d.startX) / store.state.zoom;
-    const moving = new Set(d.block.map((m) => m.clip.id));
-    const dur = d.orig.end - d.orig.start;
-    let start = d.orig.start, end = d.orig.end;
+    const me = d.block[0];
     if (d.kind === "move") {
-      start = Math.max(0, this.snapT(d.orig.start + dt, moving));
-      end = start + dur;
+      // Every member travels what the pressed clip does, so the block keeps its shape —
+      // held back so that the earliest of them stops at 0 rather than the one under the
+      // pointer, or the daemon would refuse the whole patch for a negative start.
+      const delta = Math.max(-d.floor, this.snapT(me.start + dt, d.cuts) - me.start);
       // Allow moving between tracks of the same kind — one clip only. A block spans the
       // tracks its clips are on, and there is no one track to drop it onto, so it moves in
       // time and stays where it is.
       const row = d.block.length > 1 ? null : (ev.target as HTMLElement | null)?.closest?.(".tl-track") as HTMLElement | null;
-      const target = row ? Number(row.dataset.ti) : d.ti;
-      const same = store.tracks[target]?.kind === store.tracks[d.ti].kind;
-      const to = same ? target : d.ti;
+      const target = row ? Number(row.dataset.ti) : me.ti;
+      const same = store.tracks[target]?.kind === store.tracks[me.ti].kind;
+      const to = same ? target : me.ti;
       if (to !== d.toTrack) {
         d.toTrack = to;
-        this.root.querySelector(`[data-ti="${to}"] .tl-lane`)?.appendChild(d.ghost);
+        this.root.querySelector(`[data-ti="${to}"] .tl-lane`)?.appendChild(me.ghost);
       }
+      for (const m of d.block) this.placeGhost(m.ghost, m.start + delta, m.end + delta);
     } else if (d.kind === "trim-l") {
-      start = Math.min(end - 1 / store.fps, Math.max(0, this.snapT(d.orig.start + dt, moving)));
+      let start = Math.min(me.end - 1 / store.fps, Math.max(0, this.snapT(me.start + dt, d.cuts)));
       // Cannot reveal material before the source's first frame (handles scale with speed).
-      const speed = Math.abs(d.clip.speed) || 1;
-      const timed = isTimedMedia(binItem(store.state.project!, d.clip));
-      if (timed && d.orig.in + (start - d.orig.start) * speed < 0) start = store.snap(d.orig.start - d.orig.in / speed);
+      const speed = Math.abs(me.clip.speed) || 1;
+      const timed = isTimedMedia(binItem(store.state.project!, me.clip));
+      if (timed && d.in + (start - me.start) * speed < 0) start = store.snap(me.start - d.in / speed);
+      this.placeGhost(me.ghost, start, me.end);
     } else {
-      end = Math.max(start + 1 / store.fps, this.snapT(d.orig.end + dt, moving));
-    }
-    // What the dragged clip actually travelled, which is what every other member of the
-    // block travels too — held back so that the earliest of them stops at 0 rather than
-    // the one under the pointer.
-    let delta = start - d.orig.start;
-    if (d.kind === "move" && d.block.length > 1) {
-      const floor = Math.min(...d.block.map((m) => m.start));
-      if (floor + delta < 0) delta = -floor;
-      start = d.orig.start + delta;
-      end = start + dur;
-    }
-    for (const m of d.block) {
-      const [from, to] = m.ghost === d.ghost ? [start, end] : [m.start + delta, m.end + delta];
-      m.ghost.style.left = `${this.x(from) - HEAD}px`;
-      m.ghost.style.width = `${Math.max(4, (to - from) * store.state.zoom)}px`;
-      m.ghost.dataset.start = String(from);
-      m.ghost.dataset.end = String(to);
+      this.placeGhost(me.ghost, me.start, Math.max(me.start + 1 / store.fps, this.snapT(me.end + dt, d.cuts)));
     }
   }
 
@@ -336,44 +328,40 @@ export class Timeline {
     const d = this.drag;
     this.drag = null;
     if (!d) return;
-    const start = Number(d.ghost.dataset.start ?? d.orig.start);
-    const end = Number(d.ghost.dataset.end ?? d.orig.end);
+    const me = d.block[0];
     const landed = d.block.map((m) => ({ m, start: Number(m.ghost.dataset.start ?? m.start), end: Number(m.ghost.dataset.end ?? m.end) }));
     for (const m of d.block) m.ghost.remove();
-    if (start === d.orig.start && end === d.orig.end && d.toTrack === d.ti) {
+    const [mine] = landed;
+    if (mine.start === me.start && mine.end === me.end && d.toTrack === me.ti) {
       // A click, not a drag. The selection was held together in case this became one, so
       // now it collapses to the clip that was pressed — otherwise there would be no way to
       // get back to a single clip except by clicking empty space first.
-      if (d.keep) store.selectClips([d.clip.id]);
+      if (d.keep) store.selectClips([me.clip.id]);
       return;
     }
-    const path = store.clipPath(d.clip.id);
+    const path = store.clipPath(me.clip.id);
     if (!path) return; // the clip went away mid-drag (undo, agent edit)
-    // A block is one patch: half a group having moved is not a state anyone asked for.
-    if (d.block.length > 1) {
-      const ops = landed.flatMap(({ m, start: from, end: to }) => {
-        const p = store.clipPath(m.clip.id);
-        return p ? [{ op: "replace" as const, path: `${p}/start`, value: from }, { op: "replace" as const, path: `${p}/end`, value: to }] : [];
-      });
-      await store.patch(ops, `move ${landed.map((l) => l.m.clip.id).join(", ")}`);
-      return;
-    }
     const ops: PatchOp[] = [];
-    if (d.kind === "trim-l" && isTimedMedia(binItem(store.state.project!, d.clip))) {
-      ops.push({ op: "replace", path: `${path}/in`, value: Math.max(0, d.orig.in + (start - d.orig.start) * Math.abs(d.clip.speed)) });
+    if (d.kind === "trim-l" && isTimedMedia(binItem(store.state.project!, me.clip))) {
+      ops.push({ op: "replace", path: `${path}/in`, value: Math.max(0, d.in + (mine.start - me.start) * Math.abs(me.clip.speed)) });
     }
-    if (d.toTrack !== d.ti) {
+    if (d.toTrack !== me.ti) {
       // Transitions are per track: any that involved this clip go with the cut.
-      const xs = store.tracks[d.ti].transitions;
-      if (xs.some((x) => x.from === d.clip.id || x.to === d.clip.id)) {
-        ops.push({ op: "replace", path: `${store.seqPath}/tracks/${d.ti}/transitions`, value: xs.filter((x) => x.from !== d.clip.id && x.to !== d.clip.id) });
+      const xs = store.tracks[me.ti].transitions;
+      if (xs.some((x) => x.from === me.clip.id || x.to === me.clip.id)) {
+        ops.push({ op: "replace", path: `${store.seqPath}/tracks/${me.ti}/transitions`, value: xs.filter((x) => x.from !== me.clip.id && x.to !== me.clip.id) });
       }
-      const moved = { ...d.clip, start, end };
+      const moved = { ...me.clip, start: mine.start, end: mine.end };
       ops.push({ op: "remove", path }, { op: "add", path: `${store.seqPath}/tracks/${d.toTrack}/clips/-`, value: moved });
     } else {
-      ops.push({ op: "replace", path: `${path}/start`, value: start }, { op: "replace", path: `${path}/end`, value: end });
+      // The whole block in one patch: half a group having moved is not a state anyone
+      // asked for. A member that went away mid-drag is left out, not refused.
+      for (const { m, start, end } of landed) {
+        const p = store.clipPath(m.clip.id);
+        if (p) ops.push({ op: "replace", path: `${p}/start`, value: start }, { op: "replace", path: `${p}/end`, value: end });
+      }
     }
-    await store.patch(ops, `${d.kind} ${d.clip.id}`);
+    await store.patch(ops, `${d.kind} ${landed.map((l) => l.m.clip.id).join(", ")}`);
   }
 
   private async onDrop(e: DragEvent) {

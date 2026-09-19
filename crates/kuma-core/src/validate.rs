@@ -174,10 +174,10 @@ fn check_sequence<'a>(
         for (ci, c) in &clips {
             let cp = format!("{tp}/clips/{ci}");
             check_id(issues, clip_ids, &c.id, format!("{cp}/id"), "clip");
-            if !c.group.is_empty() {
-                if !is_valid_id(&c.group) {
-                    issues.push(Issue::error(format!("{cp}/group"), format!("group id `{}` must match [A-Za-z_][A-Za-z0-9_-]*", c.group)));
-                } else if *groups.entry(&c.group).or_insert(seq_id) != seq_id {
+            // A group id is shared on purpose, so it gets the format check and not the
+            // uniqueness one.
+            if !c.group.is_empty() && check_id_format(issues, &c.group, format!("{cp}/group"), "group") {
+                if *groups.entry(&c.group).or_insert(seq_id) != seq_id {
                     // Whichever sequence it was met on first is the group's; a member
                     // anywhere else would be a clip the block can never take with it.
                     issues.push(Issue::error(
@@ -462,10 +462,18 @@ fn check_keyframes(issues: &mut Vec<Issue>, ep: &str, c: &Clip, times: impl Iter
     }
 }
 
-fn check_id<'a>(issues: &mut Vec<Issue>, seen: &mut HashSet<&'a str>, id: &'a str, path: String, what: &str) {
-    if !is_valid_id(id) {
+/// Well-formed, or an error at `path`. True when it is.
+fn check_id_format(issues: &mut Vec<Issue>, id: &str, path: String, what: &str) -> bool {
+    let ok = is_valid_id(id);
+    if !ok {
         issues.push(Issue::error(path, format!("{what} id `{id}` must match [A-Za-z_][A-Za-z0-9_-]*")));
-    } else if !seen.insert(id) {
+    }
+    ok
+}
+
+/// Well-formed and not seen before.
+fn check_id<'a>(issues: &mut Vec<Issue>, seen: &mut HashSet<&'a str>, id: &'a str, path: String, what: &str) {
+    if check_id_format(issues, id, path.clone(), what) && !seen.insert(id) {
         issues.push(Issue::error(path, format!("duplicate {what} id `{id}`")));
     }
 }

@@ -331,13 +331,11 @@ const tracksOf = (found: Found[]) => new Map(found.map((f) => [trackPathOf(f), f
 // membership goes with the clip, so a delete leaves nothing dangling. The compiler never
 // reads it: a grouped timeline renders exactly as the ungrouped one does.
 
-/** Group the selected clips. Two or more, on the timeline you are looking at — a block
- *  that could not move as one is not a group, which is what the validator says too. */
+/** Group the selected clips. Two or more — a group of one is not a group. That they must
+ *  be on one timeline is the validator's rule, and its refusal is the message. */
 export async function groupSelection() {
   const found = store.selectedFound;
   if (found.length < 2) { toast("Select two or more clips to group (Ctrl/Cmd+click)", ""); return; }
-  const seqs = new Set(found.map((f) => f.seq));
-  if (seqs.size > 1) { toast("A group's clips must be on one timeline", "err"); return; }
   // Any group the selection already carries is absorbed into the new one, so grouping a
   // group with a third clip makes one group of three rather than a group of a group.
   const id = store.newGroupId();
@@ -428,8 +426,8 @@ export async function pasteClipboard() {
   const regroup = pasteGroups(entries);
   const pasted: Clip[] = [];
   for (const { entry, track } of targets) {
-    const clip: Clip = { ...structuredClone(entry.clip), id: store.newId(clipPrefix(entry.kind), pasted.map((c) => c.id)), start: entry.clip.start + dt, end: entry.clip.end + dt, group: regroup(entry.clip.group) };
-    if (!clip.group) delete clip.group;
+    const { group, ...copied } = structuredClone(entry.clip);
+    const clip: Clip = { ...copied, id: store.newId(clipPrefix(entry.kind), pasted.map((c) => c.id)), start: entry.clip.start + dt, end: entry.clip.end + dt, ...regroup(group) };
     pasted.push(clip);
     // The indices are read off now, when nothing more will move: adding a track above
     // renumbered the ones after it.
@@ -448,12 +446,12 @@ export async function pasteClipboard() {
  * otherwise move together forever. A group only one of whose clips was copied is no group
  * at all on arrival, so it arrives loose.
  */
-function pasteGroups(entries: ClipboardEntry[]): (old: string | undefined) => string {
+function pasteGroups(entries: ClipboardEntry[]): (old: string | undefined) => { group?: string } {
   const size = new Map<string, number>();
   for (const e of entries) if (e.clip.group) size.set(e.clip.group, (size.get(e.clip.group) ?? 0) + 1);
   const minted = new Map<string, string>();
   for (const [g, n] of size) if (n > 1) minted.set(g, store.newGroupId([...minted.values()]));
-  return (old) => (old && minted.get(old)) || "";
+  return (old) => { const group = old && minted.get(old); return group ? { group } : {}; };
 }
 
 /** A track as a paste sees it: enough to match one, to add one, and to find room on one. */

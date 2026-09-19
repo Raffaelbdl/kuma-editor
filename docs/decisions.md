@@ -814,11 +814,10 @@ is the one way the shape could be lost without anyone noticing. The whole group 
 the position and destroy the shape, which is the wrong half to keep.
 
 **What a multiple selection does *not* do** — the deliberate edges.
-Dragging still moves one clip: a plain click collapses the selection to the clip under the
-pointer, so a drag can never move part of a group that looks joined. The inspector still
-edits the last clip clicked and says so, rather than showing fields that look like they
-apply to all of them. And there is no marquee: a drag on an empty lane scrubs, which is
-older and more useful than a rubber band.
+The inspector still edits the last clip clicked and says so, rather than showing fields
+that look like they apply to all of them. And there is no marquee: a drag on an empty lane
+scrubs, which is older and more useful than a rubber band. (A drag *did* move one clip
+whatever was selected, until [Clip groups](#clip-groups) made the selection a block.)
 
 **Deleting a clip takes its transitions with it** — adopted, and it was a latent bug.
 A transition names two clips and the validator refuses one that names a clip that has
@@ -1683,10 +1682,8 @@ because it is the part deliberately left out.
   no reason and stops improvements reaching the copy. Same shape as the media search path
   below: the library wants to hold more kinds of thing than templates, and the two should
   be one mechanism.
-- Several clips can be selected, copied, pasted, deleted and split together, but not
-  **moved** together: a drag is still one clip, and a marquee selection does not exist
-  (a drag on an empty lane scrubs). Moving a group wants a ghost per clip and one offset
-  for all of them — the offset part is written, in `pasteClipboard`.
+- A marquee selection does not exist: a drag on an empty lane scrubs. Several clips are
+  built up one Ctrl-click at a time.
 - A group paste keeps the transitions *inside* it no better than a single paste does: it
   keeps none. A transition is a relation between two clips on one track, and copying it
   means copying it only when both ends came along — worth doing, and the same bookkeeping

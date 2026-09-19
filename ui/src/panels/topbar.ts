@@ -5,6 +5,7 @@
 import { api } from "../api";
 import { Cmd, command, run } from "../commands";
 import { button, el, options } from "../dom";
+import { keysFor } from "../shortcuts";
 import { startJob, store } from "../store";
 import { orientation, sequenceIds } from "../types";
 
@@ -61,7 +62,7 @@ export function mountTopbar(host: HTMLElement): void {
     button("Reload preview", () => run(Cmd.reloadPreview)),
     // What the keys are, where a person looks for it. The list is the bindings themselves
     // (`shortcuts.ts`), so it cannot go stale, and `?` opens the same one.
-    button("?", () => run(Cmd.shortcuts), "Keyboard shortcuts (?)"),
+    button("?", () => run(Cmd.shortcuts), `Keyboard shortcuts (${keysFor(Cmd.shortcuts)})`),
     status,
   );
 

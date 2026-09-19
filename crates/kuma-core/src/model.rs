@@ -495,6 +495,8 @@ pub struct Track {
 ///
 /// Every field of the editing model is always serialized, so a JSON Patch `replace` on
 /// any documented path succeeds (only probed `MediaMeta` and manifest specs skip nulls).
+/// The one exception here is `group`, absent when empty so that an ungrouped file is the
+/// file it was: write it with `add`, which works whether or not it is there.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Clip {

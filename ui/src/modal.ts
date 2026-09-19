@@ -14,7 +14,7 @@ export interface FormRow { label: string; input: HTMLElement }
  * cleaned up on the way out and settled exactly once. The caller fills `dlg` and decides
  * what else counts as accepting.
  */
-function shell(onClose: (ok: boolean) => void): { dlg: HTMLDialogElement; done: (ok: boolean) => void } {
+function shell(onClose?: (ok: boolean) => void): { dlg: HTMLDialogElement; done: (ok: boolean) => void } {
   const dlg = el("dialog", "modal");
   let settled = false;
   const done = (ok: boolean) => {
@@ -22,7 +22,7 @@ function shell(onClose: (ok: boolean) => void): { dlg: HTMLDialogElement; done: 
     settled = true;
     dlg.close();
     dlg.remove();
-    onClose(ok);
+    onClose?.(ok);
   };
   dlg.addEventListener("cancel", (e) => { e.preventDefault(); done(false); });
   dlg.addEventListener("click", (e) => { if (e.target === dlg) done(false); });
@@ -33,7 +33,7 @@ function shell(onClose: (ok: boolean) => void): { dlg: HTMLDialogElement; done: 
 /** Show something to read — no question, one way out. `className` widens or otherwise
  *  shapes the dialog for the content it is holding. */
 export function showInfo(opts: { title: string; body: HTMLElement; className?: string }): void {
-  const { dlg, done } = shell(() => {});
+  const { dlg, done } = shell();
   if (opts.className) dlg.classList.add(opts.className);
   const close = button("Close", () => done(false), "", "primary");
   const actions = el("div", "modal-actions");

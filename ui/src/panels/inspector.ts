@@ -9,6 +9,7 @@
 import { api } from "../api";
 import { Cmd, run } from "../commands";
 import { button, capitalize, checkbox, dragPointer, el, options, plural, row, selectInput } from "../dom";
+import { keysFor } from "../shortcuts";
 import { store, toast } from "../store";
 import type { BinItem, Clip, Cue, Ease, Effect, PatchOp, Project, VarSpec } from "../types";
 import { moveBinItem, placeBinItem } from "../edits";
@@ -376,8 +377,7 @@ export class Inspector {
         <p class="muted">Select a <b>bin entry</b> to change what it is, or a <b>clip</b> to change where and how it plays. Drag from the bin onto the timeline to place one.</p>`;
       // Not a list of keys copied out here: there is one, it is the bindings themselves,
       // and two copies of it would disagree within a week.
-      this.host.appendChild(el("p", "muted", "Press ? for the keyboard shortcuts, or use the button in the top bar."));
-      this.host.appendChild(button("Shortcuts", () => run(Cmd.shortcuts), "Every key and gesture the editor has (?)"));
+      this.host.appendChild(button("Keyboard shortcuts", () => run(Cmd.shortcuts), `Every key and gesture the editor has (${keysFor(Cmd.shortcuts)})`));
       return;
     }
     const { clip } = f;
@@ -425,9 +425,9 @@ export class Inspector {
     // Grouping is Ctrl+G, and a keyboard shortcut is not a way to find out a feature
     // exists — the desktop shell has a menu for it and a browser tab has nothing.
     if (clip.group) {
-      actions.appendChild(button("Ungroup", () => run(Cmd.ungroup), `These ${plural(n, "clip")} move together (${clip.group}). Ungroup them (Ctrl/Cmd+Shift+G)`));
+      actions.appendChild(button("Ungroup", () => run(Cmd.ungroup), `These ${plural(n, "clip")} move together (${clip.group}). Ungroup them (${keysFor(Cmd.ungroup)})`));
     } else if (n > 1) {
-      actions.appendChild(button("Group", () => run(Cmd.group), "Hold these clips together: selecting one selects them all, and a drag moves the block (Ctrl/Cmd+G)"));
+      actions.appendChild(button("Group", () => run(Cmd.group), `Hold these clips together: selecting one selects them all, and a drag moves the block (${keysFor(Cmd.group)})`));
     }
     actions.appendChild(button("Delete clip", () => store.patch([{ op: "remove", path }], `delete ${clip.id}`)));
     this.host.appendChild(actions);

@@ -261,13 +261,11 @@ class Store {
    * timeline, which the validator holds it to.
    */
   groupmates(ids: string[]): string[] {
-    const groups = new Set(ids.map((id) => this.findClip(id)?.clip.group).filter(Boolean));
+    const asked = new Set(ids);
+    const clips = this.tracks.flatMap((t) => t.clips);
+    const groups = new Set(clips.filter((c) => c.group && asked.has(c.id)).map((c) => c.group));
     if (!groups.size) return ids;
-    const mates: string[] = [];
-    for (const t of this.tracks) {
-      for (const c of t.clips) if (c.group && groups.has(c.group) && !ids.includes(c.id)) mates.push(c.id);
-    }
-    return [...mates, ...ids];
+    return [...clips.filter((c) => c.group && groups.has(c.group) && !asked.has(c.id)).map((c) => c.id), ...ids];
   }
 
   /** Aim the next paste at a track. Clicking a track is the whole gesture: a paste needs
@@ -376,7 +374,7 @@ class Store {
    *  them project-wide keeps a pasted group from meeting its twin on another timeline. */
   newGroupId(minted: Iterable<string> = []): string {
     const p = this.state.project!;
-    return freeId("g", [...allClips(p).map((c) => c.group ?? "").filter(Boolean), ...minted]);
+    return freeId("g", [...allClips(p).flatMap((c) => (c.group ? [c.group] : [])), ...minted]);
   }
 
   /** A track id free across the whole project, for the same reason, `minted` included. */

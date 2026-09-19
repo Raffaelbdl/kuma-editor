@@ -357,6 +357,20 @@ body.scrubbing, body.scrubbing * { cursor: ew-resize !important; user-select: no
 .effect { border: 1px solid var(--line); border-radius: 6px; padding: 6px; margin-bottom: 6px; background: var(--bg-3); }
 .effect .head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; font-weight: 600; }
 .effect .head button { padding: 0 6px; font-size: 11px; }
+/* An effect folds away, because a clip with four of them is longer than the panel. The
+   head is the disclosure — it reads as the heading it replaced, not as a button — and the
+   chevron turns to point at what it opens. */
+.effect .head .disclose {
+  display: flex; align-items: center; gap: 5px; flex: 1 1 auto; min-width: 0;
+  padding: 1px 2px; border: 0; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer;
+}
+.effect .head .disclose:hover { color: var(--sel); }
+.effect .head .disclose svg { flex: none; transition: transform 0.12s ease; }
+.effect:not(.closed) .head .disclose svg { transform: rotate(90deg); }
+/* Keyframed, said in the head: folding the effect away takes the strip with it. */
+.effect .head .keyed { color: var(--sel); font-size: 10px; }
+.effect.closed .head { margin-bottom: 0; }
+.effect.closed .effect-body { display: none; }
 
 dialog.modal {
   border: 1px solid var(--line); border-radius: 10px; background: var(--bg-2); color: var(--fg);

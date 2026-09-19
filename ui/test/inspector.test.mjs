@@ -170,6 +170,45 @@ describe("the inspector's property fields", { skip: why ? `skipping: ${why}` : f
     await page.until(`!document.body.classList.contains("autokey")`);
   });
 
+  it("folds an effect away, and keeps it folded while you are on that clip", async () => {
+    const box = `document.querySelector(".effect")`;
+    const disclose = `${box}.querySelector(".disclose")`;
+    /** On screen, rather than merely built: a folded body is `display: none`. */
+    const shows = (sel) => `!!document.querySelector(${JSON.stringify(sel)})?.offsetParent`;
+
+    // Open until asked otherwise: a panel that says what it has beats three boxes to open.
+    assert.equal(await page.eval(shows(".effect .effect-body")), true);
+    assert.equal(await page.eval(`${disclose}.getAttribute("aria-expanded")`), "true");
+    // The case above left a key on it, and a head that can fold must say so — the strip
+    // that would otherwise tell you goes away with the body.
+    assert.equal(await page.eval(`!!${box}.querySelector(".head .keyed")`), true);
+
+    const before = await page.eval(REVISION);
+    await page.eval(`${disclose}.click()`);
+    await page.until(`${box}.classList.contains("closed")`);
+    assert.equal(await page.eval(shows(".effect .effect-body")), false, "the fields are gone");
+    assert.equal(await page.eval(`${disclose}.textContent.trim().startsWith("Transform")`), true, "and the head is not");
+    assert.equal(await page.eval(`${disclose}.getAttribute("aria-expanded")`), "false");
+    assert.equal(await page.eval(REVISION), before, "folding is looking, not editing");
+
+    // Off the clip and back. The fold is the clip's and it is view state, so it survives
+    // the rebuild that reselecting causes — the same bargain the curve view makes.
+    await page.eval(`(() => { const lane = document.querySelector(".tl-lane"); const r = lane.getBoundingClientRect();
+      lane.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, clientX: r.right - 10, clientY: r.top + 5 }));
+      window.dispatchEvent(new PointerEvent("pointerup", { bubbles: true })); return true; })()`);
+    await page.until(`!document.querySelector(".effect")`);
+    await page.eval(`(() => { const c = document.querySelector('.clip[data-id="c1"]'); const r = c.getBoundingClientRect();
+      c.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, clientX: r.left + 20, clientY: r.top + 2 }));
+      window.dispatchEvent(new PointerEvent("pointerup", { bubbles: true })); return true; })()`);
+    await page.until(`!!document.querySelector(".effect")`);
+    assert.equal(await page.eval(`${box}.classList.contains("closed")`), true);
+
+    // …and it opens again, with its fields.
+    await page.eval(`${disclose}.click()`);
+    await page.until(`!${box}.classList.contains("closed")`);
+    assert.equal(await page.eval(shows(".effect .num.axis-x")), true);
+  });
+
 });
 
 // ---------------------------------------------------------------------------------

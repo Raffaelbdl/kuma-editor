@@ -926,6 +926,23 @@ past either end, because clamping to a range the model does not have would be th
 lying about the document. The rules a field cannot express (a crop's left + right < 1, a
 speed's ±[0.01, 20] with a hole in the middle) stay the daemon's to refuse.
 
+**An effect folds away, and open is the default** — adopted.
+A clip carrying a transform, a crop, a colour and a blur is taller than the panel, and the
+two controls that are not an effect — `+ add effect…` and the preset picker — are the ones
+that fall off the bottom. So the head is a disclosure: it reads as the heading it replaced
+rather than as a button, and the chevron turns to point at what it opens. *Closed* is what
+is stored (`closedEffects`, by `clip/effect`, the key the curve view already uses), so a
+new effect and a newly selected clip both open — a panel that says what it has beats one
+that makes you open three boxes to find out. Like the curve, the fold is view state: it
+survives the rebuild every edit causes, it costs no revision, and nothing saves it to the
+document, because what you are looking at is not part of the video.
+
+Two things follow from folding rather than from the fold. A closed effect **follows
+nothing** — its keyed fields are not on screen, and the playhead ticks 25 times a second,
+so the panel's per-field followers are collected per effect behind one check and the
+fields catch up on the way open. And a closed effect **says that it is keyframed**, with a
+◆ in its head: the strip that would otherwise tell you is the first thing the fold hides.
+
 ## Keyframes you can point at
 
 Keyframes were a `<textarea>` of JSON, which is not an editor, it is a hole in one. The

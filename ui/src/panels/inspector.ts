@@ -105,6 +105,12 @@ const EFFECTS: Partial<Record<Effect["type"], EffectSpec>> = {
  *  so the view survives the re-render every edit causes. View state; nothing saves it. */
 const openCurves = new Map<string, string>();
 
+/** Which effects are folded shut, by the same `clip/effect`. Closed is what is *stored*,
+ *  so a new effect and a newly selected clip open: the panel says what it has rather than
+ *  making you open three boxes to find out. View state, like the curves — a fold is about
+ *  looking, not about the video, and nothing saves it. */
+const closedEffects = new Set<string>();
+
 /** How many points the curve is drawn with. Enough for a Catmull-Rom to look like one. */
 const CURVE_POINTS = 64;
 
@@ -536,10 +542,31 @@ export class Inspector {
     // Everything that follows the playhead without the panel being rebuilt for it.
     const followers: (() => void)[] = [];
     clip.effects.forEach((e, ei) => {
-      const box = el("div", "effect");
+      const id = `${clip.id}/${ei}`;
+      const box = el("div", `effect${closedEffects.has(id) ? " closed" : ""}`);
+      // The fields live in a box of their own so that folding is one class on the effect,
+      // and so the head — the one thing a closed effect still shows — is never part of it.
+      const body = el("div", "effect-body");
+      /** This effect's followers. They are the outer list's, but held here first: a closed
+       *  effect follows nothing, and this is what makes that one check rather than one per
+       *  field. */
+      const mine: (() => void)[] = [];
+
       const head = el("div", "head");
-      head.append(el("span", "", title(e.type)), button("×", () => store.patch([{ op: "remove", path: `${path}/effects/${ei}` }], `remove ${e.type}`), `Remove this ${e.type}`));
-      box.appendChild(head);
+      const disclose = button(icon("chevron-right", 11), () => fold(), `Show or hide this ${e.type}'s settings`, "disclose");
+      disclose.append(title(e.type));
+      disclose.setAttribute("aria-expanded", String(!closedEffects.has(id)));
+      const fold = () => {
+        const opening = closedEffects.delete(id);
+        if (!opening) closedEffects.add(id);
+        box.classList.toggle("closed", !opening);
+        disclose.setAttribute("aria-expanded", String(opening));
+        // Catch up on the way open: a closed effect's keyed fields have been sitting out
+        // the playhead, so they read whatever they did when it was shut.
+        if (opening) for (const f of mine) f();
+      };
+      head.append(disclose, button("×", () => store.patch([{ op: "remove", path: `${path}/effects/${ei}` }], `remove ${e.type}`), `Remove this ${e.type}`));
+      box.append(head, body);
       const rec = e as unknown as Record<string, unknown>;
       const spec = EFFECTS[e.type] ?? { add: e };
       const defaults = spec.add as unknown as Record<string, unknown>;
@@ -563,10 +590,14 @@ export class Inspector {
         // A keyed field follows the playhead: one subscription per effect updates the
         // values in place, because re-rendering this panel 25 times a second is what
         // `store.select` exists to prevent.
-        timed: (key) => (timed(key) ? { readOnly: !anim!.inside, live: (set) => followers.push(() => set(anim!.at(key))) } : {}),
+        timed: (key) => (timed(key) ? { readOnly: !anim!.inside, live: (set) => mine.push(() => set(anim!.at(key))) } : {}),
       };
-      for (const p of spec.props ?? []) box.appendChild(propRow(p, ctx));
-      if (anim) box.appendChild(keyRow(anim, `${clip.id}/${ei}`, (fn) => followers.push(fn)));
+      // A keyframed effect says so in its head, because folding it away hides the strip
+      // that would otherwise be how you know.
+      if (anim?.animated) disclose.append(el("span", "keyed", "◆"));
+      for (const p of spec.props ?? []) body.appendChild(propRow(p, ctx));
+      if (anim) body.appendChild(keyRow(anim, id, (fn) => mine.push(fn)));
+      if (mine.length) followers.push(() => { if (!closedEffects.has(id)) for (const f of mine) f(); });
       this.host.appendChild(box);
     });
     const add = el("select");

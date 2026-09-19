@@ -631,6 +631,18 @@ the first disables playback.
 Without an audio device, SDL's dummy driver still paces the callback in real time, so
 playback is always audio-paced and the alternate clock path was dead code.
 
+**An overlay off the playhead is hidden by `visibility`, never `display`** — adopted, after
+a template rendered one size in the editor and another in the render. `display: none` gives
+an iframe a **0×0 viewport**, and a template is allowed to measure itself — fitting a line
+of text to its column is the ordinary way. The stage created every overlay wrapper hidden,
+so those scripts ran against nothing, read `0` and kept whatever they had; the bake loads
+the same page full-size and got it right. It only bites when the clip is not under the
+playhead as the iframe loads, which is the ordinary case and is why it survived so long:
+a clip you are looking at gets shown by a stray update before its scripts run.
+`visibility: hidden` keeps the box, so the page always sees the project frame; it costs the
+layout and skips the paint, which is the half that matters. The wrappers are absolutely
+positioned, so laying them all out moves nothing.
+
 ## Editor tabs and the overlay workbench
 
 **The centre of the window is tabbed** — adopted. One tab is the sequence being edited

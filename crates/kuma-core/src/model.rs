@@ -527,18 +527,10 @@ pub struct Clip {
     /// Free-form label shown in the UI.
     #[serde(default)]
     pub label: String,
-    /// The group this clip belongs to, or empty for none.
-    ///
-    /// A group is an **editing relation**, not a render one: clips sharing a group are
-    /// selected together and move together, which is what holds a subtitle over the audio
-    /// it transcribes, or two clips that overlap on purpose. The compiler never reads it —
-    /// a grouped timeline and the same timeline ungrouped render identically.
-    ///
-    /// It lives on the clip rather than as a list on the sequence for the reason a clip
-    /// names its bin entry rather than the entry listing its clips: the membership goes
-    /// with the clip, so deleting one leaves nothing dangling to clean up. The members are
-    /// whichever clips carry the id, which is why a group belongs to one sequence — the
-    /// validator says so.
+    /// The group this clip belongs to, or empty for none. An **editing relation** only:
+    /// clips sharing one are selected and moved together, and the compiler never reads it.
+    /// The members are whichever clips carry the id, so a delete leaves nothing dangling
+    /// and a group belongs to one sequence — which the validator checks.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub group: String,
 }
@@ -553,10 +545,10 @@ impl Clip {
     }
 }
 
-/// How a keyframe reaches the **next** one. The shape of a segment is decided by the
-/// keyframe that opens it, so the last one's `ease` never means anything. Absent is
-/// `linear`, which is what every keyframe did before this existed. (These are the three
-/// shapes the render engine interpolates natively; how it spells them is the compiler's.)
+/// How a keyframe reaches the **next** one. A segment's shape is decided by the keyframe
+/// that opens it, so the last one's `ease` never means anything; absent is `linear`. These
+/// are the shapes the render engine interpolates natively, and how it spells them is the
+/// compiler's business.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Ease {
@@ -578,15 +570,13 @@ impl Ease {
 }
 
 /// One keyframe of any effect: when, how it reaches the next one, and whichever of the
-/// effect's numeric parameters it sets, by the names the static fields have —
+/// effect's numeric parameters it sets, under the names the static fields have —
 /// `{ "t": 1.5, "x": 120, "scale": 1.2 }`.
 ///
-/// A parameter a key leaves out means **the effect's static value**, not "unchanged": the
-/// compiler reads `k.or("x", x)`, and so does the editor. That is what lets a key written
-/// by hand set one parameter, and it is why a key the editor writes carries every animated
-/// parameter — inserting one must not move the picture. Names are checked against
-/// [`Effect::animatable`] by the validator, which is why this struct cannot
-/// `deny_unknown_fields` itself: the parameters *are* its unknown fields.
+/// A parameter a key omits means **the effect's static value**, not "unchanged", which is
+/// what lets a hand-written key set one parameter and why a key the editor writes carries
+/// every animated one. The validator checks the names against [`Effect::animatable`], so
+/// this struct cannot `deny_unknown_fields`: the parameters *are* its unknown fields.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct Keyframe {
     /// Time relative to clip start, seconds.
@@ -707,9 +697,8 @@ pub enum Effect {
 }
 
 impl Effect {
-    /// The parameters a keyframe of this kind may set, by the names its static fields
-    /// have. One table, so the validator, the compiler and the editor agree on what is
-    /// animatable without each keeping a list.
+    /// The parameters a keyframe of this kind may set, under the names its static fields
+    /// have. One table, so the validator, the compiler and the editor cannot disagree.
     pub fn animatable(&self) -> &'static [&'static str] {
         match self {
             Effect::Transform { .. } => &["x", "y", "scale", "rotation", "opacity"],

@@ -1,12 +1,11 @@
-// Moving clips as a block, in a real browser against a real daemon — and the two ways a
-// block comes about: a selection you made, and a group that makes itself.
+// Moving clips as a block, in a real browser — and the two ways a block comes about: a
+// selection you made, and a group that makes itself.
 //
-// What it pins is the part no Rust test reaches. The model's side of a group is one string
-// on a clip, and it is inert — the compiler never reads it. Everything a group *does*
+// The model's side of a group is one inert string on a clip. Everything a group *does*
 // happens in the page: the selection expands, a drag gathers the members, the block keeps
-// its shape and stops at 0 as one, and the whole move is a single patch. A plain
-// multi-selection borrows the same block and differs in exactly one way, which is the
-// contrast these cases are next to each other for: it lasts until you click elsewhere.
+// its shape and stops at 0 as one, and the move is a single patch. A multi-selection
+// borrows that same block and differs in one way, which is why the two sit together here:
+// it lasts only until you click elsewhere.
 //
 // The shortcut list is here too, because it is the same bindings this file presses.
 //

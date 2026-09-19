@@ -278,14 +278,9 @@ export async function addTrack(kind: TrackKind) {
 }
 
 
-/**
- * Split every selected clip the playhead crosses. Time-relative effects follow the cut:
- * the left half keeps its fade-in, the right half its fade-out, and keyframes are
- * re-based on the new start. A transition leaving a clip now leaves its right half.
- *
- * One patch, whatever it cuts: three clips selected across three tracks is one cut of the
- * timeline, and half of it applying is not an outcome anyone wants.
- */
+/** Split every selected clip the playhead crosses, in one patch — half a cut applying is
+ *  not an outcome anyone wants. Time-relative effects follow: the left half keeps its
+ *  fade-in, the right its fade-out, and keyframes are re-based on the new start. */
 export async function splitAtPlayhead() {
   const t = store.state.playhead;
   const cutting = store.selectedFound.filter((f) => t > f.clip.start && t < f.clip.end);
@@ -326,10 +321,8 @@ const tracksOf = (found: Found[]) => new Map(found.map((f) => [trackPathOf(f), f
 // ---- groups --------------------------------------------------------------------------
 //
 // A group holds clips together for editing: selecting one selects them all, and a drag
-// moves the block. It is a field on the clip rather than a list on the sequence, for the
-// reason a clip names its bin entry rather than the entry listing its clips — the
-// membership goes with the clip, so a delete leaves nothing dangling. The compiler never
-// reads it: a grouped timeline renders exactly as the ungrouped one does.
+// moves the block. The id lives on the clip, so a delete leaves nothing dangling, and the
+// compiler never reads it.
 
 /** Group the selected clips. Two or more — a group of one is not a group. That they must
  *  be on one timeline is the validator's rule, and its refusal is the message. */
@@ -342,9 +335,8 @@ export async function groupSelection() {
   await store.patch(found.map((f) => ({ op: "add" as const, path: `${clipPathOf(f)}/group`, value: id })), `group ${found.map((f) => f.clip.id).join(", ")}`);
 }
 
-/** Ungroup: the selection *is* the group (selecting a member selects them all), so this
- *  clears the field on every clip selected. Empty is how the model says "no group", and it
- *  is not written back, so an ungrouped project is the one it was before. */
+/** Ungroup. The selection *is* the group, so this clears the field on every clip in it.
+ *  Empty means "no group" and is not written back, so the project returns to what it was. */
 export async function ungroupSelection() {
   const found = store.selectedFound.filter((f) => f.clip.group);
   if (!found.length) { toast("Select a grouped clip to ungroup", ""); return; }
@@ -353,18 +345,13 @@ export async function ungroupSelection() {
 
 // ---- the timeline clipboard --------------------------------------------------------
 //
-// A copy is not an edit: nothing about it belongs in the document, so the clipboard is
-// state in the UI (see `store.ts`) and costs no revision and no undo step. The paste is
-// the edit, and it is one patch like every other.
-//
-// What travels is the **placement** — when it plays, how fast, how loud, its label, its
-// effects — never the bin entry. Two clips of the same entry play the same thing, which
-// is the model's own split, so a paste adds clips and nothing else. A transition is a
-// relation between two clips on one track, so it stays behind with the pair it names.
+// A copy is not an edit, so the clipboard is UI state (`store.ts`) and costs no revision;
+// the paste is the edit. What travels is the **placement** — when it plays, how fast, its
+// effects — never the bin entry, so a paste adds clips and nothing else. A transition
+// names two clips on one track and stays behind with the pair it names.
 
-/** Copy the selection. Deeply, because the clipboard has to outlive the project object it
- *  came from: every refresh replaces that, and a cut removes the clips outright. The
- *  track each clip came off travels with it — see `pasteClipboard`. */
+/** Copy the selection, deeply: the clipboard has to outlive the project object it came
+ *  from, which every refresh replaces and a cut empties. */
 export function copySelection(): boolean {
   const entries: ClipboardEntry[] = store.selectedFound.map((f) => ({ clip: structuredClone(f.clip), track: f.track.id, kind: f.track.kind }));
   if (!entries.length) { toast("Select a clip to copy", ""); return false; }
@@ -384,23 +371,13 @@ export async function cutSelection() {
 /**
  * Paste the clipboard onto the open sequence, at the playhead.
  *
- * **One clip** needs a *where* as well as a *when* — the playhead answers the second half,
- * and clicking a track answers the first. Any track of the kind it was copied from will
- * take it, in this sequence or another one, which is what makes "copy here, paste there"
- * one gesture rather than two features. With no track clicked it lands on the first of
- * that kind, the same rule a drop from the bin follows.
+ * **One clip** lands on the track you last clicked, any track of the kind it was copied
+ * from, which is what makes "copy here, paste there" one gesture; with none clicked, the
+ * first of that kind, as a drop from the bin does.
  *
- * **Several clips** are a shape, not a position: they keep their spacing and they keep
- * their tracks, so the clicked track does not come into it — there is no one track a
- * group belongs on. Each track they came off is matched by id in the sequence being
- * pasted into, else by kind, and a track is added when there is nothing to match; two of
- * them never collapse onto one, because that is the one way the shape could be lost
- * silently.
- *
- * Where the clips would land on something the whole group moves to the **first free slot
- * after it** that fits: a paste names a position, so an occupied one is answered with the
- * next one that is free rather than by refusing, or by silently landing at the end. That
- * also makes pasting twice in a row lay two copies back to back.
+ * **Several** are a shape, not a position: they keep their spacing and their own tracks,
+ * so the clicked track does not come into it. See `pasteTargets` and `freeOffset` for how
+ * the tracks are matched and how an occupied slot is answered.
  */
 export async function pasteClipboard() {
   const entries = store.state.clipboard?.entries ?? [];

@@ -42,13 +42,12 @@ export const capitalize = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 export const DEAD_ZONE = 3;
 
 /**
- * The press-drag-or-click gesture, from a `pointerdown`: the window's `pointermove` and
- * `pointerup` are taken for the duration and let go on release, and a press that travels
- * under the dead zone is reported as a click rather than as a drag of nothing. `move` gets
- * the travel from the press, and `end` whether there was any — a drag commits, a click
- * does what a click does. The press itself is taken (no focus, no text selection) unless
- * the caller says otherwise. Most drags here are sideways — a time, a number — so only
- * `dx` counts towards the dead zone unless `axes` says both do.
+ * The press-drag-or-click gesture, from a `pointerdown`. The window's `pointermove` and
+ * `pointerup` are taken for the duration and let go on release; `move` gets the travel so
+ * far and `end` whether there was any, so a press under the dead zone is a click rather
+ * than a drag of nothing. The press itself is taken (no focus, no text selection) unless
+ * the caller says otherwise, and only `dx` counts towards the dead zone unless `axes`
+ * says both do.
  */
 export function dragPointer(e: PointerEvent, h: { move: (dx: number, dy: number, ev: PointerEvent) => void; end: (moved: boolean) => void; axes?: "x" | "xy"; keepDefault?: boolean }): void {
   if (!h.keepDefault) e.preventDefault();

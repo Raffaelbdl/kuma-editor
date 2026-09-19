@@ -1,11 +1,9 @@
 // The inspector's property fields, in a real browser: a number you drag, a vector wearing
 // its axis colours, and one patch per drag rather than one per pixel.
 //
-// The drag is the part no unit test can stand in for — it is three pointer events, a dead
-// zone, a modifier and a commit that must happen exactly once, against a daemon that
-// refuses a patch built on a stale revision. What it pins beyond "the value changed" is
-// the bargain in `props.ts`: the field moves while you drag it and the document changes
-// when you let go.
+// The drag is what no unit test can stand in for — three pointer events, a dead zone, a
+// modifier and a commit that must happen exactly once, against a daemon that refuses a
+// patch built on a stale revision.
 //
 // Skips, loudly, without a browser, a binary or `ui/dist`, as its neighbours do.
 

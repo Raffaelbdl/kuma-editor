@@ -1,27 +1,13 @@
 // Property editors: the small reusable controls the inspector is built from.
 //
-// A video editor's parameters are a game engine's: a handful of shapes (a number, a
-// vector, a bounded amount, a choice) used over and over by things that otherwise have
-// nothing in common. So they live here rather than next to any one of them, and an effect,
-// a template var and a clip field all get the same control for the same shape — which is
-// the point of the exercise: `x` means the same thing, and is dragged the same way,
-// wherever you meet it.
+// One control per *shape* — a number, a vector, a bounded amount — so an effect field, a
+// template var and a clip field all get the same one, and `x` is dragged the same way
+// wherever you meet it. A number is a slider you can type in: drag sideways to change it,
+// click without moving to put a caret in it, `Shift` for fine and `Alt` for coarse. A
+// vector is one row wearing its axis colours, X red through W amber.
 //
-// Two ideas are borrowed from Godot's inspector, because they are what makes that panel
-// quick to use:
-//
-//   - **A number is a slider you can type in.** Press and drag sideways to change it;
-//     click without moving to put a caret in it. `Shift` is fine (a tenth of a step),
-//     `Alt` is coarse (ten), and the arrow keys step it while it has focus.
-//   - **A vector is one row of fields wearing their axis colours.** X is red, Y green,
-//     Z blue, W amber, and a pair that is not spatial (in/out, a crop's four edges) can
-//     take its own letters instead. Reading `x` off a row of identical boxes is the thing
-//     the colours remove.
-//
-// A drag **commits once, when it is released**. Every value here is a revision-checked
-// patch to the daemon, so committing per pointermove would be a round trip per pixel and
-// an undo history of them; the field shows the number moving and sends one edit — the
-// same bargain the timeline's clip drag makes.
+// A drag **commits once, on release**: every value here is a revision-checked patch, so
+// committing per pointermove would be a round trip per pixel and an undo history of them.
 
 import { DEAD_ZONE, dragPointer, el } from "./dom";
 

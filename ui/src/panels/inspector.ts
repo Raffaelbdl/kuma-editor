@@ -33,15 +33,11 @@ type PropSpec =
   | { kind: "text"; key: string; label?: string }
   | { kind: "json"; key: string; label?: string };
 
-/** Per effect kind: the value `+ add effect` inserts, and the properties it shows, in the
- *  order they are shown. Adding an effect kind is one row here plus the Rust model; a kind
- *  the daemon knows but this table does not renders with no fields. A kind in `ANIMATABLE`
- *  gets the keyframe row after its fields, and those fields then read and write the value
- *  *at the playhead*.
- *
- *  The units are the model's, and the tooltips say so where it is not obvious: transform
- *  offsets are pixels from the centred position, a crop is a fraction of each edge, a
- *  blur radius is pixels. */
+/** Per effect kind: the value `+ add effect` inserts, and the properties it shows, in
+ *  order. Adding a kind is one row here plus the Rust model; one the daemon knows and this
+ *  table does not renders with no fields. A kind in `ANIMATABLE` gets the keyframe row
+ *  after its fields. Units are the model's, and the tooltips say so where it is not
+ *  obvious. */
 interface EffectSpec { add: Effect; props?: PropSpec[] }
 const EASES: Ease[] = ["linear", "hold", "smooth"];
 const BLEND_MODES = ["normal", "multiply", "screen", "overlay", "darken", "lighten", "color_dodge", "color_burn", "hard_light", "soft_light", "difference", "exclusion"];
@@ -106,23 +102,17 @@ const EFFECTS: Partial<Record<Effect["type"], EffectSpec>> = {
  *  so the view survives the re-render every edit causes. View state; nothing saves it. */
 const openCurves = new Map<string, string>();
 
-/** Which effects are folded shut, by the same `clip/effect`. Closed is what is *stored*,
- *  so a new effect and a newly selected clip open: the panel says what it has rather than
- *  making you open three boxes to find out. View state, like the curves — a fold is about
- *  looking, not about the video, and nothing saves it. */
+/** Which effects are folded shut, by the same `clip/effect`. *Closed* is what is stored,
+ *  so a new effect and a newly selected clip open. View state, like the curves. */
 const closedEffects = new Set<string>();
 
 /** How many points the curve is drawn with. Enough for a Catmull-Rom to look like one. */
 const CURVE_POINTS = 64;
 
-/**
- * The curve view: one parameter's value over the clip, the keys on it as points you can
- * drag in both axes. The graph is what the strip cannot say — the *shape* between keys,
- * which is the whole question with a hold or a smooth — and a point dragged up is a
- * value edited without a number being typed. Read-only in one respect: it draws the
- * curve the compiler will produce (`paramAt` is the same sampler the preview uses), it
- * does not let you draw one.
- */
+/** One parameter's value over the clip, its keys as points you can drag in both axes. The
+ *  graph is what the strip cannot say: the *shape* between keys, which is the whole
+ *  question with a hold or a smooth. It draws the curve the compiler will produce
+ *  (`paramAt` is the preview's own sampler); it does not let you draw one. */
 function curveView(anim: Animation, param: string, onParam: (p: string) => void, follow: (fn: () => void) => void): HTMLElement {
   const wrap = el("div", "kf-curve");
   if (anim.fields.length > 1) {
@@ -133,16 +123,14 @@ function curveView(anim: Animation, param: string, onParam: (p: string) => void,
   const plot = el("div", "kf-plot");
   const dur = anim.duration;
 
-  // Sampled on a grid, and at every key — and a hair before every key, so a hold draws as
-  // the step it is rather than a slant one grid-cell wide, and every key lies on the
-  // line whatever its time.
+  // On a grid, at every key, and a hair *before* every key — so a hold draws as the step
+  // it is rather than a slant one grid-cell wide.
   const times = new Set<number>(Array.from({ length: CURVE_POINTS + 1 }, (_, i) => (i / CURVE_POINTS) * dur));
   for (const k of anim.keys) { times.add(Math.max(0, k.t - 1e-6)); times.add(k.t); }
   const grid = [...times].sort((a, b) => a - b).map((t) => ({ t, v: anim.at(param, t) }));
   const samples = grid.map((g) => g.v);
-  // The value axis fits what is there — the curve, which passes through every key — with
-  // a little room, and a flat line gets a unit of room either side rather than a division
-  // by nothing.
+  // The axis fits the curve, which passes through every key, with a little room; a flat
+  // line gets a unit either side rather than a division by nothing.
   let lo = Math.min(...samples);
   let hi = Math.max(...samples);
   if (hi - lo < 1e-9) { lo -= 1; hi += 1; }
@@ -208,11 +196,8 @@ function playheadInClip(): boolean {
 /** A key as a label: `brightness` → `Brightness`, `in` → `In`. */
 const title = capitalize;
 
-/**
- * How a row reads and writes its effect. Without keyframes that is the effect's own
- * fields; with them it is the value *at the playhead*, and writing goes into the key
- * there — which is the whole of the keyframe UI as far as a field is concerned.
- */
+/** How a row reads and writes its effect: the static fields, or — once there are keys —
+ *  the value *at the playhead*, written into the key there. */
 interface PropCtx {
   read: (key: string) => unknown;
   write: (key: string, v: unknown) => void;
@@ -254,11 +239,9 @@ function propRow(p: PropSpec, ctx: PropCtx): HTMLElement {
   return row;
 }
 
-/**
- * The keyframe row: what there is to do to an effect's keys, and where they are. It is
- * one row of buttons and a strip — the panel deliberately does not grow a track editor,
- * and the clip in the timeline carries the same keys so you can see them while scrubbing.
- */
+/** The keyframe row: what there is to do to an effect's keys, and where they are. One row
+ *  of buttons and a strip — the panel deliberately does not grow a track editor, and the
+ *  clip in the timeline carries the same keys. */
 function keyRow(anim: Animation, id: string, follow: (fn: () => void) => void): HTMLElement {
   const wrap = el("div");
   wrap.dataset.prop = "keys";
@@ -267,15 +250,14 @@ function keyRow(anim: Animation, id: string, follow: (fn: () => void) => void): 
     return wrap;
   }
 
-  // The toolbar takes the whole width rather than sitting in the value column: it is about
-  // the effect's timing, not about one of its values, and four buttons do not fit there.
+  // The whole width, not the value column: it is about the effect's timing rather than one
+  // of its values, and four buttons do not fit there.
   const tools = el("div", "kf-tools");
   const prev = button(icon("chevron-left", 12), () => anim.step(-1), "Previous key", "icon");
   const next = button(icon("chevron-right", 12), () => anim.step(1), "Next key", "icon");
   const add = button("+ key", () => anim.addKey(), "Add a key at the playhead, holding the values it has there");
   const del = button("− key", () => anim.removeKey(), "Remove the key at the playhead");
-  // The curve view is off until asked for, and stays where it was put across the
-  // re-render every edit causes: the panel must not grow a graph per effect unbidden.
+  // Off until asked for, and it stays put across the re-render every edit causes.
   const curveHost = el("div", "kf-curve-host");
   const curve = button("curve", () => {
     if (openCurves.has(id)) openCurves.delete(id);
@@ -283,8 +265,8 @@ function keyRow(anim: Animation, id: string, follow: (fn: () => void) => void): 
     showCurve();
   }, "Show this effect's values over the clip as a graph, with the keys to drag");
   // One follower for whichever curve is showing: the view is rebuilt on every toggle and
-  // parameter pick, and each build must not leave its predecessor's playhead marker
-  // following along behind a detached graph.
+  // parameter pick, and each build must not leave the last one's marker following a
+  // detached graph.
   let curveFollower: (() => void) | null = null;
   follow(() => curveFollower?.());
   const showCurve = () => {
@@ -313,15 +295,13 @@ function keyRow(anim: Animation, id: string, follow: (fn: () => void) => void): 
     live: (set) => follow(() => set(anim.inside ? anim.local : null)),
   }));
 
-  // How the key under the playhead reaches the next one. It is a property of *that* key,
-  // so it sits under the strip rather than among the effect's values, and means nothing
-  // when the playhead is not on one.
+  // A property of the key under the playhead, so it sits under the strip rather than among
+  // the effect's values, and means nothing when the playhead is not on one.
   const ease = selectInput(EASES.map((value) => ({ value })), anim.ease, (v) => anim.setEase(v as Ease));
   ease.className = "kf-ease";
   ease.title = "How the key under the playhead reaches the next one: a straight line, a hold, or a curve through its neighbours. It takes effect as you pick it.";
-  // "Ease → next", not "Ease": it is a property of the *segment* this key opens, which
-  // is the one thing about easing that has to be said out loud. Saying only "Ease" reads
-  // as "this key's easing", and then setting it on the last key looks like a bug.
+  // "Ease → next", not "Ease": it describes the *segment* this key opens. "Ease" alone
+  // reads as the key's own, and then setting it on the last key looks like a bug.
   wrap.appendChild(field("Ease → next", ease));
 
   wrap.appendChild(curveHost);

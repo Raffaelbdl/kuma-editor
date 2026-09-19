@@ -6,21 +6,17 @@ import { allClips, clipPathOf, fpsValue, freeId, isOverlaySource, nearest, seqDu
 export interface Found { seq: string; track: Track; ti: number; clip: Clip; ci: number }
 
 /**
- * What the inspector is showing. A clip and a bin entry are different things to inspect,
- * which is the model's own split: what is shown lives on the entry, when it is shown
- * lives on the clip. One selection addresses either, so the panel never has to guess.
- *
- * Clips come as a list, because copying, deleting and splitting are all things you want
- * to do to several at once; a bin entry does not, because every entry action (rename,
- * vars, delete) is about *that* entry. The list is in click order, so its last member is
- * the one a single-clip action — the inspector's fields, a transcript — means.
+ * What the inspector is showing — the model's own split: what is shown lives on the entry,
+ * when it is shown lives on the clip. Clips come as a list because copying, deleting and
+ * splitting all act on several at once; a bin entry does not, because every entry action
+ * is about *that* entry. The list is in click order, so its last member is the one a
+ * single-clip action means.
  */
 export type Selection = { kind: "clip"; ids: string[] } | { kind: "bin"; id: string } | null;
 
-/** A clip taken off a timeline, waiting to be pasted, with the track it came off. The
- *  track's *kind* travels rather than being derived from the bin entry: a video file
- *  placed on an audio track is an audio clip, and that is where a paste of it belongs.
- *  Its *id* travels because a copy of several clips keeps them on their own tracks. */
+/** A clip waiting to be pasted, with the track it came off. The *kind* travels rather than
+ *  being derived from the entry — a video file on an audio track is an audio clip — and
+ *  the *id* travels because a copy of several keeps them on their own tracks. */
 export interface ClipboardEntry { clip: Clip; track: string; kind: TrackKind }
 
 /** What was copied or cut: one clip, or several with the shape they were in. */
@@ -42,14 +38,11 @@ export interface State {
    *  a track is added. Null until a track has been clicked, and dropped when the one it
    *  names leaves the open sequence. View state, like the selection. */
   track: string | null;
-  /** The clip last copied or cut, if any. It is held here rather than in the document:
-   *  copying is not an edit, so it costs no revision and no undo step — the paste is the
-   *  edit. It survives switching sequences, which is what makes pasting into another
-   *  timeline the same gesture as pasting into this one. */
+  /** What was last copied or cut. Held here, not in the document: copying is not an edit,
+   *  so it costs no revision and survives switching sequences. The paste is the edit. */
   clipboard: Clipboard | null;
   /** Record mode: while on, changing an animatable parameter writes a key at the playhead
-   *  instead of the static value. View state — it is about how the next edit is made,
-   *  not about the document. */
+   *  instead of the static value. View state — it is about how the next edit is made. */
   autoKey: boolean;
   playhead: number;
   playing: boolean;
@@ -226,18 +219,14 @@ class Store {
   }
 
   /** Point the inspector at a clip or a bin entry, and at nothing else. (`select` above is
-   *  the subscription helper; this one is the selection, and they are deliberately not the
-   *  same word.) */
+   *  the subscription helper; these are deliberately not the same word.) */
   selectItem(kind: "clip" | "bin", id: string) {
     this.set({ selection: kind === "clip" ? { kind: "clip", ids: [id] } : { kind: "bin", id } });
   }
 
-  /** Point the inspector at several clips at once — what a paste of several leaves behind —
-   *  and, given one, aim the next paste at a track in the same update: clicking a clip is
-   *  also clicking its track, and one notification is what every panel should get for it.
-   *
-   *  A clip in a group brings its group: that is what a group *is*, so it is done here
-   *  rather than in each gesture, and no caller can forget. */
+  /** Point the inspector at several clips, and aim the next paste at a track in the same
+   *  update — clicking a clip is also clicking its track, and that is one notification.
+   *  A clip in a group brings its group: expanding here is what stops a gesture forgetting. */
   selectClips(ids: string[], track?: string) {
     const all = this.groupmates(ids);
     this.set({ selection: all.length ? { kind: "clip", ids: all } : null, ...(track === undefined ? {} : { track }) });
@@ -253,13 +242,9 @@ class Store {
     this.selectClips(rest.length === this.selectedClips.length ? [...rest, id] : rest, track);
   }
 
-  /**
-   * These clips and everything grouped with them. The ones asked for keep their order and
-   * stay last, because the last one clicked is the one a single-clip action means.
-   *
-   * Groups are looked for on the open sequence: a group is an editing relation on one
-   * timeline, which the validator holds it to.
-   */
+  /** These clips and everything grouped with them, on the open sequence. The ones asked
+   *  for keep their order and stay last, because the last clicked is the one a single-clip
+   *  action means. */
   groupmates(ids: string[]): string[] {
     const asked = new Set(ids);
     const clips = this.tracks.flatMap((t) => t.clips);
@@ -268,8 +253,8 @@ class Store {
     return [...clips.filter((c) => c.group && groups.has(c.group) && !asked.has(c.id)).map((c) => c.id), ...ids];
   }
 
-  /** Aim the next paste at a track. Clicking a track is the whole gesture: a paste needs
-   *  a *where* as well as a *when*, and the playhead only answers the second half. */
+  /** Aim the next paste at a track: a paste needs a *where* as well as a *when*, and the
+   *  playhead only answers the second half. */
   focusTrack(id: string | null) {
     this.set({ track: id });
   }
@@ -363,15 +348,14 @@ class Store {
     return f ? clipPathOf(f) : null;
   }
 
-  /** A clip id free across the whole project: clip ids are global, not per sequence.
-   *  `minted` is for a patch that adds several at once — those are not in the project
-   *  yet, and two clips of one paste sharing an id would be refused. */
+  /** A clip id free across the whole project: ids are global, not per sequence. `minted`
+   *  names the ids a patch has already taken but not yet added. */
   newId(prefix: string, minted: Iterable<string> = []): string {
     return freeId(prefix, [...allClips(this.state.project!).map((c) => c.id), ...minted]);
   }
 
-  /** A group id free across the whole project. Groups live on one sequence, but minting
-   *  them project-wide keeps a pasted group from meeting its twin on another timeline. */
+  /** A group id free across the whole project: minting project-wide keeps a pasted group
+   *  from meeting its twin on another timeline. */
   newGroupId(minted: Iterable<string> = []): string {
     const p = this.state.project!;
     return freeId("g", [...allClips(p).flatMap((c) => (c.group ? [c.group] : [])), ...minted]);
@@ -395,11 +379,9 @@ class Store {
     return Math.max(0, Math.round(t * f) / f);
   }
 
-  /** Jump to the nearest cut before or after the playhead — Alt+←/→. The cuts are every
-   *  clip start and end on the sequence on screen, whichever track they are on, plus 0, so
-   *  this walks the timeline the way an editor reads it: by where something changes.
-   *  Nothing that way means staying put, rather than sliding to the end of a clip that is
-   *  not there. */
+  /** Jump to the nearest cut before or after the playhead — Alt+←/→. A cut is any clip's
+   *  start or end on the open sequence, whichever track, plus 0. Nothing that way means
+   *  staying put. */
   seekEdge(dir: -1 | 1) {
     const edges = [0, ...this.tracks.flatMap((t) => t.clips.flatMap((c) => [c.start, c.end]))];
     const t = nearest(edges, this.state.playhead, dir, this.halfFrame);

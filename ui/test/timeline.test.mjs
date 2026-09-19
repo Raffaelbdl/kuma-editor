@@ -1,11 +1,10 @@
 // How the timeline lays its tracks out, in a real browser: overlays on top, audio at the
 // bottom, and the document's own order untouched underneath.
 //
-// The order tracks are *drawn* in and the order they are *stored* in are two different
-// things — the compiler reads the array, a person reads the screen — and the only way to
-// check that the screen says one thing while the document still says the other is to load
-// the page. Which is also the risk: a "tidy the display" change that quietly reordered the
-// document would change every composite in the project.
+// Drawn order and stored order are two different things: the compiler reads the array, a
+// person reads the screen. Only a loaded page can check that the screen says one while the
+// document still says the other — and a "tidy the display" change that quietly reordered
+// the document would change every composite in the project.
 //
 // Skips, loudly, without a browser, a binary or `ui/dist`, as its neighbours do.
 

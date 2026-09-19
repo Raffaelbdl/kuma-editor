@@ -1,10 +1,9 @@
 // The timeline clipboard, in a real browser against a real daemon: copy a clip, click
 // another track, paste it at the playhead.
 //
-// What it pins is the part that is not in any Rust test — where a paste *lands*. That
-// answer is made of three pieces of view state the daemon never sees (the selection, the
-// playhead and the track last clicked) and one rule about the document (a slot that is
-// taken pushes the clip to the next free one), and only the assembled page has all four.
+// What it pins is what no Rust test can: where a paste *lands*. That answer is three
+// pieces of view state the daemon never sees — the selection, the playhead, the track last
+// clicked — plus one document rule, a taken slot pushing the clip to the next free one.
 //
 // Skips, loudly, without a browser, a binary or `ui/dist`, as its neighbours do.
 

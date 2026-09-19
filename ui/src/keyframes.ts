@@ -1,38 +1,20 @@
 // Keyframes, as something you point at rather than type.
 //
-// The model keeps them as they are: a list of `{ t, …values, ease? }` in **clip-local
-// seconds**, read the way `compile.rs` writes them — `types.ts` holds the one sampler
-// (`paramAt`, `sampleEffect`) the preview, a split and this panel all read through, so
-// nothing here decides what a value at 1.3s *is*. It is the part that was missing — a way
-// to make a key, move one and see which one you are editing, instead of a JSON textarea.
+// Nothing here decides what a value at 1.3s *is*: `types.ts` holds the one sampler
+// (`paramAt`, `sampleEffect`) that the preview, a split and this panel read through. The
+// panel's own two rules are that the **playhead is the clock** — a field shows the value
+// there, and writing it writes the key there — and that animation is **opt-in**.
 //
-// Two rules, taken from Kdenlive and Godot respectively, because they are what makes
-// keyframing feel like editing rather than data entry:
-//
-//   - **The playhead is the clock.** A value field shows what that value *is right now*,
-//     and writing it writes the key under the playhead — making one there if there is
-//     none. There is no "which keyframe am I editing" to keep in your head, because the
-//     answer is always "the one you are looking at".
-//   - **Animation is opt-in.** A parameter is a plain number until you press ◆, which is
-//     what `docs/decisions.md` already agreed for the model's own shape: the panel must
-//     not grow a timeline per field.
-//
-// One thing the model decides for us. A keyframe that leaves a field out does not mean
-// "leave that field alone", it means "use the effect's static value" — `k.or("x", x)` in
-// the compiler, and the same fallback in `paramAt`. So a key is a **full sample**:
-// inserting one writes every animated field at that moment, which is exactly what makes
-// inserting one change nothing until you move something. Per-property tracks would need a
-// different model (and MLT packs x, y, scale and opacity into one `rect` property anyway).
+// A key that omits a field means the effect's *static* value, not "unchanged", so a key is
+// a full sample: inserting one writes every animated field and therefore moves nothing.
 
 import { store } from "./store";
 import type { Clip, Ease, Effect, Keyframe } from "./types";
 import { ANIMATABLE, clipPathOf, covers, keyframesOf, minKeys, nearest, paramAt, sampleEffect } from "./types";
 
-/**
- * The keyframes of one effect, and everything the panel does to them. Times are read from
- * the store on demand rather than captured, because the playhead moves under a panel that
- * is deliberately not re-rendered while it does.
- */
+/** The keyframes of one effect, and everything the panel does to them. Times are read from
+ *  the store on demand, never captured: the playhead moves under a panel that is
+ *  deliberately not re-rendered while it does. */
 export class Animation {
   /** `commit` writes the effect back, whole, as one patch. */
   constructor(private effect: Effect, private clip: Clip, private commit: (next: Effect, note: string) => void) {}

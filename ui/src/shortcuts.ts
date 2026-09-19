@@ -1,11 +1,10 @@
-// Keyboard shortcuts, as a table of key to command — one list to read, and a key and a
-// menu item cannot drift because they name the same command. Bound in the page rather
-// than as menu accelerators so they can tell whether a field has focus.
+// Keyboard shortcuts, as a table of key to command: a key and a menu item cannot drift
+// because they name the same command. Bound in the page, not as accelerators, so they can
+// tell whether a field has focus.
 //
-// The table is also what the **shortcut list** shows (`?`, or the button in the top bar):
-// a binding carries how it is written and what it does, so the list is the bindings rather
-// than a second copy of them that would quietly go stale. A binding that is the mirror of
-// the one above it — `→` of `←` — says nothing and is not listed twice.
+// The table is also the **shortcut list** (`?`, or the top bar's button): each binding
+// carries how it is written and what it does, so the list cannot go stale. One that
+// mirrors the binding above it — `→` of `←` — carries no text and is not listed twice.
 
 import { Cmd, command, run } from "./commands";
 import { el, row } from "./dom";

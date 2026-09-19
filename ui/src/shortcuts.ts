@@ -93,6 +93,7 @@ const BINDINGS: Binding[] = [
 const GESTURES: { section: Section; does: string; what: string }[] = [
   { section: "Editing", does: "Ctrl + click a clip", what: "Add it to the selection, or take it out again" },
   { section: "Editing", does: "Drag a clip", what: "Move it — or the whole selection, or its group, when it is part of one" },
+  { section: "Editing", does: "Drag onto another track", what: "Moves every clip being dragged by that many tracks" },
   { section: "Editing", does: "Drag a clip's edge", what: "Trim it. One clip's own, never the block's" },
   { section: "Editing", does: "Drag a number", what: "Change it (Shift: fine, Alt: coarse); click to type in it instead" },
   { section: "Editing", does: "Double-click a keyframe strip", what: "Add a keyframe there" },

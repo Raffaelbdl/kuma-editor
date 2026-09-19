@@ -927,9 +927,29 @@ Three rules follow from the block being real. It travels **one delta**, so the s
 survives; it stops when its **earliest** member reaches 0, not when the dragged one does,
 or the daemon would refuse the whole patch for a negative start; and it never snaps to its
 own members, or it would stick to itself. It is **one patch** — half a group having moved
-is not a state anyone asked for. A group does not change track: a block spans the tracks
-its clips are on and there is no one track to drop it on, so a grouped drag moves in time
-only.
+is not a state anyone asked for.
+
+**Tracks are an offset, not a destination** — adopted, after the first cut of this said a
+block simply could not change track. The reasoning there was that a block spans the tracks
+its clips are on, so there is no one track to drop it onto; that much is true, and it was
+the wrong conclusion. "Which track does this land on" has no answer for two clips, but
+"how many tracks has it come" has exactly one. So the row under the pointer says how far
+the **pressed** clip has travelled, and every member travels that far — which is the same
+rule time already followed, one row up. A block of one is a clip, so picking a track for a
+single clip is that rule too, and there is no longer a special case for it.
+
+The offset is taken only when **every member lands on a track of its own kind**, so a
+block cannot come apart on the way, and an overlay clip cannot arrive on a video track for
+the daemon to refuse. A block that straddles kinds (a subtitle over its audio) therefore
+stays put unless the tracks happen to line up — which is the honest answer rather than a
+half-move. Off the tracks entirely, over the ruler or past the edge, the drag keeps the
+offset it had rather than springing back.
+
+A move across tracks rewrites each affected track's `clips` **whole** instead of removing
+and adding one clip at a time: a remove renumbers the clips after it, and two members of a
+block can trade tracks, so a sequence of removes and adds would depend on its own order to
+come out right. It is built from where the drag found the clips, so a document that moved
+under it is a drag to abandon rather than one to guess at.
 
 **Trimming stays a clip's own** — adopted. "Move by block" is what was asked for and what
 is coherent; a group is not a claim that its clips are the same length, and resizing four

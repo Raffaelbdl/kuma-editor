@@ -22,7 +22,10 @@ export class Timeline {
     kind: "move" | "trim-l" | "trim-r"; startX: number;
     /** The dragged clip's source in-point, which a left trim moves with the edge. */
     in: number;
-    toTrack: number;
+    /** How many tracks the block has been dragged, applied to every member. A block keeps
+     *  its shape across tracks the way it keeps it in time: one offset, not one
+     *  destination — there is no single track two clips land on. */
+    shift: number;
     block: { clip: Clip; ti: number; start: number; end: number; ghost: HTMLDivElement }[];
     /** Every edge of a clip outside the block, to snap to. Fixed for the drag — a block
      *  never snaps to its own members, or it would stick to itself. */
@@ -266,11 +269,18 @@ export class Timeline {
     }
     const moving = new Set(block.map((m) => m.clip.id));
     const cuts = store.tracks.flatMap((tr) => tr.clips.filter((c) => !moving.has(c.id)).flatMap((c) => [c.start, c.end]));
-    this.drag = { kind, startX: e.clientX, in: clip.in ?? 0, toTrack: ti, block, cuts, floor: Math.min(...block.map((m) => m.start)), keep };
+    this.drag = { kind, startX: e.clientX, in: clip.in ?? 0, shift: 0, block, cuts, floor: Math.min(...block.map((m) => m.start)), keep };
     const move = (ev: PointerEvent) => this.onDragMove(ev);
     const up = () => { window.removeEventListener("pointermove", move); window.removeEventListener("pointerup", up); this.endDrag(); };
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", up);
+  }
+
+  /** Whether the whole block can move `n` tracks. Every member has to land on a track, and
+   *  on one of its own kind — an overlay clip on a video track is a document the daemon
+   *  refuses, and a block that left one member behind would not be a block. */
+  private canShift(block: { ti: number }[], n: number): boolean {
+    return block.every((m) => store.tracks[m.ti + n]?.kind === store.tracks[m.ti].kind);
   }
 
   /** Snap to 0, the playhead or a cut outside the block; else to the frame. */
@@ -300,16 +310,17 @@ export class Timeline {
       // held back so that the earliest of them stops at 0 rather than the one under the
       // pointer, or the daemon would refuse the whole patch for a negative start.
       const delta = Math.max(-d.floor, this.snapT(me.start + dt, d.cuts) - me.start);
-      // Allow moving between tracks of the same kind — one clip only. A block spans the
-      // tracks its clips are on, and there is no one track to drop it onto, so it moves in
-      // time and stays where it is.
-      const row = d.block.length > 1 ? null : (ev.target as HTMLElement | null)?.closest?.(".tl-track") as HTMLElement | null;
-      const target = row ? Number(row.dataset.ti) : me.ti;
-      const same = store.tracks[target]?.kind === store.tracks[me.ti].kind;
-      const to = same ? target : me.ti;
-      if (to !== d.toTrack) {
-        d.toTrack = to;
-        this.root.querySelector(`[data-ti="${to}"] .tl-lane`)?.appendChild(me.ghost);
+      // Tracks move by the same rule as time: the row under the pointer says how far the
+      // *pressed* clip has travelled, and every member travels that far. Dropping a block
+      // "onto" a track is the question with no answer; how many tracks it has come is the
+      // one that has. Off the tracks entirely — over the ruler, past the edge — it keeps
+      // the offset it had rather than springing back.
+      const row = (ev.target as HTMLElement | null)?.closest?.(".tl-track") as HTMLElement | null;
+      const want = row ? Number(row.dataset.ti) - me.ti : d.shift;
+      const shift = this.canShift(d.block, want) ? want : 0;
+      if (shift !== d.shift) {
+        d.shift = shift;
+        for (const m of d.block) this.root.querySelector(`[data-ti="${m.ti + shift}"] .tl-lane`)?.appendChild(m.ghost);
       }
       for (const m of d.block) this.placeGhost(m.ghost, m.start + delta, m.end + delta);
     } else if (d.kind === "trim-l") {
@@ -332,7 +343,7 @@ export class Timeline {
     const landed = d.block.map((m) => ({ m, start: Number(m.ghost.dataset.start ?? m.start), end: Number(m.ghost.dataset.end ?? m.end) }));
     for (const m of d.block) m.ghost.remove();
     const [mine] = landed;
-    if (mine.start === me.start && mine.end === me.end && d.toTrack === me.ti) {
+    if (mine.start === me.start && mine.end === me.end && d.shift === 0) {
       // A click, not a drag. The selection was held together in case this became one, so
       // now it collapses to the clip that was pressed — otherwise there would be no way to
       // get back to a single clip except by clicking empty space first.
@@ -345,20 +356,36 @@ export class Timeline {
     if (d.kind === "trim-l" && isTimedMedia(binItem(store.state.project!, me.clip))) {
       ops.push({ op: "replace", path: `${path}/in`, value: Math.max(0, d.in + (mine.start - me.start) * Math.abs(me.clip.speed)) });
     }
-    if (d.toTrack !== me.ti) {
-      // Transitions are per track: any that involved this clip go with the cut.
-      const xs = store.tracks[me.ti].transitions;
-      if (xs.some((x) => x.from === me.clip.id || x.to === me.clip.id)) {
-        ops.push({ op: "replace", path: `${store.seqPath}/tracks/${me.ti}/transitions`, value: xs.filter((x) => x.from !== me.clip.id && x.to !== me.clip.id) });
-      }
-      const moved = { ...me.clip, start: mine.start, end: mine.end };
-      ops.push({ op: "remove", path }, { op: "add", path: `${store.seqPath}/tracks/${d.toTrack}/clips/-`, value: moved });
-    } else {
+    if (d.shift === 0) {
       // The whole block in one patch: half a group having moved is not a state anyone
       // asked for. A member that went away mid-drag is left out, not refused.
       for (const { m, start, end } of landed) {
         const p = store.clipPath(m.clip.id);
         if (p) ops.push({ op: "replace", path: `${p}/start`, value: start }, { op: "replace", path: `${p}/end`, value: end });
+      }
+    } else {
+      // The block changed track, every member by the same offset. Each affected track's
+      // clips are rewritten whole rather than moved one at a time: a remove renumbers the
+      // clips after it, and two members can trade tracks, so a sequence of removes and
+      // adds would depend on its own order to come out right.
+      //
+      // This one is built from where the drag *found* the clips, so a document that moved
+      // under it — an undo, an agent edit — is a drag to abandon rather than one to guess
+      // at: a stale index here would rewrite a track that has nothing to do with it.
+      const intact = landed.every(({ m }) => store.findClip(m.clip.id)?.ti === m.ti);
+      if (!intact || !this.canShift(d.block, d.shift)) return;
+      const gone = new Set(landed.map(({ m }) => m.clip.id));
+      const arriving = new Map<number, Clip[]>();
+      for (const { m, start, end } of landed) {
+        arriving.set(m.ti + d.shift, [...(arriving.get(m.ti + d.shift) ?? []), { ...m.clip, start, end }]);
+      }
+      for (const ti of new Set([...landed.map(({ m }) => m.ti), ...arriving.keys()])) {
+        const track = store.tracks[ti];
+        const tp = `${store.seqPath}/tracks/${ti}`;
+        ops.push({ op: "replace", path: `${tp}/clips`, value: [...track.clips.filter((c) => !gone.has(c.id)), ...(arriving.get(ti) ?? [])] });
+        // A transition joins two clips on one track, so one whose clip has left goes too.
+        const xs = track.transitions.filter((x) => !gone.has(x.from) && !gone.has(x.to));
+        if (xs.length !== track.transitions.length) ops.push({ op: "replace", path: `${tp}/transitions`, value: xs });
       }
     }
     await store.patch(ops, `${d.kind} ${landed.map((l) => l.m.clip.id).join(", ")}`);

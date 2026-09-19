@@ -25,8 +25,10 @@ const clip = (id, bin, start, end) => ({ id, start, end, bin, in: 0, speed: 1, v
 
 /** `a` on video and `b` on audio are staggered on purpose: a block that stops at 0 has to
  *  stop when its *earliest* member gets there, not when the one under the pointer does.
- *  `c` sits well to the right, ungrouped, as the thing that must not move. Colour entries,
- *  so the fixture needs no media on disk. */
+ *  `c` sits well to the right on a second video track, ungrouped — the thing that must not
+ *  move, and the second half of a block that changes track. `v3` is empty, so there is a
+ *  track above for such a block to shift onto. Colour entries, so the fixture needs no
+ *  media on disk. */
 const PROJECT = JSON.stringify({
   version: 1, name: "groups", master: "main",
   fps: { num: 30, den: 1 }, width: 1920, height: 1080, sample_rate: 48000,
@@ -35,6 +37,7 @@ const PROJECT = JSON.stringify({
     main: { name: "Main", source: { markers: [], tracks: [
       track("v1", "video", "Video", [clip("a", "red", 1, 5)]),
       track("v2", "video", "Video 2", [clip("c", "red", 6, 8)]),
+      track("v3", "video", "Video 3"),
       track("a1", "audio", "Audio", [clip("b", "red", 0, 4)]),
     ] } },
   },
@@ -51,6 +54,9 @@ describe("clip groups", { skip: why ? `skipping: ${why}` : false }, () => {
     .flatMap(t => t.clips.map(c => c.id + "@" + c.start + "-" + c.end + (c.group ? ":" + c.group : ""))).sort().join(" "))`;
   const GROUP = (id) => `fetch("/api/project").then(r => r.json()).then(p => p.bin.main.source.tracks
     .flatMap(t => t.clips).find(c => c.id === ${JSON.stringify(id)})?.group ?? "")`;
+  /** Every clip as `track/id@start`, sorted: where things are, tracks included. */
+  const WHERE = `fetch("/api/project").then(r => r.json()).then(p => p.bin.main.source.tracks
+    .flatMap(t => t.clips.map(c => t.id + "/" + c.id + "@" + c.start)).sort().join(" "))`;
   const REVISION = `fetch("/api/project").then(r => r.json()).then(p => p.revision)`;
   const SELECTED = `[...document.querySelectorAll("#timeline .clip.selected")].map(c => c.dataset.id).sort().join(",")`;
 
@@ -59,6 +65,17 @@ describe("clip groups", { skip: why ? `skipping: ${why}` : false }, () => {
   const clipsAre = async (expected) => {
     try { await page.until(`${CLIPS}.then(s => s === ${JSON.stringify(expected)})`, 8000); }
     catch { assert.equal(await page.eval(CLIPS), expected); }
+  };
+  /** The same, for where the clips are rather than when. Then wait for the page to have
+   *  redrawn them there: the next drag reads the row a clip is in to know which track it
+   *  started on, so a stale box would measure the move from the wrong place. */
+  const whereIs = async (expected) => {
+    try { await page.until(`${WHERE}.then(s => s === ${JSON.stringify(expected)})`, 8000); }
+    catch { assert.equal(await page.eval(WHERE), expected); }
+    const on = expected.split(" ").map((s) => s.split("/"));
+    for (const [tid, rest] of on) {
+      await page.until(`document.querySelector('.clip[data-id="${rest.split("@")[0]}"]:not(.ghost)')?.closest(".tl-track")?.dataset.tid === ${JSON.stringify(tid)}`);
+    }
   };
 
   const pointer = (selector, dx = 0, modifiers = {}) => `(() => {
@@ -83,6 +100,19 @@ describe("clip groups", { skip: why ? `skipping: ${why}` : false }, () => {
     el.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0, clientX: x, clientY: y }));
     for (const f of [0.5, 1]) window.dispatchEvent(new PointerEvent("pointermove", { bubbles: true, clientX: x + ${dx} * f, clientY: y }));
     window.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, clientX: x + ${dx}, clientY: y }));
+    return true;
+  })()`;
+
+  /** Press a clip, travel `dx` pixels, and let go over another track's row. The moves go
+   *  to that row, as the browser's own do — which is how the drag knows what it is over. */
+  const dragToTrack = (id, dx, tid) => `(() => {
+    const el = document.querySelector('.clip[data-id="${id}"]:not(.ghost)');
+    const row = document.querySelector('.tl-track[data-tid="${tid}"]');
+    const r = el.getBoundingClientRect(), rr = row.getBoundingClientRect();
+    const x = r.left + 20, y = r.top + 6;
+    el.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0, clientX: x, clientY: y }));
+    for (const f of [0.5, 1]) row.dispatchEvent(new PointerEvent("pointermove", { bubbles: true, clientX: x + ${dx} * f, clientY: rr.top + 5 }));
+    window.dispatchEvent(new PointerEvent("pointerup", { bubbles: true, clientX: x + ${dx}, clientY: rr.top + 5 }));
     return true;
   })()`;
 
@@ -122,6 +152,34 @@ describe("clip groups", { skip: why ? `skipping: ${why}` : false }, () => {
     // The other half of keeping the selection through a press: without this there would be
     // no way back to one clip except by clicking empty space first.
     await page.until(`${SELECTED} === "a,b"`);
+    await page.eval(selectClip("a"));
+    await page.until(`${SELECTED} === "a"`);
+  });
+
+  it("drags one clip onto another track", async () => {
+    await page.eval(selectClip("a"));
+    await page.until(`${SELECTED} === "a"`);
+    await page.eval(dragToTrack("a", 0, "v2"));
+    await whereIs("a1/b@0 v2/a@1 v2/c@6");
+    // …and back. A track move is a move like any other, not a one-way door.
+    await page.eval(dragToTrack("a", 0, "v1"));
+    await whereIs("a1/b@0 v1/a@1 v2/c@6");
+  });
+
+  it("shifts a block by whole tracks, keeping the shape it has across them", async () => {
+    await page.eval(selectClip("a"));
+    await page.eval(addClip("c"));
+    await page.until(`${SELECTED} === "a,c"`);
+    const before = await page.eval(REVISION);
+    // `a` is on v1 and `c` on v2, so dragging `a` onto v2 is an offset of one track and
+    // `c` goes to v3. There is no single track for the pair to land on, and asking for one
+    // is what the offset avoids.
+    await page.eval(dragToTrack("a", 0, "v2"));
+    await whereIs("a1/b@0 v2/a@1 v3/c@6");
+    assert.equal(await page.eval(REVISION), before + 1, "one patch, tracks and all");
+    // And back down, which is the same offset the other way.
+    await page.eval(dragToTrack("a", 0, "v1"));
+    await whereIs("a1/b@0 v1/a@1 v2/c@6");
     await page.eval(selectClip("a"));
     await page.until(`${SELECTED} === "a"`);
   });

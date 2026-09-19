@@ -572,54 +572,36 @@ fn emit_filters(ctx: &Ctx, p: &Plan, w: &mut XmlWriter) {
             Effect::Transform { x, y, scale, rotation, opacity, keyframes } => {
                 open(w, "xform", "qtblend");
                 w.property("compositing", "0");
-                if keyframes.is_empty() {
-                    w.property("rect", rect_str(ctx, *x, *y, *scale, *opacity));
-                    w.property("rotation", num(*rotation));
-                } else {
-                    let mut rect = Vec::new();
-                    let mut rot = Vec::new();
-                    for k in keyframes {
-                        let pos = at(k.t);
-                        rect.push(format!(
-                            "{pos}={}",
-                            rect_str(ctx, k.x.unwrap_or(*x), k.y.unwrap_or(*y), k.scale.unwrap_or(*scale), k.opacity.unwrap_or(*opacity))
-                        ));
-                        rot.push(format!("{pos}={}", num(k.rotation.unwrap_or(*rotation))));
-                    }
-                    w.property("rect", rect.join(";"));
-                    w.property("rotation", rot.join(";"));
-                }
+                w.property("rect", anim(keyframes, &at, rect_str(ctx, *x, *y, *scale, *opacity), |k| {
+                    rect_str(ctx, k.or("x", *x), k.or("y", *y), k.or("scale", *scale), k.or("opacity", *opacity))
+                }));
+                w.property("rotation", anim(keyframes, &at, num(*rotation), |k| num(k.or("rotation", *rotation))));
                 w.close("filter");
             }
-            Effect::Crop { left, right, top, bottom, radius } => {
+            Effect::Crop { left, right, top, bottom, radius, keyframes } => {
                 open(w, "crop", "qtcrop");
-                w.property(
-                    "rect",
-                    format!(
-                        "{}%/{}%:{}%x{}%",
-                        num(left * 100.0),
-                        num(top * 100.0),
-                        num((1.0 - left - right) * 100.0),
-                        num((1.0 - top - bottom) * 100.0)
-                    ),
-                );
-                if *radius > 0.0 {
-                    w.property("radius", num(*radius));
+                w.property("rect", anim(keyframes, &at, crop_rect(*left, *right, *top, *bottom), |k| {
+                    crop_rect(k.or("left", *left), k.or("right", *right), k.or("top", *top), k.or("bottom", *bottom))
+                }));
+                // Written only when it is ever non-zero: qtcrop with `radius` set rounds
+                // even a zero radius through a slower path.
+                if *radius > 0.0 || keyframes.iter().any(|k| k.or("radius", *radius) > 0.0) {
+                    w.property("radius", anim(keyframes, &at, num(*radius), |k| num(k.or("radius", *radius))));
                 }
                 w.close("filter");
             }
-            Effect::Blur { radius } => {
+            Effect::Blur { radius, keyframes } => {
                 open(w, "blur", "avfilter.gblur");
-                w.property("av.sigma", num((radius * ctx.scale / 2.0).max(0.01)));
+                let sigma = |r: f64| num((r * ctx.scale / 2.0).max(0.01));
+                w.property("av.sigma", anim(keyframes, &at, sigma(*radius), |k| sigma(k.or("radius", *radius))));
                 w.property("av.steps", "2");
                 w.close("filter");
             }
-            Effect::Color { brightness, contrast, saturation, gamma } => {
+            Effect::Color { brightness, contrast, saturation, gamma, keyframes } => {
                 open(w, "color", "avfilter.eq");
-                w.property("av.brightness", num(*brightness));
-                w.property("av.contrast", num(*contrast));
-                w.property("av.saturation", num(*saturation));
-                w.property("av.gamma", num(*gamma));
+                for (name, stat) in [("brightness", *brightness), ("contrast", *contrast), ("saturation", *saturation), ("gamma", *gamma)] {
+                    w.property(&format!("av.{name}"), anim(keyframes, &at, num(stat), |k| num(k.or(name, stat))));
+                }
                 w.close("filter");
             }
             Effect::Fade { fade_in, fade_out } => {
@@ -641,8 +623,9 @@ fn emit_filters(ctx: &Ctx, p: &Plan, w: &mut XmlWriter) {
             }
             Effect::Volume { keyframes } => {
                 open(w, "vol", "volume");
-                let s: Vec<String> = keyframes.iter().map(|k| format!("{}={}", at(k.t), num(db(k.gain * clip.volume)))).collect();
-                w.property("level", s.join(";"));
+                // A key without `gain` is the clip as recorded: the clip's own volume, and
+                // nothing on top of it.
+                w.property("level", anim(keyframes, &at, num(db(clip.volume)), |k| num(db(k.or("gain", 1.0) * clip.volume))));
                 w.close("filter");
             }
             Effect::Mlt { service, properties } => {
@@ -655,6 +638,32 @@ fn emit_filters(ctx: &Ctx, p: &Plan, w: &mut XmlWriter) {
             Effect::Blend { .. } => {} // handled on the track's compositing transition
         }
     }
+}
+
+/// An animated property: the static value when there are no keys, else one
+/// `frame{op}value` per key. `value_of` says what the property is *at* a key, and is where
+/// "a parameter the key leaves out means the static value" is spelled out, once per
+/// property. The operator is the key's own ease, and MLT reads it as how this key reaches
+/// the next: `=` a straight line, `|=` a hold, `~=` a curve through the neighbours.
+fn anim(keys: &[Keyframe], at: &dyn Fn(f64) -> i64, stat: String, value_of: impl Fn(&Keyframe) -> String) -> String {
+    if keys.is_empty() {
+        return stat;
+    }
+    keys.iter().map(|k| format!("{}{}{}", at(k.t), ease_op(k.ease), value_of(k))).collect::<Vec<_>>().join(";")
+}
+
+/// The operator MLT writes an ease with in an animation string.
+fn ease_op(ease: Ease) -> &'static str {
+    match ease {
+        Ease::Linear => "=",
+        Ease::Hold => "|=",
+        Ease::Smooth => "~=",
+    }
+}
+
+/// qtcrop `rect` = "left%/top%:width%xheight%", from fractions cut off each edge.
+fn crop_rect(left: f64, right: f64, top: f64, bottom: f64) -> String {
+    format!("{}%/{}%:{}%x{}%", num(left * 100.0), num(top * 100.0), num((1.0 - left - right) * 100.0), num((1.0 - top - bottom) * 100.0))
 }
 
 /// qtblend `rect` = "x y w h opacity" in profile pixels, from centre-relative offsets.
@@ -762,6 +771,55 @@ mod tests {
             v["bin"]["main"] = json!({ "source": { "tracks": tracks } });
         }
         serde_json::from_value(v).unwrap()
+    }
+
+    /// A keyframe's `ease` is the operator MLT reads it with, and it governs the segment
+    /// that *follows* the key — which is why the last one's never shows up as anything.
+    #[test]
+    fn keyframe_ease_is_the_mlt_operator() {
+        let p = project(json!({
+            "fps": 30, "bin": { "x": { "source": { "path": "x.mp4" } } },
+            "tracks": [{ "id": "v1", "clips": [{ "id": "a", "start": 0, "end": 4, "bin": "x", "effects": [
+                { "type": "transform", "keyframes": [
+                    { "t": 0, "scale": 1, "ease": "hold" },
+                    { "t": 1, "scale": 2, "ease": "smooth" },
+                    { "t": 2, "scale": 1 }
+                ] },
+                { "type": "volume", "keyframes": [
+                    { "t": 0, "gain": 1, "ease": "hold" },
+                    { "t": 2, "gain": 1 }
+                ] }
+            ] }]}]
+        }));
+        let xml = compile(&p, &CompileOptions::new("/proj")).unwrap();
+        let rect = xml.split(r#"<property name="rect">"#).nth(1).unwrap().split('<').next().unwrap();
+        assert_eq!(rect.split(';').map(|s| s.split(' ').next().unwrap()).collect::<Vec<_>>(), ["0|=0", "30~=-960", "60=0"], "{xml}");
+        assert!(xml.contains(r#"<property name="rotation">0|=0;30~=0;60=0</property>"#), "{xml}");
+        assert!(xml.contains(r#"<property name="level">0|=0;60=0</property>"#), "{xml}");
+    }
+
+    /// Every keyframed kind animates through the same helper, so each MLT property it owns
+    /// gets one `frame{op}value` per key with the statics filling in what a key leaves out.
+    #[test]
+    fn crop_blur_and_color_animate_like_a_transform() {
+        let p = project(json!({
+            "fps": 30, "bin": { "x": { "source": { "path": "x.mp4" } } },
+            "tracks": [{ "id": "v1", "clips": [{ "id": "a", "start": 0, "end": 4, "bin": "x", "effects": [
+                { "type": "crop", "left": 0.1, "keyframes": [ { "t": 0, "left": 0.1 }, { "t": 1, "left": 0.3, "radius": 0.5 } ] },
+                { "type": "blur", "radius": 4, "keyframes": [ { "t": 0, "radius": 0, "ease": "smooth" }, { "t": 2, "radius": 20 } ] },
+                { "type": "color", "contrast": 1.5, "keyframes": [ { "t": 0, "brightness": -0.5 }, { "t": 2, "brightness": 0.5 } ] }
+            ] }]}]
+        }));
+        let xml = compile(&p, &CompileOptions::new("/proj")).unwrap();
+        // Crop: `right` stays the static 0 in both keys; `radius` is written because a key
+        // makes it non-zero, and is the static 0 in the key that leaves it out.
+        assert!(xml.contains(r#"<property name="rect">0=10%/0%:90%x100%;30=30%/0%:70%x100%</property>"#), "{xml}");
+        assert!(xml.contains(r#"<property name="radius">0=0;30=0.5</property>"#), "{xml}");
+        // Blur: sigma is radius/2 at full size, floored at 0.01, and the smooth key curves.
+        assert!(xml.contains(r#"<property name="av.sigma">0~=0.01;60=10</property>"#), "{xml}");
+        // Color: the keyed parameter animates, the others stay static.
+        assert!(xml.contains(r#"<property name="av.brightness">0=-0.5;60=0.5</property>"#), "{xml}");
+        assert!(xml.contains(r#"<property name="av.contrast">0=1.5;60=1.5</property>"#), "{xml}");
     }
 
     #[test]

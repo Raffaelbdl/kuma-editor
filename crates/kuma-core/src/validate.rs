@@ -1,6 +1,6 @@
 //! Structural validation. Errors reject an edit; warnings are surfaced to the UI/agent.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
@@ -145,8 +145,11 @@ pub fn validate(p: &Project, ctx: &ValidationContext) -> Vec<Issue> {
     // become MLT element ids in one compiled document and URL segments in one daemon.
     let mut track_ids = HashSet::new();
     let mut clip_ids = HashSet::new();
+    // Which sequence each group was first seen on: a group is an editing relation on one
+    // timeline, and a block cannot move on two at once.
+    let mut groups: HashMap<&str, &str> = HashMap::new();
     for (seq_id, seq) in p.sequences() {
-        check_sequence(&mut issues, p, ctx, seq_id, seq, &mut track_ids, &mut clip_ids);
+        check_sequence(&mut issues, p, ctx, seq_id, seq, &mut track_ids, &mut clip_ids, &mut groups);
     }
 
     issues
@@ -156,10 +159,11 @@ fn check_sequence<'a>(
     issues: &mut Vec<Issue>,
     p: &'a Project,
     ctx: &ValidationContext,
-    seq_id: &str,
+    seq_id: &'a str,
     seq: &'a Sequence,
     track_ids: &mut HashSet<&'a str>,
     clip_ids: &mut HashSet<&'a str>,
+    groups: &mut HashMap<&'a str, &'a str>,
 ) {
     let base = format!("/bin/{seq_id}/source");
     for (ti, t) in seq.tracks.iter().enumerate() {
@@ -170,6 +174,18 @@ fn check_sequence<'a>(
         for (ci, c) in &clips {
             let cp = format!("{tp}/clips/{ci}");
             check_id(issues, clip_ids, &c.id, format!("{cp}/id"), "clip");
+            // A group id is shared on purpose, so it gets the format check and not the
+            // uniqueness one.
+            if !c.group.is_empty() && check_id_format(issues, &c.group, format!("{cp}/group"), "group") {
+                if *groups.entry(&c.group).or_insert(seq_id) != seq_id {
+                    // Whichever sequence it was met on first is the group's; a member
+                    // anywhere else would be a clip the block can never take with it.
+                    issues.push(Issue::error(
+                        format!("{cp}/group"),
+                        format!("group `{}` is on sequence `{}`; a group's clips must be on one timeline", c.group, groups[c.group.as_str()]),
+                    ));
+                }
+            }
             if !(c.start >= 0.0 && c.end > c.start) {
                 issues.push(Issue::error(format!("{cp}/end"), "clip must have start >= 0 and end > start"));
             } else if c.duration() * p.fps.as_f64() < 1.0 - 1e-9 {
@@ -247,27 +263,51 @@ fn check_sequence<'a>(
                 if kind != "mlt" && !kinds.insert(kind.clone()) {
                     issues.push(Issue::error(ep.clone(), format!("duplicate `{kind}` effect on this clip")));
                 }
-                match e {
-                    Effect::Crop { left, right, top, bottom, radius } => {
-                        if left + right >= 1.0 || top + bottom >= 1.0 {
-                            issues.push(Issue::error(ep.clone(), "crop leaves nothing visible"));
-                        }
-                        if [left, right, top, bottom, radius].iter().any(|v| **v < 0.0 || **v > 1.0) {
-                            issues.push(Issue::error(ep.clone(), "crop values must be within 0..1"));
+                // Keyframes, for every kind that takes them: times in order, and names the
+                // kind knows. A key naming a parameter the kind does not have is refused
+                // here rather than by serde — the parameters *are* a keyframe's unknown
+                // fields — and this error can say what the kind's parameters are.
+                let keys = e.keyframes();
+                check_keyframes(issues, &ep, c, keys.iter().map(|k| k.t));
+                for (ki, k) in keys.iter().enumerate() {
+                    for name in k.values.keys() {
+                        if !e.animatable().contains(&name.as_str()) {
+                            issues.push(Issue::error(
+                                format!("{ep}/keyframes/{ki}/{name}"),
+                                format!("`{kind}` has no parameter `{name}`; its keyframes may set {}", e.animatable().join(", ")),
+                            ));
                         }
                     }
-                    Effect::Transform { keyframes, opacity, scale, .. } => {
-                        if !(0.0..=1.0).contains(opacity) {
-                            issues.push(Issue::error(format!("{ep}/opacity"), "opacity must be 0..1"));
+                }
+                // Then the bounds each kind has, checked on every sample the effect will be
+                // evaluated at: the statics, and each key as the compiler reads it.
+                match e {
+                    Effect::Crop { left, right, top, bottom, radius, .. } => {
+                        for (path, k) in samples(&ep, e) {
+                            let (l, r, t, b, rad) = (at(k, "left", *left), at(k, "right", *right), at(k, "top", *top), at(k, "bottom", *bottom), at(k, "radius", *radius));
+                            if l + r >= 1.0 || t + b >= 1.0 {
+                                issues.push(Issue::error(path.clone(), "crop leaves nothing visible"));
+                            }
+                            if [l, r, t, b, rad].iter().any(|x| *x < 0.0 || *x > 1.0) {
+                                issues.push(Issue::error(path, "crop values must be within 0..1"));
+                            }
                         }
-                        let good_scale = |s: f64| s.is_finite() && s > 0.0;
-                        if !good_scale(*scale) {
-                            issues.push(Issue::error(format!("{ep}/scale"), "scale must be > 0"));
+                    }
+                    Effect::Transform { opacity, scale, .. } => {
+                        for (path, k) in samples(&ep, e) {
+                            if !(0.0..=1.0).contains(&at(k, "opacity", *opacity)) {
+                                issues.push(Issue::error(format!("{path}/opacity"), "opacity must be 0..1"));
+                            }
+                            let s = at(k, "scale", *scale);
+                            if !(s.is_finite() && s > 0.0) {
+                                issues.push(Issue::error(format!("{path}/scale"), "scale must be > 0"));
+                            }
                         }
-                        check_keyframes(issues, &ep, c, keyframes.iter().map(|k| k.t));
-                        for (ki, k) in keyframes.iter().enumerate() {
-                            if k.scale.is_some_and(|s| !good_scale(s)) {
-                                issues.push(Issue::error(format!("{ep}/keyframes/{ki}/scale"), "scale must be > 0"));
+                    }
+                    Effect::Blur { radius, .. } => {
+                        for (path, k) in samples(&ep, e) {
+                            if at(k, "radius", *radius) < 0.0 {
+                                issues.push(Issue::error(path, "blur radius must be >= 0"));
                             }
                         }
                     }
@@ -276,16 +316,10 @@ fn check_sequence<'a>(
                             issues.push(Issue::warn(ep.clone(), "fade in + out exceed the clip duration"));
                         }
                     }
-                    Effect::Blur { radius } => {
-                        if *radius < 0.0 {
-                            issues.push(Issue::error(ep.clone(), "blur radius must be >= 0"));
-                        }
-                    }
                     Effect::Volume { keyframes } => {
                         if keyframes.is_empty() {
                             issues.push(Issue::error(ep.clone(), "volume needs at least one keyframe"));
                         }
-                        check_keyframes(issues, &ep, c, keyframes.iter().map(|k| k.t));
                     }
                     Effect::Mlt { service, .. } => {
                         if service.trim().is_empty() {
@@ -400,6 +434,20 @@ fn source_duration(p: &Project, c: &Clip) -> Option<f64> {
     }
 }
 
+/// Every point an effect is evaluated at — its static values (`None`), then each keyframe
+/// — with the path an issue about that sample should name. Read a parameter there with
+/// [`at`]: bounds are checked on every sample, so a key cannot smuggle in a value the
+/// static field would have been refused for.
+fn samples<'a>(ep: &'a str, e: &'a Effect) -> impl Iterator<Item = (String, Option<&'a Keyframe>)> + 'a {
+    std::iter::once((ep.to_string(), None)).chain(e.keyframes().iter().enumerate().map(move |(ki, k)| (format!("{ep}/keyframes/{ki}"), Some(k))))
+}
+
+/// A parameter at a sample: the static value, or what the key says with the static
+/// filling in what it leaves out — exactly as the compiler reads it.
+fn at(k: Option<&Keyframe>, name: &str, stat: f64) -> f64 {
+    k.map_or(stat, |k| k.or(name, stat))
+}
+
 /// Keyframe times must be non-negative and sorted; beyond the clip end they are pointless.
 fn check_keyframes(issues: &mut Vec<Issue>, ep: &str, c: &Clip, times: impl Iterator<Item = f64>) {
     let mut last = f64::NEG_INFINITY;
@@ -414,10 +462,18 @@ fn check_keyframes(issues: &mut Vec<Issue>, ep: &str, c: &Clip, times: impl Iter
     }
 }
 
-fn check_id<'a>(issues: &mut Vec<Issue>, seen: &mut HashSet<&'a str>, id: &'a str, path: String, what: &str) {
-    if !is_valid_id(id) {
+/// Well-formed, or an error at `path`. True when it is.
+fn check_id_format(issues: &mut Vec<Issue>, id: &str, path: String, what: &str) -> bool {
+    let ok = is_valid_id(id);
+    if !ok {
         issues.push(Issue::error(path, format!("{what} id `{id}` must match [A-Za-z_][A-Za-z0-9_-]*")));
-    } else if !seen.insert(id) {
+    }
+    ok
+}
+
+/// Well-formed and not seen before.
+fn check_id<'a>(issues: &mut Vec<Issue>, seen: &mut HashSet<&'a str>, id: &'a str, path: String, what: &str) {
+    if check_id_format(issues, id, path.clone(), what) && !seen.insert(id) {
         issues.push(Issue::error(path, format!("duplicate {what} id `{id}`")));
     }
 }
@@ -496,6 +552,75 @@ mod tests {
 
     fn messages(p: &Project) -> Vec<String> {
         validate(p, &ValidationContext::default()).into_iter().map(|i| i.message).collect()
+    }
+
+    /// A group holds clips together for editing, on one timeline: the same id on two
+    /// sequences names a block that could never move as one, so it is refused.
+    #[test]
+    fn a_group_must_be_on_one_timeline() {
+        let p = project(json!({
+            "master": "main",
+            "bin": {
+                "x": { "source": { "path": "x.mp4" } },
+                "other": { "source": { "markers": [], "tracks": [
+                    { "id": "v2", "clips": [{ "id": "b", "start": 0, "end": 5, "bin": "x", "group": "g1" }] }
+                ] } }
+            },
+            "tracks": [{ "id": "v1", "clips": [{ "id": "a", "start": 0, "end": 5, "bin": "x", "group": "g1" }] }]
+        }));
+        let m = messages(&p);
+        assert!(m.iter().any(|m| m.contains("group `g1`") && m.contains("one timeline")), "{m:?}");
+
+        // …and a group on one timeline, across its tracks, is the whole point.
+        let ok = project(json!({
+            "bin": { "x": { "source": { "path": "x.mp4" } } },
+            "tracks": [
+                { "id": "v1", "clips": [{ "id": "a", "start": 0, "end": 5, "bin": "x", "group": "g1" }] },
+                { "id": "a1", "kind": "audio", "clips": [{ "id": "b", "start": 0, "end": 5, "bin": "x", "group": "g1" }] },
+            ]
+        }));
+        assert!(!has_errors(&validate(&ok, &ValidationContext::default())), "{:?}", messages(&ok));
+    }
+
+    /// No group is the absent field, so grouping nothing writes nothing.
+    #[test]
+    fn a_group_is_not_written_when_there_is_none() {
+        let c: Clip = serde_json::from_value(json!({ "id": "a", "start": 0, "end": 5, "bin": "x" })).unwrap();
+        assert_eq!(c.group, "");
+        assert_eq!(serde_json::to_value(&c).unwrap().get("group"), None);
+    }
+
+    /// A keyframe's parameters are its unknown fields, so the validator is what says a
+    /// name is wrong — and it says which names are right.
+    #[test]
+    fn a_keyframe_may_only_set_parameters_its_effect_has() {
+        let p = project(json!({
+            "bin": { "x": { "source": { "path": "x.mp4" } } },
+            "tracks": [{ "id": "v1", "clips": [{ "id": "a", "start": 0, "end": 5, "bin": "x", "effects": [
+                { "type": "blur", "radius": 2, "keyframes": [ { "t": 0, "radius": 0 }, { "t": 1, "sigma": 9 } ] }
+            ] }] }]
+        }));
+        let m = messages(&p);
+        assert!(m.iter().any(|m| m.contains("`blur` has no parameter `sigma`") && m.contains("radius")), "{m:?}");
+    }
+
+    /// The bounds a static value gets, a key gets too — on what the key *means*, with the
+    /// statics filling in what it leaves out.
+    #[test]
+    fn a_keyframe_is_held_to_the_same_bounds_as_the_static_value() {
+        let p = project(json!({
+            "bin": { "x": { "source": { "path": "x.mp4" } } },
+            "tracks": [{ "id": "v1", "clips": [{ "id": "a", "start": 0, "end": 5, "bin": "x", "effects": [
+                // Static crop is fine; the second key, with `right` filled in from the
+                // static 0.5, leaves nothing visible.
+                { "type": "crop", "left": 0.2, "right": 0.5, "keyframes": [ { "t": 0, "left": 0.2 }, { "t": 2, "left": 0.6 } ] },
+                { "type": "blur", "radius": 2, "keyframes": [ { "t": 0, "radius": -1 } ] }
+            ] }] }]
+        }));
+        let issues = validate(&p, &ValidationContext::default());
+        assert!(issues.iter().any(|i| i.path.ends_with("/effects/0/keyframes/1") && i.message.contains("nothing visible")), "{issues:?}");
+        assert!(issues.iter().any(|i| i.path.ends_with("/effects/1/keyframes/0") && i.message.contains(">= 0")), "{issues:?}");
+        assert!(!issues.iter().any(|i| i.path.ends_with("/effects/0/keyframes/0")), "the first key is within bounds: {issues:?}");
     }
 
     #[test]

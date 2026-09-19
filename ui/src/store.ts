@@ -1,13 +1,26 @@
 import { api, subscribeEvents } from "./api";
-import type { Clip, DaemonEvent, Job, PatchOp, Project, TemplateInfo, Track } from "./types";
-import { allClips, fpsValue, freeId, isOverlaySource, seqDuration, seqPath, sequenceIds, sequenceOf } from "./types";
+import type { Clip, DaemonEvent, Job, PatchOp, Project, TemplateInfo, Track, TrackKind } from "./types";
+import { allClips, clipPathOf, fpsValue, freeId, isOverlaySource, nearest, seqDuration, seqPath, sequenceIds, sequenceOf } from "./types";
+
+/** A clip found in the project: where it is, as the record every edit of it starts from. */
+export interface Found { seq: string; track: Track; ti: number; clip: Clip; ci: number }
 
 /**
- * What the inspector is showing. A clip and a bin entry are different things to inspect,
- * which is the model's own split: what is shown lives on the entry, when it is shown
- * lives on the clip. One selection addresses either, so the panel never has to guess.
+ * What the inspector is showing — the model's own split: what is shown lives on the entry,
+ * when it is shown lives on the clip. Clips come as a list because copying, deleting and
+ * splitting all act on several at once; a bin entry does not, because every entry action
+ * is about *that* entry. The list is in click order, so its last member is the one a
+ * single-clip action means.
  */
-export type Selection = { kind: "clip"; id: string } | { kind: "bin"; id: string } | null;
+export type Selection = { kind: "clip"; ids: string[] } | { kind: "bin"; id: string } | null;
+
+/** A clip waiting to be pasted, with the track it came off. The *kind* travels rather than
+ *  being derived from the entry — a video file on an audio track is an audio clip — and
+ *  the *id* travels because a copy of several keeps them on their own tracks. */
+export interface ClipboardEntry { clip: Clip; track: string; kind: TrackKind }
+
+/** What was copied or cut: one clip, or several with the shape they were in. */
+export interface Clipboard { entries: ClipboardEntry[] }
 
 /** The tab that shows the sequence being edited. Not a bin id — ids must match
  *  `[A-Za-z_][A-Za-z0-9_-]*`, so the empty string can never name an entry and the two
@@ -21,6 +34,16 @@ export interface State {
    *  is set through the API rather than locally. Empty until the first load. */
   sequence: string;
   selection: Selection;
+  /** The track a paste lands on: the one last clicked, by id, because indices shift when
+   *  a track is added. Null until a track has been clicked, and dropped when the one it
+   *  names leaves the open sequence. View state, like the selection. */
+  track: string | null;
+  /** What was last copied or cut. Held here, not in the document: copying is not an edit,
+   *  so it costs no revision and survives switching sequences. The paste is the edit. */
+  clipboard: Clipboard | null;
+  /** Record mode: while on, changing an animatable parameter writes a key at the playhead
+   *  instead of the static value. View state — it is about how the next edit is made. */
+  autoKey: boolean;
   playhead: number;
   playing: boolean;
   /** pixels per second */
@@ -40,7 +63,7 @@ export interface State {
 type Listener = (s: State) => void;
 
 class Store {
-  state: State = { project: null, templates: [], sequence: "", selection: null, playhead: 0, playing: false, zoom: 60, tab: SEQUENCE_TAB, sequences: [], overlays: [], connected: false, jobs: {} };
+  state: State = { project: null, templates: [], sequence: "", selection: null, track: null, clipboard: null, autoKey: false, playhead: 0, playing: false, zoom: 60, tab: SEQUENCE_TAB, sequences: [], overlays: [], connected: false, jobs: {} };
   private listeners = new Set<Listener>();
   private refreshing: Promise<void> | null = null;
   private refreshAgain = false;
@@ -97,7 +120,7 @@ class Store {
       // The daemon has the last word on what is open (it falls back to the master for a
       // sequence that has gone), so the tab follows `current`, not what was asked for.
       // Opening a timeline is asking to look at it: the monitor comes forward with it.
-      this.set({ sequence: current, sequences: withId(this.state.sequences, current), selection: null, playhead: 0, tab: SEQUENCE_TAB });
+      this.set({ sequence: current, sequences: withId(this.state.sequences, current), selection: null, track: null, playhead: 0, tab: SEQUENCE_TAB });
     } catch (e) {
       toast((e as Error).message, "err");
     }
@@ -143,13 +166,15 @@ class Store {
           // daemon falls back to the master and so do we, rather than showing nothing.
           const sequence = sequenceOf(project, this.state.sequence) ? this.state.sequence : project.master;
           const selection = this.stillThere(project, this.state.selection);
+          // The focused track can go the same way the selection can (undo, an agent edit).
+          const track = sequenceOf(project, sequence)?.tracks.some((t) => t.id === this.state.track) ? this.state.track : null;
           // A tab's subject can be removed out from under us (undo, an agent edit), so
           // every tab is checked against the document it names — and the one being
           // edited always has a tab, whether it was opened or fallen back to.
           const sequences = withId(this.state.sequences.filter((id) => sequenceOf(project, id)), sequence);
           const overlays = this.state.overlays.filter((id) => isOverlayEntry(project, id));
           const tab = overlays.includes(this.state.tab) ? this.state.tab : SEQUENCE_TAB;
-          this.set({ project, sequence, sequences, selection, overlays, tab });
+          this.set({ project, sequence, sequences, selection, track, overlays, tab });
         } while (this.refreshAgain);
       } catch (e) {
         toast(`Cannot reload the project: ${(e as Error).message}`, "err");
@@ -160,11 +185,14 @@ class Store {
     return this.refreshing;
   }
 
-  /** A selection survives a refresh only while the thing it names still exists. */
+  /** A selection survives a refresh only while the things it names still exist — each of
+   *  them, so deleting one of three selected clips leaves the other two selected. */
   private stillThere(project: Project, sel: Selection): Selection {
     if (!sel) return null;
     if (sel.kind === "bin") return sel.id in project.bin ? sel : null;
-    return allClips(project).some((c) => c.id === sel.id) ? sel : null;
+    const live = new Set(allClips(project).map((c) => c.id));
+    const ids = sel.ids.filter((id) => live.has(id));
+    return ids.length ? { kind: "clip", ids } : null;
   }
 
   /**
@@ -190,15 +218,55 @@ class Store {
     this.set({ overlays, tab });
   }
 
-  /** Point the inspector at a clip or a bin entry. (`select` above is the subscription
-   *  helper; this one is the selection, and they are deliberately not the same word.) */
+  /** Point the inspector at a clip or a bin entry, and at nothing else. (`select` above is
+   *  the subscription helper; these are deliberately not the same word.) */
   selectItem(kind: "clip" | "bin", id: string) {
-    this.set({ selection: { kind, id } as Selection });
+    this.set({ selection: kind === "clip" ? { kind: "clip", ids: [id] } : { kind: "bin", id } });
   }
 
-  /** The selected clip, or null when a bin entry (or nothing) is selected. */
+  /** Point the inspector at several clips, and aim the next paste at a track in the same
+   *  update — clicking a clip is also clicking its track, and that is one notification.
+   *  A clip in a group brings its group: expanding here is what stops a gesture forgetting. */
+  selectClips(ids: string[], track?: string) {
+    const all = this.groupmates(ids);
+    this.set({ selection: all.length ? { kind: "clip", ids: all } : null, ...(track === undefined ? {} : { track }) });
+  }
+
+  /** Add a clip to the selection, or take it out again: Ctrl/Cmd- or Shift-click. A group
+   *  goes in and comes out whole. The one just clicked goes last, so it is the one the
+   *  inspector edits. */
+  toggleClip(id: string, track?: string) {
+    const mates = new Set(this.groupmates([id]));
+    const rest = this.selectedClips.filter((x) => !mates.has(x));
+    // Nothing dropped means it was not selected, so this click adds it (and its group).
+    this.selectClips(rest.length === this.selectedClips.length ? [...rest, id] : rest, track);
+  }
+
+  /** These clips and everything grouped with them, on the open sequence. The ones asked
+   *  for keep their order and stay last, because the last clicked is the one a single-clip
+   *  action means. */
+  groupmates(ids: string[]): string[] {
+    const asked = new Set(ids);
+    const clips = this.tracks.flatMap((t) => t.clips);
+    const groups = new Set(clips.filter((c) => c.group && asked.has(c.id)).map((c) => c.group));
+    if (!groups.size) return ids;
+    return [...clips.filter((c) => c.group && groups.has(c.group) && !asked.has(c.id)).map((c) => c.id), ...ids];
+  }
+
+  /** Aim the next paste at a track: a paste needs a *where* as well as a *when*, and the
+   *  playhead only answers the second half. */
+  focusTrack(id: string | null) {
+    this.set({ track: id });
+  }
+
+  /** Every selected clip, in click order. Empty when a bin entry (or nothing) is selected. */
+  get selectedClips(): string[] {
+    return this.state.selection?.kind === "clip" ? this.state.selection.ids : [];
+  }
+
+  /** The clip a single-clip action means: the last one clicked. */
   get selectedClip(): string | null {
-    return this.state.selection?.kind === "clip" ? this.state.selection.id : null;
+    return this.selectedClips.at(-1) ?? null;
   }
 
   async undo() { await api.undo(); await this.refresh(); }
@@ -252,7 +320,7 @@ class Store {
   /** Find a clip anywhere in the project; ids are unique across every sequence. Stops at
    *  the match rather than building the whole project's clip list: the preview calls this
    *  for every visible overlay on every frame. */
-  findClip(id: string | null): { seq: string; track: Track; ti: number; clip: Clip; ci: number } | null {
+  findClip(id: string | null): Found | null {
     const p = this.state.project;
     if (!p || !id) return null;
     for (const seq of sequenceIds(p)) {
@@ -265,26 +333,59 @@ class Store {
     return null;
   }
 
+  /** The clips of `ids` that are in the project, in the same order; the rest are skipped. */
+  findClips(ids: string[]): Found[] {
+    return ids.map((id) => this.findClip(id)).filter((f): f is Found => f !== null);
+  }
+
+  /** The selected clips as records, in click order. */
+  get selectedFound(): Found[] {
+    return this.findClips(this.selectedClips);
+  }
+
   clipPath(id: string): string | null {
     const f = this.findClip(id);
-    return f ? `${seqPath(f.seq)}/tracks/${f.ti}/clips/${f.ci}` : null;
+    return f ? clipPathOf(f) : null;
   }
 
-  /** A clip id free across the whole project: clip ids are global, not per sequence. */
-  newId(prefix: string): string {
-    return freeId(prefix, allClips(this.state.project!).map((c) => c.id));
+  /** A clip id free across the whole project: ids are global, not per sequence. `minted`
+   *  names the ids a patch has already taken but not yet added. */
+  newId(prefix: string, minted: Iterable<string> = []): string {
+    return freeId(prefix, [...allClips(this.state.project!).map((c) => c.id), ...minted]);
   }
 
-  /** A track id free across the whole project, for the same reason. */
-  newTrackId(prefix: string): string {
+  /** A group id free across the whole project: minting project-wide keeps a pasted group
+   *  from meeting its twin on another timeline. */
+  newGroupId(minted: Iterable<string> = []): string {
     const p = this.state.project!;
-    return freeId(prefix, sequenceIds(p).flatMap((id) => sequenceOf(p, id)!.tracks.map((t) => t.id)));
+    return freeId("g", [...allClips(p).flatMap((c) => (c.group ? [c.group] : [])), ...minted]);
+  }
+
+  /** A track id free across the whole project, for the same reason, `minted` included. */
+  newTrackId(prefix: string, minted: Iterable<string> = []): string {
+    const p = this.state.project!;
+    return freeId(prefix, [...sequenceIds(p).flatMap((id) => sequenceOf(p, id)!.tracks.map((t) => t.id)), ...minted]);
+  }
+
+  /** Half a frame: the tolerance for "on the same frame", since the playhead is on the
+   *  frame grid and a keyframe or a cut need not be. */
+  get halfFrame(): number {
+    return 0.5 / this.fps;
   }
 
   /** Round to the frame grid. */
   snap(t: number): number {
     const f = this.fps;
     return Math.max(0, Math.round(t * f) / f);
+  }
+
+  /** Jump to the nearest cut before or after the playhead — Alt+←/→. A cut is any clip's
+   *  start or end on the open sequence, whichever track, plus 0. Nothing that way means
+   *  staying put. */
+  seekEdge(dir: -1 | 1) {
+    const edges = [0, ...this.tracks.flatMap((t) => t.clips.flatMap((c) => [c.start, c.end]))];
+    const t = nearest(edges, this.state.playhead, dir, this.halfFrame);
+    if (t !== undefined) this.seek(t);
   }
 
   /** Move the playhead; it may sit past the last clip (that is where new clips go). */

@@ -2,12 +2,20 @@
 // commands; the two pickers pass their value as the command's argument.
 
 import { Cmd, run } from "../commands";
-import { button, el, options } from "../dom";
+import { button, el, options, plural } from "../dom";
+import { icon } from "../icons";
 import { fmtTime, store } from "../store";
 import type { TrackKind } from "../types";
 
 export function mountTransport(host: HTMLElement): void {
-  const play = button("▶", () => run(Cmd.togglePlay));
+  const play = button(icon("play"), () => run(Cmd.togglePlay), "Play/pause (Space)", "icon");
+  // The icon is swapped only when the state changes: this panel is subscribed to the whole
+  // store, which ticks with the playhead 25 times a second during playback.
+  const showPlaying = (playing: boolean) => {
+    if (play.dataset.playing === String(playing)) return;
+    play.dataset.playing = String(playing);
+    play.replaceChildren(icon(playing ? "pause" : "play"));
+  };
   const time = el("span", "time");
 
   const zoom = el("input");
@@ -30,17 +38,36 @@ export function mountTransport(host: HTMLElement): void {
   options(quality, [{ value: "0.5", label: "preview ½" }, { value: "0.75", label: "preview ¾" }, { value: "1", label: "preview full" }]);
   quality.onchange = () => run(Cmd.previewScale, Number(quality.value));
 
+  // How many clips a keypress would act on. Copy, cut and paste had buttons here and lost
+  // them: three more buttons for gestures everyone already knows the keys for, and the
+  // strip is a transport. What is worth saying is the thing the outlines make you count.
+  const selected = el("span", "muted sel-count");
+  // Record mode, Godot's: while it is on, changing any animatable value in the inspector
+  // writes a key at the playhead. It lives here rather than in the inspector because it
+  // is about *every* edit that follows, and the strip is where the clock is.
+  const rec = button("● Auto-key", () => store.set({ autoKey: !store.state.autoKey }), "Record: while on, changing an effect's value writes a keyframe at the playhead", "rec");
+
   host.append(
-    button("⏮", () => store.seek(0)),
+    button(icon("skip-back"), () => store.seek(0), "Back to the start (Home)", "icon"),
     play, time,
     button("Split (S)", () => run(Cmd.split)),
+    rec, selected,
     addTrackSel, quality,
     el("span", "muted", "zoom"), zoom,
   );
 
   store.subscribe((s) => {
-    play.textContent = s.playing ? "⏸" : "▶";
+    showPlaying(s.playing);
     time.textContent = `${fmtTime(s.playhead, store.fps)} / ${fmtTime(store.duration, store.fps)}`;
     zoom.value = String(s.zoom);
+    // One clip is visible as one outline; several are worth counting for you. The
+    // clipboard's own count stays out of it — it is not what this strip is about.
+    rec.classList.toggle("on", s.autoKey);
+    // The whole page says so, not just the button: a red edge on the panel where the
+    // recording edits are made.
+    document.body.classList.toggle("autokey", s.autoKey);
+    const n = store.selectedClips.length;
+    selected.textContent = n > 1 ? `${plural(n, "clip")} selected` : "";
+    selected.title = n > 1 ? "Copy, cut, delete and split act on all of them" : "";
   });
 }

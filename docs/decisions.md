@@ -744,6 +744,479 @@ compiler will composite it — there is no clip, so there are no clip effects to
 The exact answer is a sample, which is now available for an unplaced entry as well.
 Template *markup* is still edited outside the editor; `Reload` is the loop, not an editor.
 
+## The timeline clipboard
+
+Copy, cut and paste for clips, the first of the quality-of-life gestures the editor was
+missing. The interesting part is not the copy; it is where a paste *lands* — which has two
+answers, one for a single clip and one for a group, and they are not the same answer.
+
+**The clipboard is UI state, not document state** — adopted.
+Everything else in the editor is a revision-checked patch against the daemon's document,
+so a clipboard living in `store.ts` looks like the exception it is not: copying is not an
+edit. "This clip is on my clipboard" is nothing another process needs to see, and putting
+it in the document would spend a revision, an undo step and a line in every agent's view
+of the project on an act that changed nothing. The paste is the edit, and it is one patch
+like any other. The price is that the clipboard is per window and dies with it — already
+true of the selection, the playhead and which tab is open.
+
+**One clip needs a *where*, and clicking a track is it** — adopted.
+The playhead answers *when*, and nothing answered *where*: the first sketch pasted back
+onto the track the clip came from, which is no use for the thing actually wanted ("this
+clip, but on Video 2"). So the timeline remembers the track last clicked — the head, an
+empty lane, or a clip, all of which are ways of pointing at a track — and marks it in the
+head. It is remembered by **id** rather than by index, because indices shift the moment a
+track is added. A track of the wrong kind cannot take the clip, so a paste aimed at one
+falls back to the first track of the right kind, which is the rule a drop from the bin
+already follows; refusing would be correct and useless.
+
+**An occupied slot pushes the clip forward; it does not refuse** — adopted.
+A paste names a position, so the answer to "that one is taken" that keeps the gesture
+usable is *the next position that is free*: the paste walks the target tracks' clips and
+pushes its offset past whatever it lands in, looking again each time, because clearing one
+clip can walk into the next. Two consequences worth
+having: pasting twice in a row lays two clips end to end, and pasting onto the track a clip
+was copied from never lands on top of what is already there. Kdenlive refuses instead, and
+`place` (what a drop from the bin uses) sends the clip to the end of the track; neither
+answers the question the gesture asked.
+
+**The track travels with the clip — its kind, and its id** — adopted.
+`trackFor` would answer "video" for a video file, but a video file can be sitting on an
+audio track, and a paste of it belongs where it was copied from. So the clipboard holds the
+*kind* of the track each copy came off, and compatibility is that kind rather than the bin
+entry's. It holds the track's *id* as well, which is what lets a group of clips be put back
+on their own tracks (below).
+
+**What travels is the placement, and only the placement** — adopted, and it is the model's
+own split. The pasted clip carries `in`, speed, volume, label and effects; it does not copy
+the bin entry, because both clips play the same entry and that is what an entry is for.
+A transition stays behind: it names two clips on one track, and a copy of one of them has
+nothing to attach to. This is also what makes pasting into *another sequence* free — the
+entry is already project-wide — so the only check a cross-sequence paste needs is the
+recursion one `placeBinItem` already makes.
+
+**A selection is a list of clips; a bin selection is one entry** — adopted.
+`Selection` became `{ kind: "clip"; ids: string[] } | { kind: "bin"; id: string }`, which is
+not symmetry for its own sake: copying, deleting and splitting are all things you want to
+do to several clips at once, while every bin-entry action — rename, vars, delete — is
+about *that* entry. The list is in click order, so its last member is "the clip" a
+single-clip action means, and `store.selectedClip` still answers that; the panels that
+edit one thing did not have to change. Ctrl/Cmd- or Shift-click builds the list, and a
+plain click collapses it, which is also what makes a drag unambiguous.
+
+**Several clips are a shape, not a position** — adopted.
+A group paste keeps the spacing between the clips and the tracks they came off, so the
+clicked track does not come into it: there is no one track a group belongs on, and the
+answer for a single clip ("the one you clicked") does not generalise. Each source track is
+matched by id in the sequence being pasted into, else by kind, and a track is added when
+there is nothing left to match — two source tracks never collapse onto one, because that
+is the one way the shape could be lost without anyone noticing. The whole group then takes
+**one** offset, pushed forward until every clip in it fits; per-clip pushes would preserve
+the position and destroy the shape, which is the wrong half to keep.
+
+**What a multiple selection does *not* do** — the deliberate edges.
+The inspector still edits the last clip clicked and says so, rather than showing fields
+that look like they apply to all of them. And there is no marquee: a drag on an empty lane
+scrubs, which is older and more useful than a rubber band. (A drag *did* move one clip
+whatever was selected, until [Clip groups](#clip-groups) made the selection a block.)
+
+**Deleting a clip takes its transitions with it** — adopted, and it was a latent bug.
+A transition names two clips and the validator refuses one that names a clip that has
+gone, so deleting an end of a dissolve was already rejected — a 422 toast and nothing
+deleted. Multiple selection made it likely enough to fix: `deleteSelectedClips` drops
+every transition naming a clip it removes, in the same patch, the way a clip dragged to
+another track already did. Removals go highest index first, because removing a clip
+renumbers the ones after it on its track.
+
+**Buttons for copy, cut and paste in the transport strip** — tried, removed.
+They were there to say the editor had a clipboard at all, which is a real problem for a
+gesture with no menu bar of its own. But three buttons for the three key combinations
+every editor already uses is a lot of strip to spend on being told, and the strip is a
+*transport*. What survives is the part a person cannot work out by looking: how many clips
+are selected, which the outlines make you count. The keys, the inspector's shortcut list
+and the app's Project menu carry the actions.
+
+**Ctrl+C/X/V are bound off the workbench only** — adopted.
+The workbench edits a bin entry and has no track to paste onto, so a paste there would
+edit a timeline nobody is looking at. The bindings sit in `shortcuts.ts` with the rest,
+which is what keeps a text field's own copy and paste working (the handler ignores events
+from fields), and the desktop app carries the same three actions in the Project menu with
+**no** accelerator — the Edit menu's `cut`/`copy`/`paste` roles are text editing and stay
+that way, for the reason recorded under *Desktop shell*.
+
+## Track lanes: drawn by kind, stored by composite
+
+**Overlays on top, then video, then audio at the bottom** — adopted.
+The timeline used to draw the track array reversed, which put audio at the top of the
+window for no better reason than that a new project appends it last. Tracks are now grouped
+by kind for drawing — overlays, video, audio — and within a kind the later track is drawn
+higher, because that is the one compositing over the other.
+
+**The drawing is grouped; the document is not** — adopted, and it is the point.
+Array order *is* the composite: a video track after an overlay track composites over it.
+Reordering the document to match the screen would silently change every project it was
+applied to, so nothing is reordered — `render` sorts a copy, each row still carries its
+document index in `data-ti`, and every track edit (mute, hide, remove, a clip dragged onto
+another track) is addressed by that index as before. `ui/test/timeline.test.mjs` pins both
+halves at once: the screen says one order, the document still says the other.
+
+## Moving the playhead
+
+**The arrows are frames, Alt is cuts** — adopted.
+A frame is the fine move and was already what an arrow did; the coarse move people
+actually reach for is not "ten frames" but "the next place something changes", so Alt+←/→
+walks the **cuts**: every clip start and end on the sequence on screen, whichever track it
+is on, plus 0. Shift keeps the second it always was. Nothing that way means staying put,
+rather than sliding to an end that is not there, and the search ignores anything within
+half a frame of where the playhead already is — `seek` rounds to the frame grid, so an
+edge closer than that would round straight back and look like a key that did nothing.
+
+**Every seek takes the key away from the browser** — adopted, after it looked like a bug in
+the timeline. The arrows had no `preventDefault`, so the browser also scrolled — and what
+it scrolls is the nearest scrollable box around whatever has focus, which after clicking a
+track's mute button is the timeline. Pressing an arrow appeared to make the whole timeline
+run sideways. Two halves to the fix: the seeks are all `preventDefault` now, and the
+"a field owns its keys" guard stopped counting **buttons** as fields for every key — a
+button owns Space and Enter, which press it, and nothing else. Before that, the last thing
+you clicked could swallow the arrows entirely.
+
+## Clip groups
+
+A subtitle belongs over the audio it transcribes, and two clips that overlap do so on
+purpose. Both are relations the timeline had no way to say, so moving one half of a pair
+was a silent way to break it.
+
+**A group is a field on the clip, not a list on the sequence** — adopted.
+`clip.group` is an id; the members are whichever clips carry it. The alternative — a
+`groups: [[id, id], …]` beside `tracks` — makes the set explicit and then needs every
+member validated to exist and rewritten on every delete, which is exactly the upkeep
+`transitions` already costs (see `deleteSelectedClips`). The field goes with the clip, so
+deleting one leaves nothing dangling and splitting one gives both halves the group. It is
+the same shape as a clip naming its bin entry rather than the entry listing its clips.
+
+**A group is an editing relation; the compiler never reads it** — adopted, and it is what
+keeps the feature cheap. A grouped timeline and the same timeline ungrouped produce
+byte-identical MLT, so `compile.rs` needed no change and the golden file did not move. The
+model's whole side of this is one optional string and two validation rules.
+
+**A group lives on one timeline** — adopted, and the validator says so.
+A block that spans two sequences could never move as one, so the same id on two of them is
+refused rather than silently half-ignored by a UI that looks in the sequence it has open.
+
+**Selecting a member selects the group, in the store** — adopted.
+`selectClips` expands, so no gesture can forget: a click, a Ctrl-click, a paste and an
+agent edit all get the same answer. The group joins *in front of* the ids asked for, which
+keeps "the last one clicked" last — the inspector still edits the clip you pointed at, and
+says so when several are selected.
+
+**A drag moves a block, and two things make one** — the selection when the dragged clip is
+part of a multi-selection, else the dragged clip's group, else just it. Groups came first
+and a selection borrowed the same machinery a day later, once it was obvious that
+Ctrl-clicking three clips and dragging one of them moving only that one was not a rule
+anyone would defend. Multi-select had been wired for copy, cut, delete and split since it
+landed, and never for the drag.
+
+The two differ in exactly one way, which is the reason to have both: a group is in the
+document and outlives everything, a selection lasts until you click elsewhere. So
+**pressing a clip that is already one of several selected keeps the selection** rather than
+collapsing to the clip pressed — otherwise the press that begins the drag would destroy the
+thing being dragged. A press that turns out to be a click, not a drag, collapses on release
+instead, or there would be no way back to a single clip except by clicking empty space
+first.
+
+Three rules follow from the block being real. It travels **one delta**, so the shape
+survives; it stops when its **earliest** member reaches 0, not when the dragged one does,
+or the daemon would refuse the whole patch for a negative start; and it never snaps to its
+own members, or it would stick to itself. It is **one patch** — half a group having moved
+is not a state anyone asked for.
+
+**Tracks are an offset, not a destination** — adopted, after the first cut of this said a
+block simply could not change track. The reasoning there was that a block spans the tracks
+its clips are on, so there is no one track to drop it onto; that much is true, and it was
+the wrong conclusion. "Which track does this land on" has no answer for two clips, but
+"how many tracks has it come" has exactly one. So the row under the pointer says how far
+the **pressed** clip has travelled, and every member travels that far — which is the same
+rule time already followed, one row up. A block of one is a clip, so picking a track for a
+single clip is that rule too, and there is no longer a special case for it.
+
+The offset is taken only when **every member lands on a track of its own kind**, so a
+block cannot come apart on the way, and an overlay clip cannot arrive on a video track for
+the daemon to refuse. A block that straddles kinds (a subtitle over its audio) therefore
+stays put unless the tracks happen to line up — which is the honest answer rather than a
+half-move. Off the tracks entirely, over the ruler or past the edge, the drag keeps the
+offset it had rather than springing back.
+
+A move across tracks rewrites each affected track's `clips` **whole** instead of removing
+and adding one clip at a time: a remove renumbers the clips after it, and two members of a
+block can trade tracks, so a sequence of removes and adds would depend on its own order to
+come out right. It is built from where the drag found the clips, so a document that moved
+under it is a drag to abandon rather than one to guess at.
+
+**Trimming stays a clip's own** — adopted. "Move by block" is what was asked for and what
+is coherent; a group is not a claim that its clips are the same length, and resizing four
+clips from one handle is a different gesture with a different name.
+
+**A pasted copy gets a new group** — adopted, and it is the one place the id has to be
+re-minted. Keeping the old one would put the copy in the original's group, and the two
+would move together forever. A group only one of whose clips was copied arrives loose,
+because a group of one is not a group.
+
+**Ctrl+G and Ctrl+Shift+G**, the pair every editor and drawing program uses, off the
+workbench like the clipboard. Grouped clips carry a chain before the name and a brighter
+edge — not the selection's outline, which is what you have hold of rather than what these
+clips *are*.
+
+## The shortcut list
+
+**The list is the bindings** — adopted, and it is the whole point.
+`shortcuts.ts` already held every key in one table; a binding now carries how it is written
+and what it does, and the list (`?`, or the button in the top bar) is built from that table.
+A hand-written list beside it would be a second copy of the same facts and would disagree
+within a week — which is exactly what the inspector's help paragraphs had become, so they
+are gone and point at this instead. A binding that is the mirror of the one above it — `→`
+of `←` — carries no text and is not listed twice.
+
+**Gestures are in the list too, and written as sentences** — adopted.
+Half of what this editor can do is done with the pointer, so a list of keys alone would be
+a lie by omission; they are the one part that cannot be derived, since a pointer handler is
+not a table. They render as the phrases they are rather than as key caps: "Drag a clip" is
+three words, not three keys to press, and the first draft drew it as `Drag` `a` `clip`.
+
+## The inspector's property fields
+
+The effects panel was a column of `<input type="number">`: correct, and nothing you would
+want to *use*. Godot's inspector is the reference — not for looks, but because a parameter
+you can drag is a parameter you explore rather than guess at.
+
+**A number is a slider you can type in** — adopted.
+Press and drag sideways to change it, click without moving to put a caret in it. Shift is
+fine (a tenth of a step), Alt is coarse (ten), and the arrow keys step it while it has
+focus. The dead zone before a press counts as a drag is taken *off* the travel rather than
+added to it, or the value jumps three steps the moment the drag is recognised — thirty
+with Alt. A coarse drag snaps to the grid it is dragging on, which is what makes Alt the
+way back to round numbers.
+
+**A drag commits once, on release** — adopted, and it is the only honest option here.
+Every value in this panel is a revision-checked patch to the daemon: committing per
+pointermove would be a round trip per pixel and an undo history made of them. So the field
+shows the number moving and sends one edit when the pointer comes up — the same bargain
+`ui/src/panels/timeline.ts` already makes for dragging a clip, and the reason both of them
+keep a local "what it reads now" separate from "what the document says".
+
+**A vector is one row wearing its axis colours** — adopted.
+X red, Y green, Z blue, W amber, as a chip at the left of each field; a pair that is not
+spatial takes its own letters instead (a fade's In/Out). Reading `x` off a row of identical
+boxes is exactly the thing the colours remove. Past two fields the row takes the width
+under its label: four boxes beside a label in a 300px panel leave about twenty pixels of
+number each, which is how `0.05` came to read as `0` — found by screenshotting the panel
+rather than by reasoning about it.
+
+**The shapes live in `props.ts`; which shape a thing is lives with the thing** — adopted.
+`numberField`, `vectorField` and `sliderField` know nothing about effects. The effects
+table in the inspector says that a transform is a position vector, a scale, a rotation, an
+opacity slider and its keyframes; a template var's `spec.type` says the same for a var; a
+clip's own start, end, speed and volume say it inline. One control per shape, so `x` is
+dragged the same way wherever you meet it, and a new effect kind is still one row in one
+table.
+
+**The bounds in that table are the model's** — adopted, after the first draft shipped a
+field that could compose a refused patch. `scale` may not be 0 (the validator says `> 0`),
+so the field stops one step above it; `opacity` and a crop's edges are 0..1 there and
+0..1 here. Where the useful range and the legal one differ — a contrast, a gamma, a clip's
+gain — the slider covers the useful one and the field is `soft`: it will take a typed value
+past either end, because clamping to a range the model does not have would be the panel
+lying about the document. The rules a field cannot express (a crop's left + right < 1, a
+speed's ±[0.01, 20] with a hole in the middle) stay the daemon's to refuse.
+
+**An effect folds away, and open is the default** — adopted.
+A clip carrying a transform, a crop, a colour and a blur is taller than the panel, and the
+two controls that are not an effect — `+ add effect…` and the preset picker — are the ones
+that fall off the bottom. So the head is a disclosure: it reads as the heading it replaced
+rather than as a button, and the chevron turns to point at what it opens. *Closed* is what
+is stored (`closedEffects`, by `clip/effect`, the key the curve view already uses), so a
+new effect and a newly selected clip both open — a panel that says what it has beats one
+that makes you open three boxes to find out. Like the curve, the fold is view state: it
+survives the rebuild every edit causes, it costs no revision, and nothing saves it to the
+document, because what you are looking at is not part of the video.
+
+Two things follow from folding rather than from the fold. A closed effect **follows
+nothing** — its keyed fields are not on screen, and the playhead ticks 25 times a second,
+so the panel's per-field followers are collected per effect behind one check and the
+fields catch up on the way open. And a closed effect **says that it is keyframed**, with a
+◆ in its head: the strip that would otherwise tell you is the first thing the fold hides.
+
+## Keyframes you can point at
+
+Keyframes were a `<textarea>` of JSON, which is not an editor, it is a hole in one. The
+model needed nothing: times in clip-local seconds, linear between them, already shared by
+the compiler and the live preview. What was missing was the pointing.
+
+**The playhead is the clock, and the fields are the editor** — adopted, from Kdenlive.
+A keyed field shows what its value *is at the playhead*, and writing it writes the key
+under the playhead — making one there when there is none. There is no "which keyframe am I
+editing" to hold in your head, because the answer is always "the one you are looking at",
+and the drag-to-scrub fields from the previous change work on animation unmodified.
+
+**Animation is opt-in, per effect** — adopted, from Godot's key button, and it is what the
+model's own agreed direction already says ("a parameter stays a plain number field until
+asked to animate"). An effect with no keys shows **◆ Animate**; pressing it writes one key
+holding what the effect already does, so turning animation on changes nothing. **Clear**
+turns it off by writing the values at the playhead back into the static fields — anything
+else snaps the picture back to whatever the statics were before the first key, which is
+never what was meant.
+
+**A key is a full sample** — forced by the model, and worth writing down because it looks
+like a limitation. A keyframe that omits a field does not mean "leave that field alone", it
+means "use the effect's static value" (`k.x.unwrap_or(*x)` in the compiler, the same
+fallback in `transformAt`). So inserting a key writes *every* animated field at that
+moment, which is exactly what makes inserting one a no-op until you move something. Real
+per-property tracks would be a different model, and MLT packs x, y, scale and opacity into
+one `rect` property anyway, so they would have to be resampled into full keys to be
+emitted. Not worth it.
+
+**The panel gets a strip; the clip gets dots** — adopted, and this is the answer to "does
+this belong in a separate panel". Godot keeps properties in the inspector and puts keys in
+a separate bottom **Animation** panel, with its own timeline and its own playhead; Kdenlive
+keeps them together in the effect stack, on a ruler the width of the clip. kuma has no room
+for Godot's split — the bottom of the window is already a timeline, with the same clock and
+the same clip — so the keys live in two places by *role*: a compact strip in the panel,
+where the values are and where editing happens, and read-only diamonds along the bottom of
+the clip in the timeline, where time is and where you scrub past them. One place to edit,
+one glance to see. A curve editor, keys draggable in the timeline itself, and per-key
+easing are all deliberately not here yet.
+
+**Per-key easing, and the upgrade path that came with it** — adopted, format version 2.
+A key now carries `ease`: `linear`, `hold` or `smooth`, mapping onto MLT's three animation
+operators (`=`, `|=`, `~=`). The rule is MLT's, and it is the part worth remembering: the
+key that **opens** a segment decides that segment's shape, so the last key's ease never
+means anything. The UI reads it the same way, Catmull-Rom and all, so the live overlay
+preview curves the way the render will; `shiftEffect`/`trimEffect` carry the segment's ease
+onto the key a split inserts, and a key added inside a hold inherits the hold — otherwise
+"adding a key changes nothing" would be a lie exactly where it matters most.
+
+`linear` is the default and is not serialized, so a project that does not ease is
+byte-identical to the version 1 file it was. The version still went to 2, because an older
+kuma reading `"ease": "hold"` would say "unknown field" rather than "unsupported version",
+and that is what the field is for. Which brought back the thing **No upgrade path; the
+format stays version 1** (above) deleted: `kuma_core::parse_project`, one step per bump,
+applied to the JSON before it is deserialized. That entry's reasoning was that nothing was
+using kuma yet; projects exist now, and breaking them to add a defaulted field would be
+absurd. The step itself is four lines — 1 → 2 is a stamp, since a version 1 keyframe always
+did what `linear` means — and the golden test now reads its version 1 fixture through it,
+so "the upgrade changes nothing about what is rendered" is checked rather than asserted.
+
+*Not verified by rendering here*: this machine has no melt, so the `~=` on `qtblend`'s
+`rect` is pinned by a compiler test on the string and by Kdenlive driving the same filter
+with the same operator — not by frames. The check to run where melt exists is the one the
+blur ramp got: render a smooth scale ramp over sixty frames and look at them.
+
+**Every keyframed effect uses one `Keyframe` type; crop, blur and colour take it too** —
+adopted, format version 3, superseding the shape agreed under *Still open* below.
+That entry agreed a parameter should be "a number or a list of keyed values"
+(`radius: [ { "t": 0, "v": 0 } ]`), one track per parameter. Building the transform's
+editor first (A and B above) turned up the two things that decide against it:
+
+- **MLT packs parameters.** A transform's x, y, scale and opacity are one `rect`
+  property, and so are a crop's four edges. Independent per-parameter tracks would have to
+  be resampled into full keys at the union of their times before either could be emitted —
+  machinery that exists only to undo a shape the model chose.
+- **The two keyframe shapes that already existed were the same shape.** A transform's
+  `{ t, x?, scale?, … }` and a volume's `{ t, gain }` are both "a time, plus whichever of
+  the effect's parameters this key sets". Name that and there is nothing left to design.
+
+So `Keyframe { t, ease, values }`, with the values `#[serde(flatten)]`ed under the
+parameter's own names, replaces both, reads every existing document unchanged, and is what
+crop, blur and colour now carry as an optional, unwritten-when-empty `keyframes`. The
+goals the earlier entry set are all met by it — one type, one validator path, a bare
+number keeps meaning what it means, seconds and numbers only, not exposed until asked — and
+one is met better: a key that leaves a parameter out means the effect's static value, so a
+hand-written key can set one thing, while a key the editor writes carries every animatable
+parameter of its kind (`Effect::animatable`, mirrored by `ANIMATABLE` in the UI), which is
+what keeps "adding a key changes nothing" true for every kind at once.
+
+The parameters are a keyframe's unknown fields, so the type cannot `deny_unknown_fields`;
+the validator checks the names instead and, unlike serde, says which ones the kind has.
+It also holds a key to the same bounds as the static value — on what the key *means*, with
+the statics filling in what it leaves out — so a keyframe cannot smuggle in a crop that
+leaves nothing visible. The compiler writes every animated property through one `anim`
+helper; the golden file is unchanged; a compiler test pins the crop, blur and colour
+strings. The UI's `paramAt` is the one place a parameter is read at a time, and the live
+preview, the inspector and a split all ask it. Volume keeps its `min: 1` and gains a
+meaning for a key without `gain`: 1, the clip as recorded.
+
+Not rendered here, as with B: `avfilter.eq` and `qtcrop` taking animation strings is
+pinned by the compiler test and by the record's own earlier note (blur's `sigma` ramp
+was rendered and looked at; colour "should be checked rather than assumed"). Still should.
+
+**The rest of the keyframe editor: keys dragged on the clip, record mode, a curve view** —
+adopted, and each stopped where the model stops.
+
+*Keys on the clip take the pointer now.* The dots the timeline draws along a clip were
+read-only first, to keep one place to edit; that lasted until the first time someone
+reached for one. They drag in time and click to seek, through the same `Animation` the
+panel uses (`animationOf` builds it for both), so a key moved on the clip and a key moved
+in the strip go through one set of rules. Values stay the panel's — the clip has no room
+to say what a key is worth, and the strip and the graph do.
+
+*Auto-key is Godot's record button, and it lives in the transport strip.* While it is on,
+a change to any animatable value writes a key at the playhead, starting the animation if
+the effect had none; the statics are left alone. It is in the strip rather than the
+inspector because it is about every edit that follows, not about one panel, and it is read
+at the moment of the write rather than when the row is built, so switching it needs no
+re-render. The button goes red and so does the top edge of the inspector: the whole page
+should say it is recording, not one control.
+
+*The curve view is a graph you can drag points on, not a curve editor.* It draws one
+parameter over the clip with the same sampler the preview and the compiler agree on, so
+what it shows is the shape the render will have — a hold's step, a Catmull-Rom's overshoot
+— and its points move in two axes at once, one edit. What it does *not* offer is bezier
+handles, because the model has three eases and MLT's animation strings have no bezier;
+drawing one would be drawing a promise the render cannot keep. It is off until asked, per
+effect, and remembers being open across the re-render every edit causes, so the panel
+grows a graph only where someone put one.
+
+It earned its keep twice on screenshots. Once for a pixel: the playhead in the strip sat
+a pixel to the right of the key it was on, and the curve and the timeline were out too, by
+different amounts and each for its own accidental reason — a 2px line drawn *from* a
+position rather than across it, a 9px diamond given an 5px offset, a key lane whose origin
+was inside the clip's 1px border. One rule now, stated in `style.css` where the first
+marker is defined: **a marker at a moment is centred on it**. A test asserts the three
+surfaces agree to the pixel for one instant, because this is the kind of wrong that is
+seen long before it can be named.
+
+And once for the sampler: a key sat a sample to the left of the curve's
+corner, and the reason was the sampler, not the drawing. At exactly a key's time
+`sampleTrack` stayed in the segment that *ends* there rather than the one the key opens —
+invisible with linear keys, since both segments meet at the same value, and wrong after a
+hold, where the field, the preview and the curve all read the held value at the instant
+the key should have taken over. A `>` that should have been `>=`; now pinned by a test at
+that instant, and the curve samples at every key time as well as on its grid.
+
+**The panel does not re-render as the playhead moves** — adopted, and it took a bug to get
+right. A keyed field follows the playhead through one `store.select` per effect that sets
+values in place; rebuilding the inspector 25 times a second is exactly what that helper
+exists to prevent. But *whether the playhead is inside the clip* is a different question —
+outside it there is no "now" to write to, so the fields are read-only — and that is in the
+panel's subscription as a flag. Without it, selecting a clip while the playhead was
+elsewhere left the fields frozen after scrubbing into it.
+
+## Icons
+
+**Shapes, not characters** — adopted, after `⏮` gave the game away.
+The transport's buttons were glyphs, and one of them never matched the others: U+23EE has
+*emoji* presentation, so the browser reached past the UI font for the colour emoji one and
+drew a bigger, differently weighted picture beside a monochrome triangle — and drew a
+different one on each machine. CSS cannot reach that, because which font rendered a
+character is not the page's to choose. `ui/src/icons.ts` holds the three the editor uses
+as SVG shapes in `currentColor`, built as nodes rather than markup (`dom.ts` uses no
+`innerHTML`, and static icon data is not a reason to start).
+
+**An icon pack, not yet** — deferred, deliberately.
+Lucide, Feather, Phosphor and Tabler are all plain SVG and all usable without a framework,
+which is the question worth recording: nothing about this editor's no-framework UI rules
+one out. Three icons do not pay for a dependency and a build step that has none, and every
+caller goes through `icon(name)`, so the day this wants a dozen the pack goes in behind
+that function and no panel changes.
+
 ## Overlay authoring: checked, scaffolded, and shown moving
 
 Three changes made after reading through [OpenDesign](https://github.com/nexu-io/open-design),
@@ -1112,12 +1585,14 @@ because it is the part deliberately left out.
   sequence, regenerated on every compile and at every size, since the preview compiles at
   half resolution and would need its own copy.
 
-- **Every numeric effect parameter keyframable, through one shared type** — agreed, not
-  built. Today only `transform` and `volume` take keyframes, so a "go blurry" ramp needs
-  the `mlt` escape hatch. The shape agreed: a parameter is either a number or a list of
-  keyed values, as an untagged enum, so the JSON stays backward compatible and a bare
-  number keeps meaning exactly what it means now. `Fps` already uses that trick to accept
-  several spellings.
+- **Every numeric effect parameter keyframable, through one shared type** — **built**,
+  with a different shape from the one agreed here: see *Every keyframed effect uses one
+  `Keyframe` type* under *Keyframes you can point at*, which says why. The rest of this
+  entry is kept as the reasoning that led there. Originally: only `transform` and `volume`
+  took keyframes, so a "go blurry" ramp needed the `mlt` escape hatch. The shape agreed
+  then: a parameter is either a number or a list of keyed values, as an untagged enum, so
+  the JSON stays backward compatible and a bare number keeps meaning exactly what it means
+  now. `Fps` already uses that trick to accept several spellings.
 
   ```json
   { "type": "blur", "radius": 4 }
@@ -1227,6 +1702,12 @@ because it is the part deliberately left out.
   no reason and stops improvements reaching the copy. Same shape as the media search path
   below: the library wants to hold more kinds of thing than templates, and the two should
   be one mechanism.
+- A marquee selection does not exist: a drag on an empty lane scrubs. Several clips are
+  built up one Ctrl-click at a time.
+- A group paste keeps the transitions *inside* it no better than a single paste does: it
+  keeps none. A transition is a relation between two clips on one track, and copying it
+  means copying it only when both ends came along — worth doing, and the same bookkeeping
+  "make a sequence from the selected clips" (below) needs.
 - Folders and search in the browser, now that the bin is the thing they organise. The bin
   now holds sequences too, which makes this more pressing than it was.
 - A thumbnail for a sequence entry. The `thumbs` job renders overlay entries with their

@@ -6,8 +6,11 @@ use std::path::PathBuf;
 use kuma_core::Project;
 use kuma_mlt::{compile, CompileError, CompileOptions, OverlayBake, UnbakedPolicy};
 
+/// Read through `parse_project`, as the daemon does — so the fixture stays the version 1
+/// document it was written as, and the golden file being unchanged by the upgrade is the
+/// proof that the upgrade changes nothing about what is rendered.
 fn reference_project() -> Project {
-    serde_json::from_str(include_str!("fixtures/reference.kuma.json")).unwrap()
+    kuma_core::parse_project(include_str!("fixtures/reference.kuma.json")).unwrap()
 }
 
 fn bake(path: &str, is_still: bool) -> OverlayBake {

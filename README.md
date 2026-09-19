@@ -126,11 +126,65 @@ kuma serve                                               # open http://127.0.0.1
 ```
 
 Drag bin entries onto the timeline, scrub, edit vars in the inspector, press **Render**.
+Tracks are drawn overlays on top, then video, then audio at the bottom — how they
+composite, rather than the order the document happens to store them in. `←`/`→` step a
+frame, `Shift` makes it a second, and `Alt` jumps to the next **cut** — the start or end of
+any clip on the sequence, whichever track it is on.
 Output lands in `renders/`. Render means the **master** — the sequence `master` names, which
 is the whole video; while you are editing another sequence a picker appears beside the
 export preset to render that one instead, and it lands beside the other as
 `<name>-<sequence>-<preset>.<ext>`. Overlays are iterated on in their own tab — see *The overlay
 workbench* below — rather than by scrubbing the timeline to where they happen to be.
+
+**Copy, cut and paste.** `Ctrl/Cmd+C`, `Ctrl/Cmd+X` and `Ctrl/Cmd+V` — also the Project
+menu in the app — move clips around a timeline, or onto another one. A paste of **one** clip needs a *where* as well as a *when*: the playhead
+answers the second half and **clicking a track** answers the first, so a clip copied from
+*Video* lands on *Video 2* by clicking *Video 2* and pasting. Any track of the kind it was
+copied from will take it, in this sequence or in another one you switch to first; with no
+track clicked it goes back on the track it came from, or on the first of that kind. Where the playhead sits inside a clip the
+paste lands at the first free slot after it that is long enough, so pasting twice lays two
+clips end to end.
+
+**Ctrl/Cmd+click** (or Shift+click) a clip to select more than one. Several clips are a
+*shape* rather than a position: they keep their spacing and they keep their own tracks, so
+the clicked track does not come into it, and the group moves together to the first place
+all of it fits. Each track they came from is matched by id in the sequence being pasted
+into, else by kind, and a track is added when there is nothing to match — two of them
+never collapse onto one. Delete and `S` (split at the playhead) apply to the whole
+selection too, each in a single undoable patch; the transport strip says how many are
+selected, and dragging and the inspector's fields are still one clip at a time, the last
+one you clicked.
+
+What travels is the placement — `in`, speed, volume, label, effects — never the bin entry:
+both clips play the same entry, which is what the model's split already means.
+
+**The inspector is a game engine's.** Every number in it is a field you **drag**: press and
+pull sideways to change it, `Shift` for a tenth of a step, `Alt` for ten, or click once and
+type. A drag is one edit — the field moves while you hold it and the document changes when
+you let go — so scrubbing a value costs one revision and one undo step, not one per pixel.
+Values that go together are one row wearing their axis colours (a transform's **X** red and
+**Y** green, a crop's four edges), and a value with a useful range gets a slider beside its
+field. The shapes live in `ui/src/props.ts`, so an effect, a template var and a clip's own
+fields are edited the same way; an effect declares which shape each of its fields is, in
+one table in `ui/src/panels/inspector.ts`, and the bounds there are the model's own, so the
+panel cannot offer a value the daemon would refuse.
+
+**Keyframes are pointed at, not typed.** Every effect with numbers to animate — transform,
+crop, blur, colour, volume — starts as plain numbers with a **◆ Animate** button; press it and it gains one key at the playhead holding
+what it already does — nothing moves until you move something. From then on the fields are
+the value **at the playhead**: scrub, change a number, and the key under the playhead takes
+it, or a new one is made there carrying every other value as it already was. A strip under
+the effect shows where the keys are (click to go to one, drag to retime, double-click to
+add), `‹ ›` step between them, `+ key` / `− key` add and remove one where you are, and
+**Clear** stops animating while keeping the value you are looking at. The same keys are
+drawn along the bottom of the clip in the timeline, so an animated clip says so at a glance
+and you watch them go past while scrubbing — and can be dragged there too, or clicked to
+jump to. **● Auto-key** in the transport strip is record mode: while it is on, changing
+any animatable value writes a key at the playhead, starting the animation if there was
+none. **curve** in the keys row opens a graph of one parameter over the clip, the shape
+between keys drawn as the render will produce it, with the keys as points you drag in both
+axes at once. With the playhead outside the clip there is no
+"now" to write to, so the fields read the nearest end and say so rather than pretending.
 
 **The overlay workbench.** The centre of the window is tabbed, Kdenlive style. A
 **sequence** tab is a timeline you have open — the engine's picture with that sequence's
@@ -377,8 +431,9 @@ and the values live with the rest of the project's decisions.
 - 60 s 1080p30 overlay bake to ProRes 4444 / PNG sequence with exact straight alpha;
   4K supersampling; byte-identical repeat bakes with one worker.
 - Compiler: dissolves (A/B lanes + luma), wipes (generated PGM lumas), timewarp speed,
-  crop, keyframed transform, fade, blend modes (discrete keyframes on `qtblend`), blur,
-  colour, PiP stills, overlay PNG sequences; golden-file + DTD + real `melt` render tests.
+  crop, transform, blur and colour correction — each keyframable, linear, held or smooth
+  per key — fade, blend modes (discrete keyframes on `qtblend`),
+  solid-colour clips, PiP stills, overlay PNG sequences; golden-file + DTD + real `melt` render tests.
 - Daemon + MCP end to end: patch/undo/409 on stale revisions, `sample_frames` returning
   image blocks, background render jobs.
 - Preview engine: seek/play at ~23 fps for a 960×540 composite on 4 CPU cores, audio as

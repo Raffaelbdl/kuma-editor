@@ -46,6 +46,12 @@ const MENU: Record<string, string> = {
   "new-overlay": Cmd.newOverlay,
   "swap-orientation": Cmd.swapOrientation,
   "add-media": Cmd.addMedia,
+  "copy-clip": Cmd.copyClip,
+  "cut-clip": Cmd.cutClip,
+  "paste-clip": Cmd.pasteClip,
+  shortcuts: Cmd.shortcuts,
+  "group-clips": Cmd.group,
+  "ungroup-clips": Cmd.ungroup,
 };
 
 export function initDesktop(): void {

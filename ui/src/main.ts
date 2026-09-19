@@ -3,7 +3,7 @@
 
 import { Cmd, command } from "./commands";
 import { desktop, initDesktop, pickAndAddMedia } from "./desktop";
-import { addTrack, deleteSelectedClip, promptNewOverlay, promptNewSequence, splitAtPlayhead, swapOrientation, transcribe } from "./edits";
+import { addTrack, copySelection, cutSelection, deleteSelectedClips, groupSelection, pasteClipboard, promptNewOverlay, promptNewSequence, splitAtPlayhead, swapOrientation, transcribe, ungroupSelection } from "./edits";
 import { Inspector } from "./panels/inspector";
 import { Library } from "./panels/library";
 import { Preview } from "./panels/preview";
@@ -27,7 +27,13 @@ function projectCommands() {
   command(Cmd.transcribe, "Transcribe → Subtitles", () => transcribe());
   command(Cmd.addMedia, "Add Media…", () => pickAndAddMedia());
   command(Cmd.split, "Split at Playhead", () => splitAtPlayhead());
-  command(Cmd.deleteClip, "Delete Clip", () => deleteSelectedClip());
+  command(Cmd.seekEdge, "Go to Clip Edge", (dir) => store.seekEdge(Number(dir) < 0 ? -1 : 1));
+  command(Cmd.deleteClip, "Delete Clips", () => deleteSelectedClips());
+  command(Cmd.copyClip, "Copy Clips", () => copySelection());
+  command(Cmd.cutClip, "Cut Clips", () => cutSelection());
+  command(Cmd.pasteClip, "Paste Clips", () => pasteClipboard());
+  command(Cmd.group, "Group Clips", () => groupSelection());
+  command(Cmd.ungroup, "Ungroup Clips", () => ungroupSelection());
   command(Cmd.addTrack, "Add Track", (kind) => addTrack(kind as TrackKind));
 }
 

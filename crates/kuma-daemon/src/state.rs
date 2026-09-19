@@ -165,7 +165,9 @@ impl AppState {
     pub fn load(config: Config) -> anyhow::Result<Self> {
         let project = if config.project_file.is_file() {
             let text = std::fs::read_to_string(&config.project_file)?;
-            serde_json::from_str::<Project>(&text)?
+            // Through `parse_project`, so a file an older kuma wrote is brought forward
+            // rather than refused by the validator for its version alone.
+            kuma_core::parse_project(&text)?
         } else {
             Project::new_default(Project::name_from_path(&config.project_file), 1920, 1080, kuma_core::Fps::default())
         };

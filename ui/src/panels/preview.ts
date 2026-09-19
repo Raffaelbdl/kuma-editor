@@ -13,7 +13,7 @@ import { Cmd, command } from "../commands";
 import { seekOverlay } from "../overlay";
 import { SEQUENCE_TAB, store, toast } from "../store";
 import type { Clip, Project } from "../types";
-import { binItem, isOverlayClip, transformAt } from "../types";
+import { binItem, covers, isOverlayClip, paramAt, transformAt } from "../types";
 
 interface OverlayView {
   clipId: string;
@@ -363,7 +363,7 @@ export class Preview {
       const f = store.findClip(v.clipId);
       if (!f) continue;
       const c = f.clip;
-      const visible = playhead >= c.start && playhead < c.end;
+      const visible = covers(c, playhead);
       v.wrap.style.display = visible ? "" : "none";
       if (!visible || !v.ready) continue;
       const local = (playhead - c.start) * Math.abs(c.speed || 1);
@@ -394,9 +394,12 @@ function applyEffects(iframe: HTMLIFrameElement, c: Clip, local: number, W: numb
       const t = transformAt(e, local);
       transform += ` translate(${t.x}px, ${t.y}px) scale(${t.scale}) rotate(${t.rotation}deg)`;
       opacity *= t.opacity;
-    } else if (e.type === "blur") filter += ` blur(${e.radius}px)`;
-    else if (e.type === "color") filter += ` brightness(${1 + (e.brightness ?? 0)}) contrast(${e.contrast ?? 1}) saturate(${e.saturation ?? 1})`;
-    else if (e.type === "crop") clip = `inset(${(e.top ?? 0) * 100}% ${(e.right ?? 0) * 100}% ${(e.bottom ?? 0) * 100}% ${(e.left ?? 0) * 100}% round ${(e.radius ?? 0) * Math.min(W, H) * 0.5}px)`;
+    } else if (e.type === "blur") filter += ` blur(${paramAt(e, "radius", local)}px)`;
+    else if (e.type === "color") filter += ` brightness(${1 + paramAt(e, "brightness", local)}) contrast(${paramAt(e, "contrast", local)}) saturate(${paramAt(e, "saturation", local)})`;
+    else if (e.type === "crop") {
+      const at = (p: string) => paramAt(e, p, local);
+      clip = `inset(${at("top") * 100}% ${at("right") * 100}% ${at("bottom") * 100}% ${at("left") * 100}% round ${at("radius") * Math.min(W, H) * 0.5}px)`;
+    }
     else if (e.type === "fade") {
       const d = c.end - c.start;
       if (e.in && local < e.in) opacity *= local / e.in;

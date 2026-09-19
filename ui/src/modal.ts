@@ -9,6 +9,40 @@ import { button, el } from "./dom";
 
 export interface FormRow { label: string; input: HTMLElement }
 
+/**
+ * The shell every dialog here shares: modal, dismissed by Escape and by the backdrop,
+ * cleaned up on the way out and settled exactly once. The caller fills `dlg` and decides
+ * what else counts as accepting.
+ */
+function shell(onClose?: (ok: boolean) => void): { dlg: HTMLDialogElement; done: (ok: boolean) => void } {
+  const dlg = el("dialog", "modal");
+  let settled = false;
+  const done = (ok: boolean) => {
+    if (settled) return;
+    settled = true;
+    dlg.close();
+    dlg.remove();
+    onClose?.(ok);
+  };
+  dlg.addEventListener("cancel", (e) => { e.preventDefault(); done(false); });
+  dlg.addEventListener("click", (e) => { if (e.target === dlg) done(false); });
+  document.body.appendChild(dlg);
+  return { dlg, done };
+}
+
+/** Show something to read — no question, one way out. `className` widens or otherwise
+ *  shapes the dialog for the content it is holding. */
+export function showInfo(opts: { title: string; body: HTMLElement; className?: string }): void {
+  const { dlg, done } = shell();
+  if (opts.className) dlg.classList.add(opts.className);
+  const close = button("Close", () => done(false), "", "primary");
+  const actions = el("div", "modal-actions");
+  actions.appendChild(close);
+  dlg.append(el("h3", "", opts.title), opts.body, actions);
+  dlg.showModal();
+  close.focus();
+}
+
 export interface AskFormOptions {
   title: string;
   /** A line under the title: what the choice above it means. */
@@ -25,7 +59,7 @@ export interface AskFormOptions {
  */
 export function askForm(opts: AskFormOptions): Promise<boolean> {
   return new Promise((resolve) => {
-    const dlg = el("dialog", "modal");
+    const { dlg, done } = shell(resolve);
     const form = el("form");
     form.method = "dialog";
 
@@ -45,20 +79,10 @@ export function askForm(opts: AskFormOptions): Promise<boolean> {
     }
     form.appendChild(actions);
     dlg.appendChild(form);
-    document.body.appendChild(dlg);
 
-    let settled = false;
-    const done = (v: boolean) => {
-      if (settled) return;
-      settled = true;
-      dlg.close();
-      dlg.remove();
-      resolve(v);
-    };
-    // Submitting is the only path that accepts; Escape and the backdrop cancel.
+    // Submitting is the only path that accepts; Escape and the backdrop cancel, which the
+    // shell already does.
     form.onsubmit = (e) => { e.preventDefault(); done(true); };
-    dlg.addEventListener("cancel", (e) => { e.preventDefault(); done(false); });
-    dlg.addEventListener("click", (e) => { if (e.target === dlg) done(false); });
 
     dlg.showModal();
     const first = opts.rows[0]?.input;

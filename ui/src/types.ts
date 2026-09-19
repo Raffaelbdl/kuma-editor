@@ -32,22 +32,50 @@ export interface Track {
   clips: Clip[]; transitions: Transition[];
 }
 
-export interface TransformKeyframe { t: number; x?: number; y?: number; scale?: number; rotation?: number; opacity?: number }
+/** How a keyframe reaches the **next** one, MLT's rule: the key that opens a segment
+ *  decides that segment's shape, so the last key's ease never means anything. */
+export type Ease = "linear" | "hold" | "smooth";
+
+/** One keyframe of any effect: when, how it reaches the next one, and whichever of the
+ *  effect's numeric parameters it sets, by the names the static fields have. A parameter
+ *  a key leaves out means the effect's static value — the same rule as `compile.rs`. */
+export type Keyframe = { t: number; ease?: Ease } & { [param: string]: number | Ease | undefined };
+
+/**
+ * What each effect can animate, and what a parameter means when the effect does not state
+ * it (its own default — a volume effect has no static gain, and a key without one is 1,
+ * the clip as recorded). Mirrors `Effect::animatable` in `model.rs`; a kind absent here
+ * takes no keyframes.
+ */
+export const ANIMATABLE: Partial<Record<Effect["type"], Record<string, number>>> = {
+  transform: { x: 0, y: 0, scale: 1, rotation: 0, opacity: 1 },
+  crop: { left: 0, right: 0, top: 0, bottom: 0, radius: 0 },
+  blur: { radius: 0 },
+  color: { brightness: 0, contrast: 1, saturation: 1, gamma: 1 },
+  volume: { gain: 1 },
+};
+
+/** How many keys a kind must keep: a volume effect *is* its keyframes, and the validator
+ *  refuses one with none. Every other kind can go back to being static. */
+export const minKeys = (type: Effect["type"]): number => (type === "volume" ? 1 : 0);
 
 export type Effect =
-  | { type: "transform"; x?: number; y?: number; scale?: number; rotation?: number; opacity?: number; keyframes?: TransformKeyframe[] }
-  | { type: "crop"; left?: number; right?: number; top?: number; bottom?: number; radius?: number }
+  | { type: "transform"; x?: number; y?: number; scale?: number; rotation?: number; opacity?: number; keyframes?: Keyframe[] }
+  | { type: "crop"; left?: number; right?: number; top?: number; bottom?: number; radius?: number; keyframes?: Keyframe[] }
   | { type: "blend"; mode: string }
-  | { type: "blur"; radius: number }
-  | { type: "color"; brightness?: number; contrast?: number; saturation?: number; gamma?: number }
+  | { type: "blur"; radius: number; keyframes?: Keyframe[] }
+  | { type: "color"; brightness?: number; contrast?: number; saturation?: number; gamma?: number; keyframes?: Keyframe[] }
   | { type: "fade"; in?: number; out?: number }
-  | { type: "volume"; keyframes: { t: number; gain: number }[] }
+  | { type: "volume"; keyframes: Keyframe[] }
   | { type: "mlt"; service: string; properties?: Record<string, string> };
 
 /** A placement of a bin entry: when it plays, not what it is. */
 export interface Clip {
   id: string; start: number; end: number; bin: string; in?: number;
   speed: number; volume: number; muted: boolean; effects: Effect[]; label: string;
+  /** The group this clip belongs to, or absent. Clips sharing a group are selected
+   *  together and move together; the compiler never reads it. See `model.rs`. */
+  group?: string;
 }
 
 export interface Transition { from: string; to: string; kind: "dissolve" | "wipe"; duration: number; luma?: string | null; softness?: number }
@@ -261,6 +289,10 @@ export const canTimeWarp = (item: BinItem | undefined): boolean => !item || item
 const segment = (id: string) => id.replace(/~/g, "~0").replace(/\//g, "~1");
 export const binPath = (binId: string) => `/bin/${segment(binId)}`;
 export const seqPath = (seqId: string) => `${binPath(seqId)}/source`;
+/** …and to a found clip's track and to the clip itself, from where `findClip` says it is:
+ *  the one spelling of `/bin/<seq>/source/tracks/<i>/clips/<j>`. */
+export const trackPathOf = (f: { seq: string; ti: number }): string => `${seqPath(f.seq)}/tracks/${f.ti}`;
+export const clipPathOf = (f: { seq: string; ti: number; ci: number }): string => `${trackPathOf(f)}/clips/${f.ci}`;
 
 /** The entry a clip plays, if it resolves. */
 export const binItem = (p: Project, c: Clip): BinItem | undefined => p.bin[c.bin];
@@ -297,51 +329,112 @@ export function freeId(prefix: string, taken: Iterable<string>): string {
   return `${prefix}${n}`;
 }
 
-/** Linear interpolation of a keyframe list at time `t` (relative to the clip start). */
-export function keyframeAt<K extends { t: number }>(kfs: K[], t: number, mix: (a: K, b: K, u: number) => K): K | undefined {
-  if (!kfs.length) return undefined;
-  if (t <= kfs[0].t) return kfs[0];
-  for (let i = 1; i < kfs.length; i++) {
-    if (t <= kfs[i].t) return mix(kfs[i - 1], kfs[i], (t - kfs[i - 1].t) / Math.max(1e-6, kfs[i].t - kfs[i - 1].t));
+/** Catmull-Rom through four values — MLT's `~=`, and the same formula, so the preview
+ *  curves the way the render will. */
+const catmull = (p0: number, p1: number, p2: number, p3: number, u: number) => {
+  const u2 = u * u;
+  return 0.5 * (2 * p1 + (p2 - p0) * u + (2 * p0 - 5 * p1 + 4 * p2 - p3) * u2 + (3 * p1 - p0 - 3 * p2 + p3) * u2 * u);
+};
+
+/**
+ * Sample a scalar track at `t` (seconds from the clip's start), reading it the way MLT
+ * reads an animation string: **the preceding key's ease decides the segment** — held to
+ * the next key, a straight line to it, or a curve through the neighbours. Before the first
+ * key and after the last, the track holds. `value` reads a key's value, so the keys are
+ * sampled as they are rather than copied first: the preview asks this per parameter per
+ * frame.
+ */
+export function sampleTrack<K extends { t: number; ease?: Ease }>(keys: K[], t: number, value: (k: K) => number): number {
+  if (!keys.length) return 0;
+  if (t <= keys[0].t) return value(keys[0]);
+  // At a key's own time the value is the key's: the segment it *opens*, not the one
+  // that ends there. This is the whole difference after a hold, and `>` had it wrong.
+  let i = 0;
+  while (i < keys.length - 1 && t >= keys[i + 1].t - 1e-9) i++;
+  const a = keys[i];
+  const b = keys[i + 1];
+  if (!b || a.ease === "hold") return value(a);
+  const u = (t - a.t) / Math.max(1e-9, b.t - a.t);
+  if (a.ease !== "smooth") return value(a) + (value(b) - value(a)) * u;
+  return catmull(value(keys[i - 1] ?? a), value(a), value(b), value(keys[i + 2] ?? b), u);
+}
+
+/** The ease in force at `t`: the key that opens the segment `t` falls in. */
+export function easeAt(kfs: { t: number; ease?: Ease }[], t: number): Ease {
+  let ease: Ease = "linear";
+  for (const k of kfs) {
+    if (k.t > t + 1e-9) break;
+    ease = k.ease ?? "linear";
   }
-  return kfs[kfs.length - 1];
+  return ease;
 }
 
 export type TransformSample = { x: number; y: number; scale: number; rotation: number; opacity: number };
 
+/** An effect's keyframes, for any kind — empty for one that takes none. */
+export const keyframesOf = (e: Effect): Keyframe[] => ((e as unknown as { keyframes?: Keyframe[] }).keyframes ?? []);
+
+/** What the effect states for a parameter, or what the parameter means unstated. */
+export const staticOf = (e: Effect, param: string): number => {
+  const v = (e as unknown as Record<string, unknown>)[param];
+  return typeof v === "number" ? v : (ANIMATABLE[e.type]?.[param] ?? 0);
+};
+
+/**
+ * One parameter of an effect at `local` seconds into the clip: its keyframes read the way
+ * the compiler reads them (a key that leaves the parameter out means the static value),
+ * or simply the static value when it has none. Every consumer — the live preview, the
+ * inspector, a split — asks here, so they cannot disagree about what a clip does at 1.3s.
+ */
+export function paramAt(e: Effect, param: string, local: number): number {
+  const stat = staticOf(e, param);
+  const kfs = keyframesOf(e);
+  if (!kfs.length) return stat;
+  return sampleTrack(kfs, local, (k) => (k[param] as number | undefined) ?? stat);
+}
+
+/** Whether `t` falls inside the clip: `end` is exclusive, as everywhere in the model. */
+export const covers = (c: { start: number; end: number }, t: number): boolean => t >= c.start && t < c.end;
+
+/** The nearest of `times` that way from `from`, ignoring any within `margin` of it — the
+ *  one the playhead may already be standing on. Undefined when there is none. */
+export function nearest(times: number[], from: number, dir: -1 | 1, margin: number): number | undefined {
+  const ahead = dir < 0 ? times.filter((t) => t < from - margin) : times.filter((t) => t > from + margin);
+  if (!ahead.length) return undefined;
+  return dir < 0 ? Math.max(...ahead) : Math.min(...ahead);
+}
+
+/** Every animatable parameter at `local`, plus the ease in force there: what a key inserted
+ *  at that moment carries, so that inserting it moves nothing. */
+export function sampleEffect(e: Effect, local: number): Keyframe {
+  const key: Keyframe = { t: local };
+  for (const param of Object.keys(ANIMATABLE[e.type] ?? {})) key[param] = paramAt(e, param, local);
+  const ease = easeAt(keyframesOf(e), local);
+  if (ease !== "linear") key.ease = ease;
+  return key;
+}
+
 /** The transform effect's values at `local` seconds, keyframes applied. */
 export function transformAt(e: Extract<Effect, { type: "transform" }>, local: number): TransformSample {
-  const base: TransformSample = { x: e.x ?? 0, y: e.y ?? 0, scale: e.scale ?? 1, rotation: e.rotation ?? 0, opacity: e.opacity ?? 1 };
-  const fill = (k: TransformKeyframe): TransformSample & { t: number } => ({ t: k.t, x: k.x ?? base.x, y: k.y ?? base.y, scale: k.scale ?? base.scale, rotation: k.rotation ?? base.rotation, opacity: k.opacity ?? base.opacity });
-  const lerp = (a: number, b: number, u: number) => a + (b - a) * u;
-  const s = keyframeAt((e.keyframes ?? []).map(fill), local, (a, b, u) => ({ t: local, x: lerp(a.x, b.x, u), y: lerp(a.y, b.y, u), scale: lerp(a.scale, b.scale, u), rotation: lerp(a.rotation, b.rotation, u), opacity: lerp(a.opacity, b.opacity, u) }));
-  return s ?? base;
+  return { x: paramAt(e, "x", local), y: paramAt(e, "y", local), scale: paramAt(e, "scale", local), rotation: paramAt(e, "rotation", local), opacity: paramAt(e, "opacity", local) };
 }
 
 /** Re-base a time-relative effect for a clip that starts `cut` seconds later (the right
  *  half of a split): keyframes shift, the value at the cut becomes the first keyframe. */
 export function shiftEffect(e: Effect, cut: number): Effect {
   if (e.type === "fade") return { ...e, in: 0 };
-  if (e.type === "transform" && e.keyframes?.length) {
-    // `transformAt` may hand back a keyframe object carrying its own `t`: set ours last.
-    return { ...e, keyframes: [{ ...transformAt(e, cut), t: 0 }, ...e.keyframes.filter((k) => k.t > cut).map((k) => ({ ...k, t: k.t - cut }))] };
-  }
-  if (e.type === "volume") {
-    const at = keyframeAt(e.keyframes, cut, (a, b, u) => ({ t: cut, gain: a.gain + (b.gain - a.gain) * u }))?.gain ?? 1;
-    return { ...e, keyframes: [{ t: 0, gain: at }, ...e.keyframes.filter((k) => k.t > cut).map((k) => ({ ...k, t: k.t - cut }))] };
-  }
-  return e;
+  const kfs = keyframesOf(e);
+  if (!kfs.length) return e;
+  // The key the cut lands in carries that segment's ease (`sampleEffect` does), or a half
+  // cut out of a hold would come back interpolating.
+  // Only a kind that takes keyframes has any, so the spread lands on one that can hold them.
+  return { ...e, keyframes: [{ ...sampleEffect(e, cut), t: 0 }, ...kfs.filter((k) => k.t > cut).map((k) => ({ ...k, t: k.t - cut }))] } as Effect;
 }
 
 /** The complementary trim for the left half: keep keyframes up to the cut, then hold. */
 export function trimEffect(e: Effect, cut: number): Effect {
   if (e.type === "fade") return { ...e, out: 0 };
-  if (e.type === "transform" && e.keyframes?.some((k) => k.t > cut)) {
-    return { ...e, keyframes: [...e.keyframes.filter((k) => k.t <= cut), { ...transformAt(e, cut), t: cut }] };
-  }
-  if (e.type === "volume" && e.keyframes.some((k) => k.t > cut)) {
-    const at = keyframeAt(e.keyframes, cut, (a, b, u) => ({ t: cut, gain: a.gain + (b.gain - a.gain) * u }))!;
-    return { ...e, keyframes: [...e.keyframes.filter((k) => k.t <= cut), { t: cut, gain: at.gain }] };
-  }
-  return e;
+  const kfs = keyframesOf(e);
+  if (!kfs.some((k) => k.t > cut)) return e;
+  return { ...e, keyframes: [...kfs.filter((k) => k.t <= cut), sampleEffect(e, cut)] } as Effect;
 }

@@ -243,6 +243,13 @@ follows as you type. `max_chars` on the job asks whisper for lines of that many 
 instead, or 0 for its own sentences; those cues are already lines, so set `words_per_line`
 to 1.
 
+**Themes.** The palette button in the top bar (or *View → Theme…* in the app) swaps the
+editor's colours: **Kuma**, the default, and **Tokyo Night**, retro neon on deep indigo.
+The choice lives in the browser, not the project, and stops at the editor's chrome — no
+template, bake or render sees it, so the video looks the same whichever one is on. Styling
+the *video* is what a design system is for, below. A new theme is a block of tokens in
+`ui/src/themes.css` plus a line in `ui/src/theme.ts`; a test fails if either half is missing.
+
 ### Desktop app
 
 `kuma serve` plus a browser tab is still the whole editor. The desktop app is the same UI

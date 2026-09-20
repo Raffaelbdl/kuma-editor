@@ -7,8 +7,8 @@
 // and it differs per machine. A shape is ours.
 //
 // So: paths in a 24×24 box, filled with `currentColor`, built as nodes rather than markup
-// (never `innerHTML`, for the reason `dom.ts` gives). There are three because three are
-// used. An icon pack — Lucide, Feather, Phosphor, all plain SVG and usable without a
+// (never `innerHTML`, for the reason `dom.ts` gives). There are only the ones something
+// uses. An icon pack — Lucide, Feather, Phosphor, all plain SVG and usable without a
 // framework — drops in behind `icon()` without touching a caller, and is worth the
 // dependency the day this wants a dozen.
 
@@ -25,6 +25,13 @@ const ICONS = {
   /** Step back and forward — over keyframes, on the buttons beside a keyframe strip. */
   "chevron-left": [shape("polygon", { points: "16,4 18,6 12,12 18,18 16,20 8,12" })],
   "chevron-right": [shape("polygon", { points: "8,4 6,6 12,12 6,18 8,20 16,12" })],
+  /** Appearance: a disc with one half filled, the glyph every application uses for
+   *  "how this looks". Drawn as a stroked circle plus a half disc so it reads at 14px,
+   *  where a painter's palette is a smudge. */
+  palette: [
+    shape("circle", { cx: 12, cy: 12, r: 9, fill: "none", stroke: "currentColor", "stroke-width": 2 }),
+    shape("path", { d: "M12 3a9 9 0 0 0 0 18z" }),
+  ],
   /** Two links of a chain: a clip that moves with others. Stroked rather than filled,
    *  because a filled chain at 10px is a blob. */
   link: [

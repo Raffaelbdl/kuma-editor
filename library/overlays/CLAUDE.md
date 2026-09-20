@@ -108,7 +108,13 @@ edit; a bake is the slow way to learn the same thing.
    and 1080×1920 without edits.
 7. Bundle fonts (`@font-face` with relative `src`) or use a system stack. No Google Fonts
    links: the bake is headless and must be deterministic.
-8. Keep `_vendor`, `data-*` timing and the `__timelines` contract as the only
+8. **Re-measure rather than measure once.** Prefer CSS that needs no measuring at all; if
+   the page must measure itself — fitting a line of text to its box is the usual reason —
+   run it again on `resize` (a `ResizeObserver` on the element is the reliable one) and
+   after `document.fonts.ready`, since fallback metrics differ. Never leave a temporary
+   style behind on an early return: a measure that reads `0` and gives up must put back
+   what it borrowed, or the frame renders at the probe's size.
+9. Keep `_vendor`, `data-*` timing and the `__timelines` contract as the only
    hyperframes-specific surface, so the runtime stays replaceable.
 
 Transitions (dissolve/wipe) are refused on overlay clips: bakes carry no handle frames.

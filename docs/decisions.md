@@ -631,6 +631,18 @@ the first disables playback.
 Without an audio device, SDL's dummy driver still paces the callback in real time, so
 playback is always audio-paced and the alternate clock path was dead code.
 
+**An overlay off the playhead is hidden by `visibility`, never `display`** — adopted, after
+a template rendered one size in the editor and another in the render. `display: none` gives
+an iframe a **0×0 viewport**, and a template is allowed to measure itself — fitting a line
+of text to its column is the ordinary way. The stage created every overlay wrapper hidden,
+so those scripts ran against nothing, read `0` and kept whatever they had; the bake loads
+the same page full-size and got it right. It only bites when the clip is not under the
+playhead as the iframe loads, which is the ordinary case and is why it survived so long:
+a clip you are looking at gets shown by a stray update before its scripts run.
+`visibility: hidden` keeps the box, so the page always sees the project frame; it costs the
+layout and skips the paint, which is the half that matters. The wrappers are absolutely
+positioned, so laying them all out moves nothing.
+
 ## Editor tabs and the overlay workbench
 
 **The centre of the window is tabbed** — adopted. One tab is the sequence being edited
@@ -1216,6 +1228,55 @@ which is the question worth recording: nothing about this editor's no-framework 
 one out. Three icons do not pay for a dependency and a build step that has none, and every
 caller goes through `icon(name)`, so the day this wants a dozen the pack goes in behind
 that function and no panel changes.
+
+## Themes
+
+**A theme is the editor's chrome, in this browser's storage** — built, with one alternative
+theme to prove the mechanism is a mechanism.
+
+The palette was 20 tokens in one `:root` block and every other colour was a literal spread
+through `style.css`, so "another theme" meant a second stylesheet or a sweep. It is now one
+block of tokens per theme in `ui/src/themes.css`, selected by a `data-theme` on the root;
+`style.css` names tokens and nothing else. Switching is one attribute write — no reload, no
+second sheet, no rebuild — and `ui/src/theme.ts` holds the list the picker shows, the top
+bar's button and the shell's *View → Theme…*, which are the same command.
+
+**Which theme is not a project value.** It goes in `localStorage` beside the transcribe
+language, never into the document: two people opening one file may want different answers,
+and an editor's appearance is not an edit. Putting it in the project would also make
+choosing a theme a revision-checked, undoable patch that saves the file and hands an agent
+a `409` — the same argument that keeps the open sequence out of the document.
+
+The cost is that storage is per origin and a daemon's origin is its port: a project opened
+on 7456 starts at the default while the one on 7455 is themed. The transcribe language has
+always had this, and the fix — if it becomes annoying — is the desktop shell carrying the
+choice across its windows through the bridge, not a value in the project file.
+
+**A theme is not a design system, and the distinction is the whole point.** A design system
+is a document copied into the project and applied by editing a template or an entry's vars;
+it is about the *video*. A theme is about the *window*, and it stops at the editor's chrome
+— it reaches no template, no bake and no render, so the video looks identical whichever one
+is on. The section above records why a project-level theme injected into overlays was turned
+down; this is not that returning by another door.
+
+**Tokyo Night, and what a second theme is for.** The default is unchanged, and proven so: a
+screenshot of the editor before and after the token sweep differs in zero pixels below the
+top bar, where the only difference is the new button. The second is retro neon on deep
+indigo — hot pink playhead, violet overlay clips, teal audio — and it earns its place by
+being far enough from the default to catch anything the sweep missed. It also carries the
+one token that is not a colour, `--glow`, which is `none` in the default and a soft neon on
+the playhead and the Render button in Tokyo Night: the two things you look *for* rather than
+at. A theme that could only change hues would be a palette, not a theme; one that can change
+anything is a second stylesheet by instalments.
+
+**What holds the two halves together** is `ui/test/theme.test.mjs`, which reads the CSS and
+the TypeScript as text and needs no browser, daemon or build — so unlike its neighbours in
+`ui/test/`, it never skips. It fails if a palette has no entry in `THEMES` (a theme nobody
+can choose) or an entry has no palette (a picker that appears to do nothing), if a theme
+leaves a token out — the silent one, where that theme quietly keeps one of the default's
+colours — if a colour literal comes back into `style.css`, or if any palette sets
+`color-scheme`, which is the one property that would take the overlay-compositing bug out
+of retirement.
 
 ## Overlay authoring: checked, scaffolded, and shown moving
 

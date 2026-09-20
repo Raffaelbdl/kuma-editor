@@ -61,6 +61,7 @@ export const Cmd = {
   seekEdge: "timeline.seek-edge",
   deleteClip: "timeline.delete-clip",
   shortcuts: "help.shortcuts",
+  theme: "view.theme",
   group: "timeline.group",
   ungroup: "timeline.ungroup",
   copyClip: "timeline.copy-clip",

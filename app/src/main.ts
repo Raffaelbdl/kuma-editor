@@ -350,6 +350,10 @@ function rebuildMenu() {
     {
       label: "View",
       submenu: [
+        // The page owns the theme — it is one attribute and a `localStorage` key there,
+        // and the same dialog the top bar's button opens. Nothing about it lives here.
+        { label: "Theme…", click: () => sendCommand("theme") },
+        { type: "separator" },
         { role: "reload" },
         { role: "forceReload" },
         { role: "toggleDevTools" },

@@ -335,7 +335,10 @@ export class Preview {
       wrap.className = "ov";
       wrap.style.width = `${p.width}px`;
       wrap.style.height = `${p.height}px`;
-      wrap.style.display = "none";
+      // Hidden by **visibility**, never `display`: a `display: none` wrapper gives its
+      // iframe a 0×0 viewport, so a template that measures itself as it loads would read
+      // zeros and keep whatever it had, while the bake — full-size — got it right.
+      wrap.style.visibility = "hidden";
       const iframe = document.createElement("iframe");
       iframe.width = String(p.width);
       iframe.height = String(p.height);
@@ -364,7 +367,7 @@ export class Preview {
       if (!f) continue;
       const c = f.clip;
       const visible = covers(c, playhead);
-      v.wrap.style.display = visible ? "" : "none";
+      v.wrap.style.visibility = visible ? "" : "hidden";
       if (!visible || !v.ready) continue;
       const local = (playhead - c.start) * Math.abs(c.speed || 1);
       const t = c.speed < 0 ? (c.end - c.start) * Math.abs(c.speed) - local : local;

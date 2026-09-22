@@ -78,6 +78,11 @@ public:
         if (gen != gen_) return;
         ring_.insert(ring_.end(), data, data + (size_t)samples * channels);
     }
+    void push_silence(int samples, unsigned gen) {
+        std::lock_guard<std::mutex> l(m_);
+        if (gen != gen_) return;
+        ring_.insert(ring_.end(), (size_t)samples * channels, 0);
+    }
     void reset(unsigned gen) {
         std::lock_guard<std::mutex> l(m_);
         ring_.clear();
@@ -152,6 +157,7 @@ struct Slot {
 struct Command {
     std::string op;
     std::string arg;
+    unsigned gen = 0; // `end` only: the playback that ended
 };
 
 class Engine {
@@ -187,7 +193,6 @@ public:
             l.unlock();
             apply(c);
         }
-        wcv_.notify_all();
         sound.join();
         picture.join();
         audio_.set_running(false);
@@ -201,26 +206,24 @@ public:
 private:
     void apply(const Command &c) {
         if (c.op == "quit") {
-            quit_ = true;
-        } else if (c.op == "load") {
-            load(c.arg, true, true);
+            wake([this] { quit_ = true; });
         } else if (c.op == "load-video") {
-            load(c.arg, true, false);
+            load(c.arg, video_, "video");
         } else if (c.op == "load-audio") {
-            load(c.arg, false, true);
+            load(c.arg, sound_, "audio");
         } else if (c.op == "seek") {
             pause();
             pos_ = std::max(0, std::min(length_ - 1, std::atoi(c.arg.c_str())));
             show(pos_);
         } else if (c.op == "play") {
-            if (!video_.g && !sound_.g) { emit("err no timeline loaded"); return; }
+            if (length_ == 0) { emit("err no timeline loaded"); return; }
             if (pos_ >= length_ - 1) pos_ = 0;
             play();
         } else if (c.op == "pause") {
             pause();
         } else if (c.op == "end") {
             // From the sound thread: the playback it was pulling for ran out and has been heard.
-            if (playing_ && std::to_string(epoch_.load()) == c.arg) {
+            if (playing_ && epoch_ == c.gen) {
                 pause();
                 pos_ = std::max(0, length_ - 1);
                 emit("ok end");
@@ -230,40 +233,34 @@ private:
         }
     }
 
-    // Replace one graph or both. Validated first, so a bad file leaves what is loaded, and
+    // Replace one graph. Validated first, so a bad file leaves what is loaded, and
     // playing, untouched; a good one is swapped in between two frames without pausing.
-    // `load` gives each thread its own instance of the one file.
-    void load(const std::string &path, bool video, bool sound) {
-        std::unique_ptr<Graph> v, a;
-        if (video && !(v = Graph::open(path))) { emit("err cannot load " + path); return; }
-        if (sound && !(a = Graph::open(path))) { emit("err cannot load " + path); return; }
-        const Graph &g = v ? *v : *a;
-        emit(std::string("ok loaded ") + (video && sound ? "both" : video ? "video" : "audio") +
-             " frames=" + std::to_string(g.length) + " fps=" + std::to_string(g.fps) + " size=" +
-             std::to_string(g.width) + "x" + std::to_string(g.height));
-        // The old graphs are destroyed here, after their locks are released.
-        if (v) { std::lock_guard<std::mutex> l(video_.m); std::swap(video_.g, v); }
-        if (a) { std::lock_guard<std::mutex> l(sound_.m); std::swap(sound_.g, a); }
+    void load(const std::string &path, Slot &slot, const char *name) {
+        auto g = Graph::open(path);
+        if (!g) { emit("err cannot load " + path); return; }
+        emit(std::string("ok loaded ") + name + " frames=" + std::to_string(g->length) + " fps=" +
+             std::to_string(g->fps) + " size=" + std::to_string(g->width) + "x" + std::to_string(g->height));
+        fps_ = g->fps;
+        (&slot == &video_ ? video_len_ : sound_len_) = g->length;
+        length_ = std::max(video_len_.load(), sound_len_.load());
         {
-            std::lock_guard<std::mutex> lv(video_.m), la(sound_.m);
-            length_ = std::max(video_.g ? video_.g->length : 0, sound_.g ? sound_.g->length : 0);
-            fps_ = video_.g ? video_.g->fps : sound_.g->fps;
+            // The old graph is destroyed below, after its lock is released.
+            std::lock_guard<std::mutex> l(slot.m);
+            std::swap(slot.g, g);
         }
         if (!playing_) {
-            pos_ = std::max(0, std::min(length_ - 1, pos_));
-            if (video) show(pos_);
+            pos_ = std::max(0, std::min(length_ - 1, pos_.load()));
+            if (&slot == &video_) show(pos_);
         }
     }
 
     void play() {
         if (playing_) return;
-        start_ = pos_;
-        shown_ = pos_;
+        shown_ = pos_.load();
         unsigned e = ++epoch_;
         audio_.reset(e);
-        playing_ = true;
         audio_.set_running(true);
-        wcv_.notify_all();
+        wake([this] { playing_ = true; });
         emit("ok play");
     }
 
@@ -273,15 +270,27 @@ private:
         unsigned e = ++epoch_;
         audio_.set_running(false);
         audio_.reset(e);
-        pos_ = shown_;
+        pos_ = shown_.load();
     }
 
-    // Sleep until playing (or quitting); true when there is playback to serve.
+    // Change what the workers wait on under their lock, so none misses the change.
+    template <class F> void wake(F change) {
+        {
+            std::lock_guard<std::mutex> l(wm_);
+            change();
+        }
+        wcv_.notify_all();
+    }
+
+    // Block while paused; false once quitting.
     bool await_playback() {
-        if (playing_) return true;
         std::unique_lock<std::mutex> l(wm_);
-        wcv_.wait_for(l, std::chrono::milliseconds(50), [this] { return playing_ || quit_; });
-        return false;
+        wcv_.wait(l, [this] { return playing_ || quit_; });
+        return !quit_;
+    }
+
+    static void sleep_ms(double ms) {
+        std::this_thread::sleep_for(std::chrono::microseconds((long long)(std::clamp(ms, 1.0, 50.0) * 1000)));
     }
 
     // The sound thread: keep about three frames of sound queued, pulled from the audio
@@ -290,56 +299,52 @@ private:
         unsigned seen = 0;
         int apos = 0;
         bool ended = false;
-        while (!quit_) {
-            if (!await_playback()) continue;
+        while (await_playback()) {
             unsigned e = epoch_;
-            if (e != seen) { seen = e; apos = start_; ended = false; }
+            if (e != seen) { seen = e; apos = pos_; ended = false; }
             double fps = fps_;
             long long target = std::max<long long>((long long)(3.0 * rate_ / fps), 2048);
-            if (audio_.queued() > target) { std::this_thread::sleep_for(std::chrono::milliseconds(3)); continue; }
+            long long queued = audio_.queued();
+            if (queued > target) { sleep_ms((queued - target) * 1000.0 / rate_); continue; }
             if (apos >= length_) {
                 // Let the last frames' sound play out, then say so once.
-                if (!ended && audio_.queued() == 0) { ended = true; push(Command{"end", std::to_string(e)}); }
-                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+                if (!ended && queued == 0) { ended = true; push(Command{"end", "", e}); }
+                sleep_ms(5);
                 continue;
             }
             int samples = mlt_audio_calculate_frame_samples(fps, rate_, apos);
-            bool pushed = false;
-            {
-                std::lock_guard<std::mutex> l(sound_.m);
-                if (sound_.g) {
-                    sound_.g->producer->seek(apos);
-                    std::unique_ptr<Mlt::Frame> frame(sound_.g->producer->get_frame());
-                    if (frame && frame->is_valid()) {
-                        mlt_audio_format afmt = mlt_audio_s16;
-                        int freq = rate_, channels = audio_.channels, n = samples;
-                        int16_t *pcm = static_cast<int16_t *>(frame->get_audio(afmt, freq, channels, n));
-                        if (pcm && n > 0 && channels == audio_.channels && freq == rate_) {
-                            audio_.push(pcm, n, e);
-                            pushed = true;
-                        }
-                    }
-                }
-            }
-            if (!pushed) {
-                std::vector<int16_t> silence((size_t)samples * audio_.channels, 0);
-                audio_.push(silence.data(), samples, e);
-            }
+            if (!pull_sound(apos, samples, e)) audio_.push_silence(samples, e);
             apos++;
         }
     }
 
-    // The picture thread: show the frame the sound has reached. Ahead of it, wait; behind
-    // it, skip to it.
+    // Queue one frame of the audio graph's sound; false when there is none to queue.
+    bool pull_sound(int frame_index, int samples, unsigned epoch) {
+        std::lock_guard<std::mutex> l(sound_.m);
+        if (!sound_.g) return false;
+        sound_.g->producer->seek(frame_index);
+        std::unique_ptr<Mlt::Frame> frame(sound_.g->producer->get_frame());
+        if (!frame || !frame->is_valid()) return false;
+        mlt_audio_format afmt = mlt_audio_s16;
+        int freq = rate_, channels = audio_.channels;
+        int16_t *pcm = static_cast<int16_t *>(frame->get_audio(afmt, freq, channels, samples));
+        if (!pcm || samples <= 0 || channels != audio_.channels || freq != rate_) return false;
+        audio_.push(pcm, samples, epoch);
+        return true;
+    }
+
+    // The picture thread: show the frame the sound has reached. Ahead of it, wait until
+    // it is due; behind it, skip to it.
     void picture_loop() {
         unsigned seen = 0;
         int vpos = 0, start = 0;
-        while (!quit_) {
-            if (!await_playback()) continue;
+        while (await_playback()) {
             unsigned e = epoch_;
-            if (e != seen) { seen = e; vpos = start = start_; }
-            int heard = start + (int)((double)audio_.consumed() * fps_ / rate_);
-            if (vpos > heard || vpos >= length_) { std::this_thread::sleep_for(std::chrono::milliseconds(2)); continue; }
+            if (e != seen) { seen = e; vpos = start = pos_; }
+            double fps = fps_;
+            int heard = start + (int)((double)audio_.consumed() * fps / rate_);
+            if (vpos >= length_) { sleep_ms(5); continue; }
+            if (vpos > heard) { sleep_ms((vpos - heard) * 1000.0 / fps); continue; }
             vpos = std::min(heard, length_ - 1);
             if (picture(vpos, e)) shown_ = vpos;
             vpos++;
@@ -349,12 +354,15 @@ private:
     // Show one frame now, from the main thread.
     void show(int frame_index) { picture(frame_index, 0); }
 
-    // Render one frame of the video graph and write it as a JPEG. From the picture thread
-    // (`epoch` non-zero) it is written only if that playback is still the current one, so
-    // a frame finished after a pause or a seek never lands after the frame the seek showed.
+    // Whether a frame rendered for `epoch` may still be shown: always from the main
+    // thread (0), and from the picture thread only while that playback is the current one,
+    // so a frame finished after a pause or a seek never lands after the seek's.
+    bool current(unsigned epoch) const { return epoch == 0 || (playing_ && epoch_ == epoch); }
+
+    // Render one frame of the video graph and write it as a JPEG.
     bool picture(int frame_index, unsigned epoch) {
         std::lock_guard<std::mutex> l(video_.m);
-        if (!video_.g) return false;
+        if (!video_.g || !current(epoch)) return false;
         Graph &g = *video_.g;
         g.producer->seek(frame_index);
         std::unique_ptr<Mlt::Frame> frame(g.producer->get_frame());
@@ -379,7 +387,7 @@ private:
         }
         {
             std::lock_guard<std::mutex> o(out_);
-            if (epoch == 0 || (playing_ && epoch_ == epoch)) {
+            if (current(epoch)) {
                 std::string header = "frame " + std::to_string(frame_index) + " " + std::to_string(size) + "\n";
                 std::fwrite(header.data(), 1, header.size(), stdout);
                 std::fwrite(out, 1, size, stdout);
@@ -398,7 +406,7 @@ private:
     }
 
     Slot video_, sound_;
-    // Only the picture thread (and `show`, under the video lock) uses the compressor.
+    // Only `picture` uses the compressor, under the video lock.
     tjhandle jpeg_ = nullptr;
     AudioOut audio_;
     std::mutex out_; // stdout: lines and frames are written whole
@@ -406,18 +414,17 @@ private:
     std::mutex qm_;
     std::condition_variable qcv_;
     std::deque<Command> queue_;
-    std::mutex wm_;
+    std::mutex wm_; // what the workers wait on: `playing_` and `quit_`
     std::condition_variable wcv_;
 
     // Written by the main thread; the two workers read them.
     std::atomic<bool> quit_{false};
     std::atomic<bool> playing_{false};
     std::atomic<unsigned> epoch_{0}; // bumped by every play and pause
-    std::atomic<int> start_{0};      // the frame playback started from
+    std::atomic<int> pos_{0};        // the paused position, and where playback starts
     std::atomic<int> shown_{0};      // the last frame the picture thread showed
-    std::atomic<int> length_{0};
+    std::atomic<int> video_len_{0}, sound_len_{0}, length_{0};
     std::atomic<double> fps_{30.0};
-    int pos_ = 0; // the paused position; main thread only
     static constexpr int rate_ = AudioOut::rate;
 };
 

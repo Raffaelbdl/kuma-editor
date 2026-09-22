@@ -61,32 +61,6 @@ pub enum UnbakedPolicy {
     Error,
 }
 
-/// Which streams a compiled document carries. A render is always [`Streams::Both`]; the
-/// preview can compile the picture and the sound as two graphs, so that an edit to one
-/// reloads only that one. Each half must play exactly what the full graph plays of it,
-/// which `tests/render.rs` checks frame by frame and sample by sample.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum Streams {
-    #[default]
-    Both,
-    /// Tracks that show something, producers with no audio stream, image filters and
-    /// the video half of every transition.
-    Video,
-    /// Tracks that sound, producers with no video stream, audio filters and the `mix`
-    /// half of every transition. Overlays have no sound, so they are left out and need
-    /// no bake.
-    Audio,
-}
-
-impl Streams {
-    pub fn video(self) -> bool {
-        self != Streams::Audio
-    }
-    pub fn audio(self) -> bool {
-        self != Streams::Video
-    }
-}
-
 #[derive(Debug, Clone)]
 pub struct CompileOptions {
     /// Project directory: `root` attribute and base for relative asset paths.
@@ -101,6 +75,9 @@ pub struct CompileOptions {
     /// Which sequence to compile as the root. `None` means the project's master — what a
     /// render always wants. The preview sets it to whichever sequence is open.
     pub sequence: Option<BinId>,
+    /// The preview compiles the picture and the sound as two half graphs. Each must play
+    /// exactly what the full graph plays of its stream, which `tests/render.rs` checks
+    /// frame by frame and sample by sample.
     pub streams: Streams,
 }
 
@@ -327,13 +304,13 @@ fn compile_track(ctx: &Ctx, track: &Track, total: i64, w: &mut XmlWriter) -> Res
     let fps = ctx.fps;
     let tid = &track.id;
     let streams = ctx.opts.streams;
-    let visible = track.kind != TrackKind::Audio && !track.hidden;
-    // A half graph leaves out a track with nothing for it; the full graph keeps it, hidden.
-    match streams {
-        Streams::Both => {}
-        Streams::Video if !visible => return Ok(None),
-        Streams::Audio if track.muted || !track.clips.iter().any(|c| ctx.project.clip_has_audio(c)) => return Ok(None),
-        _ => {}
+    // What this track contributes to the graph being compiled. A half graph leaves out a
+    // track with nothing for it (every overlay track, in the sound's); the full graph keeps
+    // it, hidden. For a sequence clip the audio question costs a walk of what it nests.
+    let has_video = track.kind != TrackKind::Audio && !track.hidden && streams.video();
+    let has_audio = streams.audio() && ctx.project.track_has_audio(track);
+    if streams != Streams::Both && !has_video && !has_audio {
+        return Ok(None);
     }
 
     // How each clip is extended by the transitions it takes part in.
@@ -352,11 +329,7 @@ fn compile_track(ctx: &Ctx, track: &Track, total: i64, w: &mut XmlWriter) -> Res
     let mut prev_lane = 0usize;
     for (_, clip) in track.sorted_clips() {
         let item = ctx.item(clip)?;
-        // Overlays without a bake are skipped (they are live DOM in preview), and an
-        // overlay has no sound, so the audio graph skips every one.
-        if item.is_overlay() && !streams.video() {
-            continue;
-        }
+        // Overlays without a bake are skipped (they are live DOM in preview).
         if item.is_overlay() && !ctx.opts.bakes.contains_key(&clip.id) {
             match ctx.opts.unbaked {
                 UnbakedPolicy::Skip => continue,
@@ -395,12 +368,8 @@ fn compile_track(ctx: &Ctx, track: &Track, total: i64, w: &mut XmlWriter) -> Res
 
     // Emit one producer per clip.
     let mut blends = Vec::new();
-    let mut has_audio = false;
     for p in &plans {
         emit_clip_producer(ctx, p, w)?;
-        // Short-circuit: one audible clip settles the track, and for a sequence clip the
-        // question costs a walk of everything it nests.
-        has_audio = has_audio || ctx.project.clip_has_audio(p.clip);
         for e in &p.clip.effects {
             if let Effect::Blend { mode } = e {
                 if *mode != BlendMode::Normal {
@@ -486,8 +455,6 @@ fn compile_track(ctx: &Ctx, track: &Track, total: i64, w: &mut XmlWriter) -> Res
         format!("{tid}_a")
     };
 
-    let has_video = visible && streams.video();
-    let has_audio = has_audio && !track.muted && streams.audio();
     let hide = match (has_video, has_audio) {
         (false, false) => Some("both"),
         (false, true) => Some("video"),
@@ -545,17 +512,6 @@ fn emit_clip_producer(ctx: &Ctx, p: &Plan, w: &mut XmlWriter) -> Result<(), Comp
         BinSource::Sequence(_) => {
             w.open("playlist", &[("id", p.producer_id.clone())]);
             w.empty("entry", &[("producer", format!("seq_{}", clip.bin)), ("in", p.p_in.to_string()), ("out", p.p_out.to_string())]);
-            if clip.muted && ctx.opts.streams.audio() {
-                // A sequence has no decoder to switch off, the way `audio_index=-1` does
-                // for a media file, so muting one is a filter. `MUTE_DB` rather than the
-                // `db(0)` floor: that is -60 dB, which is quiet but audible against
-                // silence, and it has to stay where it is for volume ramps to interpolate.
-                let (e_in, e_out) = p.entry();
-                w.open("filter", &[("id", format!("{}_mute", p.producer_id)), ("in", e_in.to_string()), ("out", e_out.to_string())]);
-                w.property("mlt_service", "volume");
-                w.property("level", MUTE_DB.to_string());
-                w.close("filter");
-            }
             emit_filters(ctx, p, w);
             w.close("playlist");
         }
@@ -606,27 +562,28 @@ fn emit_filters(ctx: &Ctx, p: &Plan, w: &mut XmlWriter) {
     let open = |w: &mut XmlWriter, name: &str, service: &str| open_at(w, name, service, f_in, f_out);
     // Keyframe positions are relative to the clip's own start, i.e. `pre` frames in.
     let at = |t: f64| (fps.frame(t) + p.pre).clamp(0, len - 1);
-    let (video, audio) = (ctx.opts.streams.video(), ctx.opts.streams.audio());
+    let streams = ctx.opts.streams;
+
+    if streams.audio() && clip.muted && ctx.item(clip).is_ok_and(|i| i.is_sequence()) {
+        // A sequence has no decoder to switch off, the way `audio_index=-1` does for a
+        // media file, so muting one is a filter. `MUTE_DB` rather than the `db(0)` floor:
+        // that is -60 dB, which is quiet but audible against silence, and it has to stay
+        // where it is for volume ramps to interpolate.
+        w.open("filter", &[("id", format!("{}_mute", p.producer_id)), ("in", f_in.to_string()), ("out", f_out.to_string())]);
+        w.property("mlt_service", "volume");
+        w.property("level", MUTE_DB.to_string());
+        w.close("filter");
+    }
 
     // Clip-level volume (static) unless a Volume effect provides keyframes.
     let has_volume_kf = clip.effects.iter().any(|e| matches!(e, Effect::Volume { .. }));
-    if audio && !has_volume_kf && (clip.volume - 1.0).abs() > 1e-9 {
+    if streams.audio() && !has_volume_kf && (clip.volume - 1.0).abs() > 1e-9 {
         open(w, "vol", "volume");
         w.property("level", num(db(clip.volume)));
         w.close("filter");
     }
 
-    for e in &clip.effects {
-        // Each effect is for one stream, except the escape hatch, which could be either
-        // and is kept in both: an image filter nobody asks for an image from costs nothing.
-        let wanted = match e {
-            Effect::Volume { .. } => audio,
-            Effect::Mlt { .. } => true,
-            _ => video,
-        };
-        if !wanted {
-            continue;
-        }
+    for e in clip.effects.iter().filter(|e| e.streams().meets(streams)) {
         match e {
             Effect::Transform { x, y, scale, rotation, opacity, keyframes } => {
                 open(w, "xform", "qtblend");

@@ -164,9 +164,7 @@ fn each_half_graph_matches_the_full_graph() {
         let mut opts = CompileOptions::new(&root);
         opts.size = Some((480, 270));
         opts.streams = streams;
-        if streams != Streams::Audio {
-            opts.bakes.insert("o_c1".into(), OverlayBake { resource: root.join("bake/frame_%06d.png"), is_still: false });
-        }
+        opts.bakes.insert("o_c1".into(), OverlayBake { resource: root.join("bake/frame_%06d.png"), is_still: false });
         let file = root.join(format!("{name}.mlt"));
         std::fs::write(&file, compile(&p, &opts).unwrap()).unwrap();
         file

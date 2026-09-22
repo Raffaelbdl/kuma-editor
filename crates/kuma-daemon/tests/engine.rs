@@ -24,10 +24,13 @@ struct Engine {
     out: Receiver<(Instant, Out)>,
 }
 
+fn headless() -> bool {
+    std::env::var_os("DISPLAY").is_none() && std::env::var_os("WAYLAND_DISPLAY").is_none()
+}
+
 impl Engine {
     fn start(bin: &Path) -> Engine {
-        let headless = std::env::var_os("DISPLAY").is_none() && std::env::var_os("WAYLAND_DISPLAY").is_none();
-        let mut cmd = if headless {
+        let mut cmd = if headless() {
             let mut c = Command::new("xvfb-run");
             c.arg("-a").arg(bin);
             c
@@ -132,13 +135,13 @@ fn frames(msgs: &[(Instant, Out)]) -> Vec<(Instant, i64)> {
 /// Two seconds of moving picture and a tone, compiled as the preview compiles it: a video
 /// graph, and an audio graph at each of two volumes.
 fn fixture(root: &Path) -> (PathBuf, PathBuf, PathBuf) {
-    let st = Command::new("ffmpeg")
-        .args(["-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=320x180:rate=30:duration=2", "-f", "lavfi", "-i", "sine=frequency=440:duration=2"])
-        .args(["-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-c:a", "aac"])
-        .arg(root.join("clip.mp4"))
-        .status()
-        .unwrap();
-    assert!(st.success());
+    let args = ["-f", "lavfi", "-i", "testsrc2=size=320x180:rate=30:duration=2", "-f", "lavfi", "-i", "sine=frequency=440:duration=2"]
+        .into_iter()
+        .chain(["-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-c:a", "aac"])
+        .map(String::from)
+        .chain([root.join("clip.mp4").to_string_lossy().into_owned()])
+        .collect::<Vec<_>>();
+    kuma_overlay::media::ffmpeg(&args).expect("ffmpeg");
     let write = |name: &str, volume: f64, streams: Streams| {
         let p: kuma_core::Project = serde_json::from_value(json!({
             "fps": 30, "width": 320, "height": 180,
@@ -163,8 +166,7 @@ fn fixture(root: &Path) -> (PathBuf, PathBuf, PathBuf) {
 fn the_sound_paces_the_picture_and_a_reload_does_not_stop_it() {
     let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
     let bin = repo.join("engine/build/kuma-preview");
-    let headless = std::env::var_os("DISPLAY").is_none() && std::env::var_os("WAYLAND_DISPLAY").is_none();
-    if !bin.is_file() || (headless && !preview::has_bin("xvfb-run")) || !preview::has_bin("ffmpeg") {
+    if !bin.is_file() || (headless() && !preview::has_bin("xvfb-run")) || !preview::has_bin("ffmpeg") {
         eprintln!("preview engine, a display or ffmpeg missing; skipping");
         return;
     }

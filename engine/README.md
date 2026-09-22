@@ -1,6 +1,6 @@
 # kuma-preview — real-time preview engine
 
-A ~440-line C++ sidecar that links `libmlt++` and pulls composited frames from the
+A ~450-line C++ sidecar that links `libmlt++` and pulls composited frames from the
 compiled timeline so the editor can scrub and play the *same graph* that `melt` renders.
 The daemon compiles the timeline twice, at the preview scale the UI picks (½ by default):
 `.kuma/preview-video.mlt` holds only the picture and `.kuma/preview-audio.mlt` only the
@@ -19,7 +19,6 @@ Dependencies (Debian/Ubuntu): `libmlt++-dev libmlt-dev libsdl2-dev libturbojpeg0
 ```
 → load-video <path.mlt>  replace the picture's graph (keeps position and playback)
 → load-audio <path.mlt>  replace the sound's graph (keeps position and playback)
-→ load <path.mlt>        both, each from its own instance of one file
 → seek <frame>           show that frame (pauses)
 → play | pause           playback paced by the audio device
 → quit

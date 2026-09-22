@@ -12,16 +12,21 @@ use kuma_daemon::preview;
 use kuma_daemon::{AppState, Config};
 use serde_json::{json, Value};
 
-/// A project of one colour clip: enough to compile, and it needs neither media on disk nor
-/// ffmpeg, melt or hyperframes to get through a preview compile.
+/// A project of one colour clip and one sound: enough to compile, and it needs neither
+/// ffmpeg, melt nor hyperframes to get through a preview compile. The sound is two seconds
+/// of silence that [`wav`] writes, since an edit is validated against files on disk.
 const PROJECT: &str = r##"{
   "version": 1, "name": "t", "master": "main",
   "fps": { "num": 30, "den": 1 }, "width": 320, "height": 240, "sample_rate": 48000,
   "bin": {
     "navy": { "name": "Navy", "source": { "color": "#102030" } },
+    "tone": { "name": "Tone", "source": { "path": "tone.wav", "kind": "audio" } },
     "main": { "name": "Main", "source": { "tracks": [
       { "id": "v1", "kind": "video", "name": "V", "muted": false, "hidden": false, "transitions": [],
         "clips": [ { "id": "c1", "start": 0, "end": 2, "bin": "navy", "in": 0,
+                     "speed": 1, "volume": 1, "muted": false, "effects": [], "label": "" } ] },
+      { "id": "a1", "kind": "audio", "name": "A", "muted": false, "hidden": false, "transitions": [],
+        "clips": [ { "id": "t1", "start": 0, "end": 2, "bin": "tone", "in": 0,
                      "speed": 1, "volume": 1, "muted": false, "effects": [], "label": "" } ] }
     ], "markers": [] } }
   }
@@ -42,6 +47,7 @@ fn fixture() -> Option<(Arc<AppState>, tempfile::TempDir)> {
     let dir = tempfile::tempdir().unwrap();
     let project_file = dir.path().join("t.kuma.json");
     std::fs::write(&project_file, PROJECT).unwrap();
+    std::fs::write(dir.path().join("tone.wav"), wav(2)).unwrap();
     let config = Config {
         project_file,
         repo_root: repo,
@@ -49,6 +55,26 @@ fn fixture() -> Option<(Arc<AppState>, tempfile::TempDir)> {
         bind: "127.0.0.1:0".parse().unwrap(),
     };
     Some((Arc::new(AppState::load(config).unwrap()), dir))
+}
+
+/// `secs` of 48 kHz mono 16-bit silence as a WAV file.
+fn wav(secs: u32) -> Vec<u8> {
+    let data = 48_000 * 2 * secs;
+    let mut w = Vec::new();
+    w.extend_from_slice(b"RIFF");
+    w.extend_from_slice(&(36 + data).to_le_bytes());
+    w.extend_from_slice(b"WAVEfmt ");
+    w.extend_from_slice(&16u32.to_le_bytes()); // fmt chunk size
+    w.extend_from_slice(&1u16.to_le_bytes()); // PCM
+    w.extend_from_slice(&1u16.to_le_bytes()); // mono
+    w.extend_from_slice(&48_000u32.to_le_bytes());
+    w.extend_from_slice(&96_000u32.to_le_bytes()); // bytes per second
+    w.extend_from_slice(&2u16.to_le_bytes()); // block align
+    w.extend_from_slice(&16u16.to_le_bytes()); // bits
+    w.extend_from_slice(b"data");
+    w.extend_from_slice(&data.to_le_bytes());
+    w.resize(w.len() + data as usize, 0);
+    w
 }
 
 fn patch(state: &AppState, path: &str, value: Value) {
@@ -75,6 +101,24 @@ async fn the_engine_is_reloaded_only_when_the_compiled_document_changes() {
     patch(&state, &format!("{clip}/end"), json!(3.0));
     assert!(preview::reload(&state).await.unwrap().changed, "the clip's out point moved");
     assert!(!preview::reload(&state).await.unwrap().changed, "and then settles");
+}
+
+/// The picture and the sound are two graphs, and an edit reloads only the one it reaches:
+/// a colour is picture, a volume is sound, a cut is both.
+#[tokio::test]
+async fn an_edit_reloads_only_the_graph_it_changes() {
+    let Some((state, _dir)) = fixture() else { return };
+    let halves = |r: preview::Reloaded| (r.video, r.audio);
+    assert_eq!(halves(preview::reload(&state).await.unwrap()), (true, true), "a fresh engine needs both");
+
+    patch(&state, "/bin/navy/source/color", json!("#304050"));
+    assert_eq!(halves(preview::reload(&state).await.unwrap()), (true, false), "a colour is only picture");
+
+    patch(&state, "/bin/main/source/tracks/1/clips/0/volume", json!(0.5));
+    assert_eq!(halves(preview::reload(&state).await.unwrap()), (false, true), "a volume is only sound");
+
+    patch(&state, "/bin/main/source/tracks/0/clips/0/end", json!(3.0));
+    assert_eq!(halves(preview::reload(&state).await.unwrap()), (true, true), "the timeline got longer");
 }
 
 /// A burst of edits — an agent applying patches, undo held down — must not queue one

@@ -631,8 +631,7 @@ the first disables playback.
 Without an audio device, SDL's dummy driver still paces the callback in real time, so
 playback is always audio-paced and the alternate clock path was dead code.
 
-**Picture and sound as two graphs** — adopted; the compiler and the engine are built, the
-per-half reload is not. Today one graph carries both, so an audio edit changes the compiled document and
+**Picture and sound as two graphs** — adopted, and built end to end. Today one graph carries both, so an audio edit changes the compiled document and
 the engine rebuilds every producer and re-sends a picture that did not change, pausing
 playback to do it. That will not survive audio effects, where dragging a knob is an edit
 per step. The split: `CompileOptions::streams` (`Both`, `Video`, `Audio`) compiles a half
@@ -654,9 +653,10 @@ sequences need nothing of their own here: the compiler already put them in both.
 `kuma-daemon/tests/engine.rs` pins the pacing, frame by frame, and was checked to fail
 with a picture that runs free.
 
-Still to build: `preview::reload` stamping each half and sending only the one that
-changed. It compiles both and sends both under one stamp today, so an audio edit still
-reloads the picture, but no longer pauses playback to do it. Audio-reactive visuals do not
+`preview::reload` compiles both and stamps each, and sends the engine only the graph whose
+document changed: a colour reloads the picture, a volume the sound, a cut both. Clients
+still ask on every edit and never say which half; `/api/preview/reload` reports it, and
+`an_edit_reloads_only_the_graph_it_changes` pins it. Audio-reactive visuals do not
 couple the halves again: they are meant to be prebaked from an analysis of the sound into
 an overlay, the way subtitles are, not drawn by MLT's audio filters in the video graph.
 

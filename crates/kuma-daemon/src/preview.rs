@@ -49,15 +49,19 @@ pub struct PreviewHandle {
     pub last_error: Mutex<Option<String>>,
     /// Preview resolution as a fraction of the project size (0.25..=1.0).
     pub scale: Mutex<f64>,
-    /// Hash of the compiled timeline the engine is currently holding, so an edit that
-    /// compiles to the same document does not cost it a graph rebuild. Cleared whenever a
-    /// fresh engine starts, which is holding nothing.
-    loaded: Mutex<Option<u64>>,
+    /// Hashes of the picture's and the sound's graphs the engine is currently holding, so
+    /// an edit reloads only the graph it changed, and one that compiles to the same
+    /// documents costs no rebuild at all. Cleared whenever a fresh engine starts, which is
+    /// holding nothing.
+    loaded: Mutex<[Option<u64>; 2]>,
     /// Counts timelines handed to an engine. `reload` reports "changed" by comparing this
     /// across the call, not by comparing hashes: a restarted engine has to be given the
     /// same document again, and a caller whose work was done by a coalesced run still
     /// wants to hear that the engine was updated.
     loads: AtomicU64,
+    /// The same count per graph, so a caller can tell which of the two it changed.
+    video_loads: AtomicU64,
+    audio_loads: AtomicU64,
     /// Compiles performed. Only diagnostic — it is how the coalescing is observed, here
     /// and in `tests/preview.rs`.
     pub compiles: AtomicU64,
@@ -74,8 +78,10 @@ impl Default for PreviewHandle {
             starting: AsyncMutex::new(()),
             last_error: Mutex::new(None),
             scale: Mutex::new(0.5),
-            loaded: Mutex::new(None),
+            loaded: Mutex::new([None, None]),
             loads: AtomicU64::new(0),
+            video_loads: AtomicU64::new(0),
+            audio_loads: AtomicU64::new(0),
             compiles: AtomicU64::new(0),
             compiling: AsyncMutex::new(()),
             pending: AtomicBool::new(false),
@@ -84,12 +90,15 @@ impl Default for PreviewHandle {
 }
 
 /// What a reload did. `changed` is false when the project compiled to the documents the
-/// engine already had, so it was left alone.
+/// engine already had, so it was left alone; `video` and `audio` say which of the two
+/// graphs it was given.
 #[derive(Debug, Clone)]
 pub struct Reloaded {
     /// The picture's graph; the sound's is beside it (see [`preview_paths`]).
     pub path: PathBuf,
     pub changed: bool,
+    pub video: bool,
+    pub audio: bool,
 }
 
 pub struct Engine {
@@ -158,7 +167,7 @@ impl PreviewHandle {
         let engine = Arc::new(Engine { stdin: AsyncMutex::new(stdin), events: events.clone(), _child: child });
         *lock(&self.inner) = Some(engine.clone());
         // A new process holds no timeline, whatever the old one had.
-        *lock(&self.loaded) = None;
+        *lock(&self.loaded) = [None, None];
 
         // Reader task: parse the line protocol and fan out frames.
         let st = state.clone();
@@ -240,13 +249,16 @@ pub fn has_bin(name: &str) -> bool {
 /// burst of patches collapses. The pass at the end re-reads the project, so the last
 /// thing compiled is always a state observed after the last edit.
 pub async fn reload(state: &Arc<AppState>) -> anyhow::Result<Reloaded> {
-    let before = state.preview.loads.load(Ordering::SeqCst);
+    let p = &state.preview;
+    let count = || [&p.loads, &p.video_loads, &p.audio_loads].map(|c| c.load(Ordering::SeqCst));
+    let before = count();
     state.preview.pending.store(true, Ordering::SeqCst);
     let _guard = state.preview.compiling.lock().await;
     while state.preview.pending.swap(false, Ordering::SeqCst) {
         compile_and_load(state).await?;
     }
-    Ok(Reloaded { path: preview_paths(state).0, changed: state.preview.loads.load(Ordering::SeqCst) != before })
+    let after = count();
+    Ok(Reloaded { path: preview_paths(state).0, changed: after[0] != before[0], video: after[1] != before[1], audio: after[2] != before[2] })
 }
 
 /// Where the picture's and the sound's graphs are written.
@@ -283,29 +295,39 @@ async fn compile_and_load(state: &Arc<AppState>) -> anyhow::Result<()> {
         // The documents are the whole input: profile, every producer, and the bake
         // directories — whose names are themselves content hashes, so a template edited on
         // disk changes this even though the project document did not.
-        let stamp = stamp(&[&video, &audio]);
         st.preview.compiles.fetch_add(1, Ordering::SeqCst);
-        tracing::debug!("preview: compiled {} + {} bytes, stamp {stamp:016x}", video.len(), audio.len());
-        if *lock(&st.preview.loaded) == Some(stamp) {
-            return Ok(None);
+        let held = *lock(&st.preview.loaded);
+        // Each graph is written, and later sent, only when it differs from the one held.
+        let mut fresh = [None, None];
+        for (i, (xml, name)) in [(&video, "preview-video"), (&audio, "preview-audio")].into_iter().enumerate() {
+            let stamp = stamp(xml);
+            tracing::debug!("preview: compiled {name}, {} bytes, stamp {stamp:016x}", xml.len());
+            if held[i] != Some(stamp) {
+                fresh[i] = Some((crate::jobs::write_compiled(&st, xml, name)?, stamp));
+            }
         }
-        let paths = (crate::jobs::write_compiled(&st, &video, "preview-video")?, crate::jobs::write_compiled(&st, &audio, "preview-audio")?);
-        Ok::<_, anyhow::Error>(Some((paths, stamp)))
+        Ok::<_, anyhow::Error>(fresh)
     })
     .await??;
     // Only once the engine has actually been told, so a failed send does not leave us
     // believing it holds something it never received.
-    if let Some(((video, audio), stamp)) = fresh {
-        engine.send(&format!("load-video {}", video.display())).await?;
-        engine.send(&format!("load-audio {}", audio.display())).await?;
-        *lock(&state.preview.loaded) = Some(stamp);
+    let counters = [(&state.preview.video_loads, "load-video"), (&state.preview.audio_loads, "load-audio")];
+    let mut sent = false;
+    for (i, (fresh, (count, cmd))) in fresh.into_iter().zip(counters).enumerate() {
+        let Some((path, stamp)) = fresh else { continue };
+        engine.send(&format!("{cmd} {}", path.display())).await?;
+        lock(&state.preview.loaded)[i] = Some(stamp);
+        count.fetch_add(1, Ordering::SeqCst);
+        sent = true;
+    }
+    if sent {
         state.preview.loads.fetch_add(1, Ordering::SeqCst);
     }
     Ok(())
 }
 
-fn stamp(docs: &[&str]) -> u64 {
+fn stamp(xml: &str) -> u64 {
     let mut h = std::collections::hash_map::DefaultHasher::new();
-    docs.hash(&mut h);
+    xml.hash(&mut h);
     h.finish()
 }

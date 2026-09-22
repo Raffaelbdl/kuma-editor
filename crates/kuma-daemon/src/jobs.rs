@@ -583,10 +583,12 @@ pub fn sample_frames(state: &AppState, req: &SampleRequest, progress: &dyn Fn(u8
     let mut opts = compile_options(state);
     opts.bakes = bakes;
     opts.sequence = Some(sequence.clone());
-    // Overlay templates can change without a project revision (the agent edits the HTML),
-    // so the bake keys are part of the frame cache key.
-    let bake_stamp = hash_str(&opts.bakes.values().map(|b| b.resource.to_string_lossy().into_owned()).collect::<Vec<_>>().join("\n"));
     let xml = compile_xml(&project, &opts)?;
+    // The frame cache is keyed on the compiled document, which is the whole input: every
+    // producer, the bake directories (content hashes, so an overlay template edited on disk
+    // changes it without a project revision), and whatever the compiler itself does, so a
+    // kuma that compiles differently never serves a frame an older one sampled.
+    let doc_stamp = hash_str(&xml);
     let mlt_file = tempfile::Builder::new().prefix("sample-").suffix(".mlt").tempfile_in(state.config.cache_dir())?;
     std::fs::write(mlt_file.path(), xml)?;
     // Produce `target` through `f(tmp)` and publish it with a rename.
@@ -604,7 +606,7 @@ pub fn sample_frames(state: &AppState, req: &SampleRequest, progress: &dyn Fn(u8
         let t = if count == 1 { req.t0 } else { req.t0 + (t1 - req.t0) * i as f64 / (count - 1) as f64 };
         let frame = project.fps.frame(t);
         progress((50 + 50 * i / count) as u8, &format!("frame {frame}"));
-        let stamp = format!("{}_{sequence}_{}{}", project.revision, frame, if opts.bakes.is_empty() { String::new() } else { format!("o{bake_stamp}") });
+        let stamp = format!("{doc_stamp}_{frame}");
         let full = out_dir.join(format!("f{stamp}.png"));
         atomic(&full, &|tmp| Ok(kuma_mlt::melt::snapshot(mlt_file.path(), frame, tmp)?))?;
         let path = if req.rect.is_some() || req.width.is_some() {

@@ -192,3 +192,47 @@ fn each_half_graph_matches_the_full_graph() {
     // Not silence: the comparison would pass vacuously if both sides were empty.
     assert!(sound.iter().collect::<std::collections::HashSet<_>>().len() > 10, "the reference sound is silent");
 }
+
+/// A bake is one PNG per timeline frame, and an image sequence has no rate of its own:
+/// ffmpeg reads one at 25 fps unless told otherwise, which at 30 fps played every overlay
+/// at five sixths speed, so subtitles fell further behind the longer the clip ran. Frame k
+/// of this bake is grey level 4k, so the frame the timeline shows says which one it read.
+#[test]
+fn a_baked_overlay_plays_at_the_project_rate() {
+    if !have("ffmpeg") || !have("melt") {
+        eprintln!("ffmpeg/melt not available; skipping");
+        return;
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    std::fs::create_dir_all(root.join("bake")).unwrap();
+    ffmpeg(&["-f", "lavfi", "-i", "color=c=black:size=320x180:rate=30:duration=2,format=gray,geq=lum='N*4',format=rgba",
+        "-pix_fmt", "rgba", &root.join("bake/frame_%06d.png").to_string_lossy()]);
+    let p = kuma_core::parse_project(&serde_json::json!({
+        "version": 4, "name": "rate", "master": "main",
+        "fps": { "num": 30, "den": 1 }, "width": 320, "height": 180, "sample_rate": 48000,
+        "bin": {
+            "tag": { "name": "Tag", "source": { "template": "location-tag" } },
+            "main": { "name": "Main", "source": { "tracks": [
+                { "id": "o1", "kind": "overlay", "clips": [ { "id": "o", "start": 0, "end": 2, "bin": "tag" } ] }
+            ], "markers": [] } }
+        }
+    }).to_string()).unwrap();
+    let mut opts = CompileOptions::new(root);
+    opts.bakes.insert("o".into(), OverlayBake { resource: root.join("bake/frame_%06d.png"), is_still: false });
+    let mlt = root.join("rate.mlt");
+    std::fs::write(&mlt, compile(&p, &opts).unwrap()).unwrap();
+
+    for frame in [15i64, 45] {
+        let png = root.join(format!("f{frame}.png"));
+        snapshot(&mlt, frame, &png).expect("snapshot");
+        let out = Command::new("ffmpeg")
+            .args(["-v", "error", "-i"])
+            .arg(&png)
+            .args(["-vf", "crop=1:1:160:90,format=gray", "-f", "rawvideo", "-"])
+            .output()
+            .unwrap();
+        let grey = out.stdout[0] as i64;
+        assert!((grey - 4 * frame).abs() <= 3, "timeline frame {frame} shows bake frame ≈{}", grey / 4);
+    }
+}

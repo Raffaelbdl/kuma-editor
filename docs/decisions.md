@@ -592,6 +592,22 @@ how Kdenlive carries track effects and how a nested sequence's placements carry 
 Both were measured before the DTD was relaxed, and the evidence is written beside the
 declarations. Prefer fixing the copy over emitting worse XML to satisfy it.
 
+**A baked overlay is read at the project's rate, `force_fps`** — adopted, after subtitles
+rendered later and later behind the preview. A bake is one PNG per timeline frame, but an
+image sequence carries no rate, and ffmpeg's image2 demuxer reads one at 25 fps: in a 30 fps
+project every animated overlay played at five sixths speed, a fifth of a second late per
+second into the clip. The preview never showed it because the open sequence's overlays are
+live DOM, and the render test's bake was a box that does not move. The compiler now sets
+`force_fps` to the project rate on every animated bake, and
+`a_baked_overlay_plays_at_the_project_rate` reads a bake whose frame k is grey level 4k.
+MLT's own sequence readers (`pixbuf`/`qimage` with a `%06d` resource) were measured frame
+exact too, by seek and in sequence; `force_fps` was kept as the one-line change.
+
+The frame cache of `sample_frames` is keyed on the compiled document, like the preview,
+rather than on the project revision and the bake paths: under the old key, a kuma that
+compiles differently kept serving frames an older one had sampled, which is how this bug
+first looked unfixed after it was fixed.
+
 ## Templates and presets as user assets
 
 **Templates and presets live outside the codebase** — adopted.

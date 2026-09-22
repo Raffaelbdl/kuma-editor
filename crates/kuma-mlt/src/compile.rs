@@ -524,6 +524,10 @@ fn emit_clip_producer(ctx: &Ctx, p: &Plan, w: &mut XmlWriter) -> Result<(), Comp
                 w.property("ttl", "1");
             } else {
                 w.property("mlt_service", "avformat");
+                // A bake has one frame per timeline frame, but an image sequence has no
+                // rate of its own and ffmpeg reads one at 25 fps: at any other project rate
+                // the overlay would drift, late by a fifth of its time into the clip at 30.
+                w.property("force_fps", ctx.fps.as_f64().to_string());
             }
             w.property("resource", bake.resource.to_string_lossy());
             w.property("length", len.to_string());

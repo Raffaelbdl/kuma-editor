@@ -209,6 +209,7 @@
   </playlist>
   <producer id="clip_o_c1" in="0" out="89">
     <property name="mlt_service">avformat</property>
+    <property name="force_fps">30</property>
     <property name="resource">/proj/.kuma/bakes/abc/frame_%06d.png</property>
     <property name="length">90</property>
     <property name="mlt_image_format">rgba</property>

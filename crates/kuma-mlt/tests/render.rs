@@ -4,7 +4,6 @@
 use std::path::Path;
 use std::process::Command;
 
-use kuma_core::Project;
 use kuma_mlt::melt::snapshot;
 use kuma_mlt::{compile, presets, render, CompileOptions, OverlayBake, RenderJob};
 
@@ -42,7 +41,7 @@ fn renders_reference_project_with_melt() {
     let root = tmp.path().to_path_buf();
     make_media(&root);
 
-    let p: Project = serde_json::from_str(include_str!("fixtures/reference.kuma.json")).unwrap();
+    let p = kuma_core::parse_project(include_str!("fixtures/reference.kuma.json")).unwrap();
     let mut opts = CompileOptions::new(&root);
     opts.bakes.insert(
         "o_c1".into(),

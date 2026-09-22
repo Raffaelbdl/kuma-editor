@@ -1668,6 +1668,24 @@ because it is the part deliberately left out.
   background is transparent and wrapping would give it one that compiling it as root does
   not.
 
+- **Offer a clip only the effects that can act on it** — agreed, not built. The inspector
+  lists every effect for every clip, so an audio clip offers `transform`, `crop` and `fade`,
+  and a still or a colour offers `volume`. Each does nothing to it, and the user reads that as
+  a broken effect: a `fade` on an audio clip was reported as "fade not applied in the
+  preview", when `fade` has only ever been an opacity fade, in the render too. The data to
+  decide it already exists: `Effect::streams()` says what an effect acts on, and whether a
+  clip shows or sounds follows from its bin entry and its track (`clip_has_audio`,
+  `TrackKind`). The rule is to offer an effect when its streams meet the clip's. It
+  belongs in kuma-core, next to `Effect::streams()`, so the UI, MCP's effect listing and
+  the validator give the same answer, and the validator could warn about an effect already
+  placed that cannot act.
+
+  Decide with it what `fade` does to sound. Three shapes are on the table: `fade` also
+  ramps the gain whenever the clip sounds; a separate audio fade effect, as Kdenlive has;
+  or one `fade` with picture and sound switches. The first changes the sound of finished
+  videos that already carry fades. The last needs a format version bump if old documents
+  must keep their picture-only meaning.
+
 - **Ship a starter set of design systems** before any public release. The mechanism is in
   and nothing is in it, which makes the feature invisible to anyone who has not read the
   guide; see *Design systems* above for what such a set has to demonstrate.

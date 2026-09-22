@@ -42,6 +42,13 @@ fn upgrade(v: &mut Value) {
         // in an older document has to change, so this is a stamp too.
         version = 4;
     }
+    if version == 4 {
+        // 4 → 5: `volume` gained a static `gain`, defaulting to 1 — and a key without a
+        // gain, which used to mean 1, now means the static, which is 1. An empty
+        // `keyframes` is allowed now rather than refused. `audio_fade` is a new kind, so
+        // no older document has one. A stamp again.
+        version = 5;
+    }
     v["version"] = Value::from(version);
 }
 
@@ -67,7 +74,7 @@ mod tests {
     /// the current version too, not on 3-as-of-when-it-was-written.
     #[test]
     fn every_older_version_climbs_to_the_current_one() {
-        for from in [1, 2, 3] {
+        for from in [1, 2, 3, 4] {
             let text = V1.replace("\"version\": 1", &format!("\"version\": {from}"));
             assert_eq!(parse_project(&text).expect("parse").version, crate::PROJECT_VERSION, "from {from}");
         }

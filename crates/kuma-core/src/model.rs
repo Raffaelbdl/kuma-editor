@@ -209,6 +209,27 @@ impl Project {
             }
     }
 
+    /// What a clip on `track` can show and sound — which is what an effect on it has to act
+    /// on to do anything ([`Effect::acts_on`]). `None` for a clip with neither, or whose
+    /// entry does not resolve.
+    ///
+    /// A capability, not a state: muting the clip or its track changes nothing here, so an
+    /// effect stays offered, and valid, across a mute. Picture is the track's to allow (an
+    /// audio track draws none) and the source's to have; sound is the source's alone, the
+    /// probe's word where it has spoken and "yes" for a file it has not, as the daemon
+    /// assumes when it transcribes one.
+    pub fn clip_streams(&self, track: &Track, clip: &Clip) -> Option<Streams> {
+        let item = self.item(clip)?;
+        let (video, audio) = match &item.source {
+            BinSource::File { kind: MediaKind::Image, .. } => (true, false),
+            BinSource::File { kind, .. } => (*kind != MediaKind::Audio, item.meta.as_ref().is_none_or(|m| m.has_audio)),
+            BinSource::Sequence(_) => (true, self.seq_has_audio(&clip.bin)),
+            BinSource::Overlay { .. } | BinSource::Color { .. } => (true, false),
+            BinSource::Folder { .. } => (false, false),
+        };
+        Streams::of(video && track.kind != TrackKind::Audio, audio)
+    }
+
     /// Whether a track sounds: unmuted, with a clip that does.
     pub fn track_has_audio(&self, track: &Track) -> bool {
         !track.muted && track.clips.iter().any(|c| self.clip_has_audio(c))
@@ -682,17 +703,31 @@ pub enum Effect {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         keyframes: Vec<Keyframe>,
     },
-    /// Opacity fade in/out, durations in seconds.
+    /// Picture fade in/out (opacity), durations in seconds. The sound's is `audio_fade`.
     Fade {
         #[serde(default, rename = "in")]
         fade_in: f64,
         #[serde(default, rename = "out")]
         fade_out: f64,
     },
-    /// Keyframed audio gain (linear), as `gain` on each key; a key without one means 1,
-    /// the clip as recorded. There is no static gain here because the clip already has
-    /// one, and this multiplies it.
-    Volume { keyframes: Vec<Keyframe> },
+    /// Sound fade in/out: the gain rises from silence over `in` seconds at the clip's start
+    /// and falls back to it over `out` at its end. A kind of its own rather than a switch on
+    /// `fade`, so a picture fade already in a finished video goes on leaving its sound alone,
+    /// and so the two can take different lengths on one clip.
+    AudioFade {
+        #[serde(default, rename = "in")]
+        fade_in: f64,
+        #[serde(default, rename = "out")]
+        fade_out: f64,
+    },
+    /// Audio gain (linear): 1 is the clip as recorded. It multiplies the clip's own
+    /// `volume`, which is the placement's fader; this is a gain stage that can move.
+    Volume {
+        #[serde(default = "one")]
+        gain: f64,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        keyframes: Vec<Keyframe>,
+    },
     /// Escape hatch: any MLT filter by service name with raw properties.
     Mlt {
         service: String,
@@ -713,6 +748,15 @@ pub enum Streams {
 }
 
 impl Streams {
+    /// The streams named by two flags, or `None` for neither.
+    pub fn of(video: bool, audio: bool) -> Option<Streams> {
+        match (video, audio) {
+            (true, true) => Some(Streams::Both),
+            (true, false) => Some(Streams::Video),
+            (false, true) => Some(Streams::Audio),
+            (false, false) => None,
+        }
+    }
     pub fn video(self) -> bool {
         self != Streams::Audio
     }
@@ -730,7 +774,7 @@ impl Effect {
     /// image filter nobody asks for an image from costs nothing.
     pub fn streams(&self) -> Streams {
         match self {
-            Effect::Volume { .. } => Streams::Audio,
+            Effect::Volume { .. } | Effect::AudioFade { .. } => Streams::Audio,
             Effect::Mlt { .. } => Streams::Both,
             Effect::Transform { .. } | Effect::Crop { .. } | Effect::Blur { .. } | Effect::Color { .. } | Effect::Fade { .. } | Effect::Blend { .. } => {
                 Streams::Video
@@ -738,8 +782,21 @@ impl Effect {
         }
     }
 
+    /// Whether this effect does anything to a clip carrying `clip` — see
+    /// [`Project::clip_streams`]. The editor offers only the kinds that do, and the
+    /// validator warns about one already placed that does not.
+    pub fn acts_on(&self, clip: Streams) -> bool {
+        self.streams().meets(clip)
+    }
+
     /// The parameters a keyframe of this kind may set, under the names its static fields
     /// have. One table, so the validator, the compiler and the editor cannot disagree.
+    ///
+    /// Every kind with a quantity to move is here, static until it is given keys. The
+    /// three that are not have nothing a key could mean: a fade's numbers are lengths of
+    /// time, so it is an animation already; a blend mode is a choice, and changing it
+    /// mid-clip is a cut; and `mlt` properties are strings MLT reads, where an animation
+    /// string can be written directly.
     pub fn animatable(&self) -> &'static [&'static str] {
         match self {
             Effect::Transform { .. } => &["x", "y", "scale", "rotation", "opacity"],
@@ -747,7 +804,7 @@ impl Effect {
             Effect::Blur { .. } => &["radius"],
             Effect::Color { .. } => &["brightness", "contrast", "saturation", "gamma"],
             Effect::Volume { .. } => &["gain"],
-            Effect::Blend { .. } | Effect::Fade { .. } | Effect::Mlt { .. } => &[],
+            Effect::Blend { .. } | Effect::Fade { .. } | Effect::AudioFade { .. } | Effect::Mlt { .. } => &[],
         }
     }
 
@@ -758,8 +815,8 @@ impl Effect {
             | Effect::Crop { keyframes, .. }
             | Effect::Blur { keyframes, .. }
             | Effect::Color { keyframes, .. }
-            | Effect::Volume { keyframes } => keyframes,
-            Effect::Blend { .. } | Effect::Fade { .. } | Effect::Mlt { .. } => &[],
+            | Effect::Volume { keyframes, .. } => keyframes,
+            Effect::Blend { .. } | Effect::Fade { .. } | Effect::AudioFade { .. } | Effect::Mlt { .. } => &[],
         }
     }
 }
@@ -863,6 +920,71 @@ mod tests {
         // …and none is written when there are none, so a file without them is unchanged.
         let e: Effect = serde_json::from_value(json!({ "type": "blur", "radius": 3 })).unwrap();
         assert_eq!(serde_json::to_value(&e).unwrap(), json!({ "type": "blur", "radius": 3.0 }));
+    }
+
+    /// A volume is static until it is given keys, like every other kind that moves, and a
+    /// volume written before it had a static gain reads exactly as it did: a key without
+    /// `gain` meant 1, and the static it now falls back to is 1.
+    #[test]
+    fn a_volume_is_static_until_keyed_and_an_old_one_reads_the_same() {
+        let e: Effect = serde_json::from_value(json!({ "type": "volume", "gain": 0.5 })).unwrap();
+        assert_eq!(serde_json::to_value(&e).unwrap(), json!({ "type": "volume", "gain": 0.5 }), "no keys, none written");
+        let old: Effect = serde_json::from_value(json!({ "type": "volume", "keyframes": [ { "t": 0, "gain": 0 }, { "t": 1 } ] })).unwrap();
+        let Effect::Volume { gain, keyframes } = &old else { panic!("{old:?}") };
+        assert_eq!((*gain, keyframes[1].or("gain", *gain)), (1.0, 1.0));
+        let fade: Effect = serde_json::from_value(json!({ "type": "audio_fade", "in": 1, "out": 2 })).unwrap();
+        assert_eq!(fade.streams(), Streams::Audio);
+        assert!(fade.animatable().is_empty(), "a fade's numbers are lengths of time");
+    }
+
+    /// Which effects can act on a clip: picture where the track draws one and the source
+    /// has one, sound where the source has it — and a mute changes neither.
+    #[test]
+    fn a_clip_carries_what_its_source_has_where_its_track_allows() {
+        let p: Project = serde_json::from_value(json!({
+            "bin": {
+                "talk": { "source": { "path": "talk.mp4" } },
+                "screen": { "source": { "path": "screen.mp4" }, "meta": { "has_audio": false } },
+                "song": { "source": { "path": "song.mp3", "kind": "audio" } },
+                "logo": { "source": { "path": "logo.png", "kind": "image" } },
+                "red": { "source": { "color": "#f00" } },
+                "tag": { "source": { "template": "location-tag" } },
+                "part": seq(json!([{ "id": "pa", "kind": "audio", "clips": [ { "id": "p1", "start": 0, "end": 2, "bin": "song" } ] }])),
+                "main": seq(json!([
+                    { "id": "v1", "clips": [
+                        { "id": "c1", "start": 0, "end": 1, "bin": "talk", "muted": true },
+                        { "id": "c2", "start": 1, "end": 2, "bin": "screen" },
+                        { "id": "c3", "start": 2, "end": 3, "bin": "logo" },
+                        { "id": "c4", "start": 3, "end": 4, "bin": "red" },
+                        { "id": "c5", "start": 4, "end": 5, "bin": "part" } ] },
+                    { "id": "o1", "kind": "overlay", "clips": [ { "id": "c6", "start": 0, "end": 1, "bin": "tag" } ] },
+                    { "id": "a1", "kind": "audio", "clips": [
+                        { "id": "c7", "start": 0, "end": 1, "bin": "song" },
+                        { "id": "c8", "start": 1, "end": 2, "bin": "talk" },
+                        { "id": "c9", "start": 2, "end": 3, "bin": "screen" } ] }
+                ]))
+            }
+        }))
+        .unwrap();
+        let of = |id: &str| {
+            let (_, t, c) = p.find_clip(id).unwrap();
+            p.clip_streams(t, c)
+        };
+        assert_eq!(of("c1"), Some(Streams::Both), "a mute is a state, not a capability");
+        assert_eq!(of("c2"), Some(Streams::Video), "the probe found no sound");
+        assert_eq!(of("c3"), Some(Streams::Video));
+        assert_eq!(of("c4"), Some(Streams::Video));
+        assert_eq!(of("c5"), Some(Streams::Both), "a sequence sounds when something in it does");
+        assert_eq!(of("c6"), Some(Streams::Video));
+        assert_eq!(of("c7"), Some(Streams::Audio));
+        assert_eq!(of("c8"), Some(Streams::Audio), "an audio track draws no picture");
+        assert_eq!(of("c9"), None, "a silent video on an audio track has nothing to act on");
+
+        let fade: Effect = serde_json::from_value(json!({ "type": "fade", "in": 1 })).unwrap();
+        let volume: Effect = serde_json::from_value(json!({ "type": "volume" })).unwrap();
+        let mlt: Effect = serde_json::from_value(json!({ "type": "mlt", "service": "x" })).unwrap();
+        assert!(!fade.acts_on(Streams::Audio) && volume.acts_on(Streams::Audio) && !volume.acts_on(Streams::Video));
+        assert!(mlt.acts_on(Streams::Audio) && mlt.acts_on(Streams::Video), "the escape hatch is opaque, so it is offered everywhere");
     }
 
     /// A sequence is just a fourth kind of bin entry, so everything a clip already does

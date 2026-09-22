@@ -184,6 +184,7 @@
     <filter id="clip_pip_blur2" in="0" out="149">
       <property name="mlt_service">avfilter.gblur</property>
       <property name="av.sigma">2</property>
+      <property name="av.sigmaV">2</property>
       <property name="av.steps">2</property>
     </filter>
   </producer>
@@ -199,6 +200,7 @@
     <filter id="clip_s2_blur1" in="0" out="59">
       <property name="mlt_service">avfilter.gblur</property>
       <property name="av.sigma">1.5</property>
+      <property name="av.sigmaV">1.5</property>
       <property name="av.steps">2</property>
     </filter>
   </playlist>

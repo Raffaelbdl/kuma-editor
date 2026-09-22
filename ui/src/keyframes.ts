@@ -10,7 +10,7 @@
 
 import { store } from "./store";
 import type { Clip, Ease, Effect, Keyframe } from "./types";
-import { ANIMATABLE, clipPathOf, covers, keyframesOf, minKeys, nearest, paramAt, sampleEffect } from "./types";
+import { ANIMATABLE, clipPathOf, covers, keyframesOf, nearest, paramAt, sampleEffect } from "./types";
 
 /** The keyframes of one effect, and everything the panel does to them. Times are read from
  *  the store on demand, never captured: the playhead moves under a panel that is
@@ -27,11 +27,6 @@ export class Animation {
    *  playhead rather than statically. */
   get fields(): string[] {
     return Object.keys(ANIMATABLE[this.effect.type] ?? {});
-  }
-
-  /** How many keys must remain: 1 for a volume effect, which the model refuses empty. */
-  get min(): number {
-    return minKeys(this.effect.type);
   }
 
   get animated(): boolean {
@@ -123,7 +118,7 @@ export class Animation {
   }
 
   removeKey(i = this.index) {
-    if (i < 0 || this.keys.length <= this.min) return;
+    if (i < 0) return;
     this.write(this.keys.filter((_, j) => j !== i), "remove key");
   }
 
@@ -144,7 +139,6 @@ export class Animation {
    *  ones. Without that, un-animating would snap back to whatever the statics were before
    *  the first key — which is never what you meant. */
   clear() {
-    if (this.min > 0) return;
     // `t` and `ease` belong to a key, not to the effect, which would refuse them.
     const { t: _t, ease: _e, ...values } = this.sample(this.local);
     this.commit({ ...this.effect, keyframes: [], ...values } as Effect, "clear keys");

@@ -178,8 +178,8 @@ describe("the inspector's property fields", { skip: why ? `skipping: ${why}` : f
     assert.equal(await page.eval(shows(".effect .effect-body")), true);
     assert.equal(await page.eval(`${disclose}.getAttribute("aria-expanded")`), "true");
     // The case above left a key on it, and a head that can fold must say so — the strip
-    // that would otherwise tell you goes away with the body.
-    assert.equal(await page.eval(`!!${box}.querySelector(".head .keyed")`), true);
+    // that would otherwise tell you goes away with the body. The diamond there is filled.
+    assert.equal(await page.eval(`!!${box}.querySelector(".head .kf-toggle.on")`), true);
 
     const before = await page.eval(REVISION);
     await page.eval(`${disclose}.click()`);
@@ -239,6 +239,8 @@ describe("keyframes", { skip: why ? `skipping: ${why}` : false }, () => {
   const KEYS = `${EFFECT}.then(e => e.keyframes.map(k => k.t + ":" + k.x).join(" "))`;
   const X = `document.querySelector(".effect .num.axis-x input").value`;
   const button = (text) => `[...document.querySelectorAll(".effect button")].find(b => b.textContent.trim() === ${JSON.stringify(text)})`;
+  /** The keyframe diamond in an effect's head: outlined to start animating, filled to stop. */
+  const toggle = (i = 0) => `[...document.querySelectorAll(".effect")][${i}].querySelector(".head .kf-toggle")`;
 
   /** Wait for the page to have caught up with the daemon: the top bar shows the revision
    *  it last loaded, so this is "the panel you are about to click is built from the
@@ -347,16 +349,20 @@ describe("keyframes", { skip: why ? `skipping: ${why}` : false }, () => {
   it("clears the keys and keeps the value where the playhead is", async () => {
     await page.eval(seek(6));
     await page.until(`${X} === "140"`);
-    await page.eval(`${button("Clear")}.click()`);
+    // The filled diamond in the head is what stops it; the keys row has no button for it.
+    assert.equal(await page.eval(`${toggle()}.classList.contains("on")`), true);
+    assert.equal(await page.eval(`!!${button("Clear")}`), false);
+    await page.eval(`${toggle()}.click()`);
     await keysAre("");
     assert.equal(await page.eval(`${EFFECT}.then(e => [e.x, e.scale])`).then(JSON.stringify), JSON.stringify([140, 1]));
-    // …and the row goes back to offering animation rather than a strip.
-    await page.until(`!document.querySelector(".effect .kfs-key") && !!${button("◆ Animate")}`);
+    // …and the effect goes back to plain fields: no strip, no keys row at all — only the
+    // outlined diamond, which is all a static effect spends on animation.
+    await page.until(`!document.querySelector(".effect .kfs-key") && !document.querySelector('.effect [data-prop="keys"]') && !${toggle()}.classList.contains("on")`);
   });
 
   it("starts keyframing from what the effect already does", async () => {
     await page.eval(seek(5)); // three seconds in
-    await page.eval(`${button("◆ Animate")}.click()`);
+    await page.eval(`${toggle()}.click()`);
     await keysAre("3:140");
     assert.deepEqual(await page.eval(`${EFFECT}.then(e => e.keyframes[0])`), { t: 3, x: 140, y: 0, scale: 1, rotation: 0, opacity: 1 });
   });
@@ -423,7 +429,7 @@ describe("keyframes", { skip: why ? `skipping: ${why}` : false }, () => {
     };
 
     await page.eval(seek(5)); // three seconds in
-    await page.eval(`[...${box}.querySelectorAll("button")].find(b => b.textContent.trim() === "◆ Animate").click()`);
+    await page.eval(`${toggle(1)}.click()`);
     // The key carries the kind's animatable parameters — for a blur, its radius — and
     // nothing else: no ease (linear is unwritten), no fields the kind does not have.
     await blurIs('[{"t":3,"radius":4}]');
@@ -527,5 +533,92 @@ describe("keyframes", { skip: why ? `skipping: ${why}` : false }, () => {
     await page.until(`document.querySelector(".kf-ease").disabled === false`);
     assert.equal(await page.eval(`document.querySelector(".kf-hint").textContent`), "");
     assert.equal(await page.eval(`[...document.querySelectorAll(".effect label")].some(l => l.textContent === "Ease → next")`), true);
+  });
+});
+
+// ---------------------------------------------------------------------------------
+// Which effects a clip is offered: only the ones that can act on it. A colour shows and
+// never sounds; a song sounds and never shows. Each is offered its own half, and an
+// effect placed anyway says it does nothing rather than looking broken.
+
+/** One second of 8 kHz mono silence: a real file for an audio entry, without ffmpeg. */
+function silentWav(file) {
+  const samples = 8000, data = samples * 2, b = Buffer.alloc(44 + data);
+  b.write("RIFF", 0); b.writeUInt32LE(36 + data, 4); b.write("WAVE", 8); b.write("fmt ", 12);
+  b.writeUInt32LE(16, 16); b.writeUInt16LE(1, 20); b.writeUInt16LE(1, 22); b.writeUInt32LE(8000, 24);
+  b.writeUInt32LE(16000, 28); b.writeUInt16LE(2, 32); b.writeUInt16LE(16, 34); b.write("data", 36); b.writeUInt32LE(data, 40);
+  fs.writeFileSync(file, b);
+}
+
+const OFFERED = JSON.stringify({
+  version: 5, name: "offered", master: "main",
+  fps: { num: 30, den: 1 }, width: 1920, height: 1080, sample_rate: 48000,
+  bin: {
+    red: { name: "Red", source: { color: "#ff0000" } },
+    song: { name: "Song", source: { path: "song.wav", kind: "audio" } },
+    main: { name: "Main", source: { markers: [], tracks: [
+      { id: "v1", kind: "video", name: "Video", muted: false, hidden: false, transitions: [], clips: [
+        { id: "c1", start: 0, end: 4, bin: "red", in: 0, speed: 1, volume: 1, muted: false, label: "", effects: [{ type: "volume", gain: 0.5 }] },
+      ] },
+      { id: "a1", kind: "audio", name: "Audio", muted: false, hidden: false, transitions: [], clips: [
+        { id: "c2", start: 0, end: 1, bin: "song", in: 0, speed: 1, volume: 1, muted: true, label: "", effects: [] },
+      ] },
+    ] } },
+  },
+}, null, 2);
+
+describe("the effects a clip is offered", { skip: why ? `skipping: ${why}` : false }, () => {
+  let tmp, daemon, page;
+
+  const select = (id) => page.eval(`(() => { const c = document.querySelector('.clip[data-id="${id}"]'); const r = c.getBoundingClientRect();
+    c.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, clientX: r.left + 10, clientY: r.top + 2 }));
+    window.dispatchEvent(new PointerEvent("pointerup", { bubbles: true })); return true; })()`);
+  const ADD = `[...document.querySelectorAll("#inspector select")].find(s => s.options[0]?.textContent === "+ add effect…")`;
+  const offered = () => page.eval(`[...${ADD}.options].slice(1).map(o => o.value).join(" ")`);
+  const labels = () => page.eval(`[...document.querySelectorAll("#inspector .field > label")].map(l => l.textContent).join(" ")`);
+
+  before(async () => {
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), "kuma-offered-"));
+    silentWav(path.join(tmp, "song.wav"));
+    const projectFile = path.join(tmp, "offered.kuma.json");
+    fs.writeFileSync(projectFile, OFFERED);
+    daemon = await startDaemon(projectFile);
+    page = await driver(daemon.url);
+    await page.until(`!!document.querySelector('.clip[data-id="c2"]')`);
+  });
+
+  after(() => {
+    page?.close();
+    daemon?.proc.kill("SIGTERM");
+    if (tmp) fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it("offers a colour the picture's effects, and says a volume on it does nothing", async () => {
+    await select("c1");
+    await page.until(`!!document.querySelector(".effect")`);
+    assert.equal(await offered(), "transform crop blend blur color fade mlt");
+    // Placed anyway (by patch), it stays — dimmed, and saying why.
+    assert.equal(await page.eval(`document.querySelector(".effect").classList.contains("inert")`), true);
+    assert.match(await page.eval(`document.querySelector(".effect .disclose").title`), /has no sound/);
+    // A colour has no level to set, so the clip's own Volume and Muted are not offered either.
+    assert.doesNotMatch(await labels(), /Volume|Muted/);
+  });
+
+  it("offers a song the sound's effects, muted or not", async () => {
+    await select("c2");
+    await page.until(`!!${ADD} && document.querySelector("#inspector h3 .mono")?.textContent === "c2"`);
+    // A mute is a state: what the clip can do is unchanged by it, and so is the list.
+    assert.equal(await offered(), "audio_fade volume mlt");
+    assert.equal(await page.eval(`${ADD}.options[1].textContent`), "audio fade");
+    assert.match(await labels(), /Volume.*Muted/);
+  });
+
+  it("adds a volume as a plain gain, with a diamond to animate it and no keys row", async () => {
+    await page.eval(`(() => { const s = ${ADD}; s.value = "volume"; s.dispatchEvent(new Event("change", { bubbles: true })); return true; })()`);
+    const VOL = `fetch("/api/project").then(r => r.json()).then(p => JSON.stringify(p.bin.main.source.tracks[1].clips[0].effects))`;
+    await page.until(`${VOL}.then(s => s === '[{"type":"volume","gain":1}]')`);
+    await page.until(`!!document.querySelector('.effect [data-prop="gain"]')`);
+    assert.equal(await page.eval(`!!document.querySelector('.effect [data-prop="keys"]')`), false, "static until asked");
+    assert.equal(await page.eval(`document.querySelector(".effect .head .kf-toggle").classList.contains("on")`), false);
   });
 });

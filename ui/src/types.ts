@@ -43,9 +43,9 @@ export type Keyframe = { t: number; ease?: Ease } & { [param: string]: number | 
 
 /**
  * What each effect can animate, and what a parameter means when the effect does not state
- * it (its own default — a volume effect has no static gain, and a key without one is 1,
- * the clip as recorded). Mirrors `Effect::animatable` in `model.rs`; a kind absent here
- * takes no keyframes.
+ * it (its own default). Mirrors `Effect::animatable` in `model.rs`; a kind absent here
+ * takes no keyframes — a fade's numbers are lengths of time, a blend mode is a choice, and
+ * `mlt` properties are strings MLT reads.
  */
 export const ANIMATABLE: Partial<Record<Effect["type"], Record<string, number>>> = {
   transform: { x: 0, y: 0, scale: 1, rotation: 0, opacity: 1 },
@@ -55,9 +55,56 @@ export const ANIMATABLE: Partial<Record<Effect["type"], Record<string, number>>>
   volume: { gain: 1 },
 };
 
-/** How many keys a kind must keep: a volume effect *is* its keyframes, and the validator
- *  refuses one with none. Every other kind can go back to being static. */
-export const minKeys = (type: Effect["type"]): number => (type === "volume" ? 1 : 0);
+/** What a clip can show and sound — what an effect has to act on to do anything. */
+export interface Streams { video: boolean; audio: boolean }
+
+/** What each effect acts on. Mirrors `Effect::streams` in `model.rs`: `mlt`'s service is
+ *  opaque, so it is both. A record over every kind, so a new one is a compile error here. */
+const EFFECT_STREAMS: Record<Effect["type"], Streams> = {
+  transform: { video: true, audio: false },
+  crop: { video: true, audio: false },
+  blend: { video: true, audio: false },
+  blur: { video: true, audio: false },
+  color: { video: true, audio: false },
+  fade: { video: true, audio: false },
+  audio_fade: { video: false, audio: true },
+  volume: { video: false, audio: true },
+  mlt: { video: true, audio: true },
+};
+
+/** What an effect of this kind acts on. */
+export const streamsOf = (type: Effect["type"]): Streams => EFFECT_STREAMS[type];
+
+/** Whether an effect of this kind does anything to a clip carrying `clip`. */
+export const actsOn = (type: Effect["type"], clip: Streams): boolean =>
+  (EFFECT_STREAMS[type].video && clip.video) || (EFFECT_STREAMS[type].audio && clip.audio);
+
+/** What a clip on `track` can show and sound. Mirrors `Project::clip_streams` in
+ *  `model.rs`: a capability, not a state, so a mute changes nothing; picture is the
+ *  track's to allow and the source's to have, sound the source's alone. */
+export function clipStreams(p: Project, track: Track, clip: Clip): Streams {
+  const item = binItem(p, clip);
+  if (!item) return { video: false, audio: false };
+  const kind = itemKind(item);
+  const video = kind !== "audio" && kind !== "folder";
+  const audio = kind === "sequence" ? sequenceSounds(p, clip.bin) : (kind === "video" || kind === "audio") && (item.meta?.has_audio ?? true);
+  return { video: video && track.kind !== "audio", audio };
+}
+
+/** Whether a sequence carries any sound, following nested ones; the inner mutes are its
+ *  content, so they count. Mirrors `Project::seq_has_audio`. Cycle-safe. */
+function sequenceSounds(p: Project, id: string, seen = new Set<string>()): boolean {
+  const seq = sequenceOf(p, id);
+  if (!seq || seen.has(id)) return false;
+  seen.add(id);
+  return seq.tracks.some((t) => !t.muted && t.clips.some((c) => {
+    if (c.muted) return false;
+    const item = binItem(p, c);
+    if (!item) return false;
+    const k = itemKind(item);
+    return k === "sequence" ? sequenceSounds(p, c.bin, seen) : k === "video" || k === "audio";
+  }));
+}
 
 export type Effect =
   | { type: "transform"; x?: number; y?: number; scale?: number; rotation?: number; opacity?: number; keyframes?: Keyframe[] }
@@ -66,7 +113,8 @@ export type Effect =
   | { type: "blur"; radius: number; keyframes?: Keyframe[] }
   | { type: "color"; brightness?: number; contrast?: number; saturation?: number; gamma?: number; keyframes?: Keyframe[] }
   | { type: "fade"; in?: number; out?: number }
-  | { type: "volume"; keyframes: Keyframe[] }
+  | { type: "audio_fade"; in?: number; out?: number }
+  | { type: "volume"; gain?: number; keyframes?: Keyframe[] }
   | { type: "mlt"; service: string; properties?: Record<string, string> };
 
 /** A placement of a bin entry: when it plays, not what it is. */
@@ -422,7 +470,7 @@ export function transformAt(e: Extract<Effect, { type: "transform" }>, local: nu
 /** Re-base a time-relative effect for a clip that starts `cut` seconds later (the right
  *  half of a split): keyframes shift, the value at the cut becomes the first keyframe. */
 export function shiftEffect(e: Effect, cut: number): Effect {
-  if (e.type === "fade") return { ...e, in: 0 };
+  if (e.type === "fade" || e.type === "audio_fade") return { ...e, in: 0 };
   const kfs = keyframesOf(e);
   if (!kfs.length) return e;
   // The key the cut lands in carries that segment's ease (`sampleEffect` does), or a half
@@ -433,7 +481,7 @@ export function shiftEffect(e: Effect, cut: number): Effect {
 
 /** The complementary trim for the left half: keep keyframes up to the cut, then hold. */
 export function trimEffect(e: Effect, cut: number): Effect {
-  if (e.type === "fade") return { ...e, out: 0 };
+  if (e.type === "fade" || e.type === "audio_fade") return { ...e, out: 0 };
   const kfs = keyframesOf(e);
   if (!kfs.some((k) => k.t > cut)) return e;
   return { ...e, keyframes: [...kfs.filter((k) => k.t <= cut), sampleEffect(e, cut)] } as Effect;

@@ -32,6 +32,10 @@ const ICONS = {
     shape("circle", { cx: 12, cy: 12, r: 9, fill: "none", stroke: "currentColor", "stroke-width": 2 }),
     shape("path", { d: "M12 3a9 9 0 0 0 0 18z" }),
   ],
+  /** A keyframe: the diamond the strip and the clip draw keys with. Filled, an effect is
+   *  keyframed; outlined, it could be. */
+  key: [shape("polygon", { points: "12,3 21,12 12,21 3,12" })],
+  "key-open": [shape("polygon", { points: "12,4.5 19.5,12 12,19.5 4.5,12", fill: "none", stroke: "currentColor", "stroke-width": 2.2, "stroke-linejoin": "round" })],
   /** Two links of a chain: a clip that moves with others. Stroked rather than filled,
    *  because a filled chain at 10px is a blob. */
   link: [

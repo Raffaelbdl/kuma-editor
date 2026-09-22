@@ -169,14 +169,21 @@ fields are edited the same way; an effect declares which shape each of its field
 one table in `ui/src/panels/inspector.ts`, and the bounds there are the model's own, so the
 panel cannot offer a value the daemon would refuse.
 
+**Effects are offered where they can act.** Each effect acts on the picture (transform,
+crop, blur, colour, blend, fade) or the sound (volume, audio fade), so `+ add effect` lists
+only what the selected clip can use: a colour or a still is not offered a volume, a song is not
+offered a picture fade. An effect that got there anyway — by an agent's patch, or on a clip
+moved to an audio track — stays, dimmed, and says *no effect here*; the validator warns too.
+
 **Keyframes are pointed at, not typed.** Every effect with numbers to animate — transform,
-crop, blur, colour, volume — starts as plain numbers with a **◆ Animate** button; press it and it gains one key at the playhead holding
+crop, blur, colour, volume — starts as plain numbers, with an outlined **◇** in its head;
+press it and it gains one key at the playhead holding
 what it already does — nothing moves until you move something. From then on the fields are
 the value **at the playhead**: scrub, change a number, and the key under the playhead takes
 it, or a new one is made there carrying every other value as it already was. A strip under
 the effect shows where the keys are (click to go to one, drag to retime, double-click to
 add), `‹ ›` step between them, `+ key` / `− key` add and remove one where you are, and
-**Clear** stops animating while keeping the value you are looking at. The same keys are
+the diamond, filled **◆** now, stops animating while keeping the value you are looking at. The same keys are
 drawn along the bottom of the clip in the timeline, so an animated clip says so at a glance
 and you watch them go past while scrubbing — and can be dragged there too, or clicked to
 jump to. **● Auto-key** in the transport strip is record mode: while it is on, changing
@@ -439,8 +446,8 @@ and the values live with the rest of the project's decisions.
 - 60 s 1080p30 overlay bake to ProRes 4444 / PNG sequence with exact straight alpha;
   4K supersampling; byte-identical repeat bakes with one worker.
 - Compiler: dissolves (A/B lanes + luma), wipes (generated PGM lumas), timewarp speed,
-  crop, transform, blur and colour correction — each keyframable, linear, held or smooth
-  per key — fade, blend modes (discrete keyframes on `qtblend`),
+  crop, transform, blur, colour correction and volume — each static or keyframed, linear,
+  held or smooth per key — picture and sound fades, blend modes (discrete keyframes on `qtblend`),
   solid-colour clips, PiP stills, overlay PNG sequences; golden-file + DTD + real `melt` render tests.
 - Daemon + MCP end to end: patch/undo/409 on stale revisions, `sample_frames` returning
   image blocks, background render jobs.

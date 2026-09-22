@@ -592,6 +592,22 @@ how Kdenlive carries track effects and how a nested sequence's placements carry 
 Both were measured before the DTD was relaxed, and the evidence is written beside the
 declarations. Prefer fixing the copy over emitting worse XML to satisfy it.
 
+**A baked overlay is read at the project's rate, `force_fps`** — adopted, after subtitles
+rendered later and later behind the preview. A bake is one PNG per timeline frame, but an
+image sequence carries no rate, and ffmpeg's image2 demuxer reads one at 25 fps: in a 30 fps
+project every animated overlay played at five sixths speed, a fifth of a second late per
+second into the clip. The preview never showed it because the open sequence's overlays are
+live DOM, and the render test's bake was a box that does not move. The compiler now sets
+`force_fps` to the project rate on every animated bake, and
+`a_baked_overlay_plays_at_the_project_rate` reads a bake whose frame k is grey level 4k.
+MLT's own sequence readers (`pixbuf`/`qimage` with a `%06d` resource) were measured frame
+exact too, by seek and in sequence; `force_fps` was kept as the one-line change.
+
+The frame cache of `sample_frames` is keyed on the compiled document, like the preview,
+rather than on the project revision and the bake paths: under the old key, a kuma that
+compiles differently kept serving frames an older one had sampled, which is how this bug
+first looked unfixed after it was fixed.
+
 ## Templates and presets as user assets
 
 **Templates and presets live outside the codebase** — adopted.
@@ -630,6 +646,51 @@ the first disables playback.
 **No wall clock in the engine** — adopted.
 Without an audio device, SDL's dummy driver still paces the callback in real time, so
 playback is always audio-paced and the alternate clock path was dead code.
+
+**Picture and sound as two graphs** — adopted, and built end to end. Today one graph carries both, so an audio edit changes the compiled document and
+the engine rebuilds every producer and re-sends a picture that did not change, pausing
+playback to do it. That will not survive audio effects, where dragging a knob is an edit
+per step. The split: `CompileOptions::streams` (`Both`, `Video`, `Audio`) compiles a half
+graph from the same document. The video half drops tracks that only sound, decodes no audio
+(`audio_index=-1`) and keeps only the video half of each transition; the audio half drops
+tracks that make no sound, overlays included (so it needs no bake), decodes no video
+(`video_index=-1`) and keeps only `mix`. A render is always `Both`, so the golden file and
+melt are untouched. `each_half_graph_matches_the_full_graph` in `kuma-mlt/tests/render.rs`
+is what makes this an optimisation and not a second renderer: per-frame MD5s of each half
+must equal the full graph's, and it was checked to fail when either half drops a filter.
+
+The engine holds the two graphs on two threads. The sound's thread is the clock: samples
+actually handed to the device, counted from the frame playback started on. The picture's
+thread shows the frame that count has reached, dropping frames when late, and a frame it
+finishes after a pause or seek is dropped rather than shown over the seek's. Both threads
+seek by frame index into graphs of the same document, which is why speed and nested
+sequences need nothing of their own here: the compiler already put them in both.
+`load-video` and `load-audio` swap a graph between frames without pausing.
+`kuma-daemon/tests/engine.rs` pins the pacing, frame by frame, and was checked to fail
+with a picture that runs free.
+
+`preview::reload` compiles both and stamps each, and sends the engine only the graph whose
+document changed: a colour reloads the picture, a volume the sound, a cut both. Clients
+still ask on every edit and never say which half; `/api/preview/reload` reports it, and
+`an_edit_reloads_only_the_graph_it_changes` pins it. Audio-reactive visuals do not
+couple the halves again: they are meant to be prebaked from an analysis of the sound into
+an overlay, the way subtitles are, not drawn by MLT's audio filters in the video graph.
+
+Not built, recorded for when the video half is too slow:
+
+- **Frames in parallel.** MLT's own consumers render several frames at once
+  (`real_time` above 1; Shotcut's and Kdenlive's "parallel processing"). The engine pulls
+  frames itself, so it would be a worker pool rendering and encoding ahead of the playhead,
+  reordered before sending. It raises playback throughput, not single-seek latency, and not
+  every MLT service is thread-safe: compare parallel against serial output first. Only
+  sensible once sound is its own graph, since audio has to be pulled in order and on time.
+- **Tracks in parallel within a frame.** Not possible with MLT as it is: a tractor pulls its
+  tracks in turn. It would mean an upstream change or the engine blending tracks itself,
+  which is a second compositor and refused as such. It is the one thing that would help
+  scrubbing.
+- **Cheaper, available now:** decoder threads (the avformat producer's `threads`
+  property, which changes speed and not output), JPEG encoding off the pull thread, and
+  caching heavy nested sequences the way bakes cache overlays.
 
 **An overlay off the playhead is hidden by `visibility`, never `display`** — adopted, after
 a template rendered one size in the editor and another in the render. `display: none` gives
@@ -1606,6 +1667,42 @@ because it is the part deliberately left out.
   a sequence subject must not be wrapped in a synthetic root, since a nested sequence's
   background is transparent and wrapping would give it one that compiling it as root does
   not.
+
+- **Offer a clip only the effects that can act on it** — agreed, not built. The inspector
+  lists every effect for every clip, so an audio clip offers `transform`, `crop` and `fade`,
+  and a still or a colour offers `volume`. Each does nothing to it, and the user reads that as
+  a broken effect: a `fade` on an audio clip was reported as "fade not applied in the
+  preview", when `fade` has only ever been an opacity fade, in the render too. The data to
+  decide it already exists: `Effect::streams()` says what an effect acts on, and whether a
+  clip shows or sounds follows from its bin entry and its track (`clip_has_audio`,
+  `TrackKind`). The rule is to offer an effect when its streams meet the clip's. It
+  belongs in kuma-core, next to `Effect::streams()`, so the UI, MCP's effect listing and
+  the validator give the same answer, and the validator could warn about an effect already
+  placed that cannot act.
+
+  Decide with it what `fade` does to sound. Three shapes are on the table: `fade` also
+  ramps the gain whenever the clip sounds; a separate audio fade effect, as Kdenlive has;
+  or one `fade` with picture and sound switches. The first changes the sound of finished
+  videos that already carry fades. The last needs a format version bump if old documents
+  must keep their picture-only meaning.
+
+- **Every effect animatable the same way** — wanted, not built. Today there are three
+  shapes. Transform, crop, blur and colour have static values plus optional keyframes, and a
+  parameter is animated only when asked. `volume` is the opposite: it *is* its keyframes (the
+  model refuses one with none), it is added already animated with one key at gain 1, and it
+  cannot be un-animated, only removed. A static gain lives on the clip as `volume`, and the
+  effect multiplies it. Then `fade`, `blend` and `mlt` cannot be animated at all:
+  `Effect::animatable()` lists nothing for them.
+
+  The wanted shape is the first one, for every effect. `volume` gets a static `gain` and
+  optional keyframes, like the rest. That means deciding what the clip's own `volume` field
+  is then: the same value in two places, or a shorthand that goes away with a
+  `PROJECT_VERSION` step. `blend` would animate with hold keys, which is what the compiler
+  already emits for it. `fade` mostly overlaps an animated transform opacity, so making it
+  animatable may matter less than deciding what it does to sound (above). `mlt` needs its
+  properties to be typed before keys can mean anything. The inspector and
+  `Effect::animatable()` stay the single table, so the editor, the validator and the compiler
+  cannot disagree about which parameters move.
 
 - **Ship a starter set of design systems** before any public release. The mechanism is in
   and nothing is in it, which makes the feature invisible to anyone who has not read the

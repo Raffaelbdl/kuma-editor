@@ -2,7 +2,7 @@
 //! from the compiled timeline and streams JPEGs; the daemon proxies its WebSocket.
 //!
 //! The sidecar speaks a tiny line protocol on stdin/stdout:
-//!   → `load <path.mlt>` | `seek <frame>` | `play` | `pause` | `quit`
+//!   → `load-video <path.mlt>` | `load-audio <path.mlt>` | `seek <frame>` | `play` | `pause` | `quit`
 //!   ← `ok …` | `err …` | `frame <frame> <len>` followed by `<len>` JPEG bytes
 //!
 //! Frames, `ok end` and the engine's exit are fanned out to every preview socket. A
@@ -16,6 +16,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::jobs::OverlayScope;
+use kuma_mlt::Streams;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, Command};
 use tokio::sync::{broadcast, Mutex as AsyncMutex};
@@ -47,15 +48,8 @@ pub struct PreviewHandle {
     pub last_error: Mutex<Option<String>>,
     /// Preview resolution as a fraction of the project size (0.25..=1.0).
     pub scale: Mutex<f64>,
-    /// Hash of the compiled timeline the engine is currently holding, so an edit that
-    /// compiles to the same document does not cost it a graph rebuild. Cleared whenever a
-    /// fresh engine starts, which is holding nothing.
-    loaded: Mutex<Option<u64>>,
-    /// Counts timelines handed to an engine. `reload` reports "changed" by comparing this
-    /// across the call, not by comparing hashes: a restarted engine has to be given the
-    /// same document again, and a caller whose work was done by a coalesced run still
-    /// wants to hear that the engine was updated.
-    loads: AtomicU64,
+    /// The picture's graph and the sound's, each reloaded only when an edit changes it.
+    halves: [Half; 2],
     /// Compiles performed. Only diagnostic — it is how the coalescing is observed, here
     /// and in `tests/preview.rs`.
     pub compiles: AtomicU64,
@@ -72,8 +66,7 @@ impl Default for PreviewHandle {
             starting: AsyncMutex::new(()),
             last_error: Mutex::new(None),
             scale: Mutex::new(0.5),
-            loaded: Mutex::new(None),
-            loads: AtomicU64::new(0),
+            halves: [Half::new(Streams::Video, "preview-video", "load-video"), Half::new(Streams::Audio, "preview-audio", "load-audio")],
             compiles: AtomicU64::new(0),
             compiling: AsyncMutex::new(()),
             pending: AtomicBool::new(false),
@@ -81,12 +74,39 @@ impl Default for PreviewHandle {
     }
 }
 
-/// What a reload did. `changed` is false when the project compiled to the document the
-/// engine already had, so it was left alone.
+/// One of the engine's two graphs.
+struct Half {
+    stream: Streams,
+    /// Written to `.kuma/<name>.mlt`.
+    name: &'static str,
+    /// The engine command that loads it.
+    cmd: &'static str,
+    /// Hash of the document the engine is holding, so an edit that compiles to the same
+    /// one costs no rebuild. Cleared whenever a fresh engine starts, which holds nothing.
+    loaded: Mutex<Option<u64>>,
+    /// Documents handed to an engine. `reload` reports what it changed by comparing this
+    /// across the call, not by comparing hashes: a restarted engine has to be given the
+    /// same document again, and a caller whose work was done by a coalesced run still
+    /// wants to hear that the engine was updated.
+    loads: AtomicU64,
+}
+
+impl Half {
+    fn new(stream: Streams, name: &'static str, cmd: &'static str) -> Half {
+        Half { stream, name, cmd, loaded: Mutex::new(None), loads: AtomicU64::new(0) }
+    }
+}
+
+/// What a reload did. `changed` is false when the project compiled to the documents the
+/// engine already had, so it was left alone; `video` and `audio` say which of the two
+/// graphs it was given.
 #[derive(Debug, Clone)]
 pub struct Reloaded {
+    /// The picture's graph; the sound's is beside it.
     pub path: PathBuf,
     pub changed: bool,
+    pub video: bool,
+    pub audio: bool,
 }
 
 pub struct Engine {
@@ -155,7 +175,9 @@ impl PreviewHandle {
         let engine = Arc::new(Engine { stdin: AsyncMutex::new(stdin), events: events.clone(), _child: child });
         *lock(&self.inner) = Some(engine.clone());
         // A new process holds no timeline, whatever the old one had.
-        *lock(&self.loaded) = None;
+        for half in &self.halves {
+            *lock(&half.loaded) = None;
+        }
 
         // Reader task: parse the line protocol and fan out frames.
         let st = state.clone();
@@ -237,23 +259,24 @@ pub fn has_bin(name: &str) -> bool {
 /// burst of patches collapses. The pass at the end re-reads the project, so the last
 /// thing compiled is always a state observed after the last edit.
 pub async fn reload(state: &Arc<AppState>) -> anyhow::Result<Reloaded> {
-    let before = state.preview.loads.load(Ordering::SeqCst);
+    let count = || state.preview.halves.each_ref().map(|h| h.loads.load(Ordering::SeqCst));
+    let before = count();
     state.preview.pending.store(true, Ordering::SeqCst);
     let _guard = state.preview.compiling.lock().await;
     while state.preview.pending.swap(false, Ordering::SeqCst) {
         compile_and_load(state).await?;
     }
-    Ok(Reloaded { path: preview_path(state), changed: state.preview.loads.load(Ordering::SeqCst) != before })
+    let after = count();
+    let [video, audio] = [0, 1].map(|i| after[i] != before[i]);
+    let path = state.config.cache_dir().join(format!("{}.mlt", state.preview.halves[0].name));
+    Ok(Reloaded { path, changed: video || audio, video, audio })
 }
 
-fn preview_path(state: &AppState) -> PathBuf {
-    state.config.cache_dir().join("preview.mlt")
-}
-
-/// Compile the open sequence (at the preview scale) and hand it to the engine if it is not
-/// already playing exactly that. [`OverlayScope::Nested`] is what makes the overlays of the
-/// sequences it nests appear at all; its own are left unbaked, and therefore skipped, for
-/// the UI's live DOM.
+/// Compile the open sequence (at the preview scale) as two graphs, the picture and the
+/// sound, and hand the engine each one it is not already holding exactly.
+/// [`OverlayScope::Nested`] is what makes the overlays of the sequences it nests appear at
+/// all; its own are left unbaked, and therefore skipped, for the UI's live DOM. The sound
+/// needs no bakes at all.
 async fn compile_and_load(state: &Arc<AppState>) -> anyhow::Result<()> {
     // First, because starting an engine clears what it is holding.
     let engine = state.preview.ensure(state).await?;
@@ -267,28 +290,38 @@ async fn compile_and_load(state: &Arc<AppState>) -> anyhow::Result<()> {
         // that sub-sequence: it is compiled as the root, exactly as a render of it would be.
         let sequence = st.current_sequence();
         let mut opts = crate::jobs::compile_options(&st);
-        opts.bakes = crate::jobs::bake_for(&st, &project, &sequence, OverlayScope::Nested, None, &|_, _| {})?;
         opts.size = Some((w, h));
-        opts.sequence = Some(sequence);
-        let xml = crate::jobs::compile_xml(&project, &opts)?;
-        // The document is the whole input: profile, every producer, and the bake
-        // directories — whose names are themselves content hashes, so a template edited on
-        // disk changes this even though the project document did not.
-        let stamp = stamp(&xml);
+        opts.sequence = Some(sequence.clone());
         st.preview.compiles.fetch_add(1, Ordering::SeqCst);
-        tracing::debug!("preview: compiled {} bytes, stamp {stamp:016x}", xml.len());
-        if *lock(&st.preview.loaded) == Some(stamp) {
-            return Ok(None);
+        // Each graph is written, and later sent, only when it differs from the one held.
+        let mut fresh = Vec::new();
+        for (i, half) in st.preview.halves.iter().enumerate() {
+            opts.streams = half.stream;
+            opts.bakes = if half.stream.video() {
+                crate::jobs::bake_for(&st, &project, &sequence, OverlayScope::Nested, None, &|_, _| {})?
+            } else {
+                Default::default()
+            };
+            let xml = crate::jobs::compile_xml(&project, &opts)?;
+            // The document is the whole input: profile, every producer, and the bake
+            // directories — whose names are themselves content hashes, so a template edited
+            // on disk changes this even though the project document did not.
+            let stamp = stamp(&xml);
+            tracing::debug!("preview: compiled {}, {} bytes, stamp {stamp:016x}", half.name, xml.len());
+            if *lock(&half.loaded) != Some(stamp) {
+                fresh.push((i, crate::jobs::write_compiled(&st, &xml, half.name)?, stamp));
+            }
         }
-        Ok::<_, anyhow::Error>(Some((crate::jobs::write_compiled(&st, &xml, "preview")?, stamp)))
+        Ok::<_, anyhow::Error>(fresh)
     })
     .await??;
     // Only once the engine has actually been told, so a failed send does not leave us
     // believing it holds something it never received.
-    if let Some((path, stamp)) = fresh {
-        engine.send(&format!("load {}", path.display())).await?;
-        *lock(&state.preview.loaded) = Some(stamp);
-        state.preview.loads.fetch_add(1, Ordering::SeqCst);
+    for (i, path, stamp) in fresh {
+        let half = &state.preview.halves[i];
+        engine.send(&format!("{} {}", half.cmd, path.display())).await?;
+        *lock(&half.loaded) = Some(stamp);
+        half.loads.fetch_add(1, Ordering::SeqCst);
     }
     Ok(())
 }

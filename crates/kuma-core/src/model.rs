@@ -209,6 +209,11 @@ impl Project {
             }
     }
 
+    /// Whether a track sounds: unmuted, with a clip that does.
+    pub fn track_has_audio(&self, track: &Track) -> bool {
+        !track.muted && track.clips.iter().any(|c| self.clip_has_audio(c))
+    }
+
     /// Whether a sequence carries any audible sound, following nested sequences. Cycle-safe.
     pub fn seq_has_audio(&self, id: &str) -> bool {
         fn walk<'a>(p: &'a Project, id: &'a str, seen: &mut HashSet<&'a str>) -> bool {
@@ -696,7 +701,43 @@ pub enum Effect {
     },
 }
 
+/// Picture, sound, or both: what an effect acts on, and what a compiled graph carries. A
+/// render is always both; the preview compiles the picture and the sound as two graphs,
+/// so that an edit to one reloads only that one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Streams {
+    #[default]
+    Both,
+    Video,
+    Audio,
+}
+
+impl Streams {
+    pub fn video(self) -> bool {
+        self != Streams::Audio
+    }
+    pub fn audio(self) -> bool {
+        self != Streams::Video
+    }
+    /// Whether the two share a stream.
+    pub fn meets(self, other: Streams) -> bool {
+        (self.video() && other.video()) || (self.audio() && other.audio())
+    }
+}
+
 impl Effect {
+    /// What this effect acts on. The escape hatch's service is opaque, so it is both: an
+    /// image filter nobody asks for an image from costs nothing.
+    pub fn streams(&self) -> Streams {
+        match self {
+            Effect::Volume { .. } => Streams::Audio,
+            Effect::Mlt { .. } => Streams::Both,
+            Effect::Transform { .. } | Effect::Crop { .. } | Effect::Blur { .. } | Effect::Color { .. } | Effect::Fade { .. } | Effect::Blend { .. } => {
+                Streams::Video
+            }
+        }
+    }
+
     /// The parameters a keyframe of this kind may set, under the names its static fields
     /// have. One table, so the validator, the compiler and the editor cannot disagree.
     pub fn animatable(&self) -> &'static [&'static str] {

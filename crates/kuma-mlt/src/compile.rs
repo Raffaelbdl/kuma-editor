@@ -61,6 +61,32 @@ pub enum UnbakedPolicy {
     Error,
 }
 
+/// Which streams a compiled document carries. A render is always [`Streams::Both`]; the
+/// preview can compile the picture and the sound as two graphs, so that an edit to one
+/// reloads only that one. Each half must play exactly what the full graph plays of it,
+/// which `tests/render.rs` checks frame by frame and sample by sample.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Streams {
+    #[default]
+    Both,
+    /// Tracks that show something, producers with no audio stream, image filters and
+    /// the video half of every transition.
+    Video,
+    /// Tracks that sound, producers with no video stream, audio filters and the `mix`
+    /// half of every transition. Overlays have no sound, so they are left out and need
+    /// no bake.
+    Audio,
+}
+
+impl Streams {
+    pub fn video(self) -> bool {
+        self != Streams::Audio
+    }
+    pub fn audio(self) -> bool {
+        self != Streams::Video
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct CompileOptions {
     /// Project directory: `root` attribute and base for relative asset paths.
@@ -75,6 +101,7 @@ pub struct CompileOptions {
     /// Which sequence to compile as the root. `None` means the project's master — what a
     /// render always wants. The preview sets it to whichever sequence is open.
     pub sequence: Option<BinId>,
+    pub streams: Streams,
 }
 
 impl CompileOptions {
@@ -87,6 +114,7 @@ impl CompileOptions {
             unbaked: UnbakedPolicy::Skip,
             size: None,
             sequence: None,
+            streams: Streams::Both,
         }
     }
 }
@@ -298,6 +326,15 @@ impl Plan<'_> {
 fn compile_track(ctx: &Ctx, track: &Track, total: i64, w: &mut XmlWriter) -> Result<Option<CompiledTrack>, CompileError> {
     let fps = ctx.fps;
     let tid = &track.id;
+    let streams = ctx.opts.streams;
+    let visible = track.kind != TrackKind::Audio && !track.hidden;
+    // A half graph leaves out a track with nothing for it; the full graph keeps it, hidden.
+    match streams {
+        Streams::Both => {}
+        Streams::Video if !visible => return Ok(None),
+        Streams::Audio if track.muted || !track.clips.iter().any(|c| ctx.project.clip_has_audio(c)) => return Ok(None),
+        _ => {}
+    }
 
     // How each clip is extended by the transitions it takes part in.
     let mut ext: HashMap<&str, Ext> = HashMap::new();
@@ -315,7 +352,11 @@ fn compile_track(ctx: &Ctx, track: &Track, total: i64, w: &mut XmlWriter) -> Res
     let mut prev_lane = 0usize;
     for (_, clip) in track.sorted_clips() {
         let item = ctx.item(clip)?;
-        // Overlays without a bake are skipped (they are live DOM in preview).
+        // Overlays without a bake are skipped (they are live DOM in preview), and an
+        // overlay has no sound, so the audio graph skips every one.
+        if item.is_overlay() && !streams.video() {
+            continue;
+        }
         if item.is_overlay() && !ctx.opts.bakes.contains_key(&clip.id) {
             match ctx.opts.unbaked {
                 UnbakedPolicy::Skip => continue,
@@ -420,21 +461,24 @@ fn compile_track(ctx: &Ctx, track: &Track, total: i64, w: &mut XmlWriter) -> Res
                 w.property("a_track", from.lane.to_string());
                 w.property("b_track", to.lane.to_string());
             };
-            // Video.
-            open(w, "luma", "luma");
-            w.property("progressive", "1");
-            if x.kind == TransitionKind::Wipe {
-                let name = x.luma.as_deref().unwrap_or("wipe_left");
-                let path = lumas::resolve(name, &ctx.opts.root, &ctx.opts.cache_dir).map_err(|e| CompileError::Internal(format!("luma: {e}")))?;
-                w.property("resource", path.to_string_lossy());
-                w.property("softness", num(x.softness));
+            if streams.video() {
+                open(w, "luma", "luma");
+                w.property("progressive", "1");
+                if x.kind == TransitionKind::Wipe {
+                    let name = x.luma.as_deref().unwrap_or("wipe_left");
+                    let path = lumas::resolve(name, &ctx.opts.root, &ctx.opts.cache_dir).map_err(|e| CompileError::Internal(format!("luma: {e}")))?;
+                    w.property("resource", path.to_string_lossy());
+                    w.property("softness", num(x.softness));
+                }
+                w.close("transition");
             }
-            w.close("transition");
-            // Audio crossfade.
-            open(w, "xfade", "mix");
-            w.property("start", "0");
-            w.property("end", "1");
-            w.close("transition");
+            if streams.audio() {
+                // Audio crossfade.
+                open(w, "xfade", "mix");
+                w.property("start", "0");
+                w.property("end", "1");
+                w.close("transition");
+            }
         }
         w.close("tractor");
         tr_id
@@ -442,8 +486,8 @@ fn compile_track(ctx: &Ctx, track: &Track, total: i64, w: &mut XmlWriter) -> Res
         format!("{tid}_a")
     };
 
-    let has_video = track.kind != TrackKind::Audio && !track.hidden;
-    let has_audio = has_audio && !track.muted;
+    let has_video = visible && streams.video();
+    let has_audio = has_audio && !track.muted && streams.audio();
     let hide = match (has_video, has_audio) {
         (false, false) => Some("both"),
         (false, true) => Some("video"),
@@ -484,8 +528,12 @@ fn emit_clip_producer(ctx: &Ctx, p: &Plan, w: &mut XmlWriter) -> Result<(), Comp
                 w.property("mlt_service", "avformat-novalidate");
                 w.property("resource", &path);
             }
-            if clip.muted {
+            // Switching a stream off at the decoder is what makes a half graph cheaper.
+            if clip.muted || (!still && !ctx.opts.streams.audio()) {
                 w.property("audio_index", "-1");
+            }
+            if !still && !ctx.opts.streams.video() {
+                w.property("video_index", "-1");
             }
             emit_filters(ctx, p, w);
             w.close(tag);
@@ -497,7 +545,7 @@ fn emit_clip_producer(ctx: &Ctx, p: &Plan, w: &mut XmlWriter) -> Result<(), Comp
         BinSource::Sequence(_) => {
             w.open("playlist", &[("id", p.producer_id.clone())]);
             w.empty("entry", &[("producer", format!("seq_{}", clip.bin)), ("in", p.p_in.to_string()), ("out", p.p_out.to_string())]);
-            if clip.muted {
+            if clip.muted && ctx.opts.streams.audio() {
                 // A sequence has no decoder to switch off, the way `audio_index=-1` does
                 // for a media file, so muting one is a filter. `MUTE_DB` rather than the
                 // `db(0)` floor: that is -60 dB, which is quiet but audible against
@@ -558,16 +606,27 @@ fn emit_filters(ctx: &Ctx, p: &Plan, w: &mut XmlWriter) {
     let open = |w: &mut XmlWriter, name: &str, service: &str| open_at(w, name, service, f_in, f_out);
     // Keyframe positions are relative to the clip's own start, i.e. `pre` frames in.
     let at = |t: f64| (fps.frame(t) + p.pre).clamp(0, len - 1);
+    let (video, audio) = (ctx.opts.streams.video(), ctx.opts.streams.audio());
 
     // Clip-level volume (static) unless a Volume effect provides keyframes.
     let has_volume_kf = clip.effects.iter().any(|e| matches!(e, Effect::Volume { .. }));
-    if !has_volume_kf && (clip.volume - 1.0).abs() > 1e-9 {
+    if audio && !has_volume_kf && (clip.volume - 1.0).abs() > 1e-9 {
         open(w, "vol", "volume");
         w.property("level", num(db(clip.volume)));
         w.close("filter");
     }
 
     for e in &clip.effects {
+        // Each effect is for one stream, except the escape hatch, which could be either
+        // and is kept in both: an image filter nobody asks for an image from costs nothing.
+        let wanted = match e {
+            Effect::Volume { .. } => audio,
+            Effect::Mlt { .. } => true,
+            _ => video,
+        };
+        if !wanted {
+            continue;
+        }
         match e {
             Effect::Transform { x, y, scale, rotation, opacity, keyframes } => {
                 open(w, "xform", "qtblend");
@@ -1087,5 +1146,47 @@ mod tests {
         }));
         assert!(!compile(&silent, &CompileOptions::new("/proj")).unwrap().contains(r#"id="mix_v1""#));
         assert!(compile(&nested(), &CompileOptions::new("/proj")).unwrap().contains(r#"id="mix_v1""#));
+    }
+
+    /// The preview's two half graphs. The picture keeps no sound and the sound keeps no
+    /// picture, down to the decoder, and the audio graph needs no bakes at all.
+    #[test]
+    fn each_half_carries_one_stream() {
+        let p = project(json!({
+            "fps": 30,
+            "bin": { "x": { "source": { "path": "x.mp4" } }, "tag": { "source": { "template": "location-tag" } } },
+            "tracks": [
+                { "id": "v1", "clips": [
+                    { "id": "a", "start": 0, "end": 5, "bin": "x", "effects": [
+                        { "type": "volume", "keyframes": [{ "t": 0, "gain": 0 }, { "t": 1, "gain": 1 }] },
+                        { "type": "blur", "radius": 2 } ] },
+                    { "id": "b", "start": 5, "end": 8, "bin": "x", "in": 2 }
+                ], "transitions": [ { "from": "a", "to": "b", "duration": 1.0 } ] },
+                { "id": "o1t", "kind": "overlay", "clips": [ { "id": "o1", "start": 0, "end": 3, "bin": "tag" } ] },
+                { "id": "a1", "kind": "audio", "clips": [ { "id": "m", "start": 0, "end": 4, "bin": "x" } ] }
+            ]
+        }));
+        let mut opts = CompileOptions::new("/proj");
+        opts.bakes.insert("o1".into(), OverlayBake { resource: "/b/1/f_%06d.png".into(), is_still: false });
+
+        opts.streams = Streams::Video;
+        let video = compile(&p, &opts).unwrap();
+        for absent in [">mix<", ">volume<", "xfade", "clip_m"] {
+            assert!(!video.contains(absent), "`{absent}` in the video graph: {video}");
+        }
+        for present in [">luma<", ">qtblend<", "gblur", "clip_o1", r#"name="audio_index">-1"#] {
+            assert!(video.contains(present), "`{present}` missing from the video graph: {video}");
+        }
+
+        opts.streams = Streams::Audio;
+        opts.unbaked = UnbakedPolicy::Error;
+        opts.bakes.clear();
+        let audio = compile(&p, &opts).expect("the audio graph needs no bakes");
+        for absent in [">luma<", ">qtblend<", "gblur", "clip_o1", "o1t"] {
+            assert!(!audio.contains(absent), "`{absent}` in the audio graph: {audio}");
+        }
+        for present in [">mix<", "xfade", ">volume<", "clip_m", r#"name="video_index">-1"#] {
+            assert!(audio.contains(present), "`{present}` missing from the audio graph: {audio}");
+        }
     }
 }

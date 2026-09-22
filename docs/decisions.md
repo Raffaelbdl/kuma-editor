@@ -631,6 +631,42 @@ the first disables playback.
 Without an audio device, SDL's dummy driver still paces the callback in real time, so
 playback is always audio-paced and the alternate clock path was dead code.
 
+**Picture and sound as two graphs** — agreed; the compiler half is built, the engine half
+is not. Today one graph carries both, so an audio edit changes the compiled document and
+the engine rebuilds every producer and re-sends a picture that did not change, pausing
+playback to do it. That will not survive audio effects, where dragging a knob is an edit
+per step. The split: `CompileOptions::streams` (`Both`, `Video`, `Audio`) compiles a half
+graph from the same document. The video half drops tracks that only sound, decodes no audio
+(`audio_index=-1`) and keeps only the video half of each transition; the audio half drops
+tracks that make no sound, overlays included (so it needs no bake), decodes no video
+(`video_index=-1`) and keeps only `mix`. A render is always `Both`, so the golden file and
+melt are untouched. `each_half_graph_matches_the_full_graph` in `kuma-mlt/tests/render.rs`
+is what makes this an optimisation and not a second renderer: per-frame MD5s of each half
+must equal the full graph's, and it was checked to fail when either half drops a filter.
+
+Still to build: an engine holding two producers, audio as the clock and video following
+it, dropping frames when late; and `preview::reload` stamping each half and sending only
+the one that changed, with clients still asking on every edit. Keeping the two in step
+through seeks, speed and nested sequences is the risky part. Audio-reactive visuals do not
+couple the halves again: they are meant to be prebaked from an analysis of the sound into
+an overlay, the way subtitles are, not drawn by MLT's audio filters in the video graph.
+
+Not built, recorded for when the video half is too slow:
+
+- **Frames in parallel.** MLT's own consumers render several frames at once
+  (`real_time` above 1; Shotcut's and Kdenlive's "parallel processing"). The engine pulls
+  frames itself, so it would be a worker pool rendering and encoding ahead of the playhead,
+  reordered before sending. It raises playback throughput, not single-seek latency, and not
+  every MLT service is thread-safe: compare parallel against serial output first. Only
+  sensible once sound is its own graph, since audio has to be pulled in order and on time.
+- **Tracks in parallel within a frame.** Not possible with MLT as it is: a tractor pulls its
+  tracks in turn. It would mean an upstream change or the engine blending tracks itself,
+  which is a second compositor and refused as such. It is the one thing that would help
+  scrubbing.
+- **Cheaper, available now:** decoder threads (the avformat producer's `threads`
+  property, which changes speed and not output), JPEG encoding off the pull thread, and
+  caching heavy nested sequences the way bakes cache overlays.
+
 **An overlay off the playhead is hidden by `visibility`, never `display`** — adopted, after
 a template rendered one size in the editor and another in the render. `display: none` gives
 an iframe a **0×0 viewport**, and a template is allowed to measure itself — fitting a line

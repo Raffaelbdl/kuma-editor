@@ -5,7 +5,7 @@ use std::path::Path;
 use std::process::Command;
 
 use kuma_mlt::melt::snapshot;
-use kuma_mlt::{compile, presets, render, CompileOptions, OverlayBake, RenderJob};
+use kuma_mlt::{compile, presets, render, CompileOptions, OverlayBake, RenderJob, Streams};
 
 fn have(bin: &str) -> bool {
     Command::new(bin).arg("-version").output().map(|o| o.status.success()).unwrap_or(false)
@@ -135,4 +135,62 @@ fn renders_reference_project_with_melt() {
             }
         }
     }
+}
+
+/// The preview's two half graphs must each play exactly what the full graph plays of
+/// their stream: every video frame identical, every audio frame identical. That is what
+/// lets the split be a preview optimisation rather than a second renderer. The reference
+/// project gains an audio track with a volume ramp, so a track that only sounds is covered.
+#[test]
+fn each_half_graph_matches_the_full_graph() {
+    if !have("ffmpeg") || !have("melt") {
+        eprintln!("ffmpeg/melt not available; skipping stream split test");
+        return;
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().to_path_buf();
+    make_media(&root);
+
+    let mut doc: serde_json::Value = serde_json::from_str(include_str!("fixtures/reference.kuma.json")).unwrap();
+    doc["bin"]["main"]["source"]["tracks"].as_array_mut().unwrap().push(serde_json::json!({
+        "id": "a1", "kind": "audio", "name": "Music",
+        "clips": [ { "id": "m1", "start": 1.0, "end": 12.0, "bin": "screen", "in": 2.0,
+            "effects": [ { "type": "volume", "keyframes": [ { "t": 0, "gain": 0 }, { "t": 3, "gain": 0.8 } ] } ] } ]
+    }));
+    let p = kuma_core::parse_project(&doc.to_string()).unwrap();
+
+    // Preview scale, as the engine would get it; framemd5 keeps the outputs small.
+    let graph = |name: &str, streams: Streams| {
+        let mut opts = CompileOptions::new(&root);
+        opts.size = Some((480, 270));
+        opts.streams = streams;
+        if streams != Streams::Audio {
+            opts.bakes.insert("o_c1".into(), OverlayBake { resource: root.join("bake/frame_%06d.png"), is_still: false });
+        }
+        let file = root.join(format!("{name}.mlt"));
+        std::fs::write(&file, compile(&p, &opts).unwrap()).unwrap();
+        file
+    };
+    let md5s = |mlt: &Path, name: &str, props: &[(&str, &str)]| -> Vec<String> {
+        let out = root.join(format!("{name}.framemd5"));
+        let mut extra: Vec<(String, String)> = vec![("f".into(), "framemd5".into()), ("real_time".into(), "-1".into())];
+        extra.extend(props.iter().map(|(k, v)| (k.to_string(), v.to_string())));
+        let job = RenderJob { mlt_file: mlt.to_path_buf(), output: out.clone(), preset: presets::find("draft").unwrap(), range: None, extra };
+        render(&job, |_| {}).expect("melt render");
+        let text = std::fs::read_to_string(&out).unwrap();
+        let lines: Vec<String> = text.lines().filter(|l| !l.starts_with('#')).map(str::to_string).collect();
+        assert!(!lines.is_empty(), "{name}: no frames");
+        lines
+    };
+    let as_video = [("vcodec", "rawvideo"), ("pix_fmt", "rgb24"), ("an", "1")];
+    let as_audio = [("acodec", "pcm_s16le"), ("ar", "48000"), ("ac", "2"), ("vn", "1")];
+
+    let full = graph("full", Streams::Both);
+    let video = graph("video", Streams::Video);
+    let audio = graph("audio", Streams::Audio);
+    assert_eq!(md5s(&video, "video", &as_video), md5s(&full, "full-video", &as_video), "the video graph's picture differs");
+    let sound = md5s(&full, "full-audio", &as_audio);
+    assert_eq!(md5s(&audio, "audio", &as_audio), sound, "the audio graph's sound differs");
+    // Not silence: the comparison would pass vacuously if both sides were empty.
+    assert!(sound.iter().collect::<std::collections::HashSet<_>>().len() > 10, "the reference sound is silent");
 }

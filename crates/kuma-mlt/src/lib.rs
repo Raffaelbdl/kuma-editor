@@ -14,6 +14,6 @@ pub mod melt;
 pub mod presets;
 pub mod xml;
 
-pub use compile::{compile, CompileError, CompileOptions, OverlayBake, UnbakedPolicy};
+pub use compile::{compile, CompileError, CompileOptions, OverlayBake, Streams, UnbakedPolicy};
 pub use melt::{render, MeltError, RenderJob, RenderProgress};
 pub use presets::{ExportPreset, PRESETS};

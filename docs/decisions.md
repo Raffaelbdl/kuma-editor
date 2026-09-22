@@ -1686,6 +1686,24 @@ because it is the part deliberately left out.
   videos that already carry fades. The last needs a format version bump if old documents
   must keep their picture-only meaning.
 
+- **Every effect animatable the same way** — wanted, not built. Today there are three
+  shapes. Transform, crop, blur and colour have static values plus optional keyframes, and a
+  parameter is animated only when asked. `volume` is the opposite: it *is* its keyframes (the
+  model refuses one with none), it is added already animated with one key at gain 1, and it
+  cannot be un-animated, only removed. A static gain lives on the clip as `volume`, and the
+  effect multiplies it. Then `fade`, `blend` and `mlt` cannot be animated at all:
+  `Effect::animatable()` lists nothing for them.
+
+  The wanted shape is the first one, for every effect. `volume` gets a static `gain` and
+  optional keyframes, like the rest. That means deciding what the clip's own `volume` field
+  is then: the same value in two places, or a shorthand that goes away with a
+  `PROJECT_VERSION` step. `blend` would animate with hold keys, which is what the compiler
+  already emits for it. `fade` mostly overlaps an animated transform opacity, so making it
+  animatable may matter less than deciding what it does to sound (above). `mlt` needs its
+  properties to be typed before keys can mean anything. The inspector and
+  `Effect::animatable()` stay the single table, so the editor, the validator and the compiler
+  cannot disagree about which parameters move.
+
 - **Ship a starter set of design systems** before any public release. The mechanism is in
   and nothing is in it, which makes the feature invisible to anyone who has not read the
   guide; see *Design systems* above for what such a set has to demonstrate.

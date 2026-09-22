@@ -3,7 +3,7 @@
 // native file picker and revealing a folder. Nothing here can reach another project —
 // the main process resolves every path against the window's own project root.
 
-const { contextBridge, ipcRenderer } = require("electron");
+const { contextBridge, ipcRenderer, webUtils } = require("electron");
 
 /** Values the main process passed in `additionalArguments`. */
 const arg = (name) => {
@@ -24,6 +24,8 @@ contextBridge.exposeInMainWorld("kumaApp", {
   ownsDaemon: arg("owned") === "1",
   /** Native file picker; returns paths relative to the project root where possible. */
   pickMedia: () => ipcRenderer.invoke("media:pick"),
+  /** Where a dropped file is on disk (`File.path` went in Electron 32). */
+  pathForFile: (file) => webUtils.getPathForFile(file),
   /** Open a folder inside the project in the desktop file manager. */
   reveal: (relativePath) => ipcRenderer.invoke("shell:reveal", String(relativePath ?? ".")),
   showLauncher: () => ipcRenderer.invoke("app:show-launcher"),

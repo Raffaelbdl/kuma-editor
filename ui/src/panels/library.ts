@@ -10,8 +10,8 @@
 // the first out of sight as soon as a project had more than a few entries.
 
 import { api } from "../api";
-import { desktop, pickAndAddMedia } from "../desktop";
-import { button, dragPayload, el, row, setDragPayload } from "../dom";
+import { desktop, dropMedia, pickAndAddMedia } from "../desktop";
+import { button, dragPayload, el, isFileDrag, row, setDragPayload } from "../dom";
 import { startJob, store, toast } from "../store";
 import { addFromLibrary, moveBinItem, promptNewFolder, promptNewOverlay } from "../edits";
 import type { BinItem, Project } from "../types";
@@ -20,6 +20,46 @@ import { childrenMap, isFolderSource, isOverlaySource, isSequenceSource, itemKin
 export class Library {
   constructor(private host: HTMLElement) {
     store.select((s) => [s.project, s.templates, s.sequence, s.tab], () => this.render());
+    this.acceptFiles();
+  }
+
+  /** Files from the desktop, dropped anywhere in the window, join the bin at the top level
+   *  unless a folder row claimed them (`defaultPrevented`). While one is over the window the
+   *  bin is framed — grey until the drag says it carries files, since it may land empty. */
+  private acceptFiles() {
+    const label = el("span");
+    const hint = el("div", "bin-drop-hint");
+    hint.append(label);
+    // Enters and leaves are counted for every drag, in the capture phase, and hiding waits
+    // for a `dragover` that does not come: a drag from the desktop can leave while inside.
+    let depth = 0;
+    let pending = 0;
+    const hide = () => { depth = 0; clearTimeout(pending); hint.remove(); };
+    window.addEventListener("dragenter", () => { depth++; }, true);
+    window.addEventListener("dragleave", () => {
+      if (--depth <= 0) { clearTimeout(pending); pending = window.setTimeout(hide, 150); }
+    }, true);
+    window.addEventListener("dragend", hide, true);
+    window.addEventListener("drop", hide, true);
+    window.addEventListener("dragover", (e) => {
+      if (!isFileDrag(e)) return;
+      e.preventDefault();
+      clearTimeout(pending);
+      const ready = e.dataTransfer!.types.includes("Files");
+      hint.classList.toggle("waiting", !ready);
+      label.textContent = !desktop() ? "A browser cannot add dropped files — use the desktop app"
+        : ready ? "Drop to add to the bin · onto a folder to put it there" : "Waiting for the file manager to hand the files over…";
+      if (hint.isConnected) return;
+      const r = this.host.getBoundingClientRect();
+      Object.assign(hint.style, { left: `${r.left}px`, top: `${r.top}px`, width: `${r.width}px`, height: `${r.height}px` });
+      document.body.appendChild(hint);
+    });
+    window.addEventListener("drop", (e) => {
+      if (!isFileDrag(e) || e.defaultPrevented) return;
+      e.preventDefault();
+      if (this.tab !== "bin") { this.tab = "bin"; this.render(); }
+      void dropMedia(e.dataTransfer!.files, null);
+    });
   }
 
   /** Which tab is showing, and which entries are folded. View state, so it lives here
@@ -65,7 +105,7 @@ export class Library {
     };
     walk(null, 0);
     // Dropping a row on the list's empty space lists it last at the top level.
-    dropTarget(list, () => ({ parent: null, before: null }));
+    dropTarget(list, undefined, () => ({ parent: null, before: null }));
     this.host.appendChild(list);
     this.host.appendChild(row("lib-add", button("+ folder", () => void promptNewFolder(), "Add a folder; drag entries onto it")));
 
@@ -153,7 +193,7 @@ function binRow(p: Project, id: string, item: BinItem, caret: HTMLElement | unde
   // row drops into the folder. Any entry can be a parent, but only a folder is offered
   // as a drop target: dropping media on media is more often a slip.
   const folder = isFolderSource(item.source);
-  dropTarget(entry, (e) => {
+  dropTarget(entry, folder ? id : undefined, (e) => {
     const box = entry.getBoundingClientRect();
     const y = (e.clientY - box.top) / box.height;
     if (folder && y > 0.25 && y < 0.75) return { parent: id, before: null, zone: "into" };
@@ -168,20 +208,27 @@ function binRow(p: Project, id: string, item: BinItem, caret: HTMLElement | unde
 interface DropSpot { parent: string | null; before: string | null; zone?: "before" | "after" | "into" }
 
 /** Make `node` accept a dragged bin row, showing which spot the pointer means. The rule
- *  lives in `moveBinItem`; this only stops the drop reaching an enclosing target. */
-function dropTarget(node: HTMLElement, spot: (e: DragEvent) => DropSpot) {
+ *  lives in `moveBinItem`; this only stops the drop reaching an enclosing target. Files
+ *  from the desktop are taken only where there is a `folder` to add them to, and are
+ *  claimed rather than stopped, so the window's own handler knows to leave them. */
+function dropTarget(node: HTMLElement, folder: string | undefined, spot: (e: DragEvent) => DropSpot) {
   const clear = () => node.classList.remove("drop", "drop-before", "drop-after");
   node.ondragover = (e) => {
+    const files = isFileDrag(e);
+    if (files && folder === undefined) return;
     e.preventDefault();
-    e.stopPropagation();
+    if (!files) e.stopPropagation();
     clear();
-    node.classList.add({ before: "drop-before", after: "drop-after", into: "drop" }[spot(e).zone ?? "into"]);
+    node.classList.add(files ? "drop" : { before: "drop-before", after: "drop-after", into: "drop" }[spot(e).zone ?? "into"]);
   };
   node.ondragleave = clear;
   node.ondrop = (e) => {
+    const files = isFileDrag(e);
+    if (files && folder === undefined) return;
     e.preventDefault();
-    e.stopPropagation();
     clear();
+    if (files) { void dropMedia(e.dataTransfer!.files, folder!); return; }
+    e.stopPropagation();
     const from = dragPayload(e)?.bin;
     const { parent, before } = spot(e);
     if (from && from !== parent && from !== before) void moveBinItem(from, parent, before);

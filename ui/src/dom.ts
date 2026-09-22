@@ -89,6 +89,13 @@ export function dragPayload(e: DragEvent): DragPayload | null {
   try { return data ? (JSON.parse(data) as DragPayload) : null; } catch { return null; }
 }
 
+/** Whether a drag may carry files from outside the page. One with no types counts: GNOME on
+ *  Wayland often sends a file drag with none, and every drag the page starts has one. */
+export const isFileDrag = (e: DragEvent): boolean => {
+  const types = e.dataTransfer?.types;
+  return !!types && (types.length === 0 || types.includes("Files"));
+};
+
 /** Fill a `<select>` with options (value, label, tooltip); keeps a leading placeholder if given. */
 export function options(sel: HTMLSelectElement, items: { value: string; label?: string; title?: string }[], selected?: string, placeholder?: string) {
   sel.innerHTML = "";

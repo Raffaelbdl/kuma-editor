@@ -1423,6 +1423,20 @@ impossible and the revision is never touched. Held back until flag-and-reload pr
 annoying, because the validator and the agent both read metadata today.
 
 
+## Files dropped from the desktop
+
+**Anywhere in the window, into the bin** — or into the folder row it lands on, in one edit
+(`add_media` takes a `parent`). A drop on the bin panel alone was hard to find, so the bin
+is framed as soon as a file is over the window. Placing it where it was dropped is to do.
+Only the shell can: the daemon adds by path, and only `webUtils.getPathForFile` knows it.
+
+**GNOME on Wayland loses about two drags in three from Nautilus.** They carry no types
+and no files, the drop included; native Wayland (`ELECTRON_OZONE_PLATFORM_HINT=wayland`)
+and waiting longer do not help. It is a known Chromium-on-Wayland bug. So a drag with no
+types is accepted, and the frame stays grey until one says it carries files — a drag that
+will fail shows before the drop. Pasting files copied in the file manager would avoid drag
+and drop; it was left for now, since Ctrl+V pastes clips.
+
 ## Regression tests for the things that are not Rust
 
 **Built.** The suite covered the model, the compiler and the daemon well, and covered

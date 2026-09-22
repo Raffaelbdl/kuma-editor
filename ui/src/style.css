@@ -278,6 +278,15 @@ button.linkish:hover { text-decoration: underline; }
 .bin-row.drop-after { box-shadow: 0 2px 0 0 var(--accent); }
 .lib-item.open { outline: 1px solid var(--sel); }
 .lib-add { display: flex; gap: 6px; margin-top: 6px; }
+/* Frames the bin while a file is dragged over the window. Lets the pointer through, so a
+   folder row underneath can still take the drop. */
+.bin-drop-hint {
+  --c: var(--accent); position: fixed; z-index: 9; pointer-events: none; box-sizing: border-box;
+  border: 2px dashed var(--c); border-radius: 6px; background: color-mix(in srgb, var(--c) 8%, transparent);
+  display: flex; align-items: flex-end; justify-content: center; padding: 10px;
+}
+.bin-drop-hint.waiting { --c: var(--fg-2); }
+.bin-drop-hint span { background: var(--bg-3); border: 1px solid var(--c); border-radius: 4px; padding: 4px 8px; font-size: 12px; text-align: center; }
 
 .field { display: grid; grid-template-columns: 90px 1fr; gap: 6px; align-items: center; margin-bottom: 6px; }
 /* ---- property fields (see ui/src/props.ts) ----------------------------------------

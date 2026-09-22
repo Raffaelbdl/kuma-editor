@@ -386,7 +386,7 @@ async fn main() -> anyhow::Result<()> {
                 (v["id"].as_str().unwrap_or_default().to_string(), v["revision"].as_u64().unwrap_or_default())
             } else {
                 let state = open(&cli)?;
-                let (id, rev, _) = kuma_daemon::jobs::add_media(&state, &path, id.clone(), None, "cli")?;
+                let (id, rev, _) = kuma_daemon::jobs::add_media(&state, &path, id.clone(), None, None, "cli")?;
                 (id, rev)
             };
             println!("added bin entry `{id}` (revision {rev})");

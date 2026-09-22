@@ -384,6 +384,8 @@ struct AddMedia {
     #[serde(default)]
     id: Option<String>,
     #[serde(default)]
+    parent: Option<String>,
+    #[serde(default)]
     base_revision: Option<u64>,
     #[serde(default = "default_origin")]
     origin: String,
@@ -391,7 +393,7 @@ struct AddMedia {
 
 /// Probe a media file and add it to the bin. The id defaults to the file stem.
 async fn add_media(State(st): S, Json(req): Json<AddMedia>) -> ApiResult {
-    let (id, rev, warnings) = blocking(move || jobs::add_media(&st, &req.path, req.id, req.base_revision, &req.origin))
+    let (id, rev, warnings) = blocking(move || jobs::add_media(&st, &req.path, req.id, req.parent, req.base_revision, &req.origin))
         .await?
         // Keep the 409/422 contract of every other edit; anything else is the caller's input.
         .map_err(|e| match e.downcast::<EditError>() {

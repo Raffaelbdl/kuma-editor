@@ -39,6 +39,7 @@ interface LauncherBridge {
   previewPath(parentDir: string, name: string): Promise<string>;
   create(spec: NewProject): Promise<string>;
   open(file: string): Promise<boolean>;
+  pathForFile(file: File): string;
   onCommand(fn: (name: string) => void): () => void;
   onRecentsChanged(fn: () => void): () => void;
 }
@@ -402,8 +403,7 @@ window.addEventListener("drop", (e) => {
   dragDepth = 0;
   dropHint.classList.remove("on");
   const file = e.dataTransfer?.files?.[0];
-  // `File.path` is Electron's addition; a drop without one is not a real file.
-  const p = file ? (file as File & { path?: string }).path : undefined;
+  const p = file ? launcher.pathForFile(file) : "";
   if (p) void open(p);
 });
 

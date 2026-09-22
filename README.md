@@ -254,7 +254,7 @@ the *video* is what a design system is for, below. A new theme is a block of tok
 
 `kuma serve` plus a browser tab is still the whole editor. The desktop app is the same UI
 in a window, with the things a tab cannot give you: a launcher, an application menu, a
-native file picker, and a daemon that starts and stops with the window.
+native file picker, file drops, and a daemon that starts and stops with the window.
 
 ```
 npm run app                                  # installs its own deps on first run, builds, starts
@@ -372,7 +372,8 @@ entry is one field. An optional `order` sorts siblings (ordered ones first, the 
 id, so new entries land at the bottom). In the editor, `+ folder` adds one; drag a row onto
 the middle of a folder to move it there, onto the upper or lower part of any row to put it
 before or after that row, or onto the list's empty space to send it last at the top level;
-the caret folds a folder. A clip is a
+the caret folds a folder. In the desktop app, files dropped anywhere in the window join
+the bin, or the folder they were dropped on. A clip is a
 *placement*: it says which entry, when, how fast and with which effects, and never carries
 a source of its own. So an overlay's text lives on its bin entry and every placement of it
 follows; a second wording is a second entry. Overlay clips take the same effects as video

@@ -15,6 +15,7 @@ const PROJECT: &str = r##"{
   "fps": { "num": 30, "den": 1 }, "width": 320, "height": 240, "sample_rate": 48000,
   "bin": {
     "tag": { "name": "Tag", "source": { "template": "probe", "vars": {} } },
+    "clips": { "name": "Clips", "source": { "folder": true } },
     "main": { "name": "Main", "source": { "tracks": [
       { "id": "o1", "kind": "overlay", "name": "O", "muted": false, "hidden": false, "transitions": [],
         "clips": [ { "id": "o1c1", "start": 0, "end": 2, "bin": "tag", "in": 0,
@@ -184,4 +185,29 @@ async fn a_template_is_checked_and_scaffolded_over_http() {
     assert_eq!(made["lint"]["findings"].as_array().map(Vec::len), Some(0), "the scaffold is not clean: {}", made["lint"]);
     let (status, _, _) = request(&addr, "POST", "/api/templates/fresh", "{}");
     assert!(status.contains("400"), "a second scaffold overwrote the first: {status}");
+}
+
+/// Media added into a folder is one edit; a parent not in the bin is refused.
+#[tokio::test(flavor = "multi_thread")]
+async fn media_is_added_into_a_folder_in_one_edit() {
+    if !kuma_overlay::media::ffprobe_available() {
+        eprintln!("ffmpeg unavailable; skipping add-media test");
+        return;
+    }
+    let (state, addr, dir) = daemon().await;
+    let media = dir.path().join("beep.wav");
+    kuma_overlay::media::ffmpeg(&["-f".into(), "lavfi".into(), "-i".into(), "sine=duration=1".into(), media.to_string_lossy().into_owned()]).unwrap();
+    let add = |id: &str, parent: &str| request(&addr, "POST", "/api/bin", &format!(r#"{{ "path": {:?}, "id": "{id}", "parent": "{parent}" }}"#, media.to_string_lossy()));
+    let before = state.project.read().unwrap().revision;
+
+    let (status, _, reply) = add("beep", "clips");
+    assert!(status.contains("200"), "{status}: {reply}");
+    let project = state.project.read().unwrap();
+    assert_eq!(project.bin["beep"].parent.as_deref(), Some("clips"));
+    assert_eq!(project.revision, before + 1, "one edit, not two");
+    drop(project);
+
+    let (status, _, _) = add("boop", "nope");
+    assert!(status.starts_with("HTTP/1.1 4"), "a dangling parent was accepted: {status}");
+    assert!(!state.project.read().unwrap().bin.contains_key("boop"));
 }

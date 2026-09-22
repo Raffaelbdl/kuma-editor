@@ -28,8 +28,8 @@ export const api = {
   /** Check a template against the authoring contract. Reads only. */
   lintTemplate: (id: string) => json<LintReport>(`/api/templates/${encodeURIComponent(id)}/lint`),
   reloadTemplates: () => json<TemplateInfo[]>("/api/templates", { method: "POST", body: "{}" }),
-  addMedia: (path: string, base_revision: number) =>
-    json<{ id: string; revision: number }>("/api/bin", { method: "POST", body: JSON.stringify({ path, base_revision, origin: "ui: add media" }) }),
+  addMedia: (path: string, base_revision: number, parent?: string | null) =>
+    json<{ id: string; revision: number }>("/api/bin", { method: "POST", body: JSON.stringify({ path, base_revision, parent: parent ?? undefined, origin: "ui: add media" }) }),
   /** Speech to text. From a `bin` entry the result is added unplaced; from a `clip` it is
    *  placed over that clip, aligned. `replace` overwrites the transcript of an entry that
    *  already exists instead of refusing, keeping its styling and where it is placed. No

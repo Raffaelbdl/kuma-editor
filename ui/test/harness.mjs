@@ -129,6 +129,11 @@ export async function driver(url) {
         await new Promise((r) => setTimeout(r, 150));
       }
     },
+    /** A drag of `files` from outside the page through the browser's own drag pipeline:
+     *  `type` is dragEnter, dragOver, drop or dragCancel, at viewport `x`, `y`. */
+    dragFiles(type, x, y, files) {
+      return send("Input.dispatchDragEvent", { type, x, y, data: { items: [], files, dragOperationsMask: 1 } });
+    },
     close() {
       try { ws.close(); } catch { /* already gone */ }
       chrome.kill("SIGTERM");

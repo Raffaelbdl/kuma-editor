@@ -227,6 +227,9 @@ pub struct AddMedia {
     /// Bin id; defaults to a slug of the file name.
     #[serde(default)]
     pub id: Option<String>,
+    /// Bin id of the entry (usually a folder) to list it under.
+    #[serde(default)]
+    pub parent: Option<String>,
     #[serde(default)]
     pub base_revision: Option<u64>,
 }
@@ -322,7 +325,7 @@ impl KumaServer {
 
     #[tool(description = "Probe a media file and add it to the project bin. Returns the bin id to reference from a clip.")]
     async fn add_media(&self, Parameters(p): Parameters<AddMedia>) -> Result<CallToolResult, McpError> {
-        self.post("/api/bin", &json!({ "path": p.path, "id": p.id, "base_revision": p.base_revision, "origin": "claude: add media" })).await
+        self.post("/api/bin", &json!({ "path": p.path, "id": p.id, "parent": p.parent, "base_revision": p.base_revision, "origin": "claude: add media" })).await
     }
 
     #[tool(description = "Transcribe media audio with a local whisper.cpp model into a `subtitles` overlay entry (cues in source seconds, editable as its `cues` var), listed under the media. Pass `clip` to place it over that clip, aligned, on an overlay track; pass `bin` for the entry alone. The new entry's id is minted when the words are in and returned as `bin`; it takes no base_revision, since the model runs for minutes and the patch is composed against the project as it is when it lands.")]

@@ -57,7 +57,7 @@ fn a_transcript_becomes_an_editable_subtitles_entry() {
 
     let config = Config { project_file: dir.path().join("t.kuma.json"), repo_root: repo.clone(), library_dirs: vec![repo.join("library")], bind: "127.0.0.1:0".parse().unwrap() };
     let state = Arc::new(AppState::load(config).unwrap());
-    jobs::add_media(&state, &media, None, None, "test").unwrap();
+    jobs::add_media(&state, &media, None, None, None, "test").unwrap();
 
     let req = TranscribeRequest { bin: Some("talk".into()), clip: None, id: None, replace: false, options: Default::default(), origin: "test".into() };
     // Whisper is minutes of work on a real recording, so the job must report its

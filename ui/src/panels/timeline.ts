@@ -1,6 +1,6 @@
 // Timeline: tracks, clips (move/trim), transitions, playhead, zoom.
 
-import { button, dragPayload, dragPointer, el } from "../dom";
+import { button, dragPayload, dragPointer, el, isFileDrag } from "../dom";
 import { placeBinItem, addFromLibrary } from "../edits";
 import { icon } from "../icons";
 import { animationOf, keysOf } from "../keyframes";
@@ -64,8 +64,9 @@ export class Timeline {
         store.set({ zoom: z });
       }
     }, { passive: false });
-    host.addEventListener("dragover", (e) => { e.preventDefault(); });
-    host.addEventListener("drop", (e) => this.onDrop(e));
+    // Files from the desktop are left to the bin (`Library`).
+    host.addEventListener("dragover", (e) => { if (!isFileDrag(e)) e.preventDefault(); });
+    host.addEventListener("drop", (e) => { if (!isFileDrag(e)) void this.onDrop(e); });
   }
 
   private x(t: number) { return HEAD + t * store.state.zoom; }

@@ -17,6 +17,8 @@ export interface DesktopBridge {
   /** False when the app attached to a daemon it did not start (and so will not stop it). */
   ownsDaemon: boolean;
   pickMedia(): Promise<string[]>;
+  /** Where a dropped file is on disk, or "". */
+  pathForFile(file: File): string;
   reveal(relativePath?: string): Promise<string>;
   showLauncher(): Promise<void>;
   onCommand(fn: (name: string) => void): () => void;
@@ -73,6 +75,26 @@ export async function pickAndAddMedia(): Promise<void> {
     toast(`Cannot open the file picker: ${(e as Error).message}`, "err");
     return;
   }
+  await addMediaPaths(paths, null);
+}
+
+/** Add files dropped from the desktop, under `parent` if dropped on a folder. Only the
+ *  shell can say where a dropped file is; a drop can also land empty (see `isFileDrag`). */
+export async function dropMedia(files: FileList, parent: string | null): Promise<void> {
+  const app = desktop();
+  if (!files.length) {
+    toast("The drop arrived without its files. Drag it again, or use Browse…", "err", 8000);
+    return;
+  }
+  if (!app) {
+    toast("A browser cannot add dropped files. Type the path below, or use the desktop app.", "err", 8000);
+    return;
+  }
+  await addMediaPaths([...files].map((f) => app.pathForFile(f)).filter(Boolean), parent);
+}
+
+/** Add each path to the bin, stopping at the first that fails. */
+async function addMediaPaths(paths: string[], parent: string | null): Promise<void> {
   if (!paths.length) return;
   // One at a time, against the revision each previous add produced: the daemon refuses a
   // patch built on a stale revision, and a multi-select would hit that on the second file.
@@ -81,7 +103,7 @@ export async function pickAndAddMedia(): Promise<void> {
     const project = store.state.project;
     if (!project) return;
     try {
-      const r = await api.addMedia(path, project.revision);
+      const r = await api.addMedia(path, project.revision, parent);
       added.push(r.id);
       await store.refresh();
     } catch (e) {

@@ -75,7 +75,8 @@ where
 
 /// Probe a media file and add it to the bin (shared by the API and the CLI). The id
 /// defaults to a slug of the file stem; the stored path is project-relative when possible.
-pub fn add_media(state: &AppState, path: &Path, id: Option<String>, base_revision: Option<u64>, origin: &str) -> anyhow::Result<(String, u64, Vec<kuma_core::Issue>)> {
+/// `parent` lists it under that entry, in the same edit.
+pub fn add_media(state: &AppState, path: &Path, id: Option<String>, parent: Option<String>, base_revision: Option<u64>, origin: &str) -> anyhow::Result<(String, u64, Vec<kuma_core::Issue>)> {
     let abs = resolve_path(state, path);
     if !abs.is_file() {
         anyhow::bail!("file not found: {}", abs.display());
@@ -92,7 +93,7 @@ pub fn add_media(state: &AppState, path: &Path, id: Option<String>, base_revisio
         name: stem,
         source: kuma_core::BinSource::File { path: rel.to_string_lossy().into_owned(), kind: probe.kind, proxy: None },
         meta: Some(probe.meta),
-        parent: None,
+        parent,
         order: None,
     };
     let (rev, warnings) = state.apply_patch(&[bin_op(&id, "", serde_json::to_value(item)?)?], base_revision, origin)?;

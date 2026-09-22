@@ -2,7 +2,8 @@
 //! from the compiled timeline and streams JPEGs; the daemon proxies its WebSocket.
 //!
 //! The sidecar speaks a tiny line protocol on stdin/stdout:
-//!   → `load <path.mlt>` | `seek <frame>` | `play` | `pause` | `quit`
+//!   → `load-video <path.mlt>` | `load-audio <path.mlt>` | `load <path.mlt>` (both from one)
+//!     | `seek <frame>` | `play` | `pause` | `quit`
 //!   ← `ok …` | `err …` | `frame <frame> <len>` followed by `<len>` JPEG bytes
 //!
 //! Frames, `ok end` and the engine's exit are fanned out to every preview socket. A
@@ -16,6 +17,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::jobs::OverlayScope;
+use kuma_mlt::Streams;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, Command};
 use tokio::sync::{broadcast, Mutex as AsyncMutex};
@@ -81,10 +83,11 @@ impl Default for PreviewHandle {
     }
 }
 
-/// What a reload did. `changed` is false when the project compiled to the document the
+/// What a reload did. `changed` is false when the project compiled to the documents the
 /// engine already had, so it was left alone.
 #[derive(Debug, Clone)]
 pub struct Reloaded {
+    /// The picture's graph; the sound's is beside it (see [`preview_paths`]).
     pub path: PathBuf,
     pub changed: bool,
 }
@@ -243,17 +246,20 @@ pub async fn reload(state: &Arc<AppState>) -> anyhow::Result<Reloaded> {
     while state.preview.pending.swap(false, Ordering::SeqCst) {
         compile_and_load(state).await?;
     }
-    Ok(Reloaded { path: preview_path(state), changed: state.preview.loads.load(Ordering::SeqCst) != before })
+    Ok(Reloaded { path: preview_paths(state).0, changed: state.preview.loads.load(Ordering::SeqCst) != before })
 }
 
-fn preview_path(state: &AppState) -> PathBuf {
-    state.config.cache_dir().join("preview.mlt")
+/// Where the picture's and the sound's graphs are written.
+pub fn preview_paths(state: &AppState) -> (PathBuf, PathBuf) {
+    let dir = state.config.cache_dir();
+    (dir.join("preview-video.mlt"), dir.join("preview-audio.mlt"))
 }
 
-/// Compile the open sequence (at the preview scale) and hand it to the engine if it is not
-/// already playing exactly that. [`OverlayScope::Nested`] is what makes the overlays of the
-/// sequences it nests appear at all; its own are left unbaked, and therefore skipped, for
-/// the UI's live DOM.
+/// Compile the open sequence (at the preview scale) as two graphs, the picture and the
+/// sound, and hand them to the engine if it is not already playing exactly those.
+/// [`OverlayScope::Nested`] is what makes the overlays of the sequences it nests appear at
+/// all; its own are left unbaked, and therefore skipped, for the UI's live DOM. The sound
+/// needs no bakes at all.
 async fn compile_and_load(state: &Arc<AppState>) -> anyhow::Result<()> {
     // First, because starting an engine clears what it is holding.
     let engine = state.preview.ensure(state).await?;
@@ -267,34 +273,39 @@ async fn compile_and_load(state: &Arc<AppState>) -> anyhow::Result<()> {
         // that sub-sequence: it is compiled as the root, exactly as a render of it would be.
         let sequence = st.current_sequence();
         let mut opts = crate::jobs::compile_options(&st);
-        opts.bakes = crate::jobs::bake_for(&st, &project, &sequence, OverlayScope::Nested, None, &|_, _| {})?;
         opts.size = Some((w, h));
-        opts.sequence = Some(sequence);
-        let xml = crate::jobs::compile_xml(&project, &opts)?;
-        // The document is the whole input: profile, every producer, and the bake
+        opts.sequence = Some(sequence.clone());
+        opts.streams = Streams::Audio;
+        let audio = crate::jobs::compile_xml(&project, &opts)?;
+        opts.bakes = crate::jobs::bake_for(&st, &project, &sequence, OverlayScope::Nested, None, &|_, _| {})?;
+        opts.streams = Streams::Video;
+        let video = crate::jobs::compile_xml(&project, &opts)?;
+        // The documents are the whole input: profile, every producer, and the bake
         // directories — whose names are themselves content hashes, so a template edited on
         // disk changes this even though the project document did not.
-        let stamp = stamp(&xml);
+        let stamp = stamp(&[&video, &audio]);
         st.preview.compiles.fetch_add(1, Ordering::SeqCst);
-        tracing::debug!("preview: compiled {} bytes, stamp {stamp:016x}", xml.len());
+        tracing::debug!("preview: compiled {} + {} bytes, stamp {stamp:016x}", video.len(), audio.len());
         if *lock(&st.preview.loaded) == Some(stamp) {
             return Ok(None);
         }
-        Ok::<_, anyhow::Error>(Some((crate::jobs::write_compiled(&st, &xml, "preview")?, stamp)))
+        let paths = (crate::jobs::write_compiled(&st, &video, "preview-video")?, crate::jobs::write_compiled(&st, &audio, "preview-audio")?);
+        Ok::<_, anyhow::Error>(Some((paths, stamp)))
     })
     .await??;
     // Only once the engine has actually been told, so a failed send does not leave us
     // believing it holds something it never received.
-    if let Some((path, stamp)) = fresh {
-        engine.send(&format!("load {}", path.display())).await?;
+    if let Some(((video, audio), stamp)) = fresh {
+        engine.send(&format!("load-video {}", video.display())).await?;
+        engine.send(&format!("load-audio {}", audio.display())).await?;
         *lock(&state.preview.loaded) = Some(stamp);
         state.preview.loads.fetch_add(1, Ordering::SeqCst);
     }
     Ok(())
 }
 
-fn stamp(xml: &str) -> u64 {
+fn stamp(docs: &[&str]) -> u64 {
     let mut h = std::collections::hash_map::DefaultHasher::new();
-    xml.hash(&mut h);
+    docs.hash(&mut h);
     h.finish()
 }

@@ -631,8 +631,8 @@ the first disables playback.
 Without an audio device, SDL's dummy driver still paces the callback in real time, so
 playback is always audio-paced and the alternate clock path was dead code.
 
-**Picture and sound as two graphs** — agreed; the compiler half is built, the engine half
-is not. Today one graph carries both, so an audio edit changes the compiled document and
+**Picture and sound as two graphs** — adopted; the compiler and the engine are built, the
+per-half reload is not. Today one graph carries both, so an audio edit changes the compiled document and
 the engine rebuilds every producer and re-sends a picture that did not change, pausing
 playback to do it. That will not survive audio effects, where dragging a knob is an edit
 per step. The split: `CompileOptions::streams` (`Both`, `Video`, `Audio`) compiles a half
@@ -644,10 +644,19 @@ melt are untouched. `each_half_graph_matches_the_full_graph` in `kuma-mlt/tests/
 is what makes this an optimisation and not a second renderer: per-frame MD5s of each half
 must equal the full graph's, and it was checked to fail when either half drops a filter.
 
-Still to build: an engine holding two producers, audio as the clock and video following
-it, dropping frames when late; and `preview::reload` stamping each half and sending only
-the one that changed, with clients still asking on every edit. Keeping the two in step
-through seeks, speed and nested sequences is the risky part. Audio-reactive visuals do not
+The engine holds the two graphs on two threads. The sound's thread is the clock: samples
+actually handed to the device, counted from the frame playback started on. The picture's
+thread shows the frame that count has reached, dropping frames when late, and a frame it
+finishes after a pause or seek is dropped rather than shown over the seek's. Both threads
+seek by frame index into graphs of the same document, which is why speed and nested
+sequences need nothing of their own here: the compiler already put them in both.
+`load-video` and `load-audio` swap a graph between frames without pausing.
+`kuma-daemon/tests/engine.rs` pins the pacing, frame by frame, and was checked to fail
+with a picture that runs free.
+
+Still to build: `preview::reload` stamping each half and sending only the one that
+changed. It compiles both and sends both under one stamp today, so an audio edit still
+reloads the picture, but no longer pauses playback to do it. Audio-reactive visuals do not
 couple the halves again: they are meant to be prebaked from an analysis of the sound into
 an overlay, the way subtitles are, not drawn by MLT's audio filters in the video graph.
 

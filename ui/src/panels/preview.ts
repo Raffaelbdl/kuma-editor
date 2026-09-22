@@ -398,8 +398,8 @@ function applyEffects(iframe: HTMLIFrameElement, c: Clip, local: number, W: numb
       transform += ` translate(${t.x}px, ${t.y}px) scale(${t.scale}) rotate(${t.rotation}deg)`;
       opacity *= t.opacity;
     }
-    // CSS takes the standard deviation, which the render makes half the radius: `blur(r)`
-    // drew every overlay blur twice as strong as the export.
+    // CSS takes the standard deviation, which the render makes half the radius (`Blur` in
+    // `compile.rs`): `blur(r)` drew every overlay blur twice as strong as the export.
     else if (e.type === "blur") filter += ` blur(${paramAt(e, "radius", local) / 2}px)`;
     else if (e.type === "color") filter += ` brightness(${1 + paramAt(e, "brightness", local)}) contrast(${paramAt(e, "contrast", local)}) saturate(${paramAt(e, "saturation", local)})`;
     else if (e.type === "crop") {

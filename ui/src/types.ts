@@ -76,8 +76,14 @@ const EFFECT_STREAMS: Record<Effect["type"], Streams> = {
 export const streamsOf = (type: Effect["type"]): Streams => EFFECT_STREAMS[type];
 
 /** Whether an effect of this kind does anything to a clip carrying `clip`. */
-export const actsOn = (type: Effect["type"], clip: Streams): boolean =>
-  (EFFECT_STREAMS[type].video && clip.video) || (EFFECT_STREAMS[type].audio && clip.audio);
+export function actsOn(type: Effect["type"], clip: Streams): boolean {
+  const s = streamsOf(type);
+  return (s.video && clip.video) || (s.audio && clip.audio);
+}
+
+/** A fade: two lengths of time, at the clip's start and its end, whichever stream it fades.
+ *  What a split does to one is the same for both. */
+const isFade = (e: Effect): e is Extract<Effect, { type: "fade" | "audio_fade" }> => e.type === "fade" || e.type === "audio_fade";
 
 /** What a clip on `track` can show and sound. Mirrors `Project::clip_streams` in
  *  `model.rs`: a capability, not a state, so a mute changes nothing; picture is the
@@ -87,12 +93,13 @@ export function clipStreams(p: Project, track: Track, clip: Clip): Streams {
   if (!item) return { video: false, audio: false };
   const kind = itemKind(item);
   const video = kind !== "audio" && kind !== "folder";
-  const audio = kind === "sequence" ? sequenceSounds(p, clip.bin) : (kind === "video" || kind === "audio") && (item.meta?.has_audio ?? true);
+  const audio = kind === "sequence" ? sequenceSounds(p, clip.bin) : isTimedMedia(item) && hasAudio(item);
   return { video: video && track.kind !== "audio", audio };
 }
 
 /** Whether a sequence carries any sound, following nested ones; the inner mutes are its
- *  content, so they count. Mirrors `Project::seq_has_audio`. Cycle-safe. */
+ *  content, so they count. Mirrors `Project::seq_has_audio`, and walks as `reachableFrom`
+ *  does, less what is muted. Cycle-safe. */
 function sequenceSounds(p: Project, id: string, seen = new Set<string>()): boolean {
   const seq = sequenceOf(p, id);
   if (!seq || seen.has(id)) return false;
@@ -100,9 +107,7 @@ function sequenceSounds(p: Project, id: string, seen = new Set<string>()): boole
   return seq.tracks.some((t) => !t.muted && t.clips.some((c) => {
     if (c.muted) return false;
     const item = binItem(p, c);
-    if (!item) return false;
-    const k = itemKind(item);
-    return k === "sequence" ? sequenceSounds(p, c.bin, seen) : k === "video" || k === "audio";
+    return !!item && (itemKind(item) === "sequence" ? sequenceSounds(p, c.bin, seen) : isTimedMedia(item));
   }));
 }
 
@@ -470,7 +475,7 @@ export function transformAt(e: Extract<Effect, { type: "transform" }>, local: nu
 /** Re-base a time-relative effect for a clip that starts `cut` seconds later (the right
  *  half of a split): keyframes shift, the value at the cut becomes the first keyframe. */
 export function shiftEffect(e: Effect, cut: number): Effect {
-  if (e.type === "fade" || e.type === "audio_fade") return { ...e, in: 0 };
+  if (isFade(e)) return { ...e, in: 0 };
   const kfs = keyframesOf(e);
   if (!kfs.length) return e;
   // The key the cut lands in carries that segment's ease (`sampleEffect` does), or a half
@@ -481,7 +486,7 @@ export function shiftEffect(e: Effect, cut: number): Effect {
 
 /** The complementary trim for the left half: keep keyframes up to the cut, then hold. */
 export function trimEffect(e: Effect, cut: number): Effect {
-  if (e.type === "fade" || e.type === "audio_fade") return { ...e, out: 0 };
+  if (isFade(e)) return { ...e, out: 0 };
   const kfs = keyframesOf(e);
   if (!kfs.some((k) => k.t > cut)) return e;
   return { ...e, keyframes: [...kfs.filter((k) => k.t <= cut), sampleEffect(e, cut)] } as Effect;

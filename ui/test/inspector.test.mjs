@@ -32,6 +32,11 @@ const PROJECT = JSON.stringify({
 
 const why = missing();
 
+/** Select a clip the way a click does: press on it, and let go. */
+const selectClip = (page, id) => page.eval(`(() => { const c = document.querySelector('.clip[data-id="${id}"]'); const r = c.getBoundingClientRect();
+  c.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, clientX: r.left + 20, clientY: r.top + 2 }));
+  window.dispatchEvent(new PointerEvent("pointerup", { bubbles: true })); return true; })()`);
+
 describe("the inspector's property fields", { skip: why ? `skipping: ${why}` : false }, () => {
   let tmp, daemon, page;
 
@@ -86,9 +91,7 @@ describe("the inspector's property fields", { skip: why ? `skipping: ${why}` : f
     page = await driver(daemon.url);
     await page.until(`!!document.querySelector('.clip[data-id="c1"]')`);
     // Select the clip: the inspector shows a clip's effects, and that is what is under test.
-    await page.eval(`(() => { const c = document.querySelector('.clip[data-id="c1"]'); const r = c.getBoundingClientRect();
-      c.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, clientX: r.left + 20, clientY: r.top + 2 }));
-      window.dispatchEvent(new PointerEvent("pointerup", { bubbles: true })); return true; })()`);
+    await selectClip(page, "c1");
     await page.until(`!!document.querySelector(".effect .num.axis-x")`);
   });
 
@@ -195,9 +198,7 @@ describe("the inspector's property fields", { skip: why ? `skipping: ${why}` : f
       lane.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, clientX: r.right - 10, clientY: r.top + 5 }));
       window.dispatchEvent(new PointerEvent("pointerup", { bubbles: true })); return true; })()`);
     await page.until(`!document.querySelector(".effect")`);
-    await page.eval(`(() => { const c = document.querySelector('.clip[data-id="c1"]'); const r = c.getBoundingClientRect();
-      c.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, clientX: r.left + 20, clientY: r.top + 2 }));
-      window.dispatchEvent(new PointerEvent("pointerup", { bubbles: true })); return true; })()`);
+    await selectClip(page, "c1");
     await page.until(`!!document.querySelector(".effect")`);
     assert.equal(await page.eval(`${box}.classList.contains("closed")`), true);
 
@@ -277,9 +278,7 @@ describe("keyframes", { skip: why ? `skipping: ${why}` : false }, () => {
     daemon = await startDaemon(projectFile);
     page = await driver(daemon.url);
     await page.until(`!!document.querySelector('.clip[data-id="c1"]')`);
-    await page.eval(`(() => { const c = document.querySelector('.clip[data-id="c1"]'); const r = c.getBoundingClientRect();
-      c.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, clientX: r.left + 20, clientY: r.top + 2 }));
-      window.dispatchEvent(new PointerEvent("pointerup", { bubbles: true })); return true; })()`);
+    await selectClip(page, "c1");
     await page.until(`!!document.querySelector(".effect .kfs-key")`);
   });
 
@@ -570,9 +569,6 @@ const OFFERED = JSON.stringify({
 describe("the effects a clip is offered", { skip: why ? `skipping: ${why}` : false }, () => {
   let tmp, daemon, page;
 
-  const select = (id) => page.eval(`(() => { const c = document.querySelector('.clip[data-id="${id}"]'); const r = c.getBoundingClientRect();
-    c.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, clientX: r.left + 10, clientY: r.top + 2 }));
-    window.dispatchEvent(new PointerEvent("pointerup", { bubbles: true })); return true; })()`);
   const ADD = `[...document.querySelectorAll("#inspector select")].find(s => s.options[0]?.textContent === "+ add effect…")`;
   const offered = () => page.eval(`[...${ADD}.options].slice(1).map(o => o.value).join(" ")`);
   const labels = () => page.eval(`[...document.querySelectorAll("#inspector .field > label")].map(l => l.textContent).join(" ")`);
@@ -594,7 +590,7 @@ describe("the effects a clip is offered", { skip: why ? `skipping: ${why}` : fal
   });
 
   it("offers a colour the picture's effects, and says a volume on it does nothing", async () => {
-    await select("c1");
+    await selectClip(page, "c1");
     await page.until(`!!document.querySelector(".effect")`);
     assert.equal(await offered(), "transform crop blend blur color fade mlt");
     // Placed anyway (by patch), it stays — dimmed, and saying why.
@@ -605,7 +601,7 @@ describe("the effects a clip is offered", { skip: why ? `skipping: ${why}` : fal
   });
 
   it("offers a song the sound's effects, muted or not", async () => {
-    await select("c2");
+    await selectClip(page, "c2");
     await page.until(`!!${ADD} && document.querySelector("#inspector h3 .mono")?.textContent === "c2"`);
     // A mute is a state: what the clip can do is unchanged by it, and so is the list.
     assert.equal(await offered(), "audio_fade volume mlt");

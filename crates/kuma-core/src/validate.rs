@@ -258,9 +258,11 @@ fn check_sequence<'a>(
             // gain) or silently shadow the first (blend); only `mlt` may repeat.
             let mut kinds = HashSet::new();
             // What the clip can show and sound, for the effects that act on neither. Only
-            // for an entry that resolves to something placeable: the others are errors
-            // already, and a warning per effect on top would bury them.
-            let carries = item.filter(|i| !i.is_folder()).map(|_| p.clip_streams(t, c));
+            // for an entry that resolves to something placeable (the others are errors
+            // already, and a warning per effect on top would bury them), and only for a
+            // clip with effects: for a sequence it is a walk of everything nested.
+            let placeable = item.is_some_and(|i| !i.is_folder());
+            let carries = if placeable && !c.effects.is_empty() { p.clip_streams(t, c) } else { None };
             for (ei, e) in c.effects.iter().enumerate() {
                 let ep = format!("{cp}/effects/{ei}");
                 let kind = serde_json::to_value(e).ok().and_then(|v| v["type"].as_str().map(String::from)).unwrap_or_default();
@@ -270,11 +272,9 @@ fn check_sequence<'a>(
                 // A warning, not an error: it renders, and does nothing. The editor does not
                 // offer it; this is for one that arrived by patch, or whose clip moved to a
                 // track that takes away what it acted on.
-                if let Some(carries) = carries {
-                    if !carries.is_some_and(|s| e.acts_on(s)) {
-                        let lacks = if e.streams().video() { "shows no picture" } else { "has no sound" };
-                        issues.push(Issue::warn(ep.clone(), format!("`{kind}` does nothing here: this clip {lacks}")));
-                    }
+                if placeable && !carries.is_some_and(|s| e.acts_on(s)) {
+                    let lacks = if e.streams().video() { "shows no picture" } else { "has no sound" };
+                    issues.push(Issue::warn(ep.clone(), format!("`{kind}` does nothing here: this clip {lacks}")));
                 }
                 // Keyframes, for every kind that takes them: times in order, and names the
                 // kind knows. A key naming a parameter the kind does not have is refused

@@ -612,6 +612,7 @@ fn emit_filters(ctx: &Ctx, p: &Plan, w: &mut XmlWriter) {
             }
             Effect::Blur { radius, keyframes } => {
                 open(w, "blur", "avfilter.gblur");
+                // σ is half the radius; the live overlay preview's CSS `blur()` says the same.
                 let sigma = |r: f64| num((r * ctx.scale / 2.0).max(0.01));
                 let sigma = anim(keyframes, &at, sigma(*radius), |k| sigma(k.or("radius", *radius)));
                 // Both axes, written out: MLT's avfilter wrapper does not leave `sigmaV` at
@@ -628,42 +629,33 @@ fn emit_filters(ctx: &Ctx, p: &Plan, w: &mut XmlWriter) {
                 }
                 w.close("filter");
             }
-            Effect::Fade { fade_in, fade_out } => {
-                // Fades span the clip's own range, not the dissolve handles.
+            Effect::Fade { fade_in, fade_out } | Effect::AudioFade { fade_in, fade_out } => {
+                // Fades span the clip's own range, not the dissolve handles. The picture
+                // ramps its alpha. The sound ramps MLT's `volume` from `gain` to `end`
+                // across the filter's own range, in linear amplitude — true silence at the
+                // silent end, where a `level` ramp in dB would stop at the -60 dB floor.
+                let sound = matches!(e, Effect::AudioFade { .. });
+                let (name, service) = if sound { ("afade", "volume") } else { ("fade", "brightness") };
+                let ramp = |w: &mut XmlWriter, from: &str, to: &str| {
+                    if sound {
+                        w.property("gain", from);
+                        w.property("end", to);
+                    } else {
+                        w.property("alpha", format!("0={from};-1={to}"));
+                    }
+                    w.close("filter");
+                };
                 let (own_in, own_out) = (f_in + p.pre, f_out - p.post);
                 let own_len = own_out - own_in + 1;
                 if *fade_in > 0.0 {
                     let fi = fps.length(*fade_in).min(own_len);
-                    open_at(w, "fadein", "brightness", own_in, own_in + fi - 1);
-                    w.property("alpha", "0=0;-1=1");
-                    w.close("filter");
+                    open_at(w, &format!("{name}in"), service, own_in, own_in + fi - 1);
+                    ramp(w, "0", "1");
                 }
                 if *fade_out > 0.0 {
                     let fo = fps.length(*fade_out).min(own_len);
-                    open_at(w, "fadeout", "brightness", own_out - fo + 1, own_out);
-                    w.property("alpha", "0=1;-1=0");
-                    w.close("filter");
-                }
-            }
-            Effect::AudioFade { fade_in, fade_out } => {
-                // MLT's `volume` ramps its gain from `gain` to `end` across the filter's
-                // own range, in linear amplitude — true silence at the silent end, where a
-                // `level` ramp in dB would stop at the -60 dB floor and still be heard.
-                let (own_in, own_out) = (f_in + p.pre, f_out - p.post);
-                let own_len = own_out - own_in + 1;
-                if *fade_in > 0.0 {
-                    let fi = fps.length(*fade_in).min(own_len);
-                    open_at(w, "afadein", "volume", own_in, own_in + fi - 1);
-                    w.property("gain", "0");
-                    w.property("end", "1");
-                    w.close("filter");
-                }
-                if *fade_out > 0.0 {
-                    let fo = fps.length(*fade_out).min(own_len);
-                    open_at(w, "afadeout", "volume", own_out - fo + 1, own_out);
-                    w.property("gain", "1");
-                    w.property("end", "0");
-                    w.close("filter");
+                    open_at(w, &format!("{name}out"), service, own_out - fo + 1, own_out);
+                    ramp(w, "1", "0");
                 }
             }
             Effect::Volume { gain, keyframes } => {

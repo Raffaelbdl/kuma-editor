@@ -33,14 +33,19 @@ type PropSpec =
   | { kind: "text"; key: string; label?: string }
   | { kind: "json"; key: string; label?: string };
 
-/** Per effect kind: the value `+ add effect` inserts, what it is called when that is not
- *  its type, and the properties it shows, in order. Adding a kind is one row here plus the
+/** Per effect kind: the value `+ add effect` inserts, and the properties it shows, in
+ *  order. Its name is its type, spaced (`title`). Adding a kind is one row here plus the
  *  Rust model (and its streams in `types.ts`); one the daemon knows and this table does not
  *  renders with no fields. A kind in `ANIMATABLE` gets the keyframe toggle in its head, and
  *  the keyframe row once it has keys. Units are the model's, and the tooltips say so where
  *  it is not obvious. */
-interface EffectSpec { add: Effect; label?: string; props?: PropSpec[] }
+interface EffectSpec { add: Effect; props?: PropSpec[] }
 const EASES: Ease[] = ["linear", "hold", "smooth"];
+/** A fade's two lengths, whichever stream it fades. */
+const fadeProps = (into: string, outOf: string): PropSpec[] => [{ kind: "vec", label: "Duration", parts: [
+  { key: "in", tag: "In", step: 0.1, min: 0, suffix: "s", title: `Seconds to ${into}` },
+  { key: "out", tag: "Out", step: 0.1, min: 0, suffix: "s", title: `Seconds to ${outOf}` },
+] }];
 const BLEND_MODES = ["normal", "multiply", "screen", "overlay", "darken", "lighten", "color_dodge", "color_burn", "hard_light", "soft_light", "difference", "exclusion"];
 const EFFECTS: Partial<Record<Effect["type"], EffectSpec>> = {
   transform: {
@@ -83,21 +88,8 @@ const EFFECTS: Partial<Record<Effect["type"], EffectSpec>> = {
   },
   // The picture's fade and the sound's are two kinds, so each clip is offered the one it
   // can use, and a clip with both can give them different lengths.
-  fade: {
-    add: { type: "fade", in: 0.5, out: 0.5 },
-    props: [{ kind: "vec", label: "Duration", parts: [
-      { key: "in", tag: "In", step: 0.1, min: 0, suffix: "s", title: "Seconds to fade in from transparent" },
-      { key: "out", tag: "Out", step: 0.1, min: 0, suffix: "s", title: "Seconds to fade out to transparent" },
-    ] }],
-  },
-  audio_fade: {
-    add: { type: "audio_fade", in: 0.5, out: 0.5 },
-    label: "Audio fade",
-    props: [{ kind: "vec", label: "Duration", parts: [
-      { key: "in", tag: "In", step: 0.1, min: 0, suffix: "s", title: "Seconds to rise from silence" },
-      { key: "out", tag: "Out", step: 0.1, min: 0, suffix: "s", title: "Seconds to fall to silence" },
-    ] }],
-  },
+  fade: { add: { type: "fade", in: 0.5, out: 0.5 }, props: fadeProps("fade in from transparent", "fade out to transparent") },
+  audio_fade: { add: { type: "audio_fade", in: 0.5, out: 0.5 }, props: fadeProps("rise from silence", "fall to silence") },
   // A gain on top of the clip's own Volume, which is the placement's fader: this is the
   // one that moves, once it is animated.
   volume: {
@@ -204,8 +196,8 @@ function playheadInClip(): boolean {
   return !!f && covers(f.clip, store.state.playhead);
 }
 
-/** A key as a label: `brightness` → `Brightness`, `in` → `In`. */
-const title = capitalize;
+/** A key as a label: `brightness` → `Brightness`, `audio_fade` → `Audio fade`. */
+const title = (key: string) => capitalize(key.replace(/_/g, " "));
 
 /** How a row reads and writes its effect: the static fields, or — once there are keys —
  *  the value *at the playhead*, written into the key there. */
@@ -566,8 +558,9 @@ export class Inspector {
 
       const head = el("div", "head");
       const spec = EFFECTS[e.type] ?? { add: e };
-      const name = spec.label ?? title(e.type);
-      const disclose = button(icon("chevron-right", 11), () => fold(), `Show or hide this ${name.toLowerCase()}'s settings`, "disclose");
+      const name = title(e.type);
+      const lower = name.toLowerCase();
+      const disclose = button(icon("chevron-right", 11), () => fold(), `Show or hide this ${lower}'s settings`, "disclose");
       disclose.append(name);
       disclose.setAttribute("aria-expanded", String(!closedEffects.has(id)));
       const fold = () => {
@@ -585,10 +578,10 @@ export class Inspector {
       if (!actsOn(e.type, carries)) {
         box.classList.add("inert");
         disclose.append(el("span", "inert-note", "no effect here"));
-        disclose.title = `This ${name.toLowerCase()} does nothing: the clip ${streamsOf(e.type).video ? "shows no picture" : "has no sound"}`;
+        disclose.title = `This ${lower} does nothing: the clip ${streamsOf(e.type).video ? "shows no picture" : "has no sound"}`;
       }
       head.append(disclose);
-      const remove = button("×", () => store.patch([{ op: "remove", path: `${path}/effects/${ei}` }], `remove ${e.type}`), `Remove this ${name.toLowerCase()}`);
+      const remove = button("×", () => store.patch([{ op: "remove", path: `${path}/effects/${ei}` }], `remove ${e.type}`), `Remove this ${lower}`);
       box.append(head, body);
       const rec = e as unknown as Record<string, unknown>;
       const defaults = spec.add as unknown as Record<string, unknown>;
@@ -626,7 +619,7 @@ export class Inspector {
     // would be accepted and do nothing, and that reads as a broken effect.
     const add = el("select");
     const offered = (Object.keys(EFFECTS) as Effect["type"][]).filter((type) => actsOn(type, carries));
-    options(add, offered.map((value) => ({ value, label: EFFECTS[value]!.label?.toLowerCase() ?? value })), undefined, "+ add effect…");
+    options(add, offered.map((value) => ({ value, label: title(value).toLowerCase() })), undefined, "+ add effect…");
     add.onchange = () => {
       const kind = add.value as Effect["type"] | "";
       add.value = "";

@@ -18,7 +18,7 @@ import { animationOf } from "../keyframes";
 import { icon, svgEl } from "../icons";
 import type { NumberOpts } from "../props";
 import { keyStrip, numberField, showNumber, sliderField, vectorField } from "../props";
-import { actsOn, ANIMATABLE, binItem, binPath, canPlace, canTimeWarp, childrenOf, clipStreams, covers, expandPreset, hasAudio, isColorSource, isFileSource, isFolderSource, isOverlaySource, isSequenceSource, isTimedMedia, placementsOf, seqDuration, streamsOf, wouldNest } from "../types";
+import { actsOn, ANIMATABLE, binItem, binPath, canPlace, canTimeWarp, childrenOf, clipStreams, covers, expandPreset, fpsValue, hasAudio, isColorSource, isFileSource, isFolderSource, isOverlaySource, isSequenceSource, isTimedMedia, placementsOf, seqDuration, streamsOf, wouldNest } from "../types";
 
 const presetsPromise = api.effectPresets().catch(() => []);
 
@@ -487,7 +487,7 @@ export class Inspector {
     if (isFileSource(item.source)) {
       this.host.appendChild(field("Path", textInput(item.source.path, (v) => store.patch([{ op: "replace", path: `${bp}/source/path`, value: v }], `path ${id}`))));
       const m = item.meta;
-      const facts = [m?.duration ? `${m.duration.toFixed(2)}s` : "", m?.width ? `${m.width}×${m.height}` : "", m?.has_audio ? "audio" : ""].filter(Boolean).join(" · ");
+      const facts = [m?.duration ? `${m.duration.toFixed(2)}s` : "", m?.width ? `${m.width}×${m.height}` : "", m?.fps ? `${+fpsValue(m.fps).toFixed(3)} fps${m.variable_fps ? " (variable)" : ""}` : "", m?.has_audio ? "audio" : ""].filter(Boolean).join(" · ");
       if (facts) this.host.appendChild(field("Probed", el("div", "mono muted", facts)));
       return;
     }

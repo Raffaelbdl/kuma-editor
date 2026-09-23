@@ -482,6 +482,10 @@ pub struct MediaMeta {
     pub height: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fps: Option<Fps>,
+    /// The source's frames are not evenly spaced, so `fps` is their average rather than a
+    /// grid. Nothing renders differently: times are seconds, sampled at the project rate.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub variable_fps: bool,
     #[serde(default)]
     pub has_audio: bool,
 }

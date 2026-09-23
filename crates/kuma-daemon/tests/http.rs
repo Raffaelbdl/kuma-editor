@@ -11,10 +11,10 @@ use std::sync::Arc;
 use kuma_daemon::{serve, AppState, Config};
 
 const PROJECT: &str = r##"{
-  "version": 1, "name": "t", "master": "main",
+  "version": 7, "name": "t", "master": "main",
   "fps": { "num": 30, "den": 1 }, "width": 320, "height": 240, "sample_rate": 48000,
   "bin": {
-    "tag": { "name": "Tag", "source": { "template": "probe", "vars": {} } },
+    "tag": { "name": "Tag", "source": { "overlay": "overlays/probe", "vars": {} } },
     "clips": { "name": "Clips", "source": { "folder": true } },
     "main": { "name": "Main", "source": { "tracks": [
       { "id": "o1", "kind": "overlay", "name": "O", "muted": false, "hidden": false, "transitions": [],
@@ -24,7 +24,8 @@ const PROJECT: &str = r##"{
   }
 }"##;
 
-/// A daemon on a loopback port, with a one-template library and a stand-in `ui/dist`, so
+/// A daemon on a loopback port, with one overlay folder in the project, a one-blueprint
+/// library and a stand-in `ui/dist`, so
 /// the test needs nothing built and nothing installed. The tests run on a multi-thread
 /// runtime because `get` blocks its thread, which on the default one starves the server.
 async fn daemon() -> (Arc<AppState>, String, tempfile::TempDir) {
@@ -32,13 +33,16 @@ async fn daemon() -> (Arc<AppState>, String, tempfile::TempDir) {
     let project_file = dir.path().join("t.kuma.json");
     std::fs::write(&project_file, PROJECT).unwrap();
 
-    let tpl = dir.path().join("library/overlays/probe");
-    std::fs::create_dir_all(&tpl).unwrap();
-    std::fs::write(tpl.join("template.json"), r#"{ "id": "probe", "name": "Probe" }"#).unwrap();
-    std::fs::write(tpl.join("index.html"), "<html><body data-composition-id=\"root\"></body></html>").unwrap();
-    // The shared `_vendor/` every template references, as `kuma library` installs it.
+    // The same folder twice: the project's own overlay, and a blueprint in the library.
+    for folder in ["overlays/probe", "library/blueprints/probe"] {
+        let tpl = dir.path().join(folder);
+        std::fs::create_dir_all(&tpl).unwrap();
+        std::fs::write(tpl.join("overlay.json"), r#"{ "name": "Probe" }"#).unwrap();
+        std::fs::write(tpl.join("index.html"), "<html><body data-composition-id=\"root\"></body></html>").unwrap();
+    }
+    // The shared `_vendor/` every overlay references, as `kuma library` installs it.
     // Without one, a scaffold is (rightly) told its `_vendor/…` files are missing.
-    let vendor = dir.path().join("library/overlays/_vendor");
+    let vendor = dir.path().join("library/blueprints/_vendor");
     std::fs::create_dir_all(&vendor).unwrap();
     for f in ["gsap.min.js", "kuma.js"] {
         std::fs::write(vendor.join(f), "").unwrap();
@@ -110,9 +114,9 @@ fn get_body(addr: &str, path: &str) -> (String, String) {
 #[tokio::test(flavor = "multi_thread")]
 async fn nothing_is_served_without_a_cache_control() {
     let (_state, addr, _dir) = daemon().await;
-    // The bundle, live project state, and a template being authored: all reloaded
-    // constantly, all cacheable by heuristic before this.
-    for path in ["/", "/api/project", "/api/health", "/overlays/probe/index.html"] {
+    // The bundle, live project state, and a blueprint's files: all reloaded constantly,
+    // all cacheable by heuristic before this.
+    for path in ["/", "/api/project", "/api/health", "/blueprints/probe/index.html"] {
         let (status, headers) = get(&addr, path);
         assert!(status.contains("200"), "{path}: {status}");
         assert_eq!(
@@ -146,45 +150,144 @@ async fn an_overlay_entry_previews_without_a_placement() {
 
     let (_, body) = get_body(&addr, "/overlay-entry/tag?duration=3");
     assert!(body.contains("\"duration\":3.0"), "the requested length did not reach the contract: {body}");
-    // A template must look right in either orientation, so the workbench can ask for a
+    // An overlay must look right in either orientation, so the workbench can ask for a
     // frame the project is not in. Nothing about the project changes with it.
     let (_, body) = get_body(&addr, "/overlay-entry/tag?width=1080&height=1920");
     assert!(body.contains("\"width\":1080") && body.contains("\"height\":1920"), "the requested frame did not reach the contract: {body}");
 
     // Nothing else may be reachable through it: the base href and the file route are the
-    // template's folder, and only an overlay entry has one.
+    // overlay's folder, and only an overlay entry has one.
     let (status, _) = get(&addr, "/overlay-entry/main");
     assert!(status.contains("400"), "a sequence entry is not an overlay: {status}");
     let (status, _) = get(&addr, "/overlay-entry/nope");
     assert!(status.contains("404"), "{status}");
 }
 
-/// The two authoring routes, over the wire: a check that finds nothing on the fixture
-/// template, a refusal for a template that is not there, and a scaffold that lands in the
-/// project's own `overlays/`, is picked up without a rescan, and refuses to be repeated.
+fn post(addr: &str, path: &str, body: &str) -> (String, serde_json::Value) {
+    let (status, _, body) = request(addr, "POST", path, body);
+    (status, serde_json::from_str(&body).unwrap_or(serde_json::Value::Null))
+}
+
+/// The authoring routes, over the wire: a check that finds nothing on the fixture, a
+/// refusal for a blueprint that is not there, and a scaffold that lands in the project's
+/// own `overlays/`, is **not** a blueprint and **not** in the bin until it is imported,
+/// and refuses to be repeated.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_template_is_checked_and_scaffolded_over_http() {
+async fn an_overlay_is_scaffolded_checked_and_imported_over_http() {
     let (state, addr, _dir) = daemon().await;
-    let (status, body) = get_body(&addr, "/api/templates/probe/lint");
+    let (status, body) = get_body(&addr, "/api/blueprints/probe/lint");
     assert!(status.contains("200"), "{status}");
     let report: serde_json::Value = serde_json::from_str(&body).unwrap();
-    assert_eq!(report["template"], "probe");
+    assert_eq!(report["overlay"], "probe");
     assert!(report["findings"].is_array());
-    let (status, _) = get(&addr, "/api/templates/nope/lint");
+    let (status, _) = get(&addr, "/api/blueprints/nope/lint");
+    assert!(status.contains("400"), "{status}");
+    let (status, _) = get(&addr, "/api/overlays/lint?path=overlays/probe");
+    assert!(status.contains("200"), "{status}");
+
+    let (status, made) = post(&addr, "/api/overlays/new", r#"{ "id": "fresh", "name": "Fresh" }"#);
+    assert!(status.contains("200"), "{status}: {made}");
+    assert_eq!(made["overlay"], "overlays/fresh");
+    assert!(state.config.project_root().join("overlays/fresh/index.html").is_file());
+    assert_eq!(made["lint"]["findings"].as_array().map(Vec::len), Some(0), "the scaffold is not clean: {}", made["lint"]);
+    // Written is not imported, and a project's overlay is never a blueprint.
+    assert!(!state.blueprint_infos().iter().any(|t| t.id == "fresh"), "a project overlay was loaded as a blueprint");
+    assert!(!state.project.read().unwrap().bin.values().any(|i| matches!(&i.source, kuma_core::BinSource::Overlay { overlay, .. } if overlay == "overlays/fresh")));
+    let (status, _) = post(&addr, "/api/overlays/new", r#"{ "id": "fresh" }"#);
+    assert!(status.contains("400"), "a second scaffold overwrote the first: {status}");
+
+    // The editor reads each folder's manifest here, not from a library listing.
+    let (_, body) = get_body(&addr, "/api/overlays");
+    let manifests: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(manifests["overlays/probe"]["manifest"]["name"], "Probe", "{manifests}");
+    assert!(manifests.get("overlays/fresh").is_none(), "only folders the bin uses: {manifests}");
+
+    // Imported by its manifest's path: an entry named after the folder, titled by the manifest.
+    let (status, added) = post(&addr, "/api/overlays/import", r#"{ "path": "overlays/fresh/overlay.json" }"#);
+    assert!(status.contains("200"), "{status}: {added}");
+    assert_eq!(added["id"], "fresh");
+    let entry = state.project.read().unwrap().bin["fresh"].clone();
+    assert_eq!(entry.name, "Fresh");
+    assert!(matches!(&entry.source, kuma_core::BinSource::Overlay { overlay, .. } if overlay == "overlays/fresh"), "{entry:?}");
+    // A var the manifest does not declare is refused before anything is written.
+    let (status, _) = post(&addr, "/api/overlays/import", r#"{ "path": "overlays/fresh", "vars": { "nope": 1 } }"#);
     assert!(status.contains("400"), "{status}");
 
-    let (status, body) = {
-        let (s, _, b) = request(&addr, "POST", "/api/templates/fresh", r#"{ "name": "Fresh" }"#);
-        (s, b)
+    // A folder outside the project is not an overlay of it.
+    let elsewhere = tempfile::tempdir().unwrap();
+    let outside = elsewhere.path().join("probe");
+    kuma_overlay::new_overlay(elsewhere.path(), "probe", "", "").unwrap();
+    let (status, reply) = post(&addr, "/api/overlays/import", &format!(r#"{{ "path": {:?} }}"#, outside.to_string_lossy()));
+    assert!(status.contains("400") && reply["error"].as_str().is_some_and(|e| e.contains("outside the project")), "{status}: {reply}");
+}
+
+/// A blueprint reaches the bin by being copied: the entry points into the project, never
+/// into the library, and a copy never lands on a folder the project already has.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_blueprint_is_copied_into_the_project_not_referenced() {
+    let (state, addr, dir) = daemon().await;
+    let (status, added) = post(&addr, "/api/blueprints/probe/add", "{}");
+    assert!(status.contains("200"), "{status}: {added}");
+    // `overlays/probe` is the project's own, so the copy goes beside it.
+    assert_eq!(added["overlay"], "overlays/probe-2");
+    let id = added["id"].as_str().unwrap().to_string();
+    assert!(matches!(&state.project.read().unwrap().bin[&id].source, kuma_core::BinSource::Overlay { overlay, .. } if overlay == "overlays/probe-2"));
+    assert!(dir.path().join("overlays/probe-2/overlay.json").is_file());
+
+    // The blueprint changing afterwards does not reach the project.
+    std::fs::write(dir.path().join("library/blueprints/probe/index.html"), "changed").unwrap();
+    assert_ne!(std::fs::read_to_string(dir.path().join("overlays/probe-2/index.html")).unwrap(), "changed");
+
+    // The editor's copy route: a folder, and no edit.
+    let before = state.project.read().unwrap().revision;
+    let (status, copied) = post(&addr, "/api/blueprints/probe/copy", r#"{ "folder": "title" }"#);
+    assert!(status.contains("200"), "{status}: {copied}");
+    assert_eq!(copied["overlay"], "overlays/title");
+    assert_eq!(state.project.read().unwrap().revision, before);
+    let (status, _) = post(&addr, "/api/blueprints/nope/copy", "{}");
+    assert!(status.contains("400"), "{status}");
+}
+
+/// Two entries of one folder share its HTML until one is made unique; then editing the
+/// copy leaves the other alone. And a project overlay goes back to the library as a
+/// blueprint, refusing to replace one unless told to.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_entry_is_made_unique_and_an_overlay_saved_as_a_blueprint() {
+    let (state, addr, dir) = daemon().await;
+    let (status, twin) = post(&addr, "/api/overlays/import", r#"{ "path": "overlays/probe", "id": "twin" }"#);
+    assert!(status.contains("200"), "{status}: {twin}");
+
+    let (status, unique) = post(&addr, "/api/overlays/unique", r#"{ "bin": "twin" }"#);
+    assert!(status.contains("200"), "{status}: {unique}");
+    assert_eq!(unique["overlay"], "overlays/twin");
+    let folder = |id: &str| match &state.project.read().unwrap().bin[id].source {
+        kuma_core::BinSource::Overlay { overlay, .. } => overlay.clone(),
+        _ => unreachable!(),
     };
-    assert!(status.contains("200"), "{status}: {body}");
-    let made: serde_json::Value = serde_json::from_str(&body).unwrap();
-    assert_eq!(made["id"], "fresh");
-    assert!(state.config.project_root().join("overlays/fresh/index.html").is_file());
-    assert!(state.template_infos().iter().any(|t| t.id == "fresh"), "not loaded after scaffolding");
-    assert_eq!(made["lint"]["findings"].as_array().map(Vec::len), Some(0), "the scaffold is not clean: {}", made["lint"]);
-    let (status, _, _) = request(&addr, "POST", "/api/templates/fresh", "{}");
-    assert!(status.contains("400"), "a second scaffold overwrote the first: {status}");
+    assert_eq!((folder("twin").as_str(), folder("tag").as_str()), ("overlays/twin", "overlays/probe"));
+    assert!(dir.path().join("overlays/twin/index.html").is_file());
+    let (status, _) = post(&addr, "/api/overlays/unique", r#"{ "bin": "main" }"#);
+    assert!(status.contains("400"), "a sequence has no folder to copy: {status}");
+
+    let (status, saved) = post(&addr, "/api/overlays/save-blueprint", r#"{ "path": "overlays/twin", "id": "twin" }"#);
+    assert!(status.contains("200"), "{status}: {saved}");
+    assert!(dir.path().join("library/blueprints/twin/overlay.json").is_file());
+    assert!(state.blueprint_infos().iter().any(|b| b.id == "twin"), "not listed after saving");
+
+    // Saved from an entry, the entry's vars become the blueprint's defaults: what is saved
+    // is what the bin shows, not the folder before anyone configured it.
+    std::fs::write(dir.path().join("overlays/twin/overlay.json"), r#"{ "name": "Twin", "vars": { "label": { "type": "string", "default": "Hello" } } }"#).unwrap();
+    let edit = serde_json::from_value::<Vec<json_patch::PatchOperation>>(serde_json::json!([{ "op": "add", "path": "/bin/twin/source/vars/label", "value": "Paris" }])).unwrap();
+    state.apply_patch(&edit, None, "test").unwrap();
+    let (status, _) = post(&addr, "/api/overlays/save-blueprint", r#"{ "bin": "twin", "id": "twin-paris" }"#);
+    assert!(status.contains("200"), "{status}");
+    let saved = kuma_core::OverlayManifest::load(&dir.path().join("library/blueprints/twin-paris")).unwrap();
+    assert_eq!(saved.vars["label"].default, "Paris");
+    assert_eq!(saved.name, "Twin", "the rest of the manifest survives");
+    let (status, _) = post(&addr, "/api/overlays/save-blueprint", r#"{ "path": "overlays/twin", "id": "twin" }"#);
+    assert!(status.contains("400"), "an existing blueprint was replaced without asking: {status}");
+    let (status, _) = post(&addr, "/api/overlays/save-blueprint", r#"{ "path": "overlays/twin", "id": "twin", "force": true }"#);
+    assert!(status.contains("200"), "{status}");
 }
 
 /// Media added into a folder is one edit; a parent not in the bin is refused.

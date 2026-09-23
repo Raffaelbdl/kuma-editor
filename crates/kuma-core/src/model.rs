@@ -377,12 +377,15 @@ pub enum BinSource {
         #[serde(default)]
         proxy: Option<String>,
     },
-    /// A configured HTML overlay: a template id plus the variables for this instance.
-    /// Two entries of the same template with different vars are two separate items.
+    /// A configured HTML overlay: a folder of the project's own plus the variables for
+    /// this entry. Two entries may share a folder with different vars — two wordings of
+    /// one design — and are two separate items.
     Overlay {
-        /// Template id, resolved against the template libraries.
-        template: String,
-        /// Variable overrides, validated against the template manifest.
+        /// The overlay's folder (`overlay.json` + `index.html`), relative to the project
+        /// directory and inside it: `overlays/<name>`. A blueprint added to the bin is
+        /// copied there first, so nothing in the library is ever read through an entry.
+        overlay: String,
+        /// Variable overrides, validated against the folder's manifest.
         #[serde(default)]
         vars: Map<String, Value>,
     },
@@ -887,7 +890,7 @@ mod tests {
           "fps": {"num": 30000, "den": 1001}, "width": 1920, "height": 1080,
           "bin": {
             "screen": { "name": "Screen recording", "source": { "path": "media/screen.mp4", "kind": "video" } },
-            "third":  { "name": "Intro title", "source": { "template": "lower-third", "vars": { "title": "kuma" } } },
+            "third":  { "name": "Intro title", "source": { "overlay": "overlays/lower-third", "vars": { "title": "kuma" } } },
             "main": { "name": "Main", "source": { "tracks": [
               { "id": "v1", "kind": "video", "clips": [
                 { "id": "c1", "start": 0.0, "end": 12.5, "bin": "screen", "in": 3.2,
@@ -960,7 +963,7 @@ mod tests {
                 "song": { "source": { "path": "song.mp3", "kind": "audio" } },
                 "logo": { "source": { "path": "logo.png", "kind": "image" } },
                 "red": { "source": { "color": "#f00" } },
-                "tag": { "source": { "template": "location-tag" } },
+                "tag": { "source": { "overlay": "overlays/location-tag" } },
                 "part": seq(json!([{ "id": "pa", "kind": "audio", "clips": [ { "id": "p1", "start": 0, "end": 2, "bin": "song" } ] }])),
                 "main": seq(json!([
                     { "id": "v1", "clips": [

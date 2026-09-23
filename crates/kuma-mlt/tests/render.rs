@@ -211,10 +211,10 @@ fn a_baked_overlay_plays_at_the_project_rate() {
     ffmpeg(&["-f", "lavfi", "-i", "color=c=black:size=320x180:rate=30:duration=2,format=gray,geq=lum='N*4',format=rgba",
         "-pix_fmt", "rgba", &root.join("bake/frame_%06d.png").to_string_lossy()]);
     let p = kuma_core::parse_project(&serde_json::json!({
-        "version": 4, "name": "rate", "master": "main",
+        "version": 7, "name": "rate", "master": "main",
         "fps": { "num": 30, "den": 1 }, "width": 320, "height": 180, "sample_rate": 48000,
         "bin": {
-            "tag": { "name": "Tag", "source": { "template": "location-tag" } },
+            "tag": { "name": "Tag", "source": { "overlay": "overlays/location-tag" } },
             "main": { "name": "Main", "source": { "tracks": [
                 { "id": "o1", "kind": "overlay", "clips": [ { "id": "o", "start": 0, "end": 2, "bin": "tag" } ] }
             ], "markers": [] } }

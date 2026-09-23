@@ -8,22 +8,25 @@
 //!   agent can validate its own edits before sending them.
 
 pub mod edit;
+pub mod manifest;
 pub mod model;
 pub mod schema;
-pub mod template;
 pub mod time;
 pub mod upgrade;
 pub mod validate;
 
 pub use edit::{apply_patch, EditError};
 pub use model::*;
+pub use manifest::{OverlayManifest, VarSpec, VarType};
 pub use upgrade::parse_project;
-pub use template::{TemplateManifest, VarSpec, VarType};
 pub use time::{ClipFrames, Fps};
 pub use validate::{validate, Issue, Severity, ValidationContext};
 
 /// Current on-disk project format version.
 ///
+/// 7 — an overlay entry names its own folder in the project (`overlay`), no longer a
+///     library template id (`template`). Not upgraded: see `upgrade.rs`.
+/// 6 — a bin entry may carry a `volume`.
 /// 5 — `volume` has a static `gain` and optional keyframes, like every kind that moves;
 ///     `audio_fade` is new.
 /// 4 — a clip may carry a `group`: an editing relation, invisible to the compiler.
@@ -31,4 +34,4 @@ pub use validate::{validate, Issue, Severity, ValidationContext};
 ///     keyframed effect now uses.
 /// 2 — keyframes gained `ease` (`linear`, `hold`, `smooth`).
 /// 1 — the first format.
-pub const PROJECT_VERSION: u32 = 6;
+pub const PROJECT_VERSION: u32 = 7;

@@ -1,30 +1,42 @@
-# Authoring kuma overlay templates
+# Authoring kuma overlays
 
-Templates are assets shared across projects, not code. kuma reads them from every
-library's `overlays/` and from the project's own `overlays/`, later wins on an id clash:
+An **overlay** is a folder of HTML that a bin entry points at. It belongs to one project and
+lives in it: `<project>/overlays/<name>/`, named in the entry as `"overlay": "overlays/<name>"`.
+A **blueprint** is the same kind of folder kept in the user's library, to be reused across
+projects. A project never reads a blueprint through an entry: using one **copies** it into the
+project's `overlays/`, and from then on the copy is the project's to edit — changing the
+blueprint later never re-styles a finished video.
 
-1. `$XDG_DATA_HOME/kuma/overlays` (default `~/.local/share/kuma/overlays`; `kuma library`
-   installs the starter set there),
-2. each directory in `KUMA_LIBRARY` (`:`-separated), as `<dir>/overlays`,
-3. `<project dir>/overlays` — the place for one-off templates written for that video.
+Blueprints are read from every library's `blueprints/`, later wins on an id clash:
 
-`GET /api/health` (the `health` tool) lists `template_dirs` and `template_errors`. A folder
-is only a template if it holds a `template.json`, and loading refuses one without an
-`index.html` beside it, so write both before rescanning or the template reports as broken
-rather than appearing.
+1. `$XDG_DATA_HOME/kuma/blueprints` (default `~/.local/share/kuma/blueprints`; `kuma library`
+   installs the starter set there, and **Save as blueprint** writes there),
+2. each directory in `KUMA_LIBRARY` (`:`-separated), as `<dir>/blueprints`.
+
+A project's `overlays/` is never a library. `GET /api/health` (the `health` tool) lists
+`blueprint_dirs` and `blueprint_errors`.
 
 ```
-overlays/<id>/
-  template.json   manifest: id, name, description, duration_default, static, vars, tags
+overlays/<name>/        (or, in a library, blueprints/<id>/ — the same shape)
+  overlay.json    manifest: name, description, duration_default, static, vars, tags
   index.html      the composition (always this name)
   fonts/…         any fonts, referenced with relative @font-face paths
-  thumb.png       generated (`kuma thumbs`); never part of a bake, do not hand-edit
+  thumb.png       generated for blueprints (`kuma thumbs`); never part of a bake or a copy
 ```
 
-`_vendor/` holds shared files, referenced as `_vendor/<file>` from the template. A
-template's own `_vendor/` wins, then the one next to it, then the shared one from the
-highest-precedence library that has it; the bake stages and the daemon serves exactly the
-same folder.
+The folder's name is its identity; the manifest does not repeat it, so a copy under another
+name needs no edit. A folder is only an overlay if it holds an `overlay.json`, and loading
+refuses one without an `index.html` beside it.
+
+Several bin entries may point at one folder with different `vars` — two wordings of one
+design. Editing that folder's markup changes all of them; to change one alone, give it its
+own copy first (`make_overlay_unique`, **Make unique** in the inspector).
+
+`_vendor/` holds shared files, referenced as `_vendor/<file>` from the overlay. An
+overlay's own `_vendor/` wins, then the one next to it, then the shared one from the
+highest-precedence library that has it (`<library>/blueprints/_vendor/`); the bake stages
+and the daemon serves exactly the same folder. It is the runtime an overlay is written
+against, not content, so it is not copied into projects.
 
 - `_vendor/kuma.js` — `kumaTemplate(defaults)` applies the vars, returns `{ vars, width,
   height, duration, text(id, value), timeline() }` and works standalone.
@@ -36,30 +48,36 @@ same folder.
 If the project directory has a `design-system/` folder, read `design-system/DESIGN.md`
 before authoring or restyling anything, and take the colours, type, geometry and motion
 from it rather than inventing them. `design-system/tokens.css` is the same values as a
-`:root` block: copy it into the template's first `<style>` and reference `var(--ds-*)`.
-That is the whole mechanism — nothing is injected at runtime, so what a template ends up
-with is what you wrote into it, and a template stays readable on its own.
+`:root` block: copy it into the overlay's first `<style>` and reference `var(--ds-*)`.
+That is the whole mechanism — nothing is injected at runtime, so what an overlay ends up
+with is what you wrote into it, and an overlay stays readable on its own.
 
 A project gets one with `kuma design-system <id>` (`kuma design-system` lists what is
 installed; `kuma library` installs the starter set). A project without one is not a
-mistake: use the template's own defaults and keep them consistent across the video.
+mistake: use the overlay's own defaults and keep them consistent across the video.
 
 ## Start from the scaffold, and check your work
 
-Do not write a template from an empty file. `kuma new-template <id>` (the `new_template`
-tool) writes a working one into the project's `overlays/`: the root's timing attributes, a
-registered paused timeline, typed vars of three kinds, `--u` sizing that survives both
-orientations, and an exit anchored to the clip's real length. Edit that.
+Do not write an overlay from an empty file. `kuma new-overlay <name>` (the `new_overlay`
+tool) writes a working one into the project's `overlays/<name>/`: the root's timing
+attributes, a registered paused timeline, typed vars of three kinds, `--u` sizing that
+survives both orientations, and an exit anchored to the clip's real length. Edit that.
+Or start from a blueprint that is close to what you want: `add_blueprint` copies it into
+the project and adds the entry, and the copy is yours to edit.
 
-`kuma lint <id>` (the `check_template` tool, **Check** in the overlay workbench) reads the
-staged template — the injection applied, `_vendor/` in place — and reports what would
-otherwise surface as a bake that times out after 45 seconds or a frame that is quietly
-wrong: a missing timeline registration, a wall clock, a Google Fonts URL, a var the markup
-reads that the manifest does not declare, a missing asset. It runs hyperframes' own linter
-too when it is installed. It renders nothing and writes nothing, so run it after every
-edit; a bake is the slow way to learn the same thing.
+`kuma lint overlays/<name>` (the `check_overlay` tool, **Check** in the overlay workbench)
+reads the staged overlay — the injection applied, `_vendor/` in place — and reports what
+would otherwise surface as a bake that times out after 45 seconds or a frame that is
+quietly wrong: a missing timeline registration, a wall clock, a Google Fonts URL, a var the
+markup reads that the manifest does not declare, a missing asset. It runs hyperframes' own
+linter too when it is installed. It renders nothing and writes nothing, so run it after
+every edit; a bake is the slow way to learn the same thing.
 
-## The contract (what kuma guarantees, what the template must do)
+Writing a folder does not put it in the bin. When it checks clean, `import_overlay`
+(`kuma import-overlay overlays/<name>`) adds it as an entry — optionally with `vars` — so a
+half-written overlay is never something a clip can play.
+
+## The contract (what kuma guarantees, what the overlay must do)
 
 **kuma injects:**
 
@@ -67,13 +85,13 @@ edit; a bake is the slow way to learn the same thing.
   duration, speed, bake, clip }` — `vars` are the manifest defaults overlaid with the
   clip's overrides; `duration` is the clip's internal duration in seconds (clip length ×
   |speed|).
-- At the end of `<head>` (so they win over the template's own `:root` fallbacks): CSS
+- At the end of `<head>` (so they win over the overlay's own `:root` fallbacks): CSS
   custom properties `--var-<name>` on `:root` for every scalar var, and
   `--var-<name>-x` / `--var-<name>-y` for `point` vars.
 - The root `[data-composition-id]` element's `data-duration` (and `data-width`/`data-height`)
   are **rewritten in the markup** to the clip's real length before the renderer sees the
   file — hyperframes sizes the render from the attribute as written, before any script runs.
-  The value in your template is only the standalone default; do not try to set it from a
+  The value in your markup is only the standalone default; do not try to set it from a
   script (it has no effect on the render). **Never hard-code the duration in logic; read
   `window.kuma.duration`.**
 - Timed children are **mounted only for their own `data-start`/`data-duration`** — a child
@@ -82,7 +100,7 @@ edit; a bake is the slow way to learn the same thing.
   default`) to the clip's real end; a child that ends earlier keeps its timing. So: give
   "whole clip" children the same end as the root, and shorter ones their real length.
 
-**The template must:**
+**The overlay must:**
 
 1. Be transparent all the way to the root (`_vendor/kuma.css` does it). Any opaque
    wrapper becomes an opaque video.
@@ -92,7 +110,7 @@ edit; a bake is the slow way to learn the same thing.
 3. Be a **pure function of time**. Animation must be seekable:
    - GSAP: one paused timeline, `const tl = timeline()` from `kumaTemplate` (it registers
      `window.__timelines["main"]`).
-   - **No GSAP timeline at all** (static templates, pure CSS animation): put `data-no-timeline`
+   - **No GSAP timeline at all** (static overlays, pure CSS animation): put `data-no-timeline`
      on the composition root, or the renderer waits 45 s for a timeline and fails the bake.
    - CSS `@keyframes`/transitions and WAAPI are fine — the renderer scrubs them.
    - Lottie, Anime.js, Three.js are supported through the hyperframes adapters.
@@ -104,7 +122,7 @@ edit; a bake is the slow way to learn the same thing.
    to the DOM (`text("id", vars.label)` hides the element when the value is empty).
 5. Anchor the out-animation to the end: `tl.to(el, {...}, Math.max(minIn, duration - 0.45))`.
 6. Be **responsive**: size in `--u`, `vh`/`vw`/`%`, positions as fractions via `point` vars
-   (`left: calc(var(--var-anchor-x) * 100%)`). A template must look right at 1920×1080
+   (`left: calc(var(--var-anchor-x) * 100%)`). An overlay must look right at 1920×1080
    and 1080×1920 without edits.
 7. Bundle fonts (`@font-face` with relative `src`) or use a system stack. No Google Fonts
    links: the bake is headless and must be deterministic.
@@ -119,11 +137,10 @@ edit; a bake is the slow way to learn the same thing.
 
 Transitions (dissolve/wipe) are refused on overlay clips: bakes carry no handle frames.
 
-## Manifest (`template.json`)
+## Manifest (`overlay.json`)
 
 ```json
 {
-  "id": "location-tag",             // must equal the folder name
   "name": "Location tag",
   "description": "…",
   "duration_default": 4.0,
@@ -145,15 +162,15 @@ Transitions (dissolve/wipe) are refused on overlay clips: bakes carry no handle 
 Var types → UI controls: `string` input, `text` textarea, `number` slider (min/max/step),
 `color` picker, `boolean` checkbox, `enum` select, `point` x/y (fraction of frame), `cues`
 one editable row per `{start, end, text}` (seconds; `end` after `start`). A `cues` value
-reaches the template only through `window.kuma.vars` — a list has no CSS property. The
-manifest is checked on load (`id` equals the folder, defaults fit their specs, enums have
-options, `duration_default` > 0); clip `vars` are validated against it and unknown keys
-are rejected. Bakes are always the full frame; a still (`static`) is one PNG.
+reaches the overlay only through `window.kuma.vars` — a list has no CSS property. The
+manifest is checked on load (defaults fit their specs, enums have options,
+`duration_default` > 0); an entry's `vars` are validated against it and unknown keys are
+rejected. Bakes are always the full frame; a still (`static`) is one PNG.
 
 ## Timing responsibilities
 
 - **kuma's project JSON decides *when* the overlay is on screen** (clip `start`/`end`/`speed`).
-- **The template decides the choreography inside** (`data-start`/`data-duration` on
+- **The overlay decides the choreography inside** (`data-start`/`data-duration` on
   children, the GSAP timeline).
 
 Speed on an overlay clip is applied at bake time as a time remap of the seek (no frame
@@ -173,7 +190,7 @@ signals "premium" or fills a silence is motion that takes attention away from th
 and gives nothing back. An element that moves continuously while the presenter talks is
 the worst of these, because it never stops asking.
 
-House numbers, for templates that should sit beside the shipped ones:
+House numbers, for overlays that should sit beside the shipped blueprints:
 
 | | |
 |---|---|
@@ -197,7 +214,7 @@ House numbers, for templates that should sit beside the shipped ones:
 The contract check and the frames are two different questions: whether it will render, and
 whether it is any good. Both have an answer that costs seconds.
 
-1. **`check_template`** (`kuma lint <id>`) — the contract. Do this after every edit to the
+1. **`check_overlay`** (`kuma lint overlays/<name>`) — the contract. Do this after every edit to the
    markup; it is the difference between knowing now and a bake timing out in 45 seconds.
 2. **`sample_frames` with `overlay: "<bin id>"`** — the entry on its own, no placement
    needed, times counted from the start of the overlay. Take 5 or 6 across the clip, and
@@ -205,7 +222,7 @@ whether it is any good. Both have an answer that costs seconds.
    entrance, which is the most common defect and invisible in a still.
 3. **Both orientations.** Pass `frame: [1080, 1920]` and look again. Text that fits in
    landscape overflows in portrait, and anchors that look centred move. The contract
-   requires a template to survive both; this is how you find out that it does not.
+   requires an overlay to survive both; this is how you find out that it does not.
 4. **Both extremes of backdrop.** `backdrop: "#ffffff"` and `backdrop: "#000000"`. An
    overlay is transparent and will sit over footage you have not seen; if it is legible on
    white and on black, it is legible.
@@ -216,28 +233,29 @@ whether it is any good. Both have an answer that costs seconds.
 The editor's overlay workbench is the same five checks for a person: its own clock, a
 frame picker, a backdrop picker and **Check**, on an entry that nothing places.
 
-## Testing a template
+## Testing an overlay
 
 ```
-kuma thumbs                              # bakes thumb.png for the library panel
-npx hyperframes preview <dir>/overlays/<id>   # hyperframes' own studio, if you want a scrubber
+kuma lint overlays/<name>                     # the contract, without baking
+kuma thumbs                                   # bakes thumb.png for the blueprint browser
+npx hyperframes preview overlays/<name>       # hyperframes' own studio, if you want a scrubber
 ```
 
-`list_templates` (or `GET /api/templates`) rescans every library and lists what loaded.
-Add an instance to a project (`apply_edits` or drag it on the timeline), scrub the
-preview, then `sample_frames` on its range to check the baked result matches.
+Import it (or add a blueprint), scrub the preview, then `sample_frames` on its range to
+check the baked result matches.
 
-## Adding a template as an agent
+## Adding an overlay as an agent
 
-1. `template_guide` returns this file; `sample_frames` on the target range shows what the
-   overlay must sit over.
-2. Create `<dir>/overlays/<id>/template.json` and `index.html` following this contract —
-   in the project's `overlays/` for a one-off, in the user library
-   (`~/.local/share/kuma/overlays/`) for something reusable.
-3. Call `list_templates` so the daemon reloads (it reports manifests that failed to load).
-4. Add a bin entry and place it, in one `apply_edits`: add
-   `{ "name": "…", "source": { "template": "<id>", "vars": {…} } }` under `/bin/<binId>`,
-   then a clip `{ "id": "…", "start": t, "end": t + d, "bin": "<binId>" }` on an overlay
-   track. Two instances with different vars are two bin entries.
-5. `sample_frames` again on that range to verify — and run *Checking your work* above on
-   the entry before you place anything, which needs no clip at all.
+1. `overlay_guide` returns this file; `sample_frames` on the target range shows what the
+   overlay must sit over. `list_blueprints` shows what the library already has — starting
+   from one with `add_blueprint` is often quicker than a scaffold.
+2. `new_overlay` (or write `overlays/<name>/overlay.json` and `index.html` yourself,
+   following this contract), then edit it until `check_overlay` is clean.
+3. `import_overlay` with `path: "overlays/<name>"` and the `vars` you want: that is the bin
+   entry. A second wording is a second import of the same folder with other vars. Run
+   *Checking your work* above on the entry before you place anything — it needs no clip.
+4. Place it with `apply_edits`: a clip `{ "id": "…", "start": t, "end": t + d, "bin":
+   "<binId>" }` on an overlay track.
+5. `sample_frames` again on that range to verify.
+6. Only when the user asks for it to be reusable: `save_blueprint` puts the folder in their
+   library. The library is theirs, shared by every project, so do not fill it on your own.

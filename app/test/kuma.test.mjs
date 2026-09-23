@@ -49,8 +49,8 @@ describe("library fallback", () => {
 
   it("stays out of the way when a library is installed", () => {
     const xdg = dir("installed", ".local", "share");
-    dir("installed", ".local", "share", "kuma", "overlays", "mine");
-    // Otherwise the checkout's copy of a template would shadow one they had edited.
+    dir("installed", ".local", "share", "kuma", "blueprints", "mine");
+    // Otherwise the checkout's copy of a blueprint would shadow one they had edited.
     assert.equal(withEnv({ XDG_DATA_HOME: xdg, KUMA_LIBRARY: undefined }, () => kuma.libraryFallback(REPO)), null);
   });
 
@@ -59,9 +59,9 @@ describe("library fallback", () => {
     assert.equal(withEnv({ XDG_DATA_HOME: xdg, KUMA_LIBRARY: "/somewhere/else" }, () => kuma.libraryFallback(REPO)), null);
   });
 
-  it("treats an empty overlays/ as nothing installed", () => {
+  it("treats an empty blueprints/ as nothing installed", () => {
     const xdg = dir("hollow", ".local", "share");
-    dir("hollow", ".local", "share", "kuma", "overlays");
+    dir("hollow", ".local", "share", "kuma", "blueprints");
     assert.equal(withEnv({ XDG_DATA_HOME: xdg, KUMA_LIBRARY: undefined }, () => kuma.libraryFallback(REPO)), path.join(REPO, "library"));
   });
 

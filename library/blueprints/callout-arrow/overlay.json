@@ -1,5 +1,4 @@
 {
-  "id": "callout-arrow",
   "name": "Callout arrow",
   "description": "A label connected by a drawn line to a point of interest. The line draws itself, then the label pops in.",
   "duration_default": 4.0,

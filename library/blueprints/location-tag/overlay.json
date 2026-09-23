@@ -1,5 +1,4 @@
 {
-  "id": "location-tag",
   "name": "Location tag",
   "description": "A map-pin style tag with a place name and optional coordinates. Slides in, floats gently, slides out.",
   "duration_default": 4.0,

@@ -12,10 +12,14 @@ export interface MediaMeta {
 /** A timeline: what a sequence bin entry holds, master included. */
 export interface Sequence { tracks: Track[]; markers?: Marker[] }
 
+/** An overlay entry: a folder of the project's own (`overlays/<name>`, relative to the
+ *  project) and the vars for this entry. Entries may share a folder. */
+export interface OverlaySource { overlay: string; vars?: Record<string, unknown> }
+
 /** What a bin entry is. Exactly one shape. */
 export type BinSource =
   | { path: string; kind: MediaKind; proxy?: string | null }
-  | { template: string; vars?: Record<string, unknown> }
+  | OverlaySource
   | { color: string }
   | { folder: true }
   | Sequence;
@@ -153,15 +157,19 @@ export interface VarSpec {
   type: "string" | "text" | "number" | "color" | "boolean" | "enum" | "point" | "cues";
   label?: string; description?: string; default: unknown; min?: number; max?: number; step?: number; options?: string[];
 }
-export interface TemplateManifest {
-  id: string; name: string; description: string; duration_default: number; static: boolean;
+/** `overlay.json`: the same shape for a project's overlay and a library blueprint. */
+export interface OverlayManifest {
+  name: string; description: string; duration_default: number; static: boolean;
   vars: Record<string, VarSpec>; tags: string[];
 }
-export interface TemplateInfo { id: string; manifest: TemplateManifest; has_thumb: boolean; has_preview: boolean }
+/** A reusable overlay in the user's library. Copied into a project to be used. */
+export interface BlueprintInfo { id: string; manifest: OverlayManifest; has_thumb: boolean; has_preview: boolean }
+/** An overlay folder the bin uses: its manifest, or why it will not load. */
+export interface OverlayInfo { overlay: string; manifest?: OverlayManifest; error?: string }
 
-/** What `check` says about a template: the contract's own rules plus hyperframes'. */
+/** What `check` says about an overlay: the contract's own rules plus hyperframes'. */
 export interface Finding { level: "error" | "warning"; code: string; message: string; fix?: string }
-export interface LintReport { template: string; findings: Finding[]; renderer_skipped?: string }
+export interface LintReport { overlay: string; findings: Finding[]; renderer_skipped?: string }
 
 export interface Preset { id: string; description: string; extension: string }
 
@@ -243,7 +251,7 @@ export type DaemonEvent =
 
 export const fpsValue = (f: Fps) => f.num / f.den;
 
-export const isOverlaySource = (s: BinSource): s is { template: string; vars?: Record<string, unknown> } => "template" in s;
+export const isOverlaySource = (s: BinSource): s is OverlaySource => "overlay" in s;
 export const isFileSource = (s: BinSource): s is { path: string; kind: MediaKind; proxy?: string | null } => "path" in s;
 export const isSequenceSource = (s: BinSource): s is Sequence => "tracks" in s;
 export const isColorSource = (s: BinSource): s is { color: string } => "color" in s;

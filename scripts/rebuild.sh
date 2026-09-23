@@ -50,7 +50,7 @@ fi
 step "whisper.cpp for subtitles (optional)"
 # Cloned next to the other build trees and kept out of git; the daemon and `kuma doctor`
 # look for its whisper-cli here before PATH. The model goes to the user library, where
-# `kuma library` puts templates, so it is shared across checkouts. WHISPER_MODEL picks
+# `kuma library` puts blueprints, so it is shared across checkouts. WHISPER_MODEL picks
 # the size (tiny, base, small, medium, large-v3; add `.en` for English-only).
 models="${XDG_DATA_HOME:-$HOME/.local/share}/kuma/models"
 model="${WHISPER_MODEL:-base}"

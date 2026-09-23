@@ -1,5 +1,4 @@
 {
-  "id": "section-title",
   "name": "Section title",
   "description": "Big title with a subtitle and an optional dimmed backdrop. Words rise in one by one.",
   "duration_default": 4.0,

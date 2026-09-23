@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 use crate::model::*;
-use crate::template::TemplateManifest;
+use crate::manifest::{check_overlay_path, OverlayManifest};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -35,17 +35,11 @@ impl Issue {
 /// What the validator needs from the outside world.
 #[derive(Debug, Default, Clone)]
 pub struct ValidationContext {
-    /// Project directory; bin paths resolve against it.
+    /// Project directory; bin paths and overlay folders resolve against it.
     pub root: PathBuf,
-    /// Loaded overlay templates by id.
-    ///
-    /// `None` means the caller has no template knowledge and overlay ids are left
-    /// unchecked — that is the compiler, which knows nothing about the library. `Some`
-    /// means checked against exactly this set, so an id that is not in it is an error
-    /// **even when the set is empty**. Inferring the difference from emptiness instead
-    /// let a daemon with no library installed wave every overlay through as a warning.
-    pub templates: Option<BTreeMap<String, (PathBuf, TemplateManifest)>>,
-    /// If false, missing media files are not checked at all (useful for tests).
+    /// If false, nothing on disk is read: missing media files and overlay folders go
+    /// unchecked, and so do overlay vars, which are checked against the folder's manifest.
+    /// That is the compiler, which judges structure; the daemon passes true.
     pub check_files: bool,
 }
 
@@ -65,6 +59,8 @@ pub fn validate(p: &Project, ctx: &ValidationContext) -> Vec<Issue> {
     // Bin entries are checked once each, however many clips place them. Overlay vars are
     // checked here rather than per clip, because the entry is what carries them now.
     let mut bin_ids = HashSet::new();
+    // Entries may share a folder; read each manifest once.
+    let mut manifests: HashMap<&str, Result<OverlayManifest, String>> = HashMap::new();
     for (id, item) in &p.bin {
         let ip = format!("/bin/{id}");
         check_id(&mut issues, &mut bin_ids, id, format!("{ip}/id"), "bin");
@@ -77,24 +73,23 @@ pub fn validate(p: &Project, ctx: &ValidationContext) -> Vec<Issue> {
                     }
                 }
             }
-            BinSource::Overlay { template, vars } => match ctx.templates.as_ref() {
-                // The compiler validates structure without knowing the library.
-                None => {}
-                Some(loaded) => match loaded.get(template) {
-                    None if loaded.is_empty() => issues.push(Issue::error(
-                        format!("{ip}/source/template"),
-                        format!("unknown template `{template}`: no templates are loaded at all — install the library with `kuma library`"),
-                    )),
-                    None => issues.push(Issue::error(format!("{ip}/source/template"), format!("unknown template `{template}`"))),
-                    Some((_, m)) => {
-                        for problem in m.check_vars(vars) {
-                            issues.push(Issue::error(format!("{ip}/source/vars"), problem));
+            BinSource::Overlay { overlay, vars } => {
+                if let Some(problem) = check_overlay_path(overlay) {
+                    issues.push(Issue::error(format!("{ip}/source/overlay"), problem));
+                } else if ctx.check_files {
+                    let loaded = manifests.entry(overlay.as_str()).or_insert_with(|| OverlayManifest::load(&ctx.root.join(overlay)).map_err(|e| e.reason));
+                    match loaded {
+                        Err(reason) => issues.push(Issue::error(format!("{ip}/source/overlay"), format!("overlay `{overlay}`: {reason}"))),
+                        Ok(m) => {
+                            for problem in m.check_vars(vars) {
+                                issues.push(Issue::error(format!("{ip}/source/vars"), problem));
+                            }
                         }
                     }
-                },
-            },
+                }
+            }
             BinSource::Color { color } => {
-                if !crate::template::is_css_color(color) {
+                if !crate::manifest::is_css_color(color) {
                     issues.push(Issue::error(format!("{ip}/source/color"), "colour must be #rgb, #rrggbb or #rrggbbaa"));
                 }
             }
@@ -751,15 +746,16 @@ mod tests {
     #[test]
     fn overlay_vars_are_checked_once_per_entry_not_per_clip() {
         // Two clips of one entry must not report the same bad var twice.
+        let tmp = tempfile::tempdir().unwrap();
+        overlay_folder(tmp.path(), "overlays/location-tag");
         let p = project(json!({
-            "bin": { "tag": { "source": { "template": "location-tag", "vars": { "nope": 1 } } } },
+            "bin": { "tag": { "source": { "overlay": "overlays/location-tag", "vars": { "nope": 1 } } } },
             "tracks": [{ "id": "o1", "kind": "overlay", "clips": [
                 { "id": "a", "start": 0, "end": 4, "bin": "tag" },
                 { "id": "b", "start": 4, "end": 8, "bin": "tag" }
             ]}]
         }));
-        let manifest: TemplateManifest = serde_json::from_value(json!({ "id": "location-tag" })).unwrap();
-        let ctx = ValidationContext { templates: Some([("location-tag".to_string(), (PathBuf::new(), manifest))].into()), ..Default::default() };
+        let ctx = ValidationContext { root: tmp.path().to_path_buf(), check_files: true };
         let m: Vec<_> = validate(&p, &ctx).into_iter().map(|i| i.message).collect();
         assert_eq!(m.iter().filter(|m| m.contains("nope")).count(), 1, "{m:?}");
     }
@@ -792,26 +788,43 @@ mod tests {
         assert_eq!(at(2).expect("checked").severity, Severity::Error);
     }
 
-    /// An agent must not be able to add an overlay that does not exist. The daemon always
-    /// passes `Some`, so an unresolvable id is an error even when nothing is installed —
-    /// it used to downgrade to a warning and fail much later, at bake time.
+    fn overlay_folder(root: &std::path::Path, rel: &str) {
+        let dir = root.join(rel);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(crate::manifest::MANIFEST), "{}").unwrap();
+        std::fs::write(dir.join("index.html"), "<div data-composition-id=\"main\"></div>").unwrap();
+    }
+
+    /// An agent must not be able to add an overlay whose folder is not there: it used to
+    /// pass validation and fail much later, at bake time.
     #[test]
-    fn an_unknown_template_is_an_error_even_with_an_empty_library() {
+    fn an_overlay_needs_its_folder_in_the_project() {
+        let tmp = tempfile::tempdir().unwrap();
         let p = project(json!({
-            "bin": { "ghost": { "source": { "template": "totally-made-up" } } },
+            "bin": { "ghost": { "source": { "overlay": "overlays/ghost" } } },
             "tracks": [{ "id": "o1", "kind": "overlay", "clips": [
                 { "id": "g1", "start": 0, "end": 4, "bin": "ghost" }
             ]}]
         }));
-        // Daemon with nothing installed: refused, and the message says what to do.
-        let known_empty = ValidationContext { templates: Some(BTreeMap::new()), ..Default::default() };
-        let issues = validate(&p, &known_empty);
-        let bad: Vec<_> = issues.iter().filter(|i| i.severity == Severity::Error && i.path.contains("template")).collect();
-        assert_eq!(bad.len(), 1, "{issues:?}");
-        assert!(bad[0].message.contains("kuma library"), "{:?}", bad[0]);
+        let daemon = ValidationContext { root: tmp.path().to_path_buf(), check_files: true };
+        let bad = |ctx: &ValidationContext| validate(&p, ctx).into_iter().filter(|i| i.severity == Severity::Error && i.path.ends_with("/source/overlay")).count();
+        assert_eq!(bad(&daemon), 1);
+        // The compiler reads nothing from disk and must stay silent about folders.
+        assert_eq!(bad(&ValidationContext::default()), 0, "compiler path must not read overlay folders");
 
-        // The compiler passes `None` and must stay silent about ids it cannot know.
-        let no_knowledge = ValidationContext::default();
-        assert!(validate(&p, &no_knowledge).iter().all(|i| !i.path.contains("template")), "compiler path must not judge template ids");
+        overlay_folder(tmp.path(), "overlays/ghost");
+        assert_eq!(bad(&daemon), 0);
+    }
+
+    /// Outside the project is refused whoever validates: the project must carry its
+    /// overlays, and that is a fact about the path, not about the disk.
+    #[test]
+    fn an_overlay_folder_outside_the_project_is_refused() {
+        let p = project(json!({
+            "bin": { "far": { "source": { "overlay": "../elsewhere/title" } } },
+            "tracks": []
+        }));
+        let issues = validate(&p, &ValidationContext::default());
+        assert!(issues.iter().any(|i| i.severity == Severity::Error && i.path == "/bin/far/source/overlay"), "{issues:?}");
     }
 }

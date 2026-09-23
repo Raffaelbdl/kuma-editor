@@ -134,25 +134,25 @@ function userLibraryDir(): string | null {
 /**
  * `KUMA_LIBRARY` to hand the daemon, or null to leave it alone.
  *
- * With no library installed a daemon loads zero templates, and one that *is* found
- * renders without `_vendor/kuma.css` — blank, which reads as a broken template. The
- * checkout ships the starter set, so point at it.
+ * With no library installed a daemon loads zero blueprints, and an overlay renders
+ * without `_vendor/kuma.css` — blank, which reads as a broken overlay. The checkout
+ * ships the starter set, so point at it.
  *
  * Only as a fallback: `KUMA_LIBRARY` outranks the user library, so setting it always
- * would shadow templates they had installed and edited, and only inside the app.
+ * would shadow blueprints they had installed and edited, and only inside the app.
  */
 export function libraryFallback(repo: string): string | null {
   if (process.env.KUMA_LIBRARY) return null;
   const user = userLibraryDir();
-  if (user && isDir(path.join(user, "overlays"))) {
+  if (user && isDir(path.join(user, "blueprints"))) {
     try {
-      if (fs.readdirSync(path.join(user, "overlays")).length) return null;
+      if (fs.readdirSync(path.join(user, "blueprints")).length) return null;
     } catch {
       return null;
     }
   }
   const shipped = path.join(repo, "library");
-  return isDir(path.join(shipped, "overlays")) ? shipped : null;
+  return isDir(path.join(shipped, "blueprints")) ? shipped : null;
 }
 
 /** Newest mtime under `root`, or 0 if it does not exist. Directories are walked. */

@@ -1,5 +1,5 @@
 import { api, subscribeEvents } from "./api";
-import type { Clip, DaemonEvent, Job, PatchOp, Project, TemplateInfo, Track, TrackKind } from "./types";
+import type { BlueprintInfo, Clip, DaemonEvent, Job, OverlayInfo, PatchOp, Project, Track, TrackKind } from "./types";
 import { allClips, clipPathOf, fpsValue, freeId, isOverlaySource, nearest, seqDuration, seqPath, sequenceIds, sequenceOf } from "./types";
 
 /** A clip found in the project: where it is, as the record every edit of it starts from. */
@@ -29,7 +29,11 @@ export const SEQUENCE_TAB = "";
 
 export interface State {
   project: Project | null;
-  templates: TemplateInfo[];
+  /** Reusable overlays in the user's library, to copy into the project. */
+  blueprints: BlueprintInfo[];
+  /** The manifest of every overlay folder the bin uses, by folder (`overlays/<name>`).
+   *  Refetched with the project, and on the workbench's Reload after a folder is edited. */
+  manifests: Record<string, OverlayInfo>;
   /** The sequence open for editing. The daemon owns this (the preview compiles it), so it
    *  is set through the API rather than locally. Empty until the first load. */
   sequence: string;
@@ -63,7 +67,7 @@ export interface State {
 type Listener = (s: State) => void;
 
 class Store {
-  state: State = { project: null, templates: [], sequence: "", selection: null, track: null, clipboard: null, autoKey: false, playhead: 0, playing: false, zoom: 60, tab: SEQUENCE_TAB, sequences: [], overlays: [], connected: false, jobs: {} };
+  state: State = { project: null, blueprints: [], manifests: {}, sequence: "", selection: null, track: null, clipboard: null, autoKey: false, playhead: 0, playing: false, zoom: 60, tab: SEQUENCE_TAB, sequences: [], overlays: [], connected: false, jobs: {} };
   private listeners = new Set<Listener>();
   private refreshing: Promise<void> | null = null;
   private refreshAgain = false;
@@ -98,8 +102,8 @@ class Store {
   }
 
   async init() {
-    const [project, templates, seq] = await Promise.all([api.project(), api.templates(), api.sequence()]);
-    this.set({ project, templates, sequence: seq.current, sequences: [seq.current] });
+    const [project, blueprints, manifests, seq] = await Promise.all([api.project(), api.blueprints(), api.overlays(), api.sequence()]);
+    this.set({ project, blueprints, manifests, sequence: seq.current, sequences: [seq.current] });
     subscribeEvents((e) => this.onEvent(e), (connected) => {
       this.set({ connected });
       // Events only say what happens from now on: what is already queued or running (or
@@ -178,7 +182,9 @@ class Store {
       try {
         do {
           this.refreshAgain = false;
-          const project = await api.project();
+          // Manifests alongside: an edit can point an entry at another folder (make unique,
+          // an import, an undo), and the inspector builds its fields from the manifest.
+          const [project, manifests] = await Promise.all([api.project(), api.overlays().catch(() => this.state.manifests)]);
           // The open sequence can be deleted out from under us (undo, an agent edit); the
           // daemon falls back to the master and so do we, rather than showing nothing.
           const sequence = sequenceOf(project, this.state.sequence) ? this.state.sequence : project.master;
@@ -191,7 +197,7 @@ class Store {
           const sequences = withId(this.state.sequences.filter((id) => sequenceOf(project, id)), sequence);
           const overlays = this.state.overlays.filter((id) => isOverlayEntry(project, id));
           const tab = overlays.includes(this.state.tab) ? this.state.tab : SEQUENCE_TAB;
-          this.set({ project, sequence, sequences, selection, track, overlays, tab });
+          this.set({ project, manifests, sequence, sequences, selection, track, overlays, tab });
         } while (this.refreshAgain);
       } catch (e) {
         toast(`Cannot reload the project: ${(e as Error).message}`, "err");
@@ -200,6 +206,13 @@ class Store {
       }
     })();
     return this.refreshing;
+  }
+
+  /** Re-read the overlay folders' manifests and the library's blueprints: what Reload does
+   *  after a folder was edited on disk, which is not an edit the daemon announces. */
+  async reloadOverlays() {
+    const [manifests, blueprints] = await Promise.all([api.overlays(), api.reloadBlueprints()]);
+    this.set({ manifests, blueprints });
   }
 
   /** A selection survives a refresh only while the things it names still exist — each of

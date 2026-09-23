@@ -63,7 +63,7 @@ enum Cmd {
         /// editor's overlay workbench shows. Times are seconds into the overlay.
         #[arg(long)]
         overlay: Option<String>,
-        /// How long to run that overlay for (default: the template's own).
+        /// How long to run that overlay for (default: its manifest's own).
         #[arg(long)]
         duration: Option<f64>,
         /// Colour behind it, e.g. `#102030` or `transparent` (default black).
@@ -84,23 +84,51 @@ enum Cmd {
     Validate,
     /// Check the installation: repo, tools, engine, library, daemon, MCP config.
     Doctor,
-    /// Scaffold a contract-abiding overlay template in the project's `overlays/`.
-    NewTemplate {
-        /// Folder name and id: [A-Za-z_][A-Za-z0-9_-]*
+    /// Scaffold a contract-abiding overlay folder in the project's `overlays/`. It is not
+    /// in the bin until `kuma import-overlay` adds it.
+    NewOverlay {
+        /// Folder name: [A-Za-z_][A-Za-z0-9_-]*
         id: String,
-        /// Name for the library browser (defaults to the id).
+        /// Display name (defaults to the id).
         #[arg(long)]
         name: Option<String>,
         #[arg(long)]
         description: Option<String>,
-        /// Write it to the user library instead of this project.
+        /// Write it to the user library as a blueprint instead of into this project.
         #[arg(long)]
-        library: bool,
+        blueprint: bool,
     },
-    /// Check overlay templates against the contract (all, or the given ids). Exit 1 on errors.
-    Lint { templates: Vec<String> },
-    /// Generate `thumb.png` for overlay templates (all, or the given ids).
-    Thumbs { templates: Vec<String> },
+    /// Add an overlay folder of this project (`overlays/<name>`, or its `overlay.json`) to the bin.
+    ImportOverlay {
+        path: String,
+        /// Bin id (minted from the folder name by default).
+        #[arg(long)]
+        id: Option<String>,
+    },
+    /// Copy a blueprint into the project and add it to the bin.
+    AddBlueprint {
+        blueprint: String,
+        /// Bin id (minted from the folder name by default).
+        #[arg(long)]
+        id: Option<String>,
+    },
+    /// Save a project overlay into the user library as a blueprint: a bin entry (its vars
+    /// become the blueprint's defaults), or a folder as it is (anything with a `/`).
+    SaveBlueprint {
+        /// A bin id, or an overlay folder such as `overlays/title`.
+        from: String,
+        /// The blueprint's id: its folder name in the library.
+        id: String,
+        /// Replace a blueprint of that id.
+        #[arg(long)]
+        force: bool,
+    },
+    /// Check overlays against the contract: blueprint ids or project overlay folders
+    /// (anything with a `/`); with none, every blueprint and every folder the bin uses.
+    /// Exit 1 on errors.
+    Lint { targets: Vec<String> },
+    /// Generate `thumb.png` for blueprints (all, or the given ids).
+    Thumbs { blueprints: Vec<String> },
     /// Copy a design system into the project for the agent to read (`design-system/`).
     /// With no id, list what is installed.
     DesignSystem {
@@ -109,9 +137,9 @@ enum Cmd {
         #[arg(long)]
         force: bool,
     },
-    /// Install the starter templates, presets and design systems into the user library (`~/.local/share/kuma`).
+    /// Install the starter blueprints, presets and design systems into the user library (`~/.local/share/kuma`).
     Library {
-        /// Overwrite templates that already exist in the library.
+        /// Overwrite blueprints and presets that already exist in the library.
         #[arg(long)]
         force: bool,
     },
@@ -248,7 +276,7 @@ async fn main() -> anyhow::Result<()> {
                 .map(|s| {
                     let v: Vec<u32> = s.split(',').map(|x| x.trim().parse()).collect::<Result<_, _>>()?;
                     anyhow::ensure!(v.len() == 4, "rect must be x,y,w,h");
-                    Ok::<_, anyhow::Error>(kuma_core::template::Region { x: v[0], y: v[1], w: v[2], h: v[3] })
+                    Ok::<_, anyhow::Error>(kuma_core::manifest::Region { x: v[0], y: v[1], w: v[2], h: v[3] })
                 })
                 .transpose()?;
             let frame = frame
@@ -291,37 +319,79 @@ async fn main() -> anyhow::Result<()> {
                 std::process::exit(1);
             }
         }
-        Cmd::NewTemplate { id, name, description, library } => {
+        Cmd::NewOverlay { id, name, description, blueprint } => {
             let state = open(&cli)?;
-            // The project's own `overlays/` is where a one-off for this video belongs and
-            // is last on the search path; `--library` is for one meant to be reused.
-            let dir = if *library {
-                // The user library is the first search path entry — the one `kuma library`
-                // installs into — not whatever `KUMA_LIBRARY` appended last.
-                default_library_dirs().remove(0).join("overlays")
-            } else {
-                state.config.project_root().join("overlays")
-            };
-            let out = kuma_overlay::new_template(&dir, id, name.as_deref().unwrap_or(""), description.as_deref().unwrap_or("")).map_err(anyhow::Error::msg)?;
-            state.reload_templates();
+            // The project's own `overlays/` unless it is meant for every project.
+            let dir = if *blueprint { state.config.user_blueprint_dir() } else { state.config.overlays_dir() };
+            let out = kuma_overlay::new_overlay(&dir, id, name.as_deref().unwrap_or(""), description.as_deref().unwrap_or("")).map_err(anyhow::Error::msg)?;
             println!("{}", out.display());
-            let report = kuma_daemon::jobs::lint_template(&state, id)?;
+            let report = kuma_daemon::overlays::lint(&state, &out)?;
             for line in report.lines() {
                 println!("  {line}");
             }
+            if !*blueprint {
+                println!("add it to the bin with `kuma import-overlay overlays/{id}` once it is ready");
+            }
         }
-        Cmd::Lint { templates } => {
+        Cmd::ImportOverlay { path, id } => {
+            // Through the daemon when one owns the project, as `add-media` is.
+            let (id, rev) = if let Some(url) = running_daemon(&cli).await {
+                let body = serde_json::json!({ "path": path, "id": id, "origin": "cli: import overlay" });
+                let v = kuma_mcp::client::Client::new(&url).post("/api/overlays/import", &body).await?;
+                (v["id"].as_str().unwrap_or_default().to_string(), v["revision"].as_u64().unwrap_or_default())
+            } else {
+                let state = open(&cli)?;
+                let (id, rev, _) = kuma_daemon::overlays::import_overlay(&state, path, id.clone(), None, Default::default(), None, "cli")?;
+                (id, rev)
+            };
+            println!("added bin entry `{id}` (revision {rev})");
+        }
+        Cmd::AddBlueprint { blueprint, id } => {
+            let (id, rev) = if let Some(url) = running_daemon(&cli).await {
+                let body = serde_json::json!({ "id": id, "origin": format!("cli: add {blueprint}") });
+                let v = kuma_mcp::client::Client::new(&url).post(&format!("/api/blueprints/{blueprint}/add"), &body).await?;
+                (v["id"].as_str().unwrap_or_default().to_string(), v["revision"].as_u64().unwrap_or_default())
+            } else {
+                let state = open(&cli)?;
+                let overlay = kuma_daemon::overlays::copy_blueprint(&state, blueprint, None)?;
+                let (id, rev, _) = kuma_daemon::overlays::import_overlay(&state, &overlay, id.clone(), None, Default::default(), None, "cli")?;
+                (id, rev)
+            };
+            println!("added bin entry `{id}` (revision {rev})");
+        }
+        Cmd::SaveBlueprint { from, id, force } => {
             let state = open(&cli)?;
-            let ids: Vec<String> = {
-                let all = state.templates.read().unwrap().loaded.clone();
-                if templates.is_empty() { all.keys().cloned().collect() } else { templates.clone() }
+            let from = if from.contains('/') { kuma_daemon::overlays::SaveFrom::Folder(from) } else { kuma_daemon::overlays::SaveFrom::Entry(from) };
+            let dir = kuma_daemon::overlays::save_blueprint(&state, from, id, *force)?;
+            println!("{}", dir.display());
+        }
+        Cmd::Lint { targets } => {
+            let state = open(&cli)?;
+            // A target with a separator is a folder in the project; anything else names a
+            // blueprint. With none, everything: the library and what the bin uses.
+            let targets: Vec<String> = if targets.is_empty() {
+                let blueprints = state.blueprints.read().unwrap().loaded.keys().cloned().collect::<Vec<_>>();
+                let folders: std::collections::BTreeSet<String> = state
+                    .project
+                    .read()
+                    .unwrap()
+                    .bin
+                    .values()
+                    .filter_map(|i| match &i.source {
+                        kuma_core::BinSource::Overlay { overlay, .. } => Some(overlay.clone()),
+                        _ => None,
+                    })
+                    .collect();
+                blueprints.into_iter().chain(folders).collect()
+            } else {
+                targets.clone()
             };
             let mut errors = 0;
-            for id in ids {
-                let report = kuma_daemon::jobs::lint_template(&state, &id)?;
+            for target in targets {
+                let report = if target.contains('/') { kuma_daemon::overlays::lint_overlay(&state, &target)? } else { kuma_daemon::overlays::lint_blueprint(&state, &target)? };
                 errors += report.errors();
                 let status = if report.ok() { "ok" } else { "FAILED" };
-                println!("{id}: {status} ({} error(s), {} warning(s))", report.errors(), report.warnings());
+                println!("{target}: {status} ({} error(s), {} warning(s))", report.errors(), report.warnings());
                 for line in report.lines() {
                     println!("  {line}");
                 }
@@ -333,11 +403,11 @@ async fn main() -> anyhow::Result<()> {
                 std::process::exit(1);
             }
         }
-        Cmd::Thumbs { templates } => {
+        Cmd::Thumbs { blueprints } => {
             let state = open(&cli)?;
-            let all = state.templates.read().unwrap().loaded.clone();
+            let all = state.blueprints.read().unwrap().loaded.clone();
             let empty = serde_json::Map::new();
-            for (id, (dir, manifest)) in all.iter().filter(|(id, _)| templates.is_empty() || templates.contains(id)) {
+            for (id, (dir, manifest)) in all.iter().filter(|(id, _)| blueprints.is_empty() || blueprints.contains(id)) {
                 let out = dir.join("thumb.png");
                 state.baker.thumbnail(dir, manifest, &empty, &out).map_err(|e| anyhow::anyhow!("{id}: {e}"))?;
                 println!("{id:16} {}", out.display());
@@ -368,7 +438,7 @@ async fn main() -> anyhow::Result<()> {
             }
             kuma_daemon::copy_tree(&src, &dst)?;
             println!("{title} → {}", dst.display());
-            println!("The agent reads `design-system/DESIGN.md`; templates copy the `:root` block from `tokens.css`.");
+            println!("The agent reads `design-system/DESIGN.md`; overlays copy the `:root` block from `tokens.css`.");
         }
         Cmd::Library { force } => {
             let src = repo_root(&cli)?.join("library");
@@ -429,8 +499,8 @@ async fn main() -> anyhow::Result<()> {
             std::fs::write(&path, serde_json::to_string_pretty(&p)?)?;
             println!("created {}", path.display());
             let library = default_library_dirs().remove(0);
-            if !library.join("overlays").is_dir() {
-                println!("note: no template library at {} — run `kuma library` to install the starter set", library.display());
+            if !library.join("blueprints").is_dir() {
+                println!("note: no blueprints at {} — run `kuma library` to install the starter set", library.display());
             }
             if !*no_mcp {
                 match repo_root(&cli) {
@@ -454,9 +524,9 @@ async fn doctor(cli: &Cli) -> anyhow::Result<()> {
     println!("binary        {} — version {VERSION}", std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_default());
     println!("repo root     {}", cfg.repo_root.display());
     println!("project       {} ({})", cfg.project_file.display(), if cfg.project_file.is_file() { "exists" } else { "will be created" });
-    for d in cfg.all_template_dirs() {
-        let (loaded, errors) = kuma_core::template::TemplateManifest::load_all(&d);
-        println!("templates     {} — {} loaded{}", d.display(), loaded.len(), if errors.is_empty() { String::new() } else { format!(", {} failed: {}", errors.len(), errors[0]) });
+    for d in cfg.blueprint_dirs() {
+        let (loaded, errors) = kuma_core::OverlayManifest::load_all(&d);
+        println!("blueprints    {} — {} loaded{}", d.display(), loaded.len(), if errors.is_empty() { String::new() } else { format!(", {} failed: {}", errors.len(), errors[0]) });
     }
     println!(
         "design system {}",
@@ -486,11 +556,11 @@ async fn doctor(cli: &Cli) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Copy `<src>/{overlays,presets}` into the library, skipping entries that already exist
+/// Copy `<src>/{blueprints,presets,design-systems}` into the library, skipping entries that already exist
 /// unless `force`. Returns the number of entries written.
 fn install_library(src: &Path, dst: &Path, force: bool) -> anyhow::Result<usize> {
     let mut n = 0;
-    for kind in ["overlays", "presets", "design-systems"] {
+    for kind in ["blueprints", "presets", "design-systems"] {
         let Ok(rd) = std::fs::read_dir(src.join(kind)) else { continue };
         for e in rd.flatten() {
             let target = dst.join(kind).join(e.file_name());

@@ -1,4 +1,4 @@
-//! Project state, persistence, undo, templates and event broadcast.
+//! Project state, persistence, undo, blueprints and event broadcast.
 
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, PoisonError, RwLock};
 
 use kuma_core::edit::{self, EditError};
-use kuma_core::template::{TemplateError, TemplateManifest};
+use kuma_core::manifest::{ManifestError, OverlayManifest};
 use kuma_core::{Issue, Project, ValidationContext};
 use kuma_overlay::{Baker, Transcriber};
 use serde::{Deserialize, Serialize};
@@ -18,8 +18,9 @@ pub struct Config {
     pub project_file: PathBuf,
     /// Repository root: `node_modules/hyperframes`, `ui/dist`, `engine/build`.
     pub repo_root: PathBuf,
-    /// Asset libraries (each holds `overlays/` and `presets/`), lowest precedence first;
-    /// the project's own `overlays/` and `presets/` are always searched last (and win).
+    /// Asset libraries (each holds `blueprints/` and `presets/`), lowest precedence first.
+    /// The project's own `presets/` is searched last (and wins); its `overlays/` is not a
+    /// library at all — that is where the bin's overlays live.
     pub library_dirs: Vec<PathBuf>,
     pub bind: SocketAddr,
 }
@@ -31,15 +32,27 @@ impl Config {
     pub fn cache_dir(&self) -> PathBuf {
         self.project_root().join(".kuma")
     }
-    /// Every library's `overlays/` plus the project's own, lowest precedence first.
-    pub fn all_template_dirs(&self) -> Vec<PathBuf> {
-        self.library_dirs.iter().map(|d| d.join("overlays")).chain([self.project_root().join("overlays")]).collect()
+    /// Every library's `blueprints/`, lowest precedence first. Only libraries: a
+    /// blueprint is reusable across projects by definition, so no project holds one.
+    pub fn blueprint_dirs(&self) -> Vec<PathBuf> {
+        self.library_dirs.iter().map(|d| d.join("blueprints")).collect()
+    }
+    /// Where "Save as blueprint" writes: the user library, the first search path entry and
+    /// the one `kuma library` installs into — not whatever `KUMA_LIBRARY` appended last.
+    pub fn user_blueprint_dir(&self) -> PathBuf {
+        self.library_dirs[0].join("blueprints")
+    }
+    /// The project's own overlay folders, where a blueprint is copied and a new overlay
+    /// is scaffolded. A bin entry may name a folder elsewhere in the project; this is only
+    /// where kuma puts the ones it makes.
+    pub fn overlays_dir(&self) -> PathBuf {
+        self.project_root().join("overlays")
     }
     /// Every library's `presets/` plus the project's own, lowest precedence first.
     pub fn all_preset_dirs(&self) -> Vec<PathBuf> {
         self.library_dirs.iter().map(|d| d.join("presets")).chain([self.project_root().join("presets")]).collect()
     }
-    /// Where installed design systems are looked for. Unlike templates and presets these
+    /// Where installed design systems are looked for. Unlike blueprints and presets these
     /// are not read at runtime: one is **copied into the project** and the agent reads it
     /// there, so the project is the destination rather than the last search path entry.
     pub fn design_system_dirs(&self) -> Vec<PathBuf> {
@@ -52,7 +65,7 @@ impl Config {
     }
     /// Design systems installed on the search path, by id: the folder and the title from
     /// its `DESIGN.md` (the first heading). Later directories win, as they do for
-    /// templates. A folder without a `DESIGN.md` is not one.
+    /// blueprints. A folder without a `DESIGN.md` is not one.
     pub fn installed_design_systems(&self) -> BTreeMap<String, (PathBuf, String)> {
         let mut out = BTreeMap::new();
         for dir in self.design_system_dirs() {
@@ -85,7 +98,7 @@ pub fn copy_tree(src: &Path, dst: &Path) -> std::io::Result<()> {
 }
 
 /// The user's asset library: `$XDG_DATA_HOME/kuma` (`~/.local/share/kuma`), holding
-/// `overlays/` and `presets/`. `KUMA_LIBRARY` (a `:`-separated list) adds more, in
+/// `blueprints/` and `presets/`. `KUMA_LIBRARY` (a `:`-separated list) adds more, in
 /// increasing precedence.
 pub fn default_library_dirs() -> Vec<PathBuf> {
     let data = std::env::var_os("XDG_DATA_HOME")
@@ -115,10 +128,11 @@ pub struct UndoStack {
     pub future: Vec<(Project, String)>,
 }
 
-pub struct Templates {
-    pub loaded: BTreeMap<String, (PathBuf, TemplateManifest)>,
-    /// Manifests that failed to load, so the UI and the agent see why a template is missing.
-    pub errors: Vec<TemplateError>,
+/// The blueprints installed in the libraries, by folder name.
+pub struct Blueprints {
+    pub loaded: BTreeMap<String, (PathBuf, OverlayManifest)>,
+    /// Manifests that failed to load, so the UI and the agent see why a blueprint is missing.
+    pub errors: Vec<ManifestError>,
 }
 
 pub struct AppState {
@@ -128,7 +142,7 @@ pub struct AppState {
     /// edits against the same base revision cannot both succeed.
     edit: Mutex<()>,
     pub undo: Mutex<UndoStack>,
-    pub templates: RwLock<Templates>,
+    pub blueprints: RwLock<Blueprints>,
     pub baker: Baker,
     /// whisper.cpp, for the `transcribe` job. Discovered like the baker; absent is a job
     /// error naming what to install, never a daemon that will not start.
@@ -143,9 +157,9 @@ pub struct AppState {
 }
 
 #[derive(Debug, Serialize)]
-pub struct TemplateInfo {
+pub struct BlueprintInfo {
     pub id: String,
-    pub manifest: TemplateManifest,
+    pub manifest: OverlayManifest,
     pub has_thumb: bool,
     /// An animated WebP of it beside the still, from the same job.
     pub has_preview: bool,
@@ -174,13 +188,14 @@ impl AppState {
             Project::new_default(Project::name_from_path(&config.project_file), 1920, 1080, kuma_core::Fps::default())
         };
         std::fs::create_dir_all(config.cache_dir())?;
-        // The shared `_vendor/` is the highest-precedence library that has one.
-        let vendor_dir = config.all_template_dirs().iter().rev().map(|d| d.join("_vendor")).find(|d| d.is_dir()).unwrap_or_else(|| config.library_dirs[0].join("overlays/_vendor"));
+        // The shared `_vendor/` is the highest-precedence library that has one. A project's
+        // overlays use it too: it is the runtime a folder is written against, not content.
+        let vendor_dir = config.blueprint_dirs().iter().rev().map(|d| d.join("_vendor")).find(|d| d.is_dir()).unwrap_or_else(|| config.user_blueprint_dir().join("_vendor"));
         let baker = Baker::discover(&config.repo_root, vendor_dir, config.cache_dir().join("bakes"));
         let transcriber = Transcriber::discover(&config.repo_root, config.library_dirs[0].join("models"));
         let (events, _) = broadcast::channel(256);
         let st = AppState {
-            templates: RwLock::new(Templates { loaded: BTreeMap::new(), errors: Vec::new() }),
+            blueprints: RwLock::new(Blueprints { loaded: BTreeMap::new(), errors: Vec::new() }),
             project: RwLock::new(project),
             edit: Mutex::new(()),
             undo: Mutex::new(UndoStack { past: Vec::new(), future: Vec::new() }),
@@ -192,41 +207,38 @@ impl AppState {
             open_sequence: Mutex::new(None),
             config,
         };
-        st.reload_templates();
+        st.reload_blueprints();
         if !st.config.project_file.is_file() {
             st.save()?;
         }
         Ok(st)
     }
 
-    /// Later directories win on an id clash (the project's own `overlays/` is last).
-    pub fn reload_templates(&self) {
+    /// Later libraries win on an id clash.
+    pub fn reload_blueprints(&self) {
         let mut all = BTreeMap::new();
         let mut errors = Vec::new();
-        for dir in self.config.all_template_dirs() {
-            let (loaded, errs) = TemplateManifest::load_all(&dir);
+        for dir in self.config.blueprint_dirs() {
+            let (loaded, errs) = OverlayManifest::load_all(&dir);
             all.extend(loaded);
             errors.extend(errs);
         }
         for e in &errors {
-            tracing::warn!("template skipped: {e}");
+            tracing::warn!("blueprint skipped: {e}");
         }
-        // Zero templates is a configuration problem that otherwise looks like health:
-        // every overlay edit will now be refused, so say why once, loudly.
+        // No blueprints costs nothing already in a project — its overlays are its own —
+        // but it leaves the browser empty and subtitles with nothing to start from.
         if all.is_empty() {
-            tracing::warn!(
-                "no overlay templates loaded from {:?} — overlay clips will be refused; run `kuma library` to install the starter set",
-                self.config.all_template_dirs()
-            );
+            tracing::warn!("no blueprints loaded from {:?}; run `kuma library` to install the starter set", self.config.blueprint_dirs());
         }
-        *write(&self.templates) = Templates { loaded: all, errors };
+        *write(&self.blueprints) = Blueprints { loaded: all, errors };
     }
 
-    pub fn template_infos(&self) -> Vec<TemplateInfo> {
-        read(&self.templates)
+    pub fn blueprint_infos(&self) -> Vec<BlueprintInfo> {
+        read(&self.blueprints)
             .loaded
             .iter()
-            .map(|(id, (dir, m))| TemplateInfo {
+            .map(|(id, (dir, m))| BlueprintInfo {
                 id: id.clone(),
                 manifest: m.clone(),
                 has_thumb: dir.join("thumb.png").is_file(),
@@ -260,9 +272,9 @@ impl AppState {
     }
 
     pub fn validation_context(&self) -> ValidationContext {
-        // `Some` even when empty: the daemon knows what is installed, so an unresolvable
-        // overlay id is an error rather than something to find out about at render time.
-        ValidationContext { root: self.config.project_root(), templates: Some(read(&self.templates).loaded.clone()), check_files: true }
+        // Files are checked: an overlay entry whose folder is missing or broken is an
+        // error now rather than something to find out about at render time.
+        ValidationContext { root: self.config.project_root(), check_files: true }
     }
 
     pub fn save(&self) -> anyhow::Result<()> {

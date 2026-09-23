@@ -1,9 +1,10 @@
 // The left panel, in two tabs.
 //
 // **Bin** is what this project can place on a track: media files, configured overlays,
-// colours, sequences and folders, one row each, as a tree by `parent`. **Templates** is
-// where you shop — overlay templates on disk, shared across projects; adding one mints a
-// bin entry.
+// colours, sequences and folders, one row each, as a tree by `parent`. **Blueprints** is
+// where you shop — reusable overlays in the user's library, shared across projects; adding
+// one copies it into this project and mints a bin entry for the copy, so the blueprint is
+// never what a video plays.
 //
 // They are tabs rather than two stacked lists because they answer different questions
 // ("what is in this video" against "what could be"), and stacked, the second one pushed
@@ -13,13 +14,13 @@ import { api } from "../api";
 import { desktop, dropMedia, pickAndAddMedia } from "../desktop";
 import { button, dragPayload, el, isFileDrag, row, setDragPayload } from "../dom";
 import { startJob, store, toast } from "../store";
-import { addFromLibrary, moveBinItem, promptNewFolder, promptNewOverlay } from "../edits";
+import { moveBinItem, placeBlueprint, promptNewFolder, promptNewOverlay } from "../edits";
 import type { BinItem, Project } from "../types";
 import { childrenMap, isFolderSource, isOverlaySource, isSequenceSource, itemKind, parentOf } from "../types";
 
 export class Library {
   constructor(private host: HTMLElement) {
-    store.select((s) => [s.project, s.templates, s.sequence, s.tab], () => this.render());
+    store.select((s) => [s.project, s.blueprints, s.sequence, s.tab], () => this.render());
     this.acceptFiles();
   }
 
@@ -64,7 +65,7 @@ export class Library {
 
   /** Which tab is showing, and which entries are folded. View state, so it lives here
    *  rather than in the store. */
-  private tab: "bin" | "templates" = "bin";
+  private tab: "bin" | "blueprints" = "bin";
   private collapsed = new Set<string>();
 
   private render() {
@@ -74,16 +75,16 @@ export class Library {
     if (!p) return;
 
     const tabs = el("div", "tabs");
-    for (const [id, label] of [["bin", "Bin"], ["templates", "Templates"]] as const) {
+    for (const [id, label] of [["bin", "Bin"], ["blueprints", "Blueprints"]] as const) {
       tabs.appendChild(button(label, () => { this.tab = id; this.render(); }, "", `tab${this.tab === id ? " on" : ""}`));
     }
     this.host.appendChild(tabs);
     if (this.tab === "bin") this.renderBin(p);
-    else this.renderTemplates();
+    else this.renderBlueprints();
   }
 
   private renderBin(p: Project) {
-    if (!Object.keys(p.bin).length) this.host.appendChild(el("p", "muted", "Empty. Add media below, or an overlay from the Templates tab."));
+    if (!Object.keys(p.bin).length) this.host.appendChild(el("p", "muted", "Empty. Add media below, or an overlay from the Blueprints tab."));
     const list = el("div", "bin-list");
     // One grouping pass, then a walk: an entry's children (a transcript under its media,
     // a folder's contents) sit under it, indented, behind a caret. Cycle-safe because
@@ -133,34 +134,34 @@ export class Library {
     this.host.appendChild(row("lib-add", input, add));
   }
 
-  private renderTemplates() {
+  private renderBlueprints() {
     this.host.appendChild(row("lib-add",
-      button("⟳ rescan", async () => { store.set({ templates: await api.reloadTemplates() }); }, "Rescan the template libraries"),
+      button("⟳ rescan", async () => { store.set({ blueprints: await api.reloadBlueprints() }); }, "Rescan the blueprint libraries"),
       // Thumbnails are what this tab is for looking at, so the job that makes them lives
       // here rather than over the bin, where it had nothing to do with anything on screen.
-      button("thumbnails", () => startJob("Thumbnail", () => api.thumbs()), "Render thumbnails for every template and overlay entry"),
+      button("thumbnails", () => startJob("Thumbnail", () => api.thumbs()), "Render thumbnails for every blueprint and overlay entry"),
     ));
 
-    const templates = store.state.templates;
-    if (!templates.length) {
-      this.host.appendChild(el("p", "muted", "No templates found. Run `kuma library` to install the starter set, or point KUMA_LIBRARY at a folder of them."));
+    const blueprints = store.state.blueprints;
+    if (!blueprints.length) {
+      this.host.appendChild(el("p", "muted", "No blueprints found. Run `kuma library` to install the starter set, point KUMA_LIBRARY at a folder of them, or save an overlay from the bin as one."));
       return;
     }
-    for (const t of templates) {
-      const card = templateCard(t.manifest.name || t.id, [
+    for (const t of blueprints) {
+      const card = blueprintCard(t.manifest.name || t.id, [
         ["desc", t.manifest.description],
         ["desc mono", Object.keys(t.manifest.vars).join(" · ")],
       ], t.id);
       // The moving one when the job has made it, the still otherwise: an overlay is an
       // animation, and the frame a still picks is the least informative moment of it.
       if (t.has_preview || t.has_thumb) {
-        prependThumb(card, `/overlays/${encodeURIComponent(t.id)}/${t.has_preview ? "preview.webp" : "thumb.png"}`);
+        prependThumb(card, `/blueprints/${encodeURIComponent(t.id)}/${t.has_preview ? "preview.webp" : "thumb.png"}`);
       }
       // Two different decisions, so two buttons: one puts it in the video now, the other
       // opens it in the workbench to be made right first and placed when it is.
       card.appendChild(row("actions",
-        button("Open in workbench", () => void promptNewOverlay(t.id), "Add a configured overlay to the bin and iterate on it — nothing is placed"),
-        button("Place on timeline", () => addFromLibrary(t.id, store.state.playhead), "Add it to the bin and place a clip of it at the playhead"),
+        button("Open in workbench", () => void promptNewOverlay(t.id), "Copy it into the project, add it to the bin and iterate on it — nothing is placed"),
+        button("Place on timeline", () => placeBlueprint(t.id, store.state.playhead), "Copy it into the project, add it to the bin and place a clip of it at the playhead"),
       ));
       this.host.appendChild(card);
     }
@@ -235,15 +236,15 @@ function dropTarget(node: HTMLElement, folder: string | undefined, spot: (e: Dra
   };
 }
 
-/** One draggable template card. The payload is what a drop on the timeline receives. */
-function templateCard(title: string, lines: [string, string][], template: string): HTMLDivElement {
+/** One draggable blueprint card. The payload is what a drop on the timeline receives. */
+function blueprintCard(title: string, lines: [string, string][], blueprint: string): HTMLDivElement {
   const item = el("div", "lib-item");
   item.draggable = true;
   const head = el("div", "title", title);
   head.appendChild(el("span", "badge-kind overlay", "overlay"));
   item.appendChild(head);
   for (const [cls, line] of lines) if (line) item.appendChild(el("div", cls, line));
-  item.ondragstart = (e) => setDragPayload(e, { template });
+  item.ondragstart = (e) => setDragPayload(e, { blueprint });
   return item;
 }
 

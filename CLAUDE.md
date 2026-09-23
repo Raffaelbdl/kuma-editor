@@ -3,7 +3,7 @@
 Hybrid video editor: the video half is MLT (the engine under Kdenlive/Shotcut), the
 overlay half is HTML/CSS/TS baked with alpha by hyperframes, both driven from one JSON
 project file and exposed to agents over MCP. Read `README.md` for the architecture and
-`library/overlays/CLAUDE.md` before authoring an overlay template.
+`library/blueprints/CLAUDE.md` before authoring an overlay.
 
 **Picking this up? Read `docs/decisions.md` first.** It records why the model looks the
 way it does, including what was tried and rejected, and what is still open.
@@ -20,15 +20,16 @@ crates/kuma-cli       `kuma` binary: serve | mcp | render | bake | sample | lint
 engine/               C++ libmlt++ preview engine (JPEG over stdout, SDL2-paced audio)
 ui/                   Vite + TypeScript editor (no framework)
 app/                  Electron shell: project launcher, windows, daemon lifecycle
-library/overlays/     starter overlay templates (folder = template) + `_vendor/{gsap.min.js,kuma.js,kuma.css}`
+library/blueprints/   starter blueprints (folder = blueprint) + `_vendor/{gsap.min.js,kuma.js,kuma.css}`
 library/presets/      starter effect presets (typed params + `$expr` substitution)
 library/design-systems/ design systems (`DESIGN.md` + `tokens.css`) copied into a project; none ship yet
 ```
 
-Templates and presets are user assets, not code: at runtime kuma reads
-`$XDG_DATA_HOME/kuma` (default `~/.local/share/kuma`), every directory in `KUMA_LIBRARY`,
-then the project's own `overlays/` and `presets/`; later wins. `library/` is only the
-starter set that `kuma library` installs. Tests point `KUMA_LIBRARY` (or the baker) at it.
+Blueprints and presets are user assets, not code: at runtime kuma reads
+`$XDG_DATA_HOME/kuma` (default `~/.local/share/kuma`) and every directory in
+`KUMA_LIBRARY`, later wins; presets also come from the project's own `presets/`.
+Blueprints never come from a project. `library/` is only the starter set that
+`kuma library` installs. Tests point `KUMA_LIBRARY` (or the baker) at it.
 
 ## Commands
 
@@ -92,8 +93,16 @@ Chrome headless shell if hyperframes should not download one.
   what clients read; never infer one from `message`.
 - Overlays are live DOM on the sequence you have open and **baked** in the sequences it
   nests, which is what puts them in the preview at all; the two sets are disjoint, so none
-  is drawn twice. Preview bakes are best effort — a template that will not bake costs that
+  is drawn twice. Preview bakes are best effort — an overlay that will not bake costs that
   overlay, never the preview.
+- An **overlay** is a folder the project owns (`overlays/<name>/`: `overlay.json` +
+  `index.html`) and a bin entry names it (`"overlay": "overlays/<name>"`), always relative
+  and inside the project. A **blueprint** is the same shape in the user's library,
+  reusable across projects, and is never read through an entry: using one **copies** it
+  into the project (`overlays.rs`), so editing a blueprint cannot re-style a finished
+  video. An overlay folder reaches the bin only by being imported — writing one does not
+  add it — and entries may share a folder; "make unique" copies it for one of them. Undoing
+  an import leaves its folder on disk: nothing deletes a folder, it may hold someone's work.
 - Clients ask for a preview reload on **every** edit and never decide whether one is
   needed: `preview::reload` compiles, compares the document against what the engine holds,
   and only then reloads it. Do not reintroduce a client-side model of what the compiler
@@ -105,12 +114,12 @@ Chrome headless shell if hyperframes should not download one.
   `UPDATE_GOLDEN=1 cargo test -p kuma-mlt` and read the diff.
 - A **design system** is a document, not a runtime layer: `kuma design-system <id>` copies
   one into `<project>/design-system/` and an agent reads it there. Nothing injects it, so
-  applying it is an ordinary edit to a template or to an entry's vars — do not add a
+  applying it is an ordinary edit to an overlay folder or to an entry's vars — do not add a
   cascade that would re-style finished videos behind the editor's back.
-- A template is **checked, not discovered to be broken**: `Baker::lint` reads the staged
+- An overlay is **checked, not discovered to be broken**: `Baker::lint` reads the staged
   document (contract injected, `_vendor/` in place) and adds hyperframes' own linter, and
-  `kuma new-template` writes a skeleton that passes it. A test lints every shipped
-  template and the scaffold, so the starter library cannot drift from the contract it
+  `kuma new-overlay` writes a skeleton that passes it. A test lints every shipped
+  blueprint and the scaffold, so the starter library cannot drift from the contract it
   documents. New contract rule → a rule in `lint.rs`, or nothing enforces it.
 - Overlay bakes run hyperframes with **one worker**; multi-worker capture was measured
   to be non-deterministic on GSAP-driven transforms.

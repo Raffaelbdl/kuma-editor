@@ -5,7 +5,7 @@
 // load. The choice is *this browser's* — `localStorage`, beside the transcribe language —
 // never the project's, because an editor's appearance is not an edit.
 //
-// It dresses the editor's chrome and stops there: no template, bake or render sees these
+// It dresses the editor's chrome and stops there: no overlay, bake or render sees these
 // tokens, so the video looks the same whichever theme is on. Styling a video is what a
 // design system is for.
 
@@ -68,7 +68,7 @@ export async function chooseTheme(): Promise<void> {
   );
   const ok = await askForm({
     title: "Theme",
-    note: "The editor only: a theme never reaches a template, a bake or a render, so the video looks the same whichever one is on.",
+    note: "The editor only: a theme never reaches an overlay, a bake or a render, so the video looks the same whichever one is on.",
     rows: [{ label: "Theme", input }],
     ok: "Use",
   });

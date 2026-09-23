@@ -12,7 +12,7 @@ import { button, capitalize, checkbox, dragPointer, el, options, plural, row, se
 import { keysFor } from "../shortcuts";
 import { store, toast } from "../store";
 import type { BinItem, Clip, Cue, Ease, Effect, PatchOp, Project, Streams, VarSpec } from "../types";
-import { moveBinItem, placeBinItem } from "../edits";
+import { makeOverlayUnique, manifestOf, moveBinItem, overlayError, placeBinItem, saveAsBlueprint, sharersOf } from "../edits";
 import type { Animation } from "../keyframes";
 import { animationOf } from "../keyframes";
 import { icon, svgEl } from "../icons";
@@ -352,7 +352,7 @@ export class Inspector {
     // selected clip decides what the panel can edit at all — a keyed value has no "now" to
     // write to from outside it — and that flips rarely. The values themselves follow the
     // playhead without a re-render; see `renderEffects`.
-    store.select((s) => [s.project, s.selection, s.templates, s.sequence, playheadInClip()], () => this.render());
+    store.select((s) => [s.project, s.selection, s.manifests, s.sequence, playheadInClip()], () => this.render());
   }
 
   private render() {
@@ -472,6 +472,7 @@ export class Inspector {
       const open = button("Open", () => store.openOverlay(id), "Iterate on it in the overlay workbench");
       (open as HTMLButtonElement).disabled = id === store.state.tab;
       actions.appendChild(open);
+      actions.appendChild(button("Save as blueprint", () => void saveAsBlueprint(id), "Copy this overlay into your library, to reuse in other projects"));
     }
     const remove = button("Remove from bin", () => {
       if (places) return toast(`${id} is placed by ${plural(places, "clip")}`, "err");
@@ -517,10 +518,18 @@ export class Inspector {
     if (!isOverlaySource(item.source)) return;
 
     const source = item.source;
-    const tpl = store.state.templates.find((t) => t.id === source.template);
-    this.host.appendChild(field("Template", el("div", "mono muted", source.template)));
-    if (!tpl) {
-      this.host.appendChild(el("p", "muted", "Unknown template — is its library on the search path?"));
+    const manifest = manifestOf(source);
+    this.host.appendChild(field("Folder", el("div", "mono muted", source.overlay)));
+    // Entries may share a folder — two wordings of one design. Editing its markup changes
+    // every one of them, so say so, next to the way out.
+    const others = sharersOf(source.overlay).filter((x) => x !== id);
+    if (others.length) {
+      const note = el("p", "muted tiny", `Shares its folder with ${others.join(", ")}: editing the HTML changes ${others.length > 1 ? "them all" : "both"}.`);
+      this.host.appendChild(note);
+      this.host.appendChild(row("actions", button("Make unique", () => void makeOverlayUnique(id), "Copy the folder so this entry has its own, and edit it alone")));
+    }
+    if (!manifest) {
+      this.host.appendChild(el("p", "muted", overlayError(source) ?? "The overlay's folder does not load."));
       return;
     }
     // The row cannot show this and stay one line, but an overlay is the one entry kind
@@ -539,7 +548,7 @@ export class Inspector {
 
     const vars = source.vars ?? {};
     const setVar = (k: string, v: unknown) => store.patch([{ op: "add", path: `${bp}/source/vars`, value: { ...vars, [k]: v } }], `var ${k}`);
-    for (const [k, spec] of Object.entries(tpl.manifest.vars)) {
+    for (const [k, spec] of Object.entries(manifest.vars)) {
       const cur = k in vars ? vars[k] : spec.default;
       this.host.appendChild(field(spec.label ?? k, varInput(spec, cur, (v) => setVar(k, v))));
     }

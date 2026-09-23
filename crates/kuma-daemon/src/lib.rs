@@ -6,6 +6,7 @@
 
 pub mod api;
 pub mod jobs;
+pub mod overlays;
 pub mod preview;
 pub mod state;
 

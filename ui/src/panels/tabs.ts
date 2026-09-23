@@ -63,7 +63,7 @@ export function mountTabs(host: HTMLElement): void {
         close: { run: () => store.closeOverlay(id), title: "Close this tab (the entry stays in the bin)" },
       }));
     }
-    host.appendChild(button("+ overlay", () => run(Cmd.newOverlay), "Create an overlay from a template and open it here", "etab-add"));
+    host.appendChild(button("+ overlay", () => run(Cmd.newOverlay), "Create an overlay from a blueprint and open it here", "etab-add"));
   };
   store.select((s) => [s.project, s.sequence, s.sequences, s.tab, s.overlays], render);
 }

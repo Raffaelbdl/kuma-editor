@@ -1,5 +1,4 @@
 {
-  "id": "subtitles",
   "name": "Subtitles",
   "description": "Timed words, grouped into lines: the transcript a `transcribe` job writes (one cue per word), or cues typed by hand. Cue times are seconds into the source; `offset` is where the clip starts in it.",
   "duration_default": 10.0,

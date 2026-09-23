@@ -3,12 +3,12 @@
 use schemars::{schema_for, Schema};
 
 use crate::model::Project;
-use crate::template::TemplateManifest;
+use crate::manifest::OverlayManifest;
 
 pub fn project_schema() -> Schema {
     schema_for!(Project)
 }
 
-pub fn template_schema() -> Schema {
-    schema_for!(TemplateManifest)
+pub fn overlay_schema() -> Schema {
+    schema_for!(OverlayManifest)
 }

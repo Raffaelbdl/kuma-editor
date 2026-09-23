@@ -11,20 +11,21 @@
 //   - **vars**: edited in the inspector, which is where a bin entry is edited. Selecting
 //     the entry is how this panel offers them, rather than growing a second copy that
 //     would have to be kept in step with the first.
-//   - **markup**: `Reload` rescans the libraries and rebuilds the document, so a template
-//     being written in an editor is one click from being on screen.
-//   - **variants**: `Duplicate` forks the entry, because editing one changes every clip
-//     that plays it — keeping the version that works means copying it.
+//   - **markup**: `Reload` re-reads the entry's folder and rebuilds the document, so an
+//     overlay being written in an editor is one click from being on screen.
+//   - **variants**: `Duplicate` adds a second entry on the same folder, because editing
+//     one's vars changes every clip that plays it — keeping the version that works means
+//     copying it. The markup stays shared; the inspector's Make unique splits that too.
 //
 // The backdrop and the frame picker are the same idea as a design tool's device frames:
-// an overlay is transparent and must survive both orientations (the template contract
+// an overlay is transparent and must survive both orientations (the overlay contract
 // requires it), so you need to see it over something, and in a frame the project is not
 // necessarily in.
 
 import { api } from "../api";
 import { Cmd, command } from "../commands";
 import { button, el, selectInput } from "../dom";
-import { duplicateOverlay, overlayDuration, placeBinItem, templateOf } from "../edits";
+import { duplicateOverlay, manifestOf, overlayDuration, overlayError, placeBinItem } from "../edits";
 import { icon } from "../icons";
 import { seekOverlay } from "../overlay";
 import { fmtTime, isOverlayEntry, store, toast } from "../store";
@@ -40,8 +41,8 @@ const BACKDROPS = [
   { value: "frame", label: "frame at playhead" },
 ];
 
-/** Frames to check a template in. `project` is the real one; the rest are the sizes a
- *  template is required to survive, and picking one changes nothing about the project. */
+/** Frames to check an overlay in. `project` is the real one; the rest are the sizes an
+ *  overlay is required to survive, and picking one changes nothing about the project. */
 const FRAMES: Record<string, [number, number] | null> = {
   project: null,
   "16:9": [1920, 1080],
@@ -85,7 +86,7 @@ export class Workbench {
 
   constructor(private host: HTMLElement) {
     this.build();
-    store.select((s) => [s.project, s.tab, s.templates, s.overlays], () => this.update());
+    store.select((s) => [s.project, s.tab, s.manifests, s.overlays], () => this.update());
     // The backdrop is a frame of the sequence, so it follows the playhead — but only when
     // it is the one being shown, and never while something is being dragged over it.
     store.select((s) => [s.playhead], () => { if (this.backdropKind === "frame" && this.active()) this.loadShot(); });
@@ -99,9 +100,9 @@ export class Workbench {
   private build() {
     this.head.append(
       this.title, this.sub, el("span", "spacer"),
-      button("Reload", () => void this.rescan(), "Rescan the template libraries and rebuild this document — the loop for editing a template's markup"),
-      button("Check", () => void this.check(), "Check this overlay's template against the authoring contract, without baking it"),
-      button("Duplicate", () => void duplicateOverlay(store.state.tab), "Fork this entry, vars and all, and open the copy"),
+      button("Reload", () => void this.rescan(), "Re-read this overlay's folder and rebuild the document — the loop for editing its markup"),
+      button("Check", () => void this.check(), "Check this overlay's folder against the authoring contract, without baking it"),
+      button("Duplicate", () => void duplicateOverlay(store.state.tab), "A second entry on the same folder, vars and all, opened here"),
       button("Place at playhead", () => void this.place(), "Add a clip of this entry to the open sequence, at the length below", "primary"),
     );
 
@@ -129,7 +130,7 @@ export class Workbench {
     const backdrop = selectInput(BACKDROPS, this.backdropKind, (v) => { this.backdropKind = v; this.update(); });
     backdrop.title = "What to show behind it";
     for (const s of [this.frameSel, backdrop]) s.style.width = "auto";
-    this.frameSel.title = "Render it into another frame. A template has to look right either way round; this is how you check without touching the project.";
+    this.frameSel.title = "Render it into another frame. An overlay has to look right either way round; this is how you check without touching the project.";
 
     this.foot.append(
       this.play, this.clock, this.scrub,
@@ -177,9 +178,9 @@ export class Workbench {
     const item = p!.bin[id]!;
     const source = isOverlaySource(item.source) ? item.source : null;
     this.title.textContent = item.name || id;
-    this.sub.textContent = source ? source.template : "";
-    const tpl = source && templateOf(source.template);
-    const lines = tpl ? this.notes : [`Unknown template${source ? ` “${source.template}”` : ""} — is its library on the search path? Reload rescans them.`];
+    this.sub.textContent = source ? source.overlay : "";
+    const loads = source && manifestOf(source);
+    const lines = loads ? this.notes : [`${(source && overlayError(source)) ?? "Not an overlay"} — fix the folder, then Reload.`];
     this.hint.replaceChildren(...lines.map((l) => el("div", "", l)));
 
     const [w, h] = this.size(p!);
@@ -201,7 +202,7 @@ export class Workbench {
     this.setTime(this.time());
   }
 
-  /** (Re)create the iframe. A fresh document is the only honest reload: the template's
+  /** (Re)create the iframe. A fresh document is the only honest reload: the overlay's
    *  scripts read `window.kuma` once, at load. */
   private mount(id: string, len: number, w: number, h: number, revision: number) {
     this.ready = false;
@@ -247,7 +248,7 @@ export class Workbench {
   }
 
   /**
-   * Check the template against the contract. What it reports is what would otherwise
+   * Check the overlay's folder against the contract. What it reports is what would otherwise
    * surface as a bake that times out after 45 seconds, or a frame that is quietly wrong —
    * so it belongs next to Reload, at the point where markup has just been edited.
    */
@@ -259,11 +260,11 @@ export class Workbench {
     this.notes = ["Checking…"];
     this.update();
     try {
-      const report = await api.lintTemplate(source.template);
+      const report = await api.lintOverlay(source.overlay);
       const errors = report.findings.filter((f) => f.level === "error").length;
       this.notes = report.findings.map((f) => `${f.level === "error" ? "✗" : "⚠"} ${f.code}: ${f.message}${f.fix ? ` — ${f.fix}` : ""}`);
       if (report.renderer_skipped) this.notes.push(`(hyperframes' own linter did not run: ${report.renderer_skipped})`);
-      toast(errors ? `${source.template}: ${errors} contract error(s)` : `${source.template}: contract ok`, errors ? "err" : "ok");
+      toast(errors ? `${source.overlay}: ${errors} contract error(s)` : `${source.overlay}: contract ok`, errors ? "err" : "ok");
     } catch (e) {
       this.notes = [];
       toast((e as Error).message, "err");
@@ -273,7 +274,7 @@ export class Workbench {
 
   private async rescan() {
     try {
-      store.set({ templates: await api.reloadTemplates() });
+      await store.reloadOverlays();
     } catch (e) {
       toast((e as Error).message, "err");
     }

@@ -1,5 +1,5 @@
 {
-  "version": 1,
+  "version": 7,
   "name": "reference",
   "master": "main",
   "fps": { "num": 30, "den": 1 },
@@ -11,8 +11,8 @@
     "cam": { "name": "Camera", "source": { "path": "media/cam.mp4", "kind": "video" } },
     "logo": { "name": "Logo", "source": { "path": "media/logo.png", "kind": "image" } },
     "navy": { "name": "Navy card", "source": { "color": "#102030" } },
-    "paris": { "name": "Paris tag", "source": { "template": "location-tag", "vars": { "label": "Paris, France" } } },
-    "third": { "name": "Lower third", "source": { "template": "lower-third" } },
+    "paris": { "name": "Paris tag", "source": { "overlay": "overlays/location-tag", "vars": { "label": "Paris, France" } } },
+    "third": { "name": "Lower third", "source": { "overlay": "overlays/lower-third" } },
 
     "intro": {
       "name": "Intro sequence",

@@ -73,12 +73,14 @@ fn a_transcript_becomes_an_editable_subtitles_entry() {
     assert!(args.contains("-ml\n1\n-sow"), "the default is one cue per word: {args}");
 
     let p = state.project.read().unwrap().clone();
-    let BinSource::Overlay { template, vars } = &p.bin["talk-subs"].source else { panic!("not an overlay entry") };
-    assert_eq!(template, "subtitles");
+    let BinSource::Overlay { overlay, vars } = &p.bin["talk-subs"].source else { panic!("not an overlay entry") };
+    // The blueprint is copied into the project, and the entry points at the copy.
+    assert_eq!(overlay, "overlays/subtitles");
+    assert!(dir.path().join("overlays/subtitles/overlay.json").is_file());
     assert_eq!(p.bin["talk-subs"].parent.as_deref(), Some("talk"), "listed under the media it came from");
     assert_eq!(p.children(Some("talk")).len(), 1);
     assert_eq!(vars["cues"], json!([{ "start": 0.0, "end": 0.9, "text": "Hello" }, { "start": 2.0, "end": 2.8, "text": "world" }]));
-    assert!(kuma_core::validate(&p, &state.validation_context()).is_empty(), "the entry validates against the real template");
+    assert!(kuma_core::validate(&p, &state.validation_context()).is_empty(), "the entry validates against the real blueprint's copy");
     let named = TranscribeRequest { id: Some("talk-subs".into()), ..req.clone() };
     assert!(jobs::transcribe(&state, &named, &|_, _| {}).unwrap_err().to_string().contains("already exists"), "naming an entry that is there is refused");
     assert!(jobs::transcribe(&state, &TranscribeRequest { id: Some("talk".into()), replace: true, ..req.clone() }, &|_, _| {}).unwrap_err().to_string().contains("not an overlay"),
@@ -130,6 +132,8 @@ fn a_transcript_becomes_an_editable_subtitles_entry() {
     assert_eq!(tracks.len(), before + 1, "no overlay track had room at {}–{}, so one was added", placed.start, placed.end);
     let last = tracks.last().unwrap();
     assert_eq!((last.kind, last.name.as_str(), last.clips[0].bin.as_str()), (kuma_core::TrackKind::Overlay, "Subtitles", "talk-subs-2"));
+    // Transcripts share the one copy of the blueprint rather than each taking another.
+    assert!(!dir.path().join("overlays/subtitles-2").exists(), "a second transcript copied the blueprint again");
     assert!(kuma_core::validate(&p, &state.validation_context()).is_empty());
 
     // Re-running with `replace` overwrites the words in place: the same entry, its

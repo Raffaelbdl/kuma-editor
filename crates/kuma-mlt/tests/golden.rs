@@ -53,7 +53,7 @@ fn a_hidden_track_still_needs_its_overlays_baked() {
     let p: Project = serde_json::from_value(serde_json::json!({
         "fps": 30,
         "bin": {
-            "tag": { "source": { "template": "location-tag" } },
+            "tag": { "source": { "overlay": "overlays/location-tag" } },
             "main": { "source": { "tracks": [{ "id": "o1", "kind": "overlay", "hidden": true, "clips": [
                 { "id": "oh", "start": 0, "end": 3, "bin": "tag" }
             ]}]}}

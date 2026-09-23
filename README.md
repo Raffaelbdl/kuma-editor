@@ -6,12 +6,12 @@ A hybrid video editor for people who animate in HTML and edit in a real NLE.
   Shotcut. Cuts, transforms, crops, speed, dissolves/wipes, colour, blur, audio mixing,
   hundreds of filters, and an export that Kdenlive can open (`.mlt` *is* the Kdenlive
   format).
-- **Overlay half:** HTML/CSS/TS templates (labels, tags, callouts, animated explanations)
+- **Overlay half:** HTML/CSS/TS overlays (labels, tags, callouts, animated explanations)
   rendered as **live DOM** while you scrub, and **baked to alpha video** by
   [hyperframes](https://github.com/heygen-com/hyperframes) at export — any length, any
   resolution, supersampled, deterministic.
 - **Agent half:** a JSON project file with a schema, and an MCP server so Claude Code can
-  read the timeline, edit it with revision-checked patches, author overlay templates, and
+  read the timeline, edit it with revision-checked patches, author overlays, and
   **look at the actual composited frames** (`sample_frames`).
 
 Status: proof of concept. Linux only. See "What works" below before relying on anything.
@@ -30,7 +30,7 @@ project file, one preview, and the overlay is never "exported" by hand.
         │  launcher → window
         ▼
                       ┌──────────────── kuma daemon (Rust, axum) ────────────────┐
-  editor UI   ◄─WS/HTTP─►  project state · revisions · undo · jobs · templates    │
+  editor UI   ◄─WS/HTTP─►  project state · revisions · undo · jobs · blueprints   │
   (TS, Vite)          │       │                │                    │             │
                       │  kuma-mlt          kuma-overlay        preview engine     │
   Claude Code ◄─stdio─►  JSON → MLT XML    hyperframes bake     (C++ libmlt++)    │
@@ -104,16 +104,18 @@ it into `~/.cargo/bin`, tell it where the repository is once:
 export KUMA_REPO=/path/to/kuma-editor        # or pass --repo <path> on each call
 ```
 
-Overlay templates, effect presets and design systems are **assets shared across
-projects**, not part of the codebase: they live in a user library at
-`~/.local/share/kuma/{overlays,presets,design-systems}`
+Blueprints (reusable overlays), effect presets and design systems are **assets shared
+across projects**, not part of the codebase: they live in a user library at
+`~/.local/share/kuma/{blueprints,presets,design-systems}`
 (`$XDG_DATA_HOME/kuma`), plus any directories in `KUMA_LIBRARY` (a `:`-separated path
-list) and a project's own `overlays/` and `presets/` folders. Later entries win on an id
-clash. The repository ships a starter set under `library/`; install it once:
+list); presets are also read from a project's own `presets/`. Later entries win on an id
+clash. A project's overlays are not library assets: they live in the project (see
+*Overlays and blueprints*). The repository ships a starter set under `library/`; install
+it once:
 
 ```
-kuma library                                 # copies library/{overlays,presets,design-systems} → ~/.local/share/kuma (--force to overwrite)
-kuma thumbs                                  # a still and a moving preview (animated WebP, alpha) per template and overlay entry
+kuma library                                 # copies library/{blueprints,presets,design-systems} → ~/.local/share/kuma (--force to overwrite)
+kuma thumbs                                  # a still and a moving preview (animated WebP, alpha) per blueprint
 ```
 
 A project is a directory with `<name>.kuma.json` and your media:
@@ -164,7 +166,7 @@ type. A drag is one edit — the field moves while you hold it and the document 
 you let go — so scrubbing a value costs one revision and one undo step, not one per pixel.
 Values that go together are one row wearing their axis colours (a transform's **X** red and
 **Y** green, a crop's four edges), and a value with a useful range gets a slider beside its
-field. The shapes live in `ui/src/props.ts`, so an effect, a template var and a clip's own
+field. The shapes live in `ui/src/props.ts`, so an effect, an overlay var and a clip's own
 fields are edited the same way; an effect declares which shape each of its fields is, in
 one table in `ui/src/panels/inspector.ts`, and the bounds there are the model's own, so the
 panel cannot offer a value the daemon would refuse.
@@ -199,20 +201,20 @@ overlays live on top, driven by the timeline below; the topbar picker opens one 
 it a tab, and clicking between them switches which sequence is being edited (a round trip:
 the daemon holds that choice, so switching recompiles, and the last tab stays put because
 something is always open). Every other tab is one **overlay entry**, open on its own. `+ overlay` (or the
-Templates tab's *Open in workbench*, or double-clicking an overlay in the bin, or **New
-Overlay…** in the Project menu) mints a configured overlay and opens it there **without
-placing it**: creating an overlay and deciding where it plays are two decisions, and the
-workbench is for the first one.
+Blueprints tab's *Open in workbench*, or **New Overlay…** in the Project menu) copies a
+blueprint into the project, adds it to the bin and opens it there **without placing it**
+— double-clicking an overlay in the bin opens it the same way: creating an overlay and
+deciding where it plays are two decisions, and the workbench is for the first one.
 
 Inside it the overlay runs on its own clock — play, scrub and frame-step with `Space` and
 the arrows, looping, with no relation to the timeline's playhead — over a backdrop you
 pick (alpha as a checkerboard, dark, light, or the sequence's frame at the playhead), at a
 length you set, and in another frame if you want one: `9:16` renders it at 1080×1920
-without touching the project, which is how you check the responsiveness the template
+without touching the project, which is how you check the responsiveness the overlay
 contract asks for. Its vars are edited where every bin entry is edited, in the inspector
-on the right. **Reload** rescans the template libraries and rebuilds the document, so a
-template being written in an editor is one click from being on screen; **Duplicate** forks
-the entry so a variant costs nothing; **Place at playhead** puts a clip of it on the open
+on the right. **Reload** re-reads the overlay's folder and rebuilds the document, so an
+overlay being written in an editor is one click from being on screen; **Duplicate** adds a
+second entry on the same folder so a variant wording costs nothing; **Place at playhead** puts a clip of it on the open
 sequence at that length, when it is ready.
 
 An agent gets the same view: `sample_frames` with `overlay` set to the entry's id (or
@@ -224,7 +226,7 @@ graph, so they are the composite the render would produce.
 
 **Vertical.** Landscape or portrait is nothing but the project's `width`/`height`: the
 size button in the top bar (`1920×1080 ⇄`) swaps them, undoably, and the preview, the
-overlays and every export preset follow. Templates size in `vh`, so they need no edits;
+overlays and every export preset follow. Overlays size in `vh`, so they need no edits;
 pixel-valued `transform` offsets are the one thing that stays put.
 
 **Subtitles.** Select a clip and press **Transcribe → subtitles** (or `kuma transcribe
@@ -242,7 +244,7 @@ entry's `offset` set to the clip's `in`, so the cues land on the words. It goes 
 first overlay track with room there, else on a new one. The same button on a media entry
 in the bin makes the entry alone, for you to place. Its `cues` var is the transcript,
 `[{start, end, text}]` in source seconds, **one cue per word**: the finest timing whisper
-gives, and the form any template can group as it likes. The shipped template groups them
+gives, and the form any overlay can group as it likes. The shipped `subtitles` blueprint groups them
 by `words_per_line` and can stress the word being said (`stress`: colour or a pop, in the
 `accent` colour), so the karaoke style is one var away and line length is editable live.
 The inspector shows one row per cue, so a misheard word is fixed in place and the preview
@@ -253,7 +255,7 @@ to 1.
 **Themes.** The palette button in the top bar (or *View → Theme…* in the app) swaps the
 editor's colours: **Kuma**, the default, and **Tokyo Night**, retro neon on deep indigo.
 The choice lives in the browser, not the project, and stops at the editor's chrome — no
-template, bake or render sees it, so the video looks the same whichever one is on. Styling
+overlay, bake or render sees it, so the video looks the same whichever one is on. Styling
 the *video* is what a design system is for, below. A new theme is a block of tokens in
 `ui/src/themes.css` plus a line in `ui/src/theme.ts`; a test fails if either half is missing.
 
@@ -314,15 +316,16 @@ claude mcp add --scope user    kuma -- kuma mcp --project /abs/path.kuma.json  #
 
 `kuma mcp` starts the daemon in-process if none is running on the port, so the browser UI
 and the agent always share one state. Tools: `get_project`, `get_schema`, `apply_edits`,
-`undo`, `redo`, `validate_project`, `list_templates`, `template_guide`, `list_presets`,
-`add_media`, `probe_media`, `transcribe`, **`sample_frames`**, `bake_overlay`, `render`,
-`job_status`, `cancel_job`, `health`, `new_template`, `check_template`. `sample_frames` takes an
-`overlay` (a bin id) to look at one overlay entry on its own, which is how an agent checks
-an animation it is authoring; `new_template` scaffolds a template that already obeys the
-contract and `check_template` says whether one still does, without baking it.
-`template_guide` returns the overlay authoring contract
-(`library/overlays/CLAUDE.md`) so the agent can write templates into the library or the
-project.
+`undo`, `redo`, `validate_project`, `list_presets`, `add_media`, `probe_media`,
+`transcribe`, **`sample_frames`**, `bake_overlay`, `render`, `job_status`, `cancel_job`,
+`health`, and for overlays `overlay_guide`, `new_overlay`, `check_overlay`,
+`import_overlay`, `make_overlay_unique`, `list_blueprints`, `add_blueprint`,
+`save_blueprint`. An agent writes an overlay as a folder in the project (`new_overlay`
+scaffolds one that already obeys the contract, `check_overlay` says whether it still does,
+without baking it) and then `import_overlay`s it into the bin; `sample_frames` takes an
+`overlay` (a bin id) to look at one overlay entry on its own, which is how it checks an
+animation it is authoring. `overlay_guide` returns the authoring contract
+(`library/blueprints/CLAUDE.md`).
 
 ### CLI
 
@@ -335,8 +338,11 @@ kuma compile > timeline.mlt                # inspect the MLT graph (or open it i
 kuma render --sequence intro               # render one nested sequence instead of the master
 kuma transcribe --clip c1 --language fr    # whisper.cpp → `subtitles` entry under the media, placed over clip c1
 kuma transcribe screen --replace           # re-transcribe in place: same entry, styling and placement, new words
-kuma new-template my-tag                   # a contract-abiding skeleton in the project's overlays/ (--library for the user library)
-kuma lint                                  # check every template against the contract (exit 1 on errors); `kuma lint my-tag` for one
+kuma new-overlay my-tag                    # a contract-abiding skeleton in the project's overlays/ (--blueprint for the user library)
+kuma import-overlay overlays/my-tag        # add that folder to the bin (--id)
+kuma add-blueprint location-tag            # copy a blueprint into the project and add it to the bin
+kuma save-blueprint paris paris-tag        # an entry (its vars become the defaults) or a folder (overlays/my-tag) into the user library (--force)
+kuma lint                                  # every blueprint and every folder the bin uses (exit 1 on errors); `kuma lint overlays/my-tag` or `kuma lint location-tag` for one
 kuma validate | thumbs | library | doctor
 ```
 
@@ -348,7 +354,7 @@ kuma validate | thumbs | library | doctor
   "master": "main",
   "bin": {
     "screen": { "name": "Screen recording", "source": { "path": "media/screen.mp4", "kind": "video" } },
-    "paris":  { "name": "Paris tag", "source": { "template": "location-tag", "vars": { "label": "Paris" } } },
+    "paris":  { "name": "Paris tag", "source": { "overlay": "overlays/location-tag", "vars": { "label": "Paris" } } },
     "navy":   { "name": "Navy card", "source": { "color": "#102030" } },
 
     "intro":  { "name": "Intro", "source": { "tracks": [
@@ -401,18 +407,29 @@ Seconds everywhere, `end` exclusive, fps rational, tracks bottom-up, `in` meanin
 video, audio and sequence entries. Track and clip ids are unique across the whole project,
 not per sequence. The full schema: `GET /api/schema` or the `get_schema` tool.
 
-## Overlay templates
+## Overlays and blueprints
 
-A template is a folder `<library>/overlays/<id>/` with `index.html` + `template.json`. The
-manifest's typed vars become the properties panel, so templates are editable without an
-agent; the agent can author new ones because they are plain folders. The **thumbnails** button in the Templates tab (or `kuma thumbs`) renders each template
-twice: a still, and a moving preview — an animated WebP with alpha, the first seconds
-looping — which is what the browser and the inspector show. An overlay is an animation,
-and a still can only pick one moment out of it. Starter set
-(`library/overlays/`, installed by `kuma library`): `location-tag`, `lower-third`,
-`callout-arrow`, `label-pin`, `section-title`, `countdown`, `watermark` (static),
-`subtitles` (a `cues` var: the transcript). Contract: `library/overlays/CLAUDE.md`. A library
-installed before a template existed picks it up with another `kuma library` (it only adds).
+An **overlay** is a folder in the project, `overlays/<name>/` with `index.html` +
+`overlay.json`, and an overlay bin entry names it (`"overlay": "overlays/<name>"`) with the
+vars for that entry. The manifest's typed vars become the properties panel, so overlays are
+editable without an agent; the agent can author new ones because they are plain folders,
+and adds one to the bin by importing it. Several entries may share a folder — two
+wordings of one design — and **Make unique** in the inspector gives one its own copy.
+
+A **blueprint** is a reusable overlay in the user's library,
+`~/.local/share/kuma/blueprints/<id>/`, the same shape. The **Blueprints** tab lists them;
+using one **copies** it into the project, so a finished video never changes because a
+blueprint did. **Save as blueprint** in the inspector goes the other way: it copies an
+overlay of this project into the library for the next one. The **thumbnails** button in
+the Blueprints tab (or `kuma thumbs`) renders each blueprint and overlay entry twice: a
+still, and a moving preview — an animated WebP with alpha, the first seconds looping —
+which is what the browser and the inspector show. An overlay is an animation, and a still
+can only pick one moment out of it. Starter set (`library/blueprints/`, installed by
+`kuma library`): `location-tag`, `lower-third`, `callout-arrow`, `label-pin`,
+`section-title`, `countdown`, `watermark` (static), `subtitles` (a `cues` var: the
+transcript — a transcription copies it into the project once and every transcript shares
+that copy). Contract: `library/blueprints/CLAUDE.md`. A library installed before a
+blueprint existed picks it up with another `kuma library` (it only adds).
 
 Effect presets are `<library>/presets/*.json` (Ken Burns, zoom to region, vignette,
 picture-in-picture, dim) and expand to ordinary effects; `$expr` values may use the
@@ -432,8 +449,8 @@ kuma design-system <id>                     # copy it to <project>/design-system
 
 `design-system/DESIGN.md` is what an agent reads before authoring or restyling an overlay;
 `design-system/tokens.css` is the same values as a `:root { --ds-… }` block to copy into a
-template's first `<style>`. **Nothing is injected at runtime** — applying a design system
-is an edit to the template or to an entry's vars, so a template stays readable on its own
+overlay's first `<style>`. **Nothing is injected at runtime** — applying a design system
+is an edit to the overlay or to an entry's vars, so an overlay stays readable on its own
 and the values live with the rest of the project's decisions.
 
 **None ship yet** — the mechanism is here and the starter set is not, so
@@ -485,12 +502,16 @@ and the values live with the rest of the project's decisions.
   shows what it looked for: `whisper-cli` on `PATH` (`KUMA_WHISPER_BIN`) and a ggml model in
   `~/.local/share/kuma/models` (`KUMA_WHISPER_MODEL`). `GET /api/health` has the same under
   `whisper`.
-- **A template is missing from the library panel** — `GET /api/health` lists
-  `template_dirs` (where kuma looked) and `template_errors` (manifests that failed to load
+- **A blueprint is missing from the Blueprints tab** — `GET /api/health` lists
+  `blueprint_dirs` (where kuma looked) and `blueprint_errors` (manifests that failed to load
   and why). No library at all: run `kuma library`.
-- **Bakes fail with "timelines did not become ready"** — a template without a GSAP timeline
-  needs `data-no-timeline` on its composition root (see `library/overlays/CLAUDE.md`).
-  `kuma lint <id>` says so in a second instead of after a 45-second wait, and reports the
+- **A project from before blueprints will not open** ("names the template …") — overlay
+  entries used to name a library template. The message says how to bring one forward: copy
+  the blueprint into `overlays/<id>/`, rename `template.json` to `overlay.json` without its
+  `id`, and point the entry at the folder.
+- **Bakes fail with "timelines did not become ready"** — an overlay without a GSAP timeline
+  needs `data-no-timeline` on its composition root (see `library/blueprints/CLAUDE.md`).
+  `kuma lint overlays/<name>` says so in a second instead of after a 45-second wait, and reports the
   rest of the contract with it.
 
 ## Known limitations
@@ -504,7 +525,7 @@ and the values live with the rest of the project's decisions.
 - No proxies/preview chunk cache yet — heavy timelines will scrub below real time.
 - `.mlt` output opens in Kdenlive as a clip/timeline import; Kdenlive's own project
   scaffolding (`main_bin`, `kdenlive:` properties) is not emitted.
-- Overlays bake at full frame size; there is no per-template bake region yet.
+- Overlays bake at full frame size; there is no per-overlay bake region yet.
 - Transitions are refused on overlay clips: bakes carry no handle frames yet.
 - Clip and track ids must match `[A-Za-z_][A-Za-z0-9_-]*` (they double as XML ids and URL segments).
 

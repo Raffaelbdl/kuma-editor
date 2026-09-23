@@ -1,9 +1,9 @@
-// What an overlay template can measure in the preview, and when.
+// What an overlay can measure in the preview, and when.
 //
-// A template may measure itself — fitting a line of text to its box is the ordinary way —
+// An overlay may measure itself — fitting a line of text to its box is the ordinary way —
 // and the bake loads the page full-size, so it works there. The preview did not agree: it
 // hid a clip that is not under the playhead with `display: none`, which gives the iframe a
-// 0×0 viewport, so the template read zeros and kept whatever it had.
+// 0×0 viewport, so the overlay read zeros and kept whatever it had.
 //
 // The clip here starts at 6s with the playhead at 0, the ordinary case. Only a real browser
 // answers this: a 0×0 layout is something only a layout engine produces.
@@ -18,7 +18,7 @@ import path from "node:path";
 
 import { driver, missing, startDaemon } from "./harness.mjs";
 
-/** Records what it could measure while its own scripts ran — the only moment a template
+/** Records what it could measure while its own scripts ran — the only moment an overlay
  *  that fits itself to its box gets. The reset is inline so the fixture does not depend on
  *  a `_vendor/` being installed. */
 const TEMPLATE = `<!doctype html><html><head><style>
@@ -38,7 +38,7 @@ const PROJECT = JSON.stringify({
   version: 1, name: "ovl", master: "main",
   fps: { num: 30, den: 1 }, width: 1920, height: 1080, sample_rate: 48000,
   bin: {
-    probe: { name: "Probe", source: { template: "probe", vars: {} } },
+    probe: { name: "Probe", source: { overlay: "overlays/probe", vars: {} } },
     main: { name: "Main", source: { markers: [], tracks: [
       { id: "o1", kind: "overlay", name: "O", muted: false, hidden: false, transitions: [],
         clips: [{ id: "oc1", start: 6, end: 10, bin: "probe", in: 0, speed: 1, volume: 1, muted: false, effects: [], label: "" }] },
@@ -56,9 +56,9 @@ describe("what an overlay can measure in the preview", { skip: why ? `skipping: 
 
   before(async () => {
     tmp = fs.mkdtempSync(path.join(os.tmpdir(), "kuma-ovl-"));
-    const tpl = path.join(tmp, "library/overlays/probe");
+    const tpl = path.join(tmp, "overlays/probe");
     fs.mkdirSync(tpl, { recursive: true });
-    fs.writeFileSync(path.join(tpl, "template.json"), JSON.stringify({ id: "probe", name: "Probe", static: true }));
+    fs.writeFileSync(path.join(tpl, "overlay.json"), JSON.stringify({ name: "Probe", static: true }));
     fs.writeFileSync(path.join(tpl, "index.html"), TEMPLATE);
     const projectFile = path.join(tmp, "ovl.kuma.json");
     fs.writeFileSync(projectFile, PROJECT);

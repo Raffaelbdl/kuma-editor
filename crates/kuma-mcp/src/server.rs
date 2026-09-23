@@ -27,6 +27,14 @@ configured overlays (`{"source": {"template": …, "vars": {…}}}`), colours, a
 overlay's text edits its bin entry and every placement follows; to vary the text, add a second entry.
 Add media with `add_media` rather than by hand.
 
+An effect acts on the picture or the sound (`mlt` on either): `transform`, `crop`, `blur`, `color`,
+`blend` and `fade` on what a clip shows, `volume` and `audio_fade` on what it sounds. A colour, a
+still and an overlay never sound; nothing on an audio track shows. Put only what can act on the clip:
+anything else renders as nothing and comes back as a warning. Every effect with a quantity to move
+(`transform`, `crop`, `blur`, `color`, `volume`) has static values and optional `keyframes`,
+`[{t, <param>: value, ease?}]` with `t` from the clip's start; a parameter a key leaves out is
+the static value.
+
 **There is no project-level `tracks`.** A timeline is a sequence entry in the bin, and `master` names
 the one that gets rendered — so a clip lives at `/bin/<sequence>/source/tracks/<i>/clips/<j>`. A
 sequence placed on another sequence is a nested sequence: edit a part separately, then place it in

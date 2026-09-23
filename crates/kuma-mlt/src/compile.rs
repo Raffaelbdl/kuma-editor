@@ -579,9 +579,9 @@ fn emit_filters(ctx: &Ctx, p: &Plan, w: &mut XmlWriter) {
         w.close("filter");
     }
 
-    // Clip-level volume (static) unless a Volume effect provides keyframes.
-    let has_volume_kf = clip.effects.iter().any(|e| matches!(e, Effect::Volume { .. }));
-    if streams.audio() && !has_volume_kf && (clip.volume - 1.0).abs() > 1e-9 {
+    // Clip-level volume (static) unless a Volume effect folds it into its own level.
+    let has_volume_effect = clip.effects.iter().any(|e| matches!(e, Effect::Volume { .. }));
+    if streams.audio() && !has_volume_effect && (clip.volume - 1.0).abs() > 1e-9 {
         open(w, "vol", "volume");
         w.property("level", num(db(clip.volume)));
         w.close("filter");
@@ -612,8 +612,13 @@ fn emit_filters(ctx: &Ctx, p: &Plan, w: &mut XmlWriter) {
             }
             Effect::Blur { radius, keyframes } => {
                 open(w, "blur", "avfilter.gblur");
+                // σ is half the radius; the live overlay preview's CSS `blur()` says the same.
                 let sigma = |r: f64| num((r * ctx.scale / 2.0).max(0.01));
-                w.property("av.sigma", anim(keyframes, &at, sigma(*radius), |k| sigma(k.or("radius", *radius))));
+                let sigma = anim(keyframes, &at, sigma(*radius), |k| sigma(k.or("radius", *radius)));
+                // Both axes, written out: MLT's avfilter wrapper does not leave `sigmaV` at
+                // ffmpeg's "same as sigma", so without it the blur is horizontal only.
+                w.property("av.sigma", &sigma);
+                w.property("av.sigmaV", sigma);
                 w.property("av.steps", "2");
                 w.close("filter");
             }
@@ -624,28 +629,40 @@ fn emit_filters(ctx: &Ctx, p: &Plan, w: &mut XmlWriter) {
                 }
                 w.close("filter");
             }
-            Effect::Fade { fade_in, fade_out } => {
-                // Fades span the clip's own range, not the dissolve handles.
+            Effect::Fade { fade_in, fade_out } | Effect::AudioFade { fade_in, fade_out } => {
+                // Fades span the clip's own range, not the dissolve handles. The picture
+                // ramps its alpha. The sound ramps MLT's `volume` from `gain` to `end`
+                // across the filter's own range, in linear amplitude — true silence at the
+                // silent end, where a `level` ramp in dB would stop at the -60 dB floor.
+                let sound = matches!(e, Effect::AudioFade { .. });
+                let (name, service) = if sound { ("afade", "volume") } else { ("fade", "brightness") };
+                let ramp = |w: &mut XmlWriter, from: &str, to: &str| {
+                    if sound {
+                        w.property("gain", from);
+                        w.property("end", to);
+                    } else {
+                        w.property("alpha", format!("0={from};-1={to}"));
+                    }
+                    w.close("filter");
+                };
                 let (own_in, own_out) = (f_in + p.pre, f_out - p.post);
                 let own_len = own_out - own_in + 1;
                 if *fade_in > 0.0 {
                     let fi = fps.length(*fade_in).min(own_len);
-                    open_at(w, "fadein", "brightness", own_in, own_in + fi - 1);
-                    w.property("alpha", "0=0;-1=1");
-                    w.close("filter");
+                    open_at(w, &format!("{name}in"), service, own_in, own_in + fi - 1);
+                    ramp(w, "0", "1");
                 }
                 if *fade_out > 0.0 {
                     let fo = fps.length(*fade_out).min(own_len);
-                    open_at(w, "fadeout", "brightness", own_out - fo + 1, own_out);
-                    w.property("alpha", "0=1;-1=0");
-                    w.close("filter");
+                    open_at(w, &format!("{name}out"), service, own_out - fo + 1, own_out);
+                    ramp(w, "1", "0");
                 }
             }
-            Effect::Volume { keyframes } => {
+            Effect::Volume { gain, keyframes } => {
                 open(w, "vol", "volume");
-                // A key without `gain` is the clip as recorded: the clip's own volume, and
-                // nothing on top of it.
-                w.property("level", anim(keyframes, &at, num(db(clip.volume)), |k| num(db(k.or("gain", 1.0) * clip.volume))));
+                // The clip's own volume folded in, so the placement's fader and this gain
+                // are one filter; a key without `gain` holds the static one.
+                w.property("level", anim(keyframes, &at, num(db(gain * clip.volume)), |k| num(db(k.or("gain", *gain) * clip.volume))));
                 w.close("filter");
             }
             Effect::Mlt { service, properties } => {
@@ -837,9 +854,38 @@ mod tests {
         assert!(xml.contains(r#"<property name="radius">0=0;30=0.5</property>"#), "{xml}");
         // Blur: sigma is radius/2 at full size, floored at 0.01, and the smooth key curves.
         assert!(xml.contains(r#"<property name="av.sigma">0~=0.01;60=10</property>"#), "{xml}");
+        assert!(xml.contains(r#"<property name="av.sigmaV">0~=0.01;60=10</property>"#), "vertically too: {xml}");
         // Color: the keyed parameter animates, the others stay static.
         assert!(xml.contains(r#"<property name="av.brightness">0=-0.5;60=0.5</property>"#), "{xml}");
         assert!(xml.contains(r#"<property name="av.contrast">0=1.5;60=1.5</property>"#), "{xml}");
+    }
+
+    /// A sound fade is a gain ramp over the clip's own first and last frames, from and to
+    /// true silence; a static volume is one level with the clip's fader folded in.
+    #[test]
+    fn a_sound_fades_and_a_volume_holds_still_until_keyed() {
+        let p = project(json!({
+            "fps": 30, "bin": { "x": { "source": { "path": "x.mp4" } } },
+            "tracks": [{ "id": "v1", "clips": [{ "id": "a", "start": 0, "end": 4, "bin": "x", "volume": 0.5, "effects": [
+                { "type": "audio_fade", "in": 1, "out": 0.5 },
+                { "type": "volume", "gain": 0.5 }
+            ] }]}]
+        }));
+        let xml = compile(&p, &CompileOptions::new("/proj")).unwrap();
+        let filter = |name: &str| xml.split(&format!(r#"<filter id="clip_a_{name}"#)).nth(1).unwrap().split("</filter>").next().unwrap().to_string();
+        let fade_in = filter("afadein");
+        assert!(fade_in.contains(r#"in="0" out="29""#) && fade_in.contains(r#"<property name="gain">0</property>"#) && fade_in.contains(r#"<property name="end">1</property>"#), "{xml}");
+        let fade_out = filter("afadeout");
+        assert!(fade_out.contains(r#"in="105" out="119""#) && fade_out.contains(r#"<property name="end">0</property>"#), "{xml}");
+        // 0.5 × 0.5 is a quarter, which is -12 dB; and one volume filter, not the clip's
+        // own beside the effect's.
+        let vol = filter("vol");
+        assert!(vol.contains(r#"<property name="level">-12.0412</property>"#), "{xml}");
+        assert_eq!(xml.matches(r#"<property name="mlt_service">volume</property>"#).count(), 3, "{xml}");
+        // Neither acts on the picture, so the picture's half has none of them.
+        let mut picture = CompileOptions::new("/proj");
+        picture.streams = Streams::Video;
+        assert!(!compile(&p, &picture).unwrap().contains(">volume<"));
     }
 
     #[test]

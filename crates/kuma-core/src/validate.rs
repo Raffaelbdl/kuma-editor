@@ -257,11 +257,24 @@ fn check_sequence<'a>(
             // A second effect of these kinds would stack (two volume filters square the
             // gain) or silently shadow the first (blend); only `mlt` may repeat.
             let mut kinds = HashSet::new();
+            // What the clip can show and sound, for the effects that act on neither. Only
+            // for an entry that resolves to something placeable (the others are errors
+            // already, and a warning per effect on top would bury them), and only for a
+            // clip with effects: for a sequence it is a walk of everything nested.
+            let placeable = item.is_some_and(|i| !i.is_folder());
+            let carries = if placeable && !c.effects.is_empty() { p.clip_streams(t, c) } else { None };
             for (ei, e) in c.effects.iter().enumerate() {
                 let ep = format!("{cp}/effects/{ei}");
                 let kind = serde_json::to_value(e).ok().and_then(|v| v["type"].as_str().map(String::from)).unwrap_or_default();
                 if kind != "mlt" && !kinds.insert(kind.clone()) {
                     issues.push(Issue::error(ep.clone(), format!("duplicate `{kind}` effect on this clip")));
+                }
+                // A warning, not an error: it renders, and does nothing. The editor does not
+                // offer it; this is for one that arrived by patch, or whose clip moved to a
+                // track that takes away what it acted on.
+                if placeable && !carries.is_some_and(|s| e.acts_on(s)) {
+                    let lacks = if e.streams().video() { "shows no picture" } else { "has no sound" };
+                    issues.push(Issue::warn(ep.clone(), format!("`{kind}` does nothing here: this clip {lacks}")));
                 }
                 // Keyframes, for every kind that takes them: times in order, and names the
                 // kind knows. A key naming a parameter the kind does not have is refused
@@ -311,14 +324,17 @@ fn check_sequence<'a>(
                             }
                         }
                     }
-                    Effect::Fade { fade_in, fade_out } => {
+                    Effect::Fade { fade_in, fade_out } | Effect::AudioFade { fade_in, fade_out } => {
                         if fade_in + fade_out > c.duration() + 1e-9 {
                             issues.push(Issue::warn(ep.clone(), "fade in + out exceed the clip duration"));
                         }
                     }
-                    Effect::Volume { keyframes } => {
-                        if keyframes.is_empty() {
-                            issues.push(Issue::error(ep.clone(), "volume needs at least one keyframe"));
+                    Effect::Volume { gain, .. } => {
+                        for (path, k) in samples(&ep, e) {
+                            let g = at(k, "gain", *gain);
+                            if !(g.is_finite() && g >= 0.0) {
+                                issues.push(Issue::error(path, "volume gain must be >= 0"));
+                            }
                         }
                     }
                     Effect::Mlt { service, .. } => {
@@ -602,6 +618,36 @@ mod tests {
         }));
         let m = messages(&p);
         assert!(m.iter().any(|m| m.contains("`blur` has no parameter `sigma`") && m.contains("radius")), "{m:?}");
+    }
+
+    /// An effect with nothing to act on renders and does nothing, so it is a warning that
+    /// says what is missing — never an error, which would refuse unrelated edits.
+    #[test]
+    fn an_effect_that_cannot_act_on_its_clip_is_a_warning() {
+        let p = project(json!({
+            "bin": {
+                "song": { "source": { "path": "song.mp3", "kind": "audio" } },
+                "red": { "source": { "color": "#f00" } }
+            },
+            "tracks": [
+                { "id": "v1", "clips": [{ "id": "a", "start": 0, "end": 5, "bin": "red", "effects": [
+                    { "type": "volume", "gain": 0.5 }, { "type": "fade", "in": 1 }
+                ] }] },
+                { "id": "a1", "kind": "audio", "clips": [{ "id": "b", "start": 0, "end": 5, "bin": "song", "effects": [
+                    { "type": "fade", "in": 1 }, { "type": "audio_fade", "in": 1, "out": 1 },
+                    { "type": "volume", "gain": -1, "keyframes": [ { "t": 0, "gain": 2 } ] }
+                ] }] }
+            ]
+        }));
+        let issues = validate(&p, &ValidationContext::default());
+        let at = |path: &str| issues.iter().filter(|i| i.path.ends_with(path)).map(|i| (i.severity, i.message.as_str())).collect::<Vec<_>>();
+        assert_eq!(at("tracks/0/clips/0/effects/0"), [(Severity::Warning, "`volume` does nothing here: this clip has no sound")]);
+        assert!(at("tracks/0/clips/0/effects/1").is_empty(), "a colour fades");
+        assert_eq!(at("1/clips/0/effects/0"), [(Severity::Warning, "`fade` does nothing here: this clip shows no picture")]);
+        assert!(at("1/clips/0/effects/1").is_empty(), "a song fades its sound");
+        // A static volume is bounded like any other static, and each key on what it means.
+        assert_eq!(at("1/clips/0/effects/2"), [(Severity::Error, "volume gain must be >= 0")]);
+        assert!(at("effects/2/keyframes/0").is_empty(), "{issues:?}");
     }
 
     /// The bounds a static value gets, a key gets too — on what the key *means*, with the

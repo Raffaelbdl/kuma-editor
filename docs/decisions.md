@@ -1131,9 +1131,11 @@ and the drag-to-scrub fields from the previous change work on animation unmodifi
 
 **Animation is opt-in, per effect** — adopted, from Godot's key button, and it is what the
 model's own agreed direction already says ("a parameter stays a plain number field until
-asked to animate"). An effect with no keys shows **◆ Animate**; pressing it writes one key
-holding what the effect already does, so turning animation on changes nothing. **Clear**
-turns it off by writing the values at the playhead back into the static fields — anything
+asked to animate"). An effect with no keys shows an outlined diamond in its head (once a
+**◆ Animate** button on a row of its own; see *Effects: offered where they act, static until
+keyed*); pressing it writes one key holding what the effect already does, so turning
+animation on changes nothing. The filled diamond turns it off by writing the values at the
+playhead back into the static fields — anything
 else snaps the picture back to whatever the statics were before the first key, which is
 never what was meant.
 
@@ -1571,6 +1573,75 @@ Worth saying plainly: tier 3 is the one that matters and the one most likely to 
 skipped, because the bug it catches is invisible rather than loud. The preview looking
 right *is* the product.
 
+## Effects: offered where they act, static until keyed
+
+Three entries from *Still open* (offering a clip only the effects that can act on it, what
+`fade` does to sound, and every effect animatable the same way) were done together, with
+the blur defect, because they are one question: what an effect is to the clip it sits on.
+
+**What a clip carries is a capability, decided in kuma-core** — adopted.
+`Project::clip_streams(track, clip)` says whether a clip can show and whether it can sound;
+`Effect::acts_on` is `streams().meets(…)` against that. Picture is the track's to allow (an
+audio track draws none) and the source's to have (an audio file has none); sound is the
+source's alone — a file by the probe's `has_audio`, "yes" for a file not yet probed (the
+daemon's rule when it transcribes), a sequence when anything in it sounds, and never a
+colour, a still or an overlay. It deliberately ignores mutes: muting a clip must not make its
+volume effect invalid, nor take the Muted box away. The editor mirrors it in `types.ts`
+(`clipStreams`, `actsOn`, a `Record` of every kind's streams, so a new kind is a compile
+error) the way `ANIMATABLE` mirrors `animatable()`; `+ add effect` lists only what acts, and
+the clip's own Volume and Muted appear only on a clip that sounds.
+
+An effect already placed that cannot act is **kept, dimmed, and says so** ("no effect here"),
+and the validator **warns** rather than errors. An error would refuse every unrelated edit to
+a document an agent wrote, or one whose clip was moved to an audio track; it renders, as
+nothing, so a warning is the honest weight. The MCP instructions state the split so an agent
+does not have to discover it from warnings.
+
+**The sound gets its own fade: `audio_fade`** — adopted, the second of the three shapes on
+the table. Making `fade` ramp the gain whenever the clip sounds would change the sound of
+every finished video that carries a picture fade. One `fade` with picture and sound switches
+would be one kind that is offered to every clip and means something different on each, and
+the one-effect-per-kind rule would force the picture and the sound to fade for the same
+length. Two kinds keep the old meaning without a migration, let each clip be offered exactly
+its own, and give Kdenlive's shape, which is what a user coming from it expects. It compiles
+to MLT's `volume` with `gain`/`end` over the clip's own first and last frames: a linear
+amplitude ramp to true silence, where a `level` ramp in dB would stop at the -60 dB floor and
+still be heard. Checked on a render: a sine averages -42 dB over the first quarter second,
+reaches its full -24 dB at one second, and falls symmetrically at the end.
+
+**`volume` is static until keyed, like the rest** — adopted. It has a `gain` (default 1)
+and optional `keyframes`, where it used to *be* its keyframes and refuse none. The clip's
+own `volume` stays: it is the placement's fader, and the effect is a gain stage on top that
+can move, multiplying it as before — Kdenlive has the same two. Folding the clip's value into
+the effect instead would be the same number in two places or a field removed by a version
+step; neither buys anything. A key without `gain` used to mean 1 and now means the static,
+which defaults to 1, so every existing volume reads exactly as it did: version 5 is a stamp.
+
+**Not animatable, on purpose: `fade`, `audio_fade`, `blend`, `mlt`.** A fade's numbers are
+lengths of time, so a fade *is* an animation; keying its length has no meaning. A blend mode
+is a choice, not a quantity: the only key it could take is a hold, and changing mode
+mid-clip is what a cut is for. `mlt` properties are strings MLT reads, where an animation
+string can already be written directly — the reason an animation string never enters the
+model. `Effect::animatable()` says so, and stays the one table.
+
+**The animate control is a diamond in the effect's head** — adopted, replacing the
+**◆ Animate** row. Every animatable effect used to spend a labelled row and a full-width
+button on something most effects never use. Now it is an icon beside ×: outlined and faint
+until the effect is keyed, filled in the selection colour once it is, which is also how a
+folded effect says it moves (the separate `◆` marker is gone). Pressing the filled one
+clears, which is where the keys row's **Clear** went. The keys row itself appears only on
+an effect that has keys. Clicking the filled diamond throws the keys away — the stopwatch in
+After Effects does the same — and it is one undo.
+
+**Blur is blurred both ways** — adopted. The compiler writes `av.sigmaV` beside
+`av.sigma`, the same animation. Measured with melt 7.22 on a 640×360 test pattern (mean
+absolute difference between neighbouring rows, lower is blurrier): a static blur was already
+blurred vertically here without it (0.34 either way), but a keyframed one was not fully — 0.49
+without `sigmaV`, 0.34 with it. So what the wrapper does with an unset `sigmaV` depends on the
+path, and possibly on the version; writing it takes the question away. The overlay preview
+had its own blur bug: CSS `blur()` takes a standard deviation and the render uses half the
+radius, so the live DOM drew every overlay blur twice as strong as the export. It now halves.
+
 ---
 
 ## Still open
@@ -1667,42 +1738,6 @@ because it is the part deliberately left out.
   a sequence subject must not be wrapped in a synthetic root, since a nested sequence's
   background is transparent and wrapping would give it one that compiling it as root does
   not.
-
-- **Offer a clip only the effects that can act on it** — agreed, not built. The inspector
-  lists every effect for every clip, so an audio clip offers `transform`, `crop` and `fade`,
-  and a still or a colour offers `volume`. Each does nothing to it, and the user reads that as
-  a broken effect: a `fade` on an audio clip was reported as "fade not applied in the
-  preview", when `fade` has only ever been an opacity fade, in the render too. The data to
-  decide it already exists: `Effect::streams()` says what an effect acts on, and whether a
-  clip shows or sounds follows from its bin entry and its track (`clip_has_audio`,
-  `TrackKind`). The rule is to offer an effect when its streams meet the clip's. It
-  belongs in kuma-core, next to `Effect::streams()`, so the UI, MCP's effect listing and
-  the validator give the same answer, and the validator could warn about an effect already
-  placed that cannot act.
-
-  Decide with it what `fade` does to sound. Three shapes are on the table: `fade` also
-  ramps the gain whenever the clip sounds; a separate audio fade effect, as Kdenlive has;
-  or one `fade` with picture and sound switches. The first changes the sound of finished
-  videos that already carry fades. The last needs a format version bump if old documents
-  must keep their picture-only meaning.
-
-- **Every effect animatable the same way** — wanted, not built. Today there are three
-  shapes. Transform, crop, blur and colour have static values plus optional keyframes, and a
-  parameter is animated only when asked. `volume` is the opposite: it *is* its keyframes (the
-  model refuses one with none), it is added already animated with one key at gain 1, and it
-  cannot be un-animated, only removed. A static gain lives on the clip as `volume`, and the
-  effect multiplies it. Then `fade`, `blend` and `mlt` cannot be animated at all:
-  `Effect::animatable()` lists nothing for them.
-
-  The wanted shape is the first one, for every effect. `volume` gets a static `gain` and
-  optional keyframes, like the rest. That means deciding what the clip's own `volume` field
-  is then: the same value in two places, or a shorthand that goes away with a
-  `PROJECT_VERSION` step. `blend` would animate with hold keys, which is what the compiler
-  already emits for it. `fade` mostly overlaps an animated transform opacity, so making it
-  animatable may matter less than deciding what it does to sound (above). `mlt` needs its
-  properties to be typed before keys can mean anything. The inspector and
-  `Effect::animatable()` stay the single table, so the editor, the validator and the compiler
-  cannot disagree about which parameters move.
 
 - **Ship a starter set of design systems** before any public release. The mechanism is in
   and nothing is in it, which makes the feature invisible to anyone who has not read the
@@ -1832,11 +1867,6 @@ because it is the part deliberately left out.
   clip trimmed two seconds into that variable-rate file sampled pixel-identical to
   ffmpeg's own extraction at the same source times. Audio drift over a long recording is
   untested.
-
-- **Defect: blur is horizontal only.** The compiler sets `av.sigma` and not `av.sigmaV`,
-  and MLT does not mirror one into the other, so a blurred clip keeps perfectly sharp
-  horizontal edges. Confirmed by rendering colour bars with and without the vertical
-  sigma. One line in `emit_filters`; not yet fixed.
 
 - **The bake cache grows forever and nothing prunes it.** A successful bake only ever
   adds a directory. The only deletions anywhere in the bake path are the scratch frames

@@ -24,9 +24,11 @@ pub use validate::{validate, Issue, Severity, ValidationContext};
 
 /// Current on-disk project format version.
 ///
+/// 5 — `volume` has a static `gain` and optional keyframes, like every kind that moves;
+///     `audio_fade` is new.
 /// 4 — a clip may carry a `group`: an editing relation, invisible to the compiler.
 /// 3 — crop, blur and color take `keyframes`, through the one `Keyframe` type every
 ///     keyframed effect now uses.
 /// 2 — keyframes gained `ease` (`linear`, `hold`, `smooth`).
 /// 1 — the first format.
-pub const PROJECT_VERSION: u32 = 4;
+pub const PROJECT_VERSION: u32 = 5;

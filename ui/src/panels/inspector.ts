@@ -11,14 +11,14 @@ import { Cmd, run } from "../commands";
 import { button, capitalize, checkbox, dragPointer, el, options, plural, row, selectInput } from "../dom";
 import { keysFor } from "../shortcuts";
 import { store, toast } from "../store";
-import type { BinItem, Clip, Cue, Ease, Effect, PatchOp, Project, VarSpec } from "../types";
+import type { BinItem, Clip, Cue, Ease, Effect, PatchOp, Project, Streams, VarSpec } from "../types";
 import { moveBinItem, placeBinItem } from "../edits";
 import type { Animation } from "../keyframes";
 import { animationOf } from "../keyframes";
 import { icon, svgEl } from "../icons";
 import type { NumberOpts } from "../props";
 import { keyStrip, numberField, showNumber, sliderField, vectorField } from "../props";
-import { ANIMATABLE, binItem, binPath, canPlace, canTimeWarp, childrenOf, covers, expandPreset, hasAudio, isColorSource, isFileSource, isFolderSource, isOverlaySource, isSequenceSource, isTimedMedia, placementsOf, seqDuration, wouldNest } from "../types";
+import { actsOn, ANIMATABLE, binItem, binPath, canPlace, canTimeWarp, childrenOf, clipStreams, covers, expandPreset, hasAudio, isColorSource, isFileSource, isFolderSource, isOverlaySource, isSequenceSource, isTimedMedia, placementsOf, seqDuration, streamsOf, wouldNest } from "../types";
 
 const presetsPromise = api.effectPresets().catch(() => []);
 
@@ -34,12 +34,18 @@ type PropSpec =
   | { kind: "json"; key: string; label?: string };
 
 /** Per effect kind: the value `+ add effect` inserts, and the properties it shows, in
- *  order. Adding a kind is one row here plus the Rust model; one the daemon knows and this
- *  table does not renders with no fields. A kind in `ANIMATABLE` gets the keyframe row
- *  after its fields. Units are the model's, and the tooltips say so where it is not
- *  obvious. */
+ *  order. Its name is its type, spaced (`title`). Adding a kind is one row here plus the
+ *  Rust model (and its streams in `types.ts`); one the daemon knows and this table does not
+ *  renders with no fields. A kind in `ANIMATABLE` gets the keyframe toggle in its head, and
+ *  the keyframe row once it has keys. Units are the model's, and the tooltips say so where
+ *  it is not obvious. */
 interface EffectSpec { add: Effect; props?: PropSpec[] }
 const EASES: Ease[] = ["linear", "hold", "smooth"];
+/** A fade's two lengths, whichever stream it fades. */
+const fadeProps = (into: string, outOf: string): PropSpec[] => [{ kind: "vec", label: "Duration", parts: [
+  { key: "in", tag: "In", step: 0.1, min: 0, suffix: "s", title: `Seconds to ${into}` },
+  { key: "out", tag: "Out", step: 0.1, min: 0, suffix: "s", title: `Seconds to ${outOf}` },
+] }];
 const BLEND_MODES = ["normal", "multiply", "screen", "overlay", "darken", "lighten", "color_dodge", "color_burn", "hard_light", "soft_light", "difference", "exclusion"];
 const EFFECTS: Partial<Record<Effect["type"], EffectSpec>> = {
   transform: {
@@ -80,19 +86,16 @@ const EFFECTS: Partial<Record<Effect["type"], EffectSpec>> = {
       { kind: "slider", key: "gamma", min: 0.1, max: 4, step: 0.01, soft: true },
     ],
   },
-  fade: {
-    add: { type: "fade", in: 0.5, out: 0.5 },
-    props: [{ kind: "vec", label: "Duration", parts: [
-      { key: "in", tag: "In", step: 0.1, min: 0, suffix: "s" },
-      { key: "out", tag: "Out", step: 0.1, min: 0, suffix: "s" },
-    ] }],
-  },
-  // A volume effect is its keyframes — the model refuses one with none, so `min` is 1 and
-  // there is no un-animating it; removing the effect is how you stop.
+  // The picture's fade and the sound's are two kinds, so each clip is offered the one it
+  // can use, and a clip with both can give them different lengths.
+  fade: { add: { type: "fade", in: 0.5, out: 0.5 }, props: fadeProps("fade in from transparent", "fade out to transparent") },
+  audio_fade: { add: { type: "audio_fade", in: 0.5, out: 0.5 }, props: fadeProps("rise from silence", "fall to silence") },
+  // A gain on top of the clip's own Volume, which is the placement's fader: this is the
+  // one that moves, once it is animated.
   volume: {
-    add: { type: "volume", keyframes: [{ t: 0, gain: 1 }] },
+    add: { type: "volume", ...ANIMATABLE.volume },
     props: [
-      { kind: "num", key: "gain", step: 0.05, min: 0, title: "Gain at the playhead: 1 is the clip as recorded" },
+      { kind: "slider", key: "gain", min: 0, max: 2, step: 0.01, soft: true, title: "1 is the clip as recorded; it multiplies the clip's own Volume" },
     ],
   },
   mlt: { add: { type: "mlt", service: "frei0r.vignette", properties: {} }, props: [{ kind: "text", key: "service" }, { kind: "json", key: "properties" }] },
@@ -193,8 +196,8 @@ function playheadInClip(): boolean {
   return !!f && covers(f.clip, store.state.playhead);
 }
 
-/** A key as a label: `brightness` → `Brightness`, `in` → `In`. */
-const title = capitalize;
+/** A key as a label: `brightness` → `Brightness`, `audio_fade` → `Audio fade`. */
+const title = (key: string) => capitalize(key.replace(/_/g, " "));
 
 /** How a row reads and writes its effect: the static fields, or — once there are keys —
  *  the value *at the playhead*, written into the key there. */
@@ -239,16 +242,25 @@ function propRow(p: PropSpec, ctx: PropCtx): HTMLElement {
   return row;
 }
 
-/** The keyframe row: what there is to do to an effect's keys, and where they are. One row
- *  of buttons and a strip — the panel deliberately does not grow a track editor, and the
- *  clip in the timeline carries the same keys. */
+/** The keyframe toggle, in the effect's head: an outlined diamond on an effect that could
+ *  be keyframed, a filled one on an effect that is. It is how a keyframed effect says so
+ *  while folded, and the one control for starting and stopping — a row of its own under
+ *  every effect was a large button for something most effects never want. */
+function keyToggle(anim: Animation): HTMLButtonElement {
+  const on = anim.animated;
+  const b = button(icon(on ? "key" : "key-open", 11), () => (on ? anim.clear() : anim.animate()),
+    on ? "Stop animating" : "Animate", "kf-toggle");
+  b.classList.toggle("on", on);
+  b.setAttribute("aria-pressed", String(on));
+  return b;
+}
+
+/** The keyframe row: what there is to do to an effect's keys, and where they are — for an
+ *  effect that has some. One row of buttons and a strip; the panel deliberately does not
+ *  grow a track editor, and the clip in the timeline carries the same keys. */
 function keyRow(anim: Animation, id: string, follow: (fn: () => void) => void): HTMLElement {
   const wrap = el("div");
   wrap.dataset.prop = "keys";
-  if (!anim.animated) {
-    wrap.appendChild(field("Keys", button("◆ Animate", () => anim.animate(), "Keyframe this effect: adds a key at the playhead holding the values it has now")));
-    return wrap;
-  }
 
   // The whole width, not the value column: it is about the effect's timing rather than one
   // of its values, and four buttons do not fit there.
@@ -276,10 +288,8 @@ function keyRow(anim: Animation, id: string, follow: (fn: () => void) => void): 
     curveHost.replaceChildren(...(param ? [curveView(anim, param, (p) => { openCurves.set(id, p); showCurve(); }, (fn) => { curveFollower = fn; })] : []));
   };
   // No caption: the strip under it says what these are, and the width is spoken for.
-  tools.append(prev, add, del, next, curve, el("span", "spacer"));
-  // A volume effect must keep a key, so it has no "stop animating" — removing the effect is
-  // how that is said.
-  if (anim.min === 0) tools.append(button("Clear", () => anim.clear(), "Stop keyframing, keeping the values at the playhead"));
+  // Stopping is the diamond in the head, which is also where starting was.
+  tools.append(prev, add, del, next, curve);
   wrap.appendChild(tools);
 
   wrap.appendChild(keyStrip({
@@ -315,7 +325,7 @@ function keyRow(anim: Animation, id: string, follow: (fn: () => void) => void): 
     // and says where the ease you want lives.
     const last = i >= 0 && i === anim.keys.length - 1;
     add.disabled = !anim.inside || i >= 0;
-    del.disabled = !anim.inside || i < 0 || anim.keys.length <= anim.min;
+    del.disabled = !anim.inside || i < 0;
     ease.disabled = i < 0 || last;
     ease.value = anim.keys[i]?.ease ?? "linear";
     hint.textContent = !anim.inside
@@ -385,6 +395,11 @@ export class Inspector {
     }
     if (isTimedMedia(item)) {
       this.host.appendChild(field("Source in", numberField(clip.in ?? 0, (v) => void rep("/in", v, "in"), { step: frame, min: 0, suffix: "s" })));
+    }
+    // What the clip can show and sound: which effects it is offered, and whether it has a
+    // level to set at all. A capability, so a muted clip keeps its Muted box.
+    const carries = clipStreams(store.state.project!, f.track, clip);
+    if (carries.audio) {
       this.host.appendChild(field("Volume", sliderField(clip.volume, (v) => void rep("/volume", v, "volume"), { min: 0, max: 2, step: 0.01, soft: true, title: "Gain: 1 is the clip as recorded" })));
       this.host.appendChild(field("Muted", checkbox(clip.muted, (v) => void rep("/muted", v, "mute"))));
     }
@@ -397,7 +412,7 @@ export class Inspector {
       go.append(el("label", "", "Plays"), linkButton(`${item.name || clip.bin} →`, () => store.selectItem("bin", clip.bin), "Edit the bin entry (changes every clip that plays it)"));
       this.host.appendChild(go);
     }
-    this.renderEffects(clip, path);
+    this.renderEffects(clip, path, carries);
 
     const actions = el("div", "insp-actions");
     // The command reads the selection: from a clip the subtitles land over it, aligned.
@@ -526,7 +541,7 @@ export class Inspector {
     }
   }
 
-  private renderEffects(clip: Clip, path: string) {
+  private renderEffects(clip: Clip, path: string, carries: Streams) {
     this.host.appendChild(el("h3", "", "Effects"));
     // Everything that follows the playhead without the panel being rebuilt for it.
     const followers: (() => void)[] = [];
@@ -542,8 +557,11 @@ export class Inspector {
       const mine: (() => void)[] = [];
 
       const head = el("div", "head");
-      const disclose = button(icon("chevron-right", 11), () => fold(), `Show or hide this ${e.type}'s settings`, "disclose");
-      disclose.append(title(e.type));
+      const spec = EFFECTS[e.type] ?? { add: e };
+      const name = title(e.type);
+      const lower = name.toLowerCase();
+      const disclose = button(icon("chevron-right", 11), () => fold(), `Show or hide this ${lower}'s settings`, "disclose");
+      disclose.append(name);
       disclose.setAttribute("aria-expanded", String(!closedEffects.has(id)));
       const fold = () => {
         const opening = closedEffects.delete(id);
@@ -554,10 +572,18 @@ export class Inspector {
         // the playhead, so they read whatever they did when it was shut.
         if (opening) for (const f of mine) f();
       };
-      head.append(disclose, button("×", () => store.patch([{ op: "remove", path: `${path}/effects/${ei}` }], `remove ${e.type}`), `Remove this ${e.type}`));
+      // Not offered for this clip, but here — by patch, or because the clip moved to a
+      // track that takes away what it acted on. The validator warns too; this says it where
+      // the effect is, so it does not read as broken.
+      if (!actsOn(e.type, carries)) {
+        box.classList.add("inert");
+        disclose.append(el("span", "inert-note", "no effect here"));
+        disclose.title = `This ${lower} does nothing: the clip ${streamsOf(e.type).video ? "shows no picture" : "has no sound"}`;
+      }
+      head.append(disclose);
+      const remove = button("×", () => store.patch([{ op: "remove", path: `${path}/effects/${ei}` }], `remove ${e.type}`), `Remove this ${lower}`);
       box.append(head, body);
       const rec = e as unknown as Record<string, unknown>;
-      const spec = EFFECTS[e.type] ?? { add: e };
       const defaults = spec.add as unknown as Record<string, unknown>;
       const cur = (key: string) => rec[key] ?? defaults[key];
       const replace = (value: unknown, note: string) => void store.patch([{ op: "replace", path: `${path}/effects/${ei}`, value }], `${e.type} ${note}`);
@@ -581,16 +607,19 @@ export class Inspector {
         // `store.select` exists to prevent.
         timed: (key) => (timed(key) ? { readOnly: !anim!.inside, live: (set) => mine.push(() => set(anim!.at(key))) } : {}),
       };
-      // A keyframed effect says so in its head, because folding it away hides the strip
-      // that would otherwise be how you know.
-      if (anim?.animated) disclose.append(el("span", "keyed", "◆"));
+      // The toggle is in the head, so a keyframed effect says so while folded too.
+      if (anim) head.append(keyToggle(anim));
+      head.append(remove);
       for (const p of spec.props ?? []) body.appendChild(propRow(p, ctx));
-      if (anim) body.appendChild(keyRow(anim, id, (fn) => mine.push(fn)));
+      if (anim?.animated) body.appendChild(keyRow(anim, id, (fn) => mine.push(fn)));
       if (mine.length) followers.push(() => { if (!closedEffects.has(id)) for (const f of mine) f(); });
       this.host.appendChild(box);
     });
+    // Only what can act on this clip: a volume on a still, or a picture fade on a song,
+    // would be accepted and do nothing, and that reads as a broken effect.
     const add = el("select");
-    options(add, Object.keys(EFFECTS).map((value) => ({ value })), undefined, "+ add effect…");
+    const offered = (Object.keys(EFFECTS) as Effect["type"][]).filter((type) => actsOn(type, carries));
+    options(add, offered.map((value) => ({ value, label: title(value).toLowerCase() })), undefined, "+ add effect…");
     add.onchange = () => {
       const kind = add.value as Effect["type"] | "";
       add.value = "";

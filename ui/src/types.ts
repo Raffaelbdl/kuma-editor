@@ -223,15 +223,15 @@ export type PatchOp =
   | { op: "move"; from: string; path: string };
 
 export type JobState = "queued" | "running" | "done" | "failed" | "cancelled";
+/** Done, failed or cancelled: it will not change again. */
+export const isFinal = (j: Job) => j.state !== "queued" && j.state !== "running";
 
 export interface Job {
-  id: number; kind: string; percent: number; message: string; done: boolean; ok: boolean; result: unknown;
+  id: number; kind: string; percent: number; message: string; result: unknown;
   /** Where it is in its life — the field to read; `message` is only a label. */
   state: JobState;
   /** Whether it can be stopped (renders can). */
   cancellable?: boolean;
-  /** Finished because it was stopped: `done`, not `ok`, and not a failure. */
-  cancelled?: boolean;
   /** What it was asked to do, settled when it started — a render's `{sequence, preset, output}`. */
   params?: unknown;
 }

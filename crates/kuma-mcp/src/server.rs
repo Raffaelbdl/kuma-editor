@@ -399,12 +399,12 @@ impl KumaServer {
         self.job("/api/render", &body, Duration::from_secs(p.wait_seconds.unwrap_or(900))).await
     }
 
-    #[tool(description = "Status of a background job (render/bake): percent, message, done, ok, cancelled, result.")]
+    #[tool(description = "Status of a background job (render/bake): state (queued, running, done, failed, cancelled), percent, message, result.")]
     async fn job_status(&self, Parameters(p): Parameters<JobArg>) -> Result<CallToolResult, McpError> {
         self.get(&format!("/api/jobs/{}", p.id)).await
     }
 
-    #[tool(description = "Cancel a render job, whether it is queued or encoding. melt is stopped, the partial file is removed, and the job ends with `cancelled: true`. Refused for a job that has finished or is not a render.")]
+    #[tool(description = "Cancel a render job, whether it is queued or encoding. melt is stopped, the partial file is removed, and the job ends in state `cancelled`. Refused for a job that has finished or is not a render.")]
     async fn cancel_job(&self, Parameters(p): Parameters<JobArg>) -> Result<CallToolResult, McpError> {
         self.post(&format!("/api/jobs/{}/cancel", p.id), &json!({})).await
     }

@@ -416,28 +416,28 @@ async fn transcribe(State(st): S, Json(req): Json<TranscribeRequest>) -> Json<Va
 
 // ---------- jobs ----------
 
-/// Queue a render. The sequence and output are settled now, not when its turn comes, so
-/// what the queue says it will write is what it writes; a bad preset or sequence is
-/// refused here rather than surfacing as a failed job.
+/// `p` relative to the project when it is inside it: a path as a person would type it.
+fn project_relative(st: &AppState, p: &std::path::Path) -> std::path::PathBuf {
+    p.strip_prefix(st.config.project_root()).unwrap_or(p).to_path_buf()
+}
+
+/// Queue a render. Sequence and output are settled now, so the queue shows what will be
+/// written whatever is opened meanwhile, and a bad preset is refused here.
 async fn render(State(st): S, Json(mut req): Json<RenderRequest>) -> ApiResult {
     let (sequence, preset, output) = jobs::render_target(&st, &req).map_err(ApiError::bad_request)?;
-    let path = output.strip_prefix(st.config.project_root()).unwrap_or(&output).to_path_buf();
-    let params = json!({ "sequence": sequence, "preset": preset.id, "output": output, "path": path });
+    let params = json!({ "sequence": sequence, "preset": preset.id, "output": output, "path": project_relative(&st, &output) });
     req.sequence = Some(sequence);
     req.output = Some(output);
     let s2 = st.clone();
-    let id = jobs::spawn_cancellable(st, "render", params, move |progress, cancel| jobs::render_queued(&s2, &req, progress, cancel));
+    let id = jobs::spawn_cancellable(st, "render", params, move |progress, cancel| jobs::render(&s2, &req, progress, cancel));
     Ok(Json(json!({ "job": id })))
 }
 
-/// Where a render would write, and what is already there: a file on disk, or a render
-/// not yet finished that will write the same path. Reads only — so a client can warn
-/// before overwriting without the render itself having to ask. `path` is the output as
-/// a person would type it: project-relative when it is inside the project.
+/// Where a render would write and what it would replace — a file there, or unfinished
+/// renders to the same path — so a client can warn first. Reads only.
 async fn render_target(State(st): S, Query(req): Query<RenderRequest>) -> ApiResult {
     let (sequence, preset, output) = jobs::render_target(&st, &req).map_err(ApiError::bad_request)?;
-    let path = output.strip_prefix(st.config.project_root()).unwrap_or(&output).to_path_buf();
-    Ok(Json(json!({ "sequence": sequence, "preset": preset.id, "output": output, "path": path, "exists": output.exists(), "pending": st.jobs.writing(&output) })))
+    Ok(Json(json!({ "sequence": sequence, "preset": preset.id, "path": project_relative(&st, &output), "exists": output.exists(), "pending": st.jobs.writing(&output), "output": output })))
 }
 
 #[derive(Deserialize)]
@@ -485,17 +485,15 @@ async fn job_get(State(st): S, Path(id): Path<u64>) -> ApiResult {
 
 #[derive(Deserialize)]
 struct JobListQuery {
-    #[serde(default)]
     kind: Option<String>,
 }
 
-/// The jobs the daemon still remembers, oldest first: how a window opened after they were
-/// started learns about them, since events only tell it what happens from then on.
+/// The jobs still remembered, oldest first: events only tell a new window what happens next.
 async fn job_list(State(st): S, Query(q): Query<JobListQuery>) -> Json<Value> {
     Json(json!({ "jobs": st.jobs.list(q.kind.as_deref()) }))
 }
 
-/// Clear finished jobs from the queue, for every window: they learn it as an event.
+/// Clear finished jobs, for every window.
 async fn job_clear(State(st): S) -> Json<Value> {
     let ids = st.jobs.clear_finished();
     let _ = st.events.send(crate::state::Event::JobsCleared { ids: ids.clone() });

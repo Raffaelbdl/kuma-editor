@@ -115,27 +115,25 @@ fn run_cancellable(mut cmd: Command, cancel: &AtomicBool, mut on_line: impl FnMu
     let stderr = child.stderr.take().expect("piped stderr");
     let finished = AtomicBool::new(false);
     std::thread::scope(|scope| -> Result<(), MeltError> {
-        // The reader blocks on stderr, so the flag is watched from beside it. Killing the
-        // child closes the pipe, which is what ends the read below.
+        // The reader blocks on stderr, so the flag is watched beside it. Killing the child
+        // closes the pipe, which ends the read.
         scope.spawn(|| {
-            let wait_while = |go_on: &dyn Fn() -> bool, ticks: u32| {
-                for _ in 0..ticks {
-                    if finished.load(Ordering::SeqCst) || !go_on() {
-                        return;
-                    }
-                    std::thread::sleep(Duration::from_millis(100));
-                }
-            };
-            wait_while(&|| !cancel.load(Ordering::SeqCst), u32::MAX);
-            if finished.load(Ordering::SeqCst) {
+            let done = || finished.load(Ordering::SeqCst);
+            let tick = || std::thread::sleep(Duration::from_millis(100));
+            while !done() && !cancel.load(Ordering::SeqCst) {
+                tick();
+            }
+            if done() {
                 return;
             }
             kill_tree(pid, "TERM");
-            // A grace period to exit on its own, then no more asking.
-            wait_while(&|| true, 30);
-            if !finished.load(Ordering::SeqCst) {
-                kill_tree(pid, "KILL");
+            for _ in 0..30 {
+                if done() {
+                    return;
+                }
+                tick();
             }
+            kill_tree(pid, "KILL");
         });
         // melt writes progress as "Current Frame: N, percentage: P" on stderr, using \r.
         let read = (|| -> Result<(), MeltError> {
@@ -161,10 +159,9 @@ fn run_cancellable(mut cmd: Command, cancel: &AtomicBool, mut on_line: impl FnMu
     Ok(status.code())
 }
 
-/// Signal a process and its children, through `pkill`/`kill` rather than a `libc`
-/// dependency. The children first: `melt_command` may be `xvfb-run`, and killing the
-/// wrapper alone leaves melt running — which is also why this is not a process group of
-/// its own, as that would stop a terminal's Ctrl-C reaching melt as it does today.
+/// Signal a process's children, then the process (`pkill`/`kill`, no `libc`). Children
+/// first: melt may run under `xvfb-run`. Not a process group of its own, which would stop
+/// a terminal's Ctrl-C from reaching melt.
 fn kill_tree(pid: u32, signal: &str) {
     let quiet = |c: &mut Command| {
         let _ = c.stdout(Stdio::null()).stderr(Stdio::null()).status();

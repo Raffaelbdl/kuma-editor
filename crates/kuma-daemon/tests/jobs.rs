@@ -76,15 +76,15 @@ async fn renders_queue_and_a_queued_one_cancels_without_starting() {
     assert_eq!(state.jobs.get(c).unwrap().state, JobState::Queued);
 
     jobs::cancel(&state, b).unwrap();
-    let job = wait_for(&state, b, "finished", |j| j.done);
-    assert!(job.cancelled && !job.ok, "{job:?}");
+    let job = wait_for(&state, b, "finished", |j| j.state.is_final());
+    assert_eq!(job.state, JobState::Cancelled);
     assert!(!ran_b.load(Ordering::SeqCst), "a render cancelled in the queue must never start");
 
     release_a.send(()).unwrap();
-    wait_for(&state, a, "finished", |j| j.done && j.ok);
+    wait_for(&state, a, "finished", |j| j.state == JobState::Done);
     wait_for(&state, c, "started", |j| j.message == "encoding");
     release_c.send(()).unwrap();
-    wait_for(&state, c, "finished", |j| j.done && j.ok);
+    wait_for(&state, c, "finished", |j| j.state == JobState::Done);
     assert!(ran_a.load(Ordering::SeqCst) && ran_c.load(Ordering::SeqCst));
 
     let listed: Vec<u64> = state.jobs.list(Some("render")).iter().map(|j| j.id).collect();
@@ -105,7 +105,7 @@ async fn only_a_running_cancellable_job_can_be_cancelled() {
     tx.send(()).unwrap();
 
     let quick = jobs::spawn_cancellable(state.clone(), "render", serde_json::Value::Null, |_, _| Ok(serde_json::Value::Null));
-    wait_for(&state, quick, "finished", |j| j.done);
+    wait_for(&state, quick, "finished", |j| j.state.is_final());
     assert!(matches!(jobs::cancel(&state, quick), Err(CancelError::Finished(_))));
 }
 
@@ -113,7 +113,7 @@ async fn only_a_running_cancellable_job_can_be_cancelled() {
 async fn clearing_forgets_finished_jobs_and_keeps_live_ones() {
     let (state, _dir) = fixture();
     let finished = jobs::spawn(state.clone(), "bake", |_| Ok(serde_json::Value::Null));
-    wait_for(&state, finished, "finished", |j| j.done);
+    wait_for(&state, finished, "finished", |j| j.state.is_final());
     let (tx, rx) = mpsc::channel::<()>();
     let live = jobs::spawn(state.clone(), "bake", move |_| {
         let _ = rx.recv();
@@ -137,13 +137,13 @@ async fn a_cancelled_render_stops_melt_and_leaves_nothing() {
     let req = RenderRequest { preset: "draft".into(), output: Some(output.clone()), range: None, sequence: None };
     let (_, preset, _) = jobs::render_target(&state, &req).unwrap();
     let s2 = state.clone();
-    let id = jobs::spawn_cancellable(state.clone(), "render", serde_json::json!({ "preset": preset.id }), move |p, c| jobs::render_queued(&s2, &req, p, c));
-    let job = wait_for(&state, id, "encoding", |j| j.done || j.percent >= 50);
-    assert!(!job.done, "finished before it could be cancelled: {job:?}");
+    let id = jobs::spawn_cancellable(state.clone(), "render", serde_json::json!({ "preset": preset.id }), move |p, c| jobs::render(&s2, &req, p, c));
+    let job = wait_for(&state, id, "encoding", |j| j.state.is_final() || j.percent >= 50);
+    assert!(!job.state.is_final(), "finished before it could be cancelled: {job:?}");
     jobs::cancel(&state, id).unwrap();
     let start = Instant::now();
-    let job = wait_for(&state, id, "finished", |j| j.done);
-    assert!(job.cancelled, "{job:?}");
+    let job = wait_for(&state, id, "finished", |j| j.state.is_final());
+    assert_eq!(job.state, JobState::Cancelled);
     assert!(start.elapsed() < Duration::from_secs(20), "melt outlived its cancel");
     assert!(!output.exists(), "a cancelled render left {}", output.display());
 }

@@ -81,8 +81,8 @@ describe("the render queue", { skip: why ? `skipping: ${why}` : false }, () => {
 
     // Nothing half-written is left behind, and the daemon agrees with the rows.
     assert.deepEqual(fs.readdirSync(path.join(tmp, "renders")).filter((f) => f.endsWith(".mp4")), []);
-    const jobs = await page.eval(`fetch("/api/jobs?kind=render").then(r => r.json()).then(j => j.jobs.map(x => [x.id, x.cancelled]))`);
-    assert.deepEqual(jobs, [[first, true], [second, true]]);
+    const jobs = await page.eval(`fetch("/api/jobs?kind=render").then(r => r.json()).then(j => j.jobs.map(x => [x.id, x.state]))`);
+    assert.deepEqual(jobs, [[first, "cancelled"], [second, "cancelled"]]);
     // The row names the file as a person would, not by its absolute path.
     assert.equal(await page.eval(`${row(second)}.querySelector(".job-path").textContent`), "renders/second.mp4");
     await page.eval(`${dialog}.querySelector(".queue-pane .modal-actions button:last-child").click()`);

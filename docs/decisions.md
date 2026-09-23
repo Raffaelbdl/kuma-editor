@@ -1675,7 +1675,7 @@ Renders run **one at a time**, in the order they were asked for. Two melts encod
 side each run at half speed, and neither finishes first. A render takes a ticket in
 `in_render_lane` and waits on a condvar that a freed lane and a cancel both notify. One
 cancelled while queued gives up its place and never starts. A first cut polled a mutex
-with `try_lock`, which does not keep waiters in order. Each job has an explicit `state`
+with `try_lock`, which does not keep waiters in order. Each job has one `state`
 (`queued`, `running`, `done`, `failed`, `cancelled`) that the UI reads directly. An early
 version inferred "queued" from the message text instead. Progress reaches clients at most
 every 250 ms unless the percentage moves, because melt reports every frame. Its sequence and output path are

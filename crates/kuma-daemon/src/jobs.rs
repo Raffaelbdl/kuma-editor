@@ -14,12 +14,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::state::{lock, read, AppState, Event};
 
-/// Where a job is in its life. The one field a client reads to know it; `message` is a
-/// label and nothing may be inferred from its wording.
+/// Where a job is in its life: what clients read. `message` is only a label.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum JobState {
-    /// Waiting its turn: a render behind another.
+    /// A render waiting its turn.
     #[default]
     Queued,
     Running,
@@ -38,28 +37,26 @@ pub struct Job {
     pub state: JobState,
     pub percent: u8,
     pub message: String,
-    /// `state` is one of the final three. Kept beside it for the clients that predate it.
-    pub done: bool,
-    /// `state` is `done`.
-    pub ok: bool,
     #[serde(default)]
     pub result: serde_json::Value,
     /// Whether `POST /api/jobs/{id}/cancel` can stop it.
     #[serde(default)]
     pub cancellable: bool,
-    /// `state` is `cancelled`.
-    #[serde(default)]
-    pub cancelled: bool,
-    /// What the job was asked to do, as a queue shows it (a render's sequence, preset and
-    /// output), decided when it was started.
+    /// What it was asked to do, as the queue shows it: a render's sequence, preset, output.
     #[serde(default)]
     pub params: serde_json::Value,
 }
 
+impl JobState {
+    /// Done, failed or cancelled: it will not change again.
+    pub fn is_final(self) -> bool {
+        matches!(self, JobState::Done | JobState::Failed | JobState::Cancelled)
+    }
+}
+
 impl Job {
     fn with_state(self, state: JobState, message: impl Into<String>) -> Job {
-        let finished = matches!(state, JobState::Done | JobState::Failed | JobState::Cancelled);
-        Job { state, message: message.into(), done: finished, ok: state == JobState::Done, cancelled: state == JobState::Cancelled, ..self }
+        Job { state, message: message.into(), ..self }
     }
 }
 
@@ -72,8 +69,7 @@ pub struct Jobs {
     lane: Lane,
 }
 
-/// Renders run one at a time, first come first served. A waiter holds a ticket in
-/// `waiting`; the front one takes the lane once it is free.
+/// Renders run one at a time, first come first served: the front ticket takes the lane.
 #[derive(Default)]
 struct Lane {
     state: Mutex<LaneState>,
@@ -99,15 +95,13 @@ impl Jobs {
         jobs
     }
 
-    /// Forget every finished job — done, failed or cancelled — and return their ids.
-    /// Running and queued ones stay: clearing is tidying, not cancelling.
+    /// Forget every finished job and return their ids. Live ones stay.
     pub fn clear_finished(&self) -> Vec<u64> {
-        let mut table = lock(&self.table);
-        let mut ids: Vec<u64> = table.values().filter(|j| j.done).map(|j| j.id).collect();
-        ids.sort_unstable();
-        for id in &ids {
-            table.remove(id);
-        }
+        let mut ids = Vec::new();
+        lock(&self.table).retain(|id, j| !j.state.is_final() || {
+            ids.push(*id);
+            false
+        });
         ids
     }
 
@@ -115,7 +109,7 @@ impl Jobs {
     pub fn writing(&self, output: &Path) -> Vec<u64> {
         let mut ids: Vec<u64> = lock(&self.table)
             .values()
-            .filter(|j| j.kind == "render" && !j.done && j.params.get("output").and_then(serde_json::Value::as_str) == output.to_str())
+            .filter(|j| j.kind == "render" && !j.state.is_final() && j.params.get("output").and_then(serde_json::Value::as_str) == output.to_str())
             .map(|j| j.id)
             .collect();
         ids.sort_unstable();
@@ -133,17 +127,16 @@ pub enum CancelError {
     NotCancellable(String),
 }
 
-/// Ask a job to stop. It stops at its next opportunity — at once while it is queued, by
-/// killing melt while it encodes — and then reports itself `cancelled`.
+/// Ask a job to stop: at once while queued, by killing melt while it encodes. It then
+/// reports itself `cancelled`.
 pub fn cancel(state: &AppState, id: u64) -> Result<Job, CancelError> {
     let job = state.jobs.get(id).ok_or(CancelError::NotFound)?;
-    if job.done {
+    if job.state.is_final() {
         return Err(CancelError::Finished(id));
     }
     let flag = lock(&state.jobs.cancels).get(&id).cloned().ok_or_else(|| CancelError::NotCancellable(job.kind.clone()))?;
     flag.store(true, Ordering::SeqCst);
-    // A queued render is waiting on the lane: wake it to see the flag.
-    state.jobs.lane.turn.notify_all();
+    state.jobs.lane.turn.notify_all(); // a queued render sees the flag at once
     Ok(job)
 }
 
@@ -155,9 +148,8 @@ where
     spawn_inner(state, kind, serde_json::Value::Null, false, move |progress, _| f(progress))
 }
 
-/// Spawn a job that can be cancelled. It starts `queued` and is `running` from its first
-/// progress report. `f` gets the flag as well and is expected to watch it; however it
-/// then returns, a set flag makes the job `cancelled` rather than failed.
+/// Spawn a cancellable job: `queued` until its first progress report. `f` watches the
+/// flag; once set, the job ends `cancelled` however `f` returns.
 pub fn spawn_cancellable<F>(state: Arc<AppState>, kind: &str, params: serde_json::Value, f: F) -> u64
 where
     F: FnOnce(&dyn Fn(u8, &str), &AtomicBool) -> anyhow::Result<serde_json::Value> + Send + 'static,
@@ -165,8 +157,7 @@ where
     spawn_inner(state, kind, params, true, f)
 }
 
-/// How often a job's progress may reach clients when only its message moves. melt
-/// reports every frame; a queue needs a few updates a second, not hundreds.
+/// How often progress reaches clients when only the message moves: melt reports every frame.
 const PROGRESS_EVERY: std::time::Duration = std::time::Duration::from_millis(250);
 
 fn spawn_inner<F>(state: Arc<AppState>, kind: &str, params: serde_json::Value, cancellable: bool, f: F) -> u64
@@ -174,9 +165,9 @@ where
     F: FnOnce(&dyn Fn(u8, &str), &AtomicBool) -> anyhow::Result<serde_json::Value> + Send + 'static,
 {
     let id = state.jobs.next.fetch_add(1, Ordering::SeqCst) + 1;
-    let blank = Job { id, kind: kind.to_string(), state: JobState::Queued, percent: 0, message: String::new(), done: false, ok: false, result: serde_json::Value::Null, cancellable, cancelled: false, params };
     // Only a cancellable job can wait for a turn; anything else starts at once.
-    let job = if cancellable { blank.with_state(JobState::Queued, "queued") } else { blank.with_state(JobState::Running, "starting") };
+    let (start, message) = if cancellable { (JobState::Queued, "queued") } else { (JobState::Running, "starting") };
+    let job = Job { id, kind: kind.to_string(), state: start, percent: 0, message: String::new(), result: serde_json::Value::Null, cancellable, params }.with_state(start, message);
     let flag = Arc::new(AtomicBool::new(false));
     if cancellable {
         lock(&state.jobs.cancels).insert(id, flag.clone());
@@ -185,7 +176,7 @@ where
         let mut table = lock(&state.jobs.table);
         // Keep the table bounded: drop the oldest finished jobs beyond a hundred.
         if table.len() >= 100 {
-            let mut done: Vec<u64> = table.iter().filter(|(_, j)| j.done).map(|(k, _)| *k).collect();
+            let mut done: Vec<u64> = table.iter().filter(|(_, j)| j.state.is_final()).map(|(k, _)| *k).collect();
             done.sort_unstable();
             for k in done.into_iter().take(table.len() + 1 - 100) {
                 table.remove(&k);
@@ -193,8 +184,7 @@ where
         }
         table.insert(id, job.clone());
     }
-    // Said at once: a render waiting its turn reports nothing until it gets one, and a
-    // queue that learned of it only then would not show it waiting.
+    // Said at once, or a queued render would be invisible until its turn.
     let _ = state.events.send(Event::Job(job.clone()));
     tokio::task::spawn_blocking(move || {
         let publish = |job: Job| {
@@ -217,8 +207,7 @@ where
             Ok(result) => Job { percent: 100, result, ..job.clone() }.with_state(JobState::Done, "done"),
             Err(e) => Job { percent, ..job.clone() }.with_state(JobState::Failed, format!("{e:#}")),
         });
-        // After the final state is out, so a cancel in between finds the job not yet done
-        // and still cancellable, rather than neither.
+        // Only now: a cancel just before the final state must not find it uncancellable.
         lock(&state.jobs.cancels).remove(&id);
     });
     id
@@ -606,9 +595,7 @@ fn default_preset() -> String {
     "youtube-1080p".into()
 }
 
-/// What a render request means once its defaults are filled in: the sequence, the preset
-/// and the absolute output path. Worked out when the job is asked for, so the queue shows
-/// what will be written and the job writes exactly that, whatever is opened meanwhile.
+/// A render request with its defaults filled in: sequence, preset, absolute output path.
 pub fn render_target(state: &AppState, req: &RenderRequest) -> anyhow::Result<(String, &'static kuma_mlt::ExportPreset, PathBuf)> {
     let project = read(&state.project);
     let preset = kuma_mlt::presets::find(&req.preset).ok_or_else(|| anyhow::anyhow!("unknown preset `{}`", req.preset))?;
@@ -622,14 +609,8 @@ pub fn render_target(state: &AppState, req: &RenderRequest) -> anyhow::Result<(S
     Ok((sequence, preset, output))
 }
 
-/// Wait for the render lane, then render.
-pub fn render_queued(state: &AppState, req: &RenderRequest, progress: &dyn Fn(u8, &str), cancel: &AtomicBool) -> anyhow::Result<serde_json::Value> {
-    in_render_lane(state, cancel, progress, || render(state, req, progress, cancel))
-}
-
-/// Run `f` once every render asked for earlier has finished, reporting the start through
-/// `progress` — which is what makes the job `running`. A cancel while waiting gives up
-/// the place in line without ever starting.
+/// Run `f` once every render asked for earlier has finished, reporting the start (which
+/// makes the job `running`). Cancelled while waiting, it gives up its place.
 pub fn in_render_lane<T>(state: &AppState, cancel: &AtomicBool, progress: &dyn Fn(u8, &str), f: impl FnOnce() -> anyhow::Result<T>) -> anyhow::Result<T> {
     let lane = &state.jobs.lane;
     let mut s = lock(&lane.state);
@@ -647,7 +628,7 @@ pub fn in_render_lane<T>(state: &AppState, cancel: &AtomicBool, progress: &dyn F
             s.busy = true;
             break;
         }
-        // `cancel` and a freed lane both notify; the timeout is only a backstop.
+        // A freed lane and `cancel` both notify; the timeout is a backstop.
         s = lane.turn.wait_timeout(s, std::time::Duration::from_secs(1)).unwrap_or_else(std::sync::PoisonError::into_inner).0;
     }
     drop(s);
@@ -663,7 +644,12 @@ pub fn in_render_lane<T>(state: &AppState, cancel: &AtomicBool, progress: &dyn F
     f()
 }
 
+/// Render, once the lane is ours.
 pub fn render(state: &AppState, req: &RenderRequest, progress: &dyn Fn(u8, &str), cancel: &AtomicBool) -> anyhow::Result<serde_json::Value> {
+    in_render_lane(state, cancel, progress, || render_now(state, req, progress, cancel))
+}
+
+fn render_now(state: &AppState, req: &RenderRequest, progress: &dyn Fn(u8, &str), cancel: &AtomicBool) -> anyhow::Result<serde_json::Value> {
     let (sequence, preset, output) = render_target(state, req)?;
     let project = read(&state.project).clone();
     let mut opts = compile_options(state);
@@ -679,7 +665,7 @@ pub fn render(state: &AppState, req: &RenderRequest, progress: &dyn Fn(u8, &str)
     let job = RenderJob { mlt_file: mlt.clone(), output: output.clone(), preset, range, extra };
     progress(50, "rendering with melt");
     if let Err(e) = kuma_mlt::render(&job, cancel, |p| progress(50 + p.percent / 2, &format!("frame {}", p.frame))) {
-        // Half a video is not a result: a stopped encode leaves nothing behind.
+        // A stopped encode leaves nothing behind.
         if matches!(e, kuma_mlt::MeltError::Cancelled) {
             let _ = std::fs::remove_file(&output);
         }

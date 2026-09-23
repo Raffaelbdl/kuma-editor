@@ -14,7 +14,7 @@ import { sequenceIds, type Job } from "../types";
 type Tab = "render" | "queue";
 
 /** A render's own account of itself, settled by the daemon when it was queued. */
-interface RenderParams { sequence?: string; preset?: string; output?: string }
+interface RenderParams { sequence?: string; preset?: string; output?: string; /** `output`, project-relative when inside it. */ path?: string }
 
 /** The dialog that is up, if one is: asking again switches its tab rather than stacking. */
 let showing: ((tab: Tab) => void) | null = null;
@@ -107,6 +107,7 @@ export function openRenderDialog(tab: Tab = "render"): void {
     // Every job, renders or not: the top bar counts them all, and this is where its
     // click lands. Only renders carry a Cancel.
     const all = Object.values(jobs).sort((a, b) => b.id - a.id);
+    clear.disabled = !all.some((j) => j.done);
     for (const j of all) {
       let r = rows.get(j.id);
       if (!r) rows.set(j.id, (r = jobRow(j.id)));
@@ -120,7 +121,9 @@ export function openRenderDialog(tab: Tab = "render"): void {
     list.replaceChildren(...(all.length ? all.map((j) => rows.get(j.id)!.root) : [empty]));
   };
   const queuePane = el("div", "queue-pane");
-  queuePane.append(list, row("modal-actions", button("Close", close)));
+  const clear = button("Clear finished", () => void api.clearJobs().catch((e) => toast((e as Error).message, "err")), "Remove done, failed and cancelled jobs from the list");
+  clear.classList.add("push-left");
+  queuePane.append(list, row("modal-actions", clear, button("Close", close)));
 
   const body = el("div", "render-body");
   body.append(renderPane, queuePane);
@@ -183,7 +186,7 @@ function jobRow(id: number): JobRow {
         : status === "failed" ? `Failed: ${j.message}`
         : capitalize(status);
       root.dataset.output = p.output ?? "";
-      path.textContent = p.output ?? "";
+      path.textContent = p.path ?? p.output ?? "";
       path.title = p.output ?? "";
       cancel.hidden = j.done || !j.cancellable;
       reveal.hidden = !(status === "done" && desktop());

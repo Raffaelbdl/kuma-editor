@@ -152,6 +152,10 @@ class Store {
     if (e.type === "project_changed") {
       if (!this.state.project || e.revision !== this.state.project.revision) await this.refresh();
       toast(`${e.origin} → r${e.revision}`, "ok", 1200);
+    } else if (e.type === "jobs_cleared") {
+      const jobs = { ...this.state.jobs };
+      for (const id of e.ids) delete jobs[id];
+      this.set({ jobs });
     } else if (e.type === "job") {
       const { type: _, ...job } = e;
       this.set({ jobs: { ...this.state.jobs, [e.id]: job } });

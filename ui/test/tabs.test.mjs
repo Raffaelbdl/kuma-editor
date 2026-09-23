@@ -133,7 +133,7 @@ describe("the open sequence", { skip: why ? `skipping: ${why}` : false }, () => 
     assert.deepEqual(await page.until(`window.__rendered`), { preset: "youtube-1080p", sequence: "intro" });
 
     // Put the page back as it was found: these cases share one browser, in order.
-    await page.eval(`${dialog}.querySelector(".queue-pane .modal-actions button").click()`);
+    await page.eval(`${dialog}.querySelector(".queue-pane .modal-actions button:last-child").click()`);
     await page.until(`!${dialog}`);
     await page.eval(`window.fetch = window.__realFetch`);
     await page.eval(clickTab("Main"));

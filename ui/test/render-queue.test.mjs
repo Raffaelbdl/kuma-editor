@@ -83,7 +83,9 @@ describe("the render queue", { skip: why ? `skipping: ${why}` : false }, () => {
     assert.deepEqual(fs.readdirSync(path.join(tmp, "renders")).filter((f) => f.endsWith(".mp4")), []);
     const jobs = await page.eval(`fetch("/api/jobs?kind=render").then(r => r.json()).then(j => j.jobs.map(x => [x.id, x.cancelled]))`);
     assert.deepEqual(jobs, [[first, true], [second, true]]);
-    await page.eval(`${dialog}.querySelector(".queue-pane .modal-actions button").click()`);
+    // The row names the file as a person would, not by its absolute path.
+    assert.equal(await page.eval(`${row(second)}.querySelector(".job-path").textContent`), "renders/second.mp4");
+    await page.eval(`${dialog}.querySelector(".queue-pane .modal-actions button:last-child").click()`);
     await page.until(`!${dialog}`);
   });
 
@@ -119,5 +121,15 @@ describe("the render queue", { skip: why ? `skipping: ${why}` : false }, () => {
     await page.until(`document.querySelector("#topbar .status.link")`);
     await page.eval(`document.querySelector("#topbar .status").click()`);
     await page.until(`${dialog} && ${JOB_IDS}.length === 2 && ${dialog}.querySelector(".queue-pane").hidden === false`);
+  });
+
+  it("clears finished jobs, from the daemon as well as the list", async () => {
+    const clear = `[...${dialog}.querySelectorAll(".queue-pane button")].find(b => b.textContent === "Clear finished")`;
+    assert.equal(await page.eval(`${clear}.disabled`), false);
+    await page.eval(`${clear}.click()`);
+    await page.until(`${dialog}.querySelector(".job-list").textContent === "No jobs yet."`);
+    assert.equal(await page.eval(`${clear}.disabled`), true);
+    assert.equal(await page.eval(`document.querySelector("#topbar .status").textContent`), "");
+    assert.deepEqual(await page.eval(`fetch("/api/jobs").then(r => r.json()).then(j => j.jobs)`), []);
   });
 });

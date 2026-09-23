@@ -106,6 +106,8 @@ pub enum Event {
     /// The project changed; clients should refetch.
     ProjectChanged { revision: u64, origin: String },
     Job(crate::jobs::Job),
+    /// Finished jobs were cleared from the table; clients drop them too.
+    JobsCleared { ids: Vec<u64> },
 }
 
 pub struct UndoStack {

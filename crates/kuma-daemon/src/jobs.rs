@@ -99,6 +99,18 @@ impl Jobs {
         jobs
     }
 
+    /// Forget every finished job — done, failed or cancelled — and return their ids.
+    /// Running and queued ones stay: clearing is tidying, not cancelling.
+    pub fn clear_finished(&self) -> Vec<u64> {
+        let mut table = lock(&self.table);
+        let mut ids: Vec<u64> = table.values().filter(|j| j.done).map(|j| j.id).collect();
+        ids.sort_unstable();
+        for id in &ids {
+            table.remove(id);
+        }
+        ids
+    }
+
     /// The unfinished renders that will write `output`.
     pub fn writing(&self, output: &Path) -> Vec<u64> {
         let mut ids: Vec<u64> = lock(&self.table)

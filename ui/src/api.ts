@@ -55,6 +55,8 @@ export const api = {
   },
   /** The jobs the daemon still remembers, oldest first. */
   jobs: (kind?: string) => json<{ jobs: Job[] }>(`/api/jobs${kind ? `?kind=${encodeURIComponent(kind)}` : ""}`),
+  /** Forget every finished job, for every window. Running and queued ones stay. */
+  clearJobs: () => json<{ cleared: number[] }>("/api/jobs/clear", { method: "POST", body: "{}" }),
   /** Stop a queued or running render. It reports itself `cancelled` once it has. */
   cancelJob: (id: number) => json<Job>(`/api/jobs/${id}/cancel`, { method: "POST", body: "{}" }),
   previewReload: (scale?: number) => json<{ mlt: string; scale: number }>("/api/preview/reload", { method: "POST", body: JSON.stringify(scale === undefined ? {} : { scale }) }),

@@ -238,7 +238,8 @@ export interface Job {
 
 export type DaemonEvent =
   | { type: "project_changed"; revision: number; origin: string }
-  | ({ type: "job" } & Job);
+  | ({ type: "job" } & Job)
+  | { type: "jobs_cleared"; ids: number[] };
 
 export const fpsValue = (f: Fps) => f.num / f.den;
 

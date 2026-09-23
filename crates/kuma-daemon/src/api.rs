@@ -49,6 +49,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/sample", post(sample))
         .route("/api/snapshot", get(snapshot))
         .route("/api/jobs", get(job_list))
+        .route("/api/jobs/clear", post(job_clear))
         .route("/api/jobs/{id}", get(job_get))
         .route("/api/jobs/{id}/cancel", post(job_cancel))
         .route("/api/events", get(events_ws))
@@ -420,7 +421,8 @@ async fn transcribe(State(st): S, Json(req): Json<TranscribeRequest>) -> Json<Va
 /// refused here rather than surfacing as a failed job.
 async fn render(State(st): S, Json(mut req): Json<RenderRequest>) -> ApiResult {
     let (sequence, preset, output) = jobs::render_target(&st, &req).map_err(ApiError::bad_request)?;
-    let params = json!({ "sequence": sequence, "preset": preset.id, "output": output });
+    let path = output.strip_prefix(st.config.project_root()).unwrap_or(&output).to_path_buf();
+    let params = json!({ "sequence": sequence, "preset": preset.id, "output": output, "path": path });
     req.sequence = Some(sequence);
     req.output = Some(output);
     let s2 = st.clone();
@@ -491,6 +493,13 @@ struct JobListQuery {
 /// started learns about them, since events only tell it what happens from then on.
 async fn job_list(State(st): S, Query(q): Query<JobListQuery>) -> Json<Value> {
     Json(json!({ "jobs": st.jobs.list(q.kind.as_deref()) }))
+}
+
+/// Clear finished jobs from the queue, for every window: they learn it as an event.
+async fn job_clear(State(st): S) -> Json<Value> {
+    let ids = st.jobs.clear_finished();
+    let _ = st.events.send(crate::state::Event::JobsCleared { ids: ids.clone() });
+    Json(json!({ "cleared": ids }))
 }
 
 async fn job_cancel(State(st): S, Path(id): Path<u64>) -> ApiResult {

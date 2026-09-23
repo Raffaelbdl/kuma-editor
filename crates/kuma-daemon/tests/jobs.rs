@@ -109,6 +109,22 @@ async fn only_a_running_cancellable_job_can_be_cancelled() {
     assert!(matches!(jobs::cancel(&state, quick), Err(CancelError::Finished(_))));
 }
 
+#[tokio::test(flavor = "multi_thread")]
+async fn clearing_forgets_finished_jobs_and_keeps_live_ones() {
+    let (state, _dir) = fixture();
+    let finished = jobs::spawn(state.clone(), "bake", |_| Ok(serde_json::Value::Null));
+    wait_for(&state, finished, "finished", |j| j.done);
+    let (tx, rx) = mpsc::channel::<()>();
+    let live = jobs::spawn(state.clone(), "bake", move |_| {
+        let _ = rx.recv();
+        Ok(serde_json::Value::Null)
+    });
+    assert_eq!(state.jobs.clear_finished(), [finished]);
+    assert!(state.jobs.get(finished).is_none());
+    assert!(state.jobs.get(live).is_some(), "a running job is not the queue's to forget");
+    tx.send(()).unwrap();
+}
+
 /// The real thing: melt is stopped mid-encode and leaves no half-written file.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_cancelled_render_stops_melt_and_leaves_nothing() {

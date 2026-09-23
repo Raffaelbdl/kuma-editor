@@ -76,6 +76,14 @@ impl Fps {
         Fps::new((n * 1000.0).round() as u32, 1000)
     }
 
+    /// Parse `num/den`, as ffprobe and the CLI spell a rate. `None` for anything else,
+    /// including a zero on either side (ffprobe's `0/0` for "unknown").
+    pub fn parse_ratio(s: &str) -> Option<Self> {
+        let (n, d) = s.split_once('/')?;
+        let f = Fps::new(n.trim().parse().ok()?, d.trim().parse().ok()?);
+        (f.num > 0 && f.den > 0).then_some(f)
+    }
+
     pub fn as_f64(&self) -> f64 {
         self.num as f64 / self.den as f64
     }
@@ -125,6 +133,14 @@ const fn gcd(a: u32, b: u32) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_ratio_parses_reduced_and_zero_is_unknown() {
+        assert_eq!(Fps::parse_ratio("60000/2002"), Some(Fps::new(30000, 1001)));
+        assert_eq!(Fps::parse_ratio(" 25 / 1 "), Some(Fps::new(25, 1)));
+        assert_eq!(Fps::parse_ratio("0/0"), None);
+        assert_eq!(Fps::parse_ratio("30"), None);
+    }
 
     #[test]
     fn ntsc_snaps_to_1001() {

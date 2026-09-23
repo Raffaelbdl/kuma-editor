@@ -24,6 +24,8 @@ struct FfStream {
     #[serde(default)]
     r_frame_rate: Option<String>,
     #[serde(default)]
+    avg_frame_rate: Option<String>,
+    #[serde(default)]
     duration: Option<String>,
 }
 
@@ -77,21 +79,29 @@ pub fn probe(path: &Path) -> Result<Probe, String> {
         (None, true, _) => MediaKind::Audio,
         _ => MediaKind::Video,
     };
-    let fps = video
-        .and_then(|v| v.r_frame_rate.as_deref())
-        .and_then(|r| {
-            let (n, d) = r.split_once('/')?;
-            Some(Fps::new(n.parse().ok()?, d.parse().ok()?))
-        })
-        .filter(|f| f.num > 0 && f.den > 0);
+    let (fps, variable_fps) = video
+        .filter(|_| kind != MediaKind::Image)
+        .map_or((None, false), |v| frame_rate(v.r_frame_rate.as_deref(), v.avg_frame_rate.as_deref()));
     let meta = MediaMeta {
         duration: if kind == MediaKind::Image { None } else { fmt_dur.or_else(|| video.and_then(|v| v.duration.as_deref()).and_then(|d| d.parse().ok())) },
         width: video.and_then(|v| v.width),
         height: video.and_then(|v| v.height),
-        fps: if kind == MediaKind::Image { None } else { fps },
+        fps,
+        variable_fps,
         has_audio: audio,
     };
     Ok(Probe { meta, kind })
+}
+
+/// The rate to report, and whether the source is variable-rate: ffprobe's `r_frame_rate`
+/// when `avg_frame_rate` agrees with it to within 0.5%, else the average, flagged.
+/// `docs/decisions.md` ("Probed frame rate") has why.
+fn frame_rate(r: Option<&str>, avg: Option<&str>) -> (Option<Fps>, bool) {
+    match (r.and_then(Fps::parse_ratio), avg.and_then(Fps::parse_ratio)) {
+        (Some(r), Some(avg)) if (r.as_f64() - avg.as_f64()).abs() > r.as_f64() * 0.005 => (Some(avg), true),
+        (Some(r), _) => (Some(r), false),
+        (None, avg) => (avg, false),
+    }
 }
 
 /// Run ffmpeg with `-v error -y` and the given args.
@@ -101,4 +111,28 @@ pub fn ffmpeg(args: &[String]) -> Result<(), String> {
         return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_variable_rate_reports_its_average() {
+        assert_eq!(frame_rate(Some("30/1"), Some("180000/15001")), (Some(Fps::new(180000, 15001)), true));
+    }
+
+    #[test]
+    fn a_constant_rate_keeps_the_clean_rational() {
+        assert_eq!(frame_rate(Some("30000/1001"), Some("30000/1001")), (Some(Fps::new(30000, 1001)), false));
+        // An average a hair off the grid is still constant, and still reads as the grid.
+        assert_eq!(frame_rate(Some("25/1"), Some("2499/100")), (Some(Fps::new(25, 1)), false));
+    }
+
+    #[test]
+    fn an_unknown_rate_falls_back_to_the_other() {
+        assert_eq!(frame_rate(Some("25/1"), Some("0/0")), (Some(Fps::new(25, 1)), false));
+        assert_eq!(frame_rate(Some("0/0"), Some("12/1")), (Some(Fps::new(12, 1)), false));
+        assert_eq!(frame_rate(None, None), (None, false));
+    }
 }

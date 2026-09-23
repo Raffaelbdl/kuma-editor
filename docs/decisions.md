@@ -1644,6 +1644,26 @@ radius, so the live DOM drew every overlay blur twice as strong as the export. I
 
 ---
 
+## Probed frame rate
+
+The probe used to record ffprobe's `r_frame_rate`, which for a variable-rate file is the
+smallest rate that can express every timestamp rather than the actual one: frames 100/67/33
+ms apart, averaging 15 fps, read as 30. It now reads `avg_frame_rate` as well. When the two
+agree to within 0.5% the file is constant-rate and `r` is kept, because it is the clean
+rational where an average can come back as `2997/100`; when they diverge, `fps` is the
+average and `variable_fps` is set, which the inspector shows as "(variable)". Either value
+can be `0/0`, and then the other is used.
+
+**Storing both rates** — rejected. `r_frame_rate` on a variable file is a timestamp grid,
+not a rate anyone wants to read, and a flag says the one thing the pair would have said.
+
+No format bump: `MediaMeta` tolerates unknown keys and the flag is omitted when false, so
+files load either way. Entries probed before this keep their old rate until re-probed,
+the stale-metadata problem above. Rendering was never affected — times are seconds
+sampled at the project rate, checked pixel-identical against ffmpeg's own extraction on
+a variable-rate file. Audio drift over a long variable-rate recording is still untested.
+
+
 ## Still open
 
 Nested sequences are done and the editor is an application now, so this list is the whole
@@ -1853,20 +1873,6 @@ because it is the part deliberately left out.
 
   If only the audio case matters, the cheap version is a gain field on file entries and no
   general mechanism.
-
-- **Defect: the probe reports the wrong frame rate for variable-rate sources.** It records
-  ffprobe's `r_frame_rate`, which for a variable-rate file is the smallest rate that can
-  express every timestamp rather than the actual one. A test file with real frame deltas
-  of 100/67/33 ms, averaging just under 12 fps, reports 30. Informational only, since the
-  probed rate never reaches the compiler, but it is what the bin shows and what an agent
-  reads from `get_project`. `avg_frame_rate` is the honest number, and storing both would
-  let the UI say "variable" when they diverge.
-
-  *Rendering itself is fine, and was checked rather than assumed:* times are seconds and
-  become frames once, at the project rate, so nothing assumes the source has a grid. A
-  clip trimmed two seconds into that variable-rate file sampled pixel-identical to
-  ffmpeg's own extraction at the same source times. Audio drift over a long recording is
-  untested.
 
 - **The bake cache grows forever and nothing prunes it.** A successful bake only ever
   adds a directory. The only deletions anywhere in the bake path are the scratch frames

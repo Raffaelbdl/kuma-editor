@@ -419,9 +419,10 @@ async fn main() -> anyhow::Result<()> {
             let path = absolute(&cli.project)?;
             anyhow::ensure!(!path.exists(), "{} already exists", path.display());
             // Accepts `30`, `29.97`, `30000/1001` or `{"num":30000,"den":1001}`.
-            let fps = match fps.split_once('/') {
-                Some((n, d)) => kuma_core::Fps::new(n.trim().parse()?, d.trim().parse()?),
-                None => serde_json::from_str::<kuma_core::Fps>(fps)?,
+            let fps = if fps.contains('/') {
+                kuma_core::Fps::parse_ratio(fps).ok_or_else(|| anyhow::anyhow!("bad frame rate {fps:?}"))?
+            } else {
+                serde_json::from_str::<kuma_core::Fps>(fps)?
             };
             let p = kuma_core::Project::new_default(kuma_core::Project::name_from_path(&path), *width, *height, fps);
             std::fs::create_dir_all(path.parent().unwrap())?;

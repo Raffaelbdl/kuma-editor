@@ -33,7 +33,7 @@ function shell(onClose?: (ok: boolean) => void): { dlg: HTMLDialogElement; done:
 /** A dialog that stays up while its owner keeps it live — the render dialog's queue ticks
  *  under it. Closed by `close`, Escape or the backdrop; `onClose` runs once, however. */
 export function openDialog(className = "", onClose?: () => void): { dlg: HTMLDialogElement; close: () => void } {
-  const { dlg, done } = shell(onClose && (() => onClose()));
+  const { dlg, done } = shell(onClose);
   if (className) dlg.classList.add(className);
   dlg.showModal();
   return { dlg, close: () => done(false) };

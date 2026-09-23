@@ -7,7 +7,7 @@ import { button, el, options, plural } from "../dom";
 import { icon } from "../icons";
 import { keysFor } from "../shortcuts";
 import { store } from "../store";
-import { orientation, sequenceIds } from "../types";
+import { orientation, sequenceIds, type JobState } from "../types";
 import { openRenderDialog } from "./render";
 
 export function mountTopbar(host: HTMLElement): void {
@@ -71,15 +71,10 @@ export function mountTopbar(host: HTMLElement): void {
     // A count, not a transcript: the detail — paths, frames, errors — is the queue's, one
     // click away. Only what there is gets said.
     const jobs = Object.values(s.jobs);
-    const count = (n: number, what: string) => (n ? [`${plural(n, "job")} ${what}`] : []);
-    const parts = [
-      ...count(jobs.filter((j) => !j.done && j.message !== "queued").length, "running"),
-      ...count(jobs.filter((j) => !j.done && j.message === "queued").length, "queued"),
-      ...count(jobs.filter((j) => j.done && j.ok).length, "finished"),
-      ...count(jobs.filter((j) => j.done && !j.ok && !j.cancelled).length, "failed"),
-      ...count(jobs.filter((j) => j.cancelled).length, "cancelled"),
-    ];
-    status.textContent = parts.join(", ");
+    const n: Record<JobState, number> = { running: 0, queued: 0, done: 0, failed: 0, cancelled: 0 };
+    for (const j of jobs) n[j.state]++;
+    const said: [JobState, string][] = [["running", "running"], ["queued", "queued"], ["done", "finished"], ["failed", "failed"], ["cancelled", "cancelled"]];
+    status.textContent = said.filter(([k]) => n[k]).map(([k, word]) => `${plural(n[k], "job")} ${word}`).join(", ");
     status.classList.toggle("link", jobs.length > 0);
   });
 }

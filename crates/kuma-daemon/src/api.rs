@@ -428,27 +428,14 @@ async fn render(State(st): S, Json(mut req): Json<RenderRequest>) -> ApiResult {
     Ok(Json(json!({ "job": id })))
 }
 
-#[derive(Deserialize)]
-struct TargetQuery {
-    #[serde(default)]
-    preset: Option<String>,
-    #[serde(default)]
-    sequence: Option<String>,
-    #[serde(default)]
-    output: Option<std::path::PathBuf>,
-}
-
 /// Where a render would write, and what is already there: a file on disk, or a render
 /// not yet finished that will write the same path. Reads only — so a client can warn
-/// before overwriting without the render itself having to ask.
-async fn render_target(State(st): S, Query(q): Query<TargetQuery>) -> ApiResult {
-    let req = RenderRequest { preset: q.preset.unwrap_or_else(|| "youtube-1080p".into()), output: q.output, range: None, sequence: q.sequence };
+/// before overwriting without the render itself having to ask. `path` is the output as
+/// a person would type it: project-relative when it is inside the project.
+async fn render_target(State(st): S, Query(req): Query<RenderRequest>) -> ApiResult {
     let (sequence, preset, output) = jobs::render_target(&st, &req).map_err(ApiError::bad_request)?;
-    let pending: Vec<u64> = st.jobs.list(Some("render")).into_iter()
-        .filter(|j| !j.done && j.params.get("output").and_then(Value::as_str) == output.to_str())
-        .map(|j| j.id)
-        .collect();
-    Ok(Json(json!({ "sequence": sequence, "preset": preset.id, "output": output, "exists": output.exists(), "pending": pending })))
+    let path = output.strip_prefix(st.config.project_root()).unwrap_or(&output).to_path_buf();
+    Ok(Json(json!({ "sequence": sequence, "preset": preset.id, "output": output, "path": path, "exists": output.exists(), "pending": st.jobs.writing(&output) })))
 }
 
 #[derive(Deserialize)]

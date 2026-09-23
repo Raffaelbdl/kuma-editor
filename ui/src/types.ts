@@ -222,8 +222,12 @@ export type PatchOp =
   | { op: "remove"; path: string }
   | { op: "move"; from: string; path: string };
 
+export type JobState = "queued" | "running" | "done" | "failed" | "cancelled";
+
 export interface Job {
   id: number; kind: string; percent: number; message: string; done: boolean; ok: boolean; result: unknown;
+  /** Where it is in its life — the field to read; `message` is only a label. */
+  state: JobState;
   /** Whether it can be stopped (renders can). */
   cancellable?: boolean;
   /** Finished because it was stopped: `done`, not `ok`, and not a failure. */

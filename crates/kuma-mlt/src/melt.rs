@@ -118,19 +118,23 @@ fn run_cancellable(mut cmd: Command, cancel: &AtomicBool, mut on_line: impl FnMu
         // The reader blocks on stderr, so the flag is watched from beside it. Killing the
         // child closes the pipe, which is what ends the read below.
         scope.spawn(|| {
-            while !finished.load(Ordering::SeqCst) {
-                if cancel.load(Ordering::SeqCst) {
-                    kill_tree(pid, "TERM");
-                    for _ in 0..30 {
-                        if finished.load(Ordering::SeqCst) {
-                            return;
-                        }
-                        std::thread::sleep(Duration::from_millis(100));
+            let wait_while = |go_on: &dyn Fn() -> bool, ticks: u32| {
+                for _ in 0..ticks {
+                    if finished.load(Ordering::SeqCst) || !go_on() {
+                        return;
                     }
-                    kill_tree(pid, "KILL");
-                    return;
+                    std::thread::sleep(Duration::from_millis(100));
                 }
-                std::thread::sleep(Duration::from_millis(100));
+            };
+            wait_while(&|| !cancel.load(Ordering::SeqCst), u32::MAX);
+            if finished.load(Ordering::SeqCst) {
+                return;
+            }
+            kill_tree(pid, "TERM");
+            // A grace period to exit on its own, then no more asking.
+            wait_while(&|| true, 30);
+            if !finished.load(Ordering::SeqCst) {
+                kill_tree(pid, "KILL");
             }
         });
         // melt writes progress as "Current Frame: N, percentage: P" on stderr, using \r.

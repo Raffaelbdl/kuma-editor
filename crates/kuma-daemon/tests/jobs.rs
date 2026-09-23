@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc};
 use std::time::{Duration, Instant};
 
-use kuma_daemon::jobs::{self, CancelError, Job, RenderRequest};
+use kuma_daemon::jobs::{self, CancelError, Job, JobState, RenderRequest};
 use kuma_daemon::{AppState, Config};
 
 const PROJECT: &str = r##"{
@@ -50,7 +50,7 @@ fn wait_for(state: &AppState, id: u64, what: &str, done: impl Fn(&Job) -> bool) 
 fn lane_job(state: &Arc<AppState>, release: mpsc::Receiver<()>, ran: Arc<AtomicBool>) -> u64 {
     let s2 = state.clone();
     jobs::spawn_cancellable(state.clone(), "render", serde_json::Value::Null, move |progress, cancel| {
-        jobs::in_render_lane(&s2, cancel, || {
+        jobs::in_render_lane(&s2, cancel, progress, || {
             ran.store(true, Ordering::SeqCst);
             progress(10, "encoding");
             let _ = release.recv();
@@ -72,8 +72,8 @@ async fn renders_queue_and_a_queued_one_cancels_without_starting() {
     let b = lane_job(&state, b_rx, ran_b.clone());
     let c = lane_job(&state, c_rx, ran_c.clone());
     std::thread::sleep(Duration::from_millis(300));
-    assert_eq!(state.jobs.get(b).unwrap().message, "queued");
-    assert_eq!(state.jobs.get(c).unwrap().message, "queued");
+    assert_eq!(state.jobs.get(b).unwrap().state, JobState::Queued);
+    assert_eq!(state.jobs.get(c).unwrap().state, JobState::Queued);
 
     jobs::cancel(&state, b).unwrap();
     let job = wait_for(&state, b, "finished", |j| j.done);

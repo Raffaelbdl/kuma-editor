@@ -155,10 +155,8 @@ class Store {
     } else if (e.type === "job") {
       const { type: _, ...job } = e;
       this.set({ jobs: { ...this.state.jobs, [e.id]: job } });
-      if (e.done) {
-        if (e.cancelled) toast(`${e.kind} cancelled`, "ok");
-        else toast(e.ok ? `${e.kind} done` : `${e.kind} failed: ${e.message}`, e.ok ? "ok" : "err", e.ok ? 4000 : 12000);
-      }
+      if (e.state === "failed") toast(`${e.kind} failed: ${e.message}`, "err", 12000);
+      else if (e.state === "done" || e.state === "cancelled") toast(`${e.kind} ${e.state}`, "ok", 4000);
     }
   }
 

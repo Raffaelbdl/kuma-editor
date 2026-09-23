@@ -101,7 +101,7 @@ describe("the open sequence", { skip: why ? `skipping: ${why}` : false }, () => 
     // The request is captured rather than run: what is under test is which timeline the
     // dialog asks for, and a real render would need melt and a minute.
     await page.eval(`window.__rendered = null; window.__realFetch = window.fetch;
-      window.fetch = (u, o) => (String(u).includes("/api/render")
+      window.fetch = (u, o) => (String(u).endsWith("/api/render")
         ? (window.__rendered = JSON.parse(o.body), Promise.resolve(new Response('{"job":1}', { headers: { "content-type": "application/json" } })))
         : window.__realFetch(u, o));`);
     const renderBtn = `document.querySelector("#topbar button.primary")`;
@@ -117,17 +117,18 @@ describe("the open sequence", { skip: why ? `skipping: ${why}` : false }, () => 
     await page.until(`${dialog} && ${dialog}.querySelector(".render-pane select:not([title]) option")`);
     assert.equal(await page.eval(`${seqSel}.value`), "main", "the master stays the default");
     assert.deepEqual(await page.eval(`[...${seqSel}.options].map(o => o.textContent)`), ["Main (master)", "Intro"]);
-    assert.match(await page.eval(`${dialog}.querySelector(".render-pane input").placeholder`), /^renders\/tabs-youtube-1080p\.mp4$/);
+    // The daemon's own answer, asked for: the default name is its rule.
+    await page.until(`${dialog}.querySelector(".render-pane input").placeholder === "renders/tabs-youtube-1080p.mp4"`);
 
     await page.eval(`${go}.click()`);
-    assert.deepEqual(await page.until(`window.__rendered`), { preset: "youtube-1080p" }, "no sequence means the master, the daemon's own default");
+    assert.deepEqual(await page.until(`window.__rendered`), { preset: "youtube-1080p", sequence: "main" }, "the master, named: the person picked it");
     // Asking for a render shows the queue it joined.
     await page.until(`${dialog}.querySelector(".queue-pane").hidden === false`);
 
     // Back to the first tab, another sequence named.
     await page.eval(`[...${dialog}.querySelectorAll("button.tab")].find(b => b.textContent === "Render").click()`);
     await page.eval(pick("intro"));
-    assert.match(await page.eval(`${dialog}.querySelector(".render-pane input").placeholder`), /tabs-intro-youtube-1080p/);
+    await page.until(`${dialog}.querySelector(".render-pane input").placeholder === "renders/tabs-intro-youtube-1080p.mp4"`);
     await page.eval(`window.__rendered = null; ${go}.click()`);
     assert.deepEqual(await page.until(`window.__rendered`), { preset: "youtube-1080p", sequence: "intro" });
 

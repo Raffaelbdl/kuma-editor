@@ -12,6 +12,10 @@ async function json<T>(url: string, init?: RequestInit): Promise<T> {
   return body as T;
 }
 
+/** Where a render would write (`path` project-relative when it can be) and what it
+ *  would replace: a file there already, or unfinished renders to the same place. */
+export interface RenderTarget { output: string; path: string; exists: boolean; pending: number[] }
+
 export const api = {
   project: () => json<Project>("/api/project"),
   patch: (patch: PatchOp[], base_revision: number, origin = "ui") =>
@@ -44,11 +48,10 @@ export const api = {
     json<{ job: number }>("/api/render", { method: "POST", body: JSON.stringify({ preset, sequence, output }) }),
   /** Where a render would write, whether a file is there already, and which unfinished
    *  renders will write the same path. Reads only. */
-  renderTarget: (preset: string, sequence?: string, output?: string) => {
-    const q = new URLSearchParams({ preset });
-    if (sequence) q.set("sequence", sequence);
+  renderTarget: (preset: string, sequence: string, output?: string) => {
+    const q = new URLSearchParams({ preset, sequence });
     if (output) q.set("output", output);
-    return json<{ output: string; exists: boolean; pending: number[] }>(`/api/render/target?${q}`);
+    return json<RenderTarget>(`/api/render/target?${q}`);
   },
   /** The jobs the daemon still remembers, oldest first. */
   jobs: (kind?: string) => json<{ jobs: Job[] }>(`/api/jobs${kind ? `?kind=${encodeURIComponent(kind)}` : ""}`),

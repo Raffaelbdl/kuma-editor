@@ -228,3 +228,23 @@ async fn jobs_are_listed_and_cancels_are_checked() {
     let (status, _, body) = request(&addr, "POST", "/api/render", r#"{"preset":"nope"}"#);
     assert!(status.contains("400") && body.contains("unknown preset"), "{status} {body}");
 }
+
+/// What a render would overwrite is said before it is asked for: the file on disk, and a
+/// render still to finish that writes the same path.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_render_target_says_what_it_would_overwrite() {
+    let (_state, addr, dir) = daemon().await;
+    let target = |q: &str| -> serde_json::Value { serde_json::from_str(&get_body(&addr, &format!("/api/render/target?{q}")).1).unwrap() };
+
+    let t = target("preset=draft");
+    assert_eq!(t["output"], serde_json::json!(dir.path().join("renders/t-draft.mp4")));
+    assert_eq!((t["exists"].as_bool(), t["pending"].as_array().map(Vec::len)), (Some(false), Some(0)));
+
+    std::fs::create_dir_all(dir.path().join("renders")).unwrap();
+    std::fs::write(dir.path().join("renders/t-draft.mp4"), "").unwrap();
+    assert_eq!(target("preset=draft")["exists"], true);
+    assert_eq!(target("preset=draft&output=renders/other.mp4")["exists"], false);
+
+    let (status, _) = get_body(&addr, "/api/render/target?preset=nope");
+    assert!(status.contains("400"), "{status}");
+}

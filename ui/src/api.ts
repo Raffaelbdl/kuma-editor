@@ -42,6 +42,14 @@ export const api = {
    *  the master. `output` is project-relative; the daemon names one when it is left out. */
   render: (preset: string, sequence?: string, output?: string) =>
     json<{ job: number }>("/api/render", { method: "POST", body: JSON.stringify({ preset, sequence, output }) }),
+  /** Where a render would write, whether a file is there already, and which unfinished
+   *  renders will write the same path. Reads only. */
+  renderTarget: (preset: string, sequence?: string, output?: string) => {
+    const q = new URLSearchParams({ preset });
+    if (sequence) q.set("sequence", sequence);
+    if (output) q.set("output", output);
+    return json<{ output: string; exists: boolean; pending: number[] }>(`/api/render/target?${q}`);
+  },
   /** The jobs the daemon still remembers, oldest first. */
   jobs: (kind?: string) => json<{ jobs: Job[] }>(`/api/jobs${kind ? `?kind=${encodeURIComponent(kind)}` : ""}`),
   /** Stop a queued or running render. It reports itself `cancelled` once it has. */

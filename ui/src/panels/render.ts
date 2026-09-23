@@ -6,7 +6,7 @@
 import { api } from "../api";
 import { desktop } from "../desktop";
 import { button, el, options } from "../dom";
-import { openDialog } from "../modal";
+import { askForm, openDialog } from "../modal";
 import { store, toast } from "../store";
 import { sequenceIds, type Job, type Preset } from "../types";
 
@@ -52,12 +52,31 @@ export function openRenderDialog(tab: Tab = "render"): void {
     const part = sequence.value === project.master ? "" : `-${sequence.value}`;
     output.placeholder = p ? `renders/${project.name || "kuma"}${part}-${p.id}.${p.extension}` : "";
   };
-  sequence.onchange = placeholder;
-  preset.onchange = placeholder;
+  // Said while choosing, not only on the click: the name is derived from the sequence
+  // and preset, so picking either can land on a file that is already there.
+  const warning = el("p", "render-warning");
+  warning.hidden = true;
+  let clash: { output: string; exists: boolean; pending: number[] } | null = null;
+  let asked = 0;
+  const check = async () => {
+    const n = ++asked;
+    try {
+      const t = await api.renderTarget(preset.value, seqParam(), output.value.trim() || undefined);
+      if (n !== asked) return; // a newer choice has been made meanwhile
+      clash = t.exists || t.pending.length ? t : null;
+      warning.hidden = !clash;
+      warning.textContent = clash ? overwriteNote(clash) : "";
+    } catch { /* an unknown preset mid-load, say: the render itself will say so */ }
+  };
+  const seqParam = () => (sequence.value === project.master ? undefined : sequence.value);
+  sequence.onchange = () => { placeholder(); void check(); };
+  preset.onchange = () => { placeholder(); void check(); };
+  output.oninput = () => void check();
   void api.presets().then((ps) => {
     presets = ps;
     options(preset, ps.map((p) => ({ value: p.id, title: p.description })), lastPreset || ps[0]?.id);
     placeholder();
+    void check();
   });
 
   const field = (label: string, input: HTMLElement) => {
@@ -68,7 +87,9 @@ export function openRenderDialog(tab: Tab = "render"): void {
   const start = button("Render", async () => {
     // Left out for the master, so the daemon's default is what decides it, as it does
     // for every other client.
-    const seq = sequence.value === project.master ? undefined : sequence.value;
+    const seq = seqParam();
+    await check();
+    if (clash && !(await askForm({ title: "Overwrite?", note: overwriteNote(clash), rows: [], ok: "Render anyway" }))) return;
     try {
       await api.render(preset.value, seq, output.value.trim() || undefined);
       lastPreset = preset.value;
@@ -82,6 +103,7 @@ export function openRenderDialog(tab: Tab = "render"): void {
     field("Sequence", sequence),
     field("Preset", preset),
     field("Output", output),
+    warning,
     el("p", "muted tiny", "Renders run one at a time; one asked for while another is encoding waits in the queue."),
     actions(button("Close", close), start),
   );
@@ -123,6 +145,15 @@ export function openRenderDialog(tab: Tab = "render"): void {
   showing = show;
   unsubscribe = store.select((s) => [s.jobs], (s) => draw(s.jobs));
   show(tab);
+}
+
+/** What a render would clobber, in a sentence. */
+function overwriteNote(t: { output: string; exists: boolean; pending: number[] }): string {
+  const name = t.output.split(/[\\/]/).pop();
+  const jobs = t.pending.map((id) => `#${id}`).join(", ");
+  return t.exists && t.pending.length ? `${name} already exists, and ${jobs} will also write it. Rendering replaces it.`
+    : t.exists ? `${name} already exists. Rendering replaces it.`
+    : `${jobs} will also write ${name}. The last to finish wins.`;
 }
 
 function actions(...buttons: HTMLButtonElement[]): HTMLElement {

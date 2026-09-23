@@ -44,6 +44,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/bin/{id}/{file}", get(bin_asset))
         .route("/api/presets", get(presets))
         .route("/api/render", post(render))
+        .route("/api/render/target", get(render_target))
         .route("/api/bake", post(bake))
         .route("/api/sample", post(sample))
         .route("/api/snapshot", get(snapshot))
@@ -425,6 +426,29 @@ async fn render(State(st): S, Json(mut req): Json<RenderRequest>) -> ApiResult {
     let s2 = st.clone();
     let id = jobs::spawn_cancellable(st, "render", params, move |progress, cancel| jobs::render_queued(&s2, &req, progress, cancel));
     Ok(Json(json!({ "job": id })))
+}
+
+#[derive(Deserialize)]
+struct TargetQuery {
+    #[serde(default)]
+    preset: Option<String>,
+    #[serde(default)]
+    sequence: Option<String>,
+    #[serde(default)]
+    output: Option<std::path::PathBuf>,
+}
+
+/// Where a render would write, and what is already there: a file on disk, or a render
+/// not yet finished that will write the same path. Reads only — so a client can warn
+/// before overwriting without the render itself having to ask.
+async fn render_target(State(st): S, Query(q): Query<TargetQuery>) -> ApiResult {
+    let req = RenderRequest { preset: q.preset.unwrap_or_else(|| "youtube-1080p".into()), output: q.output, range: None, sequence: q.sequence };
+    let (sequence, preset, output) = jobs::render_target(&st, &req).map_err(ApiError::bad_request)?;
+    let pending: Vec<u64> = st.jobs.list(Some("render")).into_iter()
+        .filter(|j| !j.done && j.params.get("output").and_then(Value::as_str) == output.to_str())
+        .map(|j| j.id)
+        .collect();
+    Ok(Json(json!({ "sequence": sequence, "preset": preset.id, "output": output, "exists": output.exists(), "pending": pending })))
 }
 
 #[derive(Deserialize)]

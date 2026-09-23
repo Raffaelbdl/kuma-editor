@@ -420,6 +420,7 @@ dialog.modal.render .field { grid-template-columns: 80px 1fr; }
 .job-actions { display: flex; flex-direction: column; gap: 4px; }
 .job.failed .job-state { color: var(--danger); }
 .job.cancelled, .job.queued { opacity: 0.7; }
+.render-warning { margin: 4px 0 0 88px; font-size: 12px; color: var(--sel); }
 #topbar .status.link { cursor: pointer; }
 #topbar .status.link:hover { color: var(--fg); text-decoration: underline; }
 

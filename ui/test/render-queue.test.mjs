@@ -83,6 +83,35 @@ describe("the render queue", { skip: why ? `skipping: ${why}` : false }, () => {
     assert.deepEqual(fs.readdirSync(path.join(tmp, "renders")).filter((f) => f.endsWith(".mp4")), []);
     const jobs = await page.eval(`fetch("/api/jobs?kind=render").then(r => r.json()).then(j => j.jobs.map(x => [x.id, x.cancelled]))`);
     assert.deepEqual(jobs, [[first, true], [second, true]]);
+    await page.eval(`${dialog}.querySelector(".queue-pane .modal-actions button").click()`);
+    await page.until(`!${dialog}`);
+  });
+
+  it("warns before rendering over a file that is already there", async () => {
+    fs.writeFileSync(path.join(tmp, "renders/queue-draft.mp4"), "");
+    const before = (await page.eval(`fetch("/api/jobs?kind=render").then(r => r.json()).then(j => j.jobs.length)`));
+    await page.eval(`document.querySelector("#topbar button.primary").click()`);
+    await page.until(`${dialog}?.querySelector(".render-pane select:not([title]) option[value=draft]")`);
+    await page.eval(`(() => { const p = ${dialog}.querySelector(".render-pane select:not([title])"); p.value = "draft"; p.dispatchEvent(new Event("change")); })()`);
+    const warning = `${dialog}.querySelector(".render-warning")`;
+    await page.until(`!${warning}.hidden`);
+    assert.equal(await page.eval(`${warning}.textContent`), "queue-draft.mp4 already exists. Rendering replaces it.");
+
+    // Another name clears it.
+    await page.eval(`(() => { const o = ${dialog}.querySelector(".render-pane input"); o.value = "renders/fresh.mp4"; o.dispatchEvent(new Event("input")); })()`);
+    await page.until(`${warning}.hidden`);
+    await page.eval(`(() => { const o = ${dialog}.querySelector(".render-pane input"); o.value = ""; o.dispatchEvent(new Event("input")); })()`);
+    await page.until(`!${warning}.hidden`);
+
+    // The click asks, and saying no queues nothing.
+    await page.eval(`${dialog}.querySelector(".render-pane button.primary").click()`);
+    const ask = `[...document.querySelectorAll("dialog.modal")].find(d => d.textContent.includes("Overwrite?"))`;
+    await page.until(ask);
+    await page.eval(`[...${ask}.querySelectorAll("button")].find(b => b.textContent === "Cancel").click()`);
+    await page.until(`!${ask}`);
+    assert.equal(await page.eval(`fetch("/api/jobs?kind=render").then(r => r.json()).then(j => j.jobs.length)`), before);
+    await page.eval(`${dialog}.querySelector(".render-pane .modal-actions button").click()`);
+    fs.rmSync(path.join(tmp, "renders/queue-draft.mp4"));
   });
 
   it("the queue a window opens on is the daemon's, not only what it saw happen", async () => {

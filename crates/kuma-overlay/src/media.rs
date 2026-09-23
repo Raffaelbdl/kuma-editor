@@ -79,31 +79,25 @@ pub fn probe(path: &Path) -> Result<Probe, String> {
         (None, true, _) => MediaKind::Audio,
         _ => MediaKind::Video,
     };
-    let (fps, variable_fps) = video.map_or((None, false), |v| frame_rate(v.r_frame_rate.as_deref(), v.avg_frame_rate.as_deref()));
+    let (fps, variable_fps) = video
+        .filter(|_| kind != MediaKind::Image)
+        .map_or((None, false), |v| frame_rate(v.r_frame_rate.as_deref(), v.avg_frame_rate.as_deref()));
     let meta = MediaMeta {
         duration: if kind == MediaKind::Image { None } else { fmt_dur.or_else(|| video.and_then(|v| v.duration.as_deref()).and_then(|d| d.parse().ok())) },
         width: video.and_then(|v| v.width),
         height: video.and_then(|v| v.height),
-        fps: if kind == MediaKind::Image { None } else { fps },
-        variable_fps: kind != MediaKind::Image && variable_fps,
+        fps,
+        variable_fps,
         has_audio: audio,
     };
     Ok(Probe { meta, kind })
 }
 
-/// The rate to report, and whether the source is variable-rate.
-///
-/// `r_frame_rate` is the smallest rate that can express every timestamp, which for a
-/// variable-rate file is not its rate at all (frames 100/67/33 ms apart read as 30).
-/// `avg_frame_rate` is frames over duration, the honest number. They agree on a
-/// constant-rate file, and there `r` is kept because it is the clean rational (an
-/// average can come back as `2997/100`). Either may be `0/0` when ffprobe cannot say.
+/// The rate to report, and whether the source is variable-rate: ffprobe's `r_frame_rate`
+/// when `avg_frame_rate` agrees with it to within 0.5%, else the average, flagged.
+/// `docs/decisions.md` ("Probed frame rate") has why.
 fn frame_rate(r: Option<&str>, avg: Option<&str>) -> (Option<Fps>, bool) {
-    let parse = |s: &str| {
-        let (n, d) = s.split_once('/')?;
-        Some(Fps::new(n.parse().ok()?, d.parse().ok()?)).filter(|f| f.num > 0 && f.den > 0)
-    };
-    match (r.and_then(parse), avg.and_then(parse)) {
+    match (r.and_then(Fps::parse_ratio), avg.and_then(Fps::parse_ratio)) {
         (Some(r), Some(avg)) if (r.as_f64() - avg.as_f64()).abs() > r.as_f64() * 0.005 => (Some(avg), true),
         (Some(r), _) => (Some(r), false),
         (None, avg) => (avg, false),

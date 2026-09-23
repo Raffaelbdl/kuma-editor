@@ -249,7 +249,7 @@ function propRow(p: PropSpec, ctx: PropCtx): HTMLElement {
 function keyToggle(anim: Animation): HTMLButtonElement {
   const on = anim.animated;
   const b = button(icon(on ? "key" : "key-open", 11), () => (on ? anim.clear() : anim.animate()),
-    on ? "Keyframed. Click to stop, keeping the values at the playhead" : "Animate: key this effect at the playhead, holding what it does now", "kf-toggle");
+    on ? "Stop animating" : "Animate", "kf-toggle");
   b.classList.toggle("on", on);
   b.setAttribute("aria-pressed", String(on));
   return b;

@@ -83,8 +83,13 @@ Chrome headless shell if hyperframes should not download one.
   an overlay is never an edit.
 - **Render means the master** unless a sequence is named: `render` and `sample_frames`
   default to it on every surface, and no session state leaks into either. The editor's
-  Render button is the one place a person can choose otherwise, and only once the open
-  sequence differs from the master.
+  render dialog is the one place a person can choose otherwise, with the master
+  preselected whatever is open.
+- Renders are **queued**: one encodes at a time, first come first served
+  (`jobs::in_render_lane`), the rest wait `queued`, and any of them can be cancelled (`POST /api/jobs/{id}/cancel`, MCP
+  `cancel_job`). A cancel kills melt and removes the partial file. A render's sequence and
+  output are settled when it is asked for, not when its turn comes. A job's `state` is
+  what clients read; never infer one from `message`.
 - Overlays are live DOM on the sequence you have open and **baked** in the sequences it
   nests, which is what puts them in the preview at all; the two sets are disjoint, so none
   is drawn twice. Preview bakes are best effort — a template that will not bake costs that

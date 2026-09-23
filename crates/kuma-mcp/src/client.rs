@@ -66,8 +66,10 @@ impl Client {
         let start = std::time::Instant::now();
         loop {
             let j = self.get(&format!("/api/jobs/{id}")).await?;
-            if j["done"].as_bool() == Some(true) {
-                if j["ok"].as_bool() == Some(true) {
+            let state = j["state"].as_str().unwrap_or_default();
+            if matches!(state, "done" | "failed" | "cancelled") {
+                // Stopped on purpose is an outcome, not a failure.
+                if state != "failed" {
                     return Ok(j);
                 }
                 anyhow::bail!("job {id} failed: {}", j["message"].as_str().unwrap_or("?"));

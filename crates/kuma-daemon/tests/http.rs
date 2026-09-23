@@ -211,3 +211,40 @@ async fn media_is_added_into_a_folder_in_one_edit() {
     assert!(status.starts_with("HTTP/1.1 4"), "a dangling parent was accepted: {status}");
     assert!(!state.project.read().unwrap().bin.contains_key("boop"));
 }
+
+/// The queue's routes: a listing a fresh window can rebuild from, and a cancel that tells
+/// an unknown job from one that can no longer be stopped. A bad preset is refused when
+/// the render is asked for, not discovered as a failed job.
+#[tokio::test(flavor = "multi_thread")]
+async fn jobs_are_listed_and_cancels_are_checked() {
+    let (_state, addr, _dir) = daemon().await;
+    let (status, body) = get_body(&addr, "/api/jobs?kind=render");
+    assert!(status.contains("200"), "{status}");
+    assert_eq!(serde_json::from_str::<serde_json::Value>(&body).unwrap()["jobs"], serde_json::json!([]));
+
+    let (status, _, _) = request(&addr, "POST", "/api/jobs/42/cancel", "{}");
+    assert!(status.contains("404"), "{status}");
+
+    let (status, _, body) = request(&addr, "POST", "/api/render", r#"{"preset":"nope"}"#);
+    assert!(status.contains("400") && body.contains("unknown preset"), "{status} {body}");
+}
+
+/// What a render would overwrite is said before it is asked for: the file on disk, and a
+/// render still to finish that writes the same path.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_render_target_says_what_it_would_overwrite() {
+    let (_state, addr, dir) = daemon().await;
+    let target = |q: &str| -> serde_json::Value { serde_json::from_str(&get_body(&addr, &format!("/api/render/target?{q}")).1).unwrap() };
+
+    let t = target("preset=draft");
+    assert_eq!(t["output"], serde_json::json!(dir.path().join("renders/t-draft.mp4")));
+    assert_eq!((t["exists"].as_bool(), t["pending"].as_array().map(Vec::len)), (Some(false), Some(0)));
+
+    std::fs::create_dir_all(dir.path().join("renders")).unwrap();
+    std::fs::write(dir.path().join("renders/t-draft.mp4"), "").unwrap();
+    assert_eq!(target("preset=draft")["exists"], true);
+    assert_eq!(target("preset=draft&output=renders/other.mp4")["exists"], false);
+
+    let (status, _) = get_body(&addr, "/api/render/target?preset=nope");
+    assert!(status.contains("400"), "{status}");
+}

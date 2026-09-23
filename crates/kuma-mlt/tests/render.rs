@@ -54,8 +54,10 @@ fn renders_reference_project_with_melt() {
     let out = root.join("out.mp4");
     let job = RenderJob { mlt_file: mlt_file.clone(), output: out.clone(), preset: presets::find("draft").unwrap(), range: None, extra: vec![] };
     let mut last = 0;
-    render(&job, |p| last = p.percent).expect("melt render");
+    render(&job, &std::sync::atomic::AtomicBool::new(false), |p| last = p.percent).expect("melt render");
     assert!(out.is_file());
+    // `-silent` once swallowed these, and a render sat at 50% until it finished.
+    assert!(last > 0, "melt reported no progress");
 
     // Duration is 15 s (450 frames) and the file has audio.
     let probe = Command::new("ffprobe")
@@ -174,7 +176,7 @@ fn each_half_graph_matches_the_full_graph() {
         let mut extra: Vec<(String, String)> = vec![("f".into(), "framemd5".into()), ("real_time".into(), "-1".into())];
         extra.extend(props.iter().map(|(k, v)| (k.to_string(), v.to_string())));
         let job = RenderJob { mlt_file: mlt.to_path_buf(), output: out.clone(), preset: presets::find("draft").unwrap(), range: None, extra };
-        render(&job, |_| {}).expect("melt render");
+        render(&job, &std::sync::atomic::AtomicBool::new(false), |_| {}).expect("melt render");
         let text = std::fs::read_to_string(&out).unwrap();
         let lines: Vec<String> = text.lines().filter(|l| !l.starts_with('#')).map(str::to_string).collect();
         assert!(!lines.is_empty(), "{name}: no frames");

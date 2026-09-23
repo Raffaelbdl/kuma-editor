@@ -222,11 +222,24 @@ export type PatchOp =
   | { op: "remove"; path: string }
   | { op: "move"; from: string; path: string };
 
-export interface Job { id: number; kind: string; percent: number; message: string; done: boolean; ok: boolean; result: unknown }
+export type JobState = "queued" | "running" | "done" | "failed" | "cancelled";
+/** Done, failed or cancelled: it will not change again. */
+export const isFinal = (j: Job) => j.state !== "queued" && j.state !== "running";
+
+export interface Job {
+  id: number; kind: string; percent: number; message: string; result: unknown;
+  /** Where it is in its life — the field to read; `message` is only a label. */
+  state: JobState;
+  /** Whether it can be stopped (renders can). */
+  cancellable?: boolean;
+  /** What it was asked to do, settled when it started — a render's `{sequence, preset, output}`. */
+  params?: unknown;
+}
 
 export type DaemonEvent =
   | { type: "project_changed"; revision: number; origin: string }
-  | ({ type: "job" } & Job);
+  | ({ type: "job" } & Job)
+  | { type: "jobs_cleared"; ids: number[] };
 
 export const fpsValue = (f: Fps) => f.num / f.den;
 

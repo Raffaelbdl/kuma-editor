@@ -1663,6 +1663,37 @@ the stale-metadata problem above. Rendering was never affected — times are sec
 sampled at the project rate, checked pixel-identical against ffmpeg's own extraction on
 a variable-rate file. Audio drift over a long variable-rate recording is still untested.
 
+## Render dialog and queue
+
+Render used to fire straight from the top bar, with the preset and a master/open target as
+loose selects beside it, and every render ran at once and to the end. It now opens a
+dialog modelled on Kdenlive's: a Render tab (sequence, master first and preselected;
+preset; optional output) and a Job queue tab listing every render with its progress and a
+Cancel button. The top bar's status line opens the queue.
+
+Renders run **one at a time**, in the order they were asked for. Two melts encoding side by
+side each run at half speed, and neither finishes first. A render takes a ticket in
+`in_render_lane` and waits on a condvar that a freed lane and a cancel both notify. One
+cancelled while queued gives up its place and never starts. A first cut polled a mutex
+with `try_lock`, which does not keep waiters in order. Each job has one `state`
+(`queued`, `running`, `done`, `failed`, `cancelled`) that the UI reads directly. An early
+version inferred "queued" from the message text instead. Progress reaches clients at most
+every 250 ms unless the percentage moves, because melt reports every frame. Its sequence and output path are
+settled when it is asked for (`render_target`), so the queue shows what will be written
+and opening another sequence meanwhile changes nothing. A job is published the moment it
+exists; before, a queued one said nothing until it moved, and the queue could not show it.
+
+Cancelling is a flag the job watches. The bake loop checks it between overlays, since
+bakes are content-cached and abandoning one costs nothing. During the encode, a watcher
+beside the stderr reader kills melt and its children, then the partial file is removed.
+**A process group of its own for melt** was rejected. It kills the tree in one signal, but
+it also stops a terminal's Ctrl-C from reaching melt, which then outlives a stopped
+`kuma render` or daemon. So the children are signalled (`pkill -P`) and then the child
+itself, which reaches melt under `xvfb-run`.
+
+Found on the way: melt 7.22 takes `-silent` to suppress `-progress` too. A render had
+never reported a frame, so it sat at 50% until done. Renders no longer pass `-silent`, and
+the melt render test asserts that progress arrives.
 
 ## Still open
 

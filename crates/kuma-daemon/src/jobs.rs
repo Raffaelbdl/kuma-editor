@@ -3,7 +3,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use kuma_core::template::Region;
@@ -14,30 +14,130 @@ use serde::{Deserialize, Serialize};
 
 use crate::state::{lock, read, AppState, Event};
 
-/// A background job as clients see it: progress while running, then `done` with either
-/// a `result` or an `error`.
+/// Where a job is in its life: what clients read. `message` is only a label.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum JobState {
+    /// A render waiting its turn.
+    #[default]
+    Queued,
+    Running,
+    Done,
+    Failed,
+    Cancelled,
+}
+
+/// A background job as clients see it: progress while running, then a final `state` with
+/// either a `result` or an error in `message`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Job {
     pub id: u64,
     pub kind: String,
+    #[serde(default)]
+    pub state: JobState,
     pub percent: u8,
     pub message: String,
-    pub done: bool,
-    pub ok: bool,
     #[serde(default)]
     pub result: serde_json::Value,
+    /// Whether `POST /api/jobs/{id}/cancel` can stop it.
+    #[serde(default)]
+    pub cancellable: bool,
+    /// What it was asked to do, as the queue shows it: a render's sequence, preset, output.
+    #[serde(default)]
+    pub params: serde_json::Value,
+}
+
+impl JobState {
+    /// Done, failed or cancelled: it will not change again.
+    pub fn is_final(self) -> bool {
+        matches!(self, JobState::Done | JobState::Failed | JobState::Cancelled)
+    }
+}
+
+impl Job {
+    fn with_state(self, state: JobState, message: impl Into<String>) -> Job {
+        Job { state, message: message.into(), ..self }
+    }
 }
 
 #[derive(Default)]
 pub struct Jobs {
     next: AtomicU64,
     table: Mutex<HashMap<u64, Job>>,
+    /// The flags of the cancellable jobs not yet finished.
+    cancels: Mutex<HashMap<u64, Arc<AtomicBool>>>,
+    lane: Lane,
+}
+
+/// Renders run one at a time, first come first served: the front ticket takes the lane.
+#[derive(Default)]
+struct Lane {
+    state: Mutex<LaneState>,
+    turn: std::sync::Condvar,
+}
+
+#[derive(Default)]
+struct LaneState {
+    waiting: std::collections::VecDeque<u64>,
+    busy: bool,
+    next: u64,
 }
 
 impl Jobs {
     pub fn get(&self, id: u64) -> Option<Job> {
         lock(&self.table).get(&id).cloned()
     }
+
+    /// Every job still in the table, oldest first, optionally of one kind.
+    pub fn list(&self, kind: Option<&str>) -> Vec<Job> {
+        let mut jobs: Vec<Job> = lock(&self.table).values().filter(|j| kind.is_none_or(|k| j.kind == k)).cloned().collect();
+        jobs.sort_by_key(|j| j.id);
+        jobs
+    }
+
+    /// Forget every finished job and return their ids. Live ones stay.
+    pub fn clear_finished(&self) -> Vec<u64> {
+        let mut ids = Vec::new();
+        lock(&self.table).retain(|id, j| !j.state.is_final() || {
+            ids.push(*id);
+            false
+        });
+        ids
+    }
+
+    /// The unfinished renders that will write `output`.
+    pub fn writing(&self, output: &Path) -> Vec<u64> {
+        let mut ids: Vec<u64> = lock(&self.table)
+            .values()
+            .filter(|j| j.kind == "render" && !j.state.is_final() && j.params.get("output").and_then(serde_json::Value::as_str) == output.to_str())
+            .map(|j| j.id)
+            .collect();
+        ids.sort_unstable();
+        ids
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum CancelError {
+    #[error("no such job")]
+    NotFound,
+    #[error("job {0} has already finished")]
+    Finished(u64),
+    #[error("a `{0}` job cannot be cancelled")]
+    NotCancellable(String),
+}
+
+/// Ask a job to stop: at once while queued, by killing melt while it encodes. It then
+/// reports itself `cancelled`.
+pub fn cancel(state: &AppState, id: u64) -> Result<Job, CancelError> {
+    let job = state.jobs.get(id).ok_or(CancelError::NotFound)?;
+    if job.state.is_final() {
+        return Err(CancelError::Finished(id));
+    }
+    let flag = lock(&state.jobs.cancels).get(&id).cloned().ok_or_else(|| CancelError::NotCancellable(job.kind.clone()))?;
+    flag.store(true, Ordering::SeqCst);
+    state.jobs.lane.turn.notify_all(); // a queued render sees the flag at once
+    Ok(job)
 }
 
 /// Spawn a blocking job. `f` receives a progress callback and returns a JSON result.
@@ -45,13 +145,38 @@ pub fn spawn<F>(state: Arc<AppState>, kind: &str, f: F) -> u64
 where
     F: FnOnce(&dyn Fn(u8, &str)) -> anyhow::Result<serde_json::Value> + Send + 'static,
 {
+    spawn_inner(state, kind, serde_json::Value::Null, false, move |progress, _| f(progress))
+}
+
+/// Spawn a cancellable job: `queued` until its first progress report. `f` watches the
+/// flag; once set, the job ends `cancelled` however `f` returns.
+pub fn spawn_cancellable<F>(state: Arc<AppState>, kind: &str, params: serde_json::Value, f: F) -> u64
+where
+    F: FnOnce(&dyn Fn(u8, &str), &AtomicBool) -> anyhow::Result<serde_json::Value> + Send + 'static,
+{
+    spawn_inner(state, kind, params, true, f)
+}
+
+/// How often progress reaches clients when only the message moves: melt reports every frame.
+const PROGRESS_EVERY: std::time::Duration = std::time::Duration::from_millis(250);
+
+fn spawn_inner<F>(state: Arc<AppState>, kind: &str, params: serde_json::Value, cancellable: bool, f: F) -> u64
+where
+    F: FnOnce(&dyn Fn(u8, &str), &AtomicBool) -> anyhow::Result<serde_json::Value> + Send + 'static,
+{
     let id = state.jobs.next.fetch_add(1, Ordering::SeqCst) + 1;
-    let job = Job { id, kind: kind.to_string(), percent: 0, message: "queued".into(), done: false, ok: false, result: serde_json::Value::Null };
+    // Only a cancellable job can wait for a turn; anything else starts at once.
+    let (start, message) = if cancellable { (JobState::Queued, "queued") } else { (JobState::Running, "starting") };
+    let job = Job { id, kind: kind.to_string(), state: start, percent: 0, message: String::new(), result: serde_json::Value::Null, cancellable, params }.with_state(start, message);
+    let flag = Arc::new(AtomicBool::new(false));
+    if cancellable {
+        lock(&state.jobs.cancels).insert(id, flag.clone());
+    }
     {
         let mut table = lock(&state.jobs.table);
         // Keep the table bounded: drop the oldest finished jobs beyond a hundred.
         if table.len() >= 100 {
-            let mut done: Vec<u64> = table.iter().filter(|(_, j)| j.done).map(|(k, _)| *k).collect();
+            let mut done: Vec<u64> = table.iter().filter(|(_, j)| j.state.is_final()).map(|(k, _)| *k).collect();
             done.sort_unstable();
             for k in done.into_iter().take(table.len() + 1 - 100) {
                 table.remove(&k);
@@ -59,16 +184,31 @@ where
         }
         table.insert(id, job.clone());
     }
+    // Said at once, or a queued render would be invisible until its turn.
+    let _ = state.events.send(Event::Job(job.clone()));
     tokio::task::spawn_blocking(move || {
         let publish = |job: Job| {
             lock(&state.jobs.table).insert(id, job.clone());
             let _ = state.events.send(Event::Job(job));
         };
-        let progress = |percent: u8, message: &str| publish(Job { percent, message: message.to_string(), ..job.clone() });
-        publish(match f(&progress) {
-            Ok(result) => Job { percent: 100, message: "done".into(), done: true, ok: true, result, ..job.clone() },
-            Err(e) => Job { message: format!("{e:#}"), done: true, ok: false, ..job.clone() },
+        // (when last published, percent, still queued)
+        let last = std::cell::Cell::new((std::time::Instant::now(), 0u8, job.state == JobState::Queued));
+        let progress = |percent: u8, message: &str| {
+            let (at, was, queued) = last.get();
+            if queued || percent != was || at.elapsed() >= PROGRESS_EVERY {
+                last.set((std::time::Instant::now(), percent, false));
+                publish(Job { percent, ..job.clone() }.with_state(JobState::Running, message));
+            }
+        };
+        let outcome = f(&progress, &flag);
+        let percent = last.get().1;
+        publish(match outcome {
+            _ if flag.load(Ordering::SeqCst) => Job { percent, ..job.clone() }.with_state(JobState::Cancelled, "cancelled"),
+            Ok(result) => Job { percent: 100, result, ..job.clone() }.with_state(JobState::Done, "done"),
+            Err(e) => Job { percent, ..job.clone() }.with_state(JobState::Failed, format!("{e:#}")),
         });
+        // Only now: a cancel just before the final state must not find it uncancellable.
+        lock(&state.jobs.cancels).remove(&id);
     });
     id
 }
@@ -323,13 +463,14 @@ pub fn bake_for(
     scope: OverlayScope,
     within: Option<(f64, f64)>,
     progress: &dyn Fn(u8, &str),
+    cancel: Option<&AtomicBool>,
 ) -> anyhow::Result<Bakes> {
     let nested_only = match scope {
         OverlayScope::None => return Ok(Bakes::new()),
         OverlayScope::Nested => true,
         OverlayScope::All => false,
     };
-    let (out, errs) = bake_clips(state, project, &overlay_clips(project, root, nested_only, within), progress);
+    let (out, errs) = bake_clips(state, project, &overlay_clips(project, root, nested_only, within), progress, cancel);
     if !nested_only {
         return strict((out, errs));
     }
@@ -347,7 +488,7 @@ pub fn bake_all(state: &AppState, project: &Project, only: Option<&[String]>, pr
         .map(|(_, _, c)| c.id.clone())
         .filter(|id| only.is_none_or(|o| o.contains(id)))
         .collect();
-    strict(bake_clips(state, project, &ids, progress))
+    strict(bake_clips(state, project, &ids, progress, None))
 }
 
 /// A bake that must not lose an overlay: the first failure becomes the result.
@@ -356,12 +497,17 @@ fn strict((out, errs): (Bakes, Vec<anyhow::Error>)) -> anyhow::Result<Bakes> {
 }
 
 /// Bake the named overlay clips (cached), returning what succeeded and what did not.
-/// Whether a failure is fatal is the caller's to decide — the loop does not care.
-fn bake_clips(state: &AppState, project: &Project, ids: &[String], progress: &dyn Fn(u8, &str)) -> (Bakes, Vec<anyhow::Error>) {
+/// Whether a failure is fatal is the caller's to decide — the loop does not care. A set
+/// `cancel` stops it between two bakes, which the cache makes free to pick up again.
+fn bake_clips(state: &AppState, project: &Project, ids: &[String], progress: &dyn Fn(u8, &str), cancel: Option<&AtomicBool>) -> (Bakes, Vec<anyhow::Error>) {
     let templates = read(&state.templates).loaded.clone();
     let (mut out, mut errs) = (Bakes::new(), Vec::new());
     let n = ids.len().max(1);
     for (i, id) in ids.iter().enumerate() {
+        if cancel.is_some_and(|c| c.load(Ordering::SeqCst)) {
+            errs.push(anyhow::anyhow!("cancelled"));
+            break;
+        }
         let Some((_, _, clip)) = project.find_clip(id) else { continue };
         let Some(BinSource::Overlay { template: overlay, vars }) = project.item(clip).map(|i| &i.source) else { continue };
         let Some((dir, manifest)) = templates.get(overlay) else {
@@ -449,21 +595,68 @@ fn default_preset() -> String {
     "youtube-1080p".into()
 }
 
-pub fn render(state: &AppState, req: &RenderRequest, progress: &dyn Fn(u8, &str)) -> anyhow::Result<serde_json::Value> {
-    let project = read(&state.project).clone();
+/// A render request with its defaults filled in: sequence, preset, absolute output path.
+pub fn render_target(state: &AppState, req: &RenderRequest) -> anyhow::Result<(String, &'static kuma_mlt::ExportPreset, PathBuf)> {
+    let project = read(&state.project);
     let preset = kuma_mlt::presets::find(&req.preset).ok_or_else(|| anyhow::anyhow!("unknown preset `{}`", req.preset))?;
     let sequence = project.sequence_or_master(req.sequence.as_deref()).map_err(|e| anyhow::anyhow!(e))?.clone();
-    let mut opts = compile_options(state);
-    opts.bakes = bake_for(state, &project, &sequence, OverlayScope::All, None, &|p, m| progress(p / 2, m))?;
-    opts.unbaked = UnbakedPolicy::Error;
-    opts.sequence = Some(sequence.clone());
-    let mlt = compile_project(state, &project, &opts, "render")?;
     let output = req.output.clone().unwrap_or_else(|| {
         let name = if project.name.is_empty() { "kuma" } else { project.name.as_str() };
         let part = if sequence == project.master { String::new() } else { format!("-{sequence}") };
-        state.config.project_root().join("renders").join(format!("{name}{part}-{}.{}", preset.id, preset.extension))
+        PathBuf::from("renders").join(format!("{name}{part}-{}.{}", preset.id, preset.extension))
     });
     let output = if output.is_absolute() { output } else { state.config.project_root().join(output) };
+    Ok((sequence, preset, output))
+}
+
+/// Run `f` once every render asked for earlier has finished, reporting the start (which
+/// makes the job `running`). Cancelled while waiting, it gives up its place.
+pub fn in_render_lane<T>(state: &AppState, cancel: &AtomicBool, progress: &dyn Fn(u8, &str), f: impl FnOnce() -> anyhow::Result<T>) -> anyhow::Result<T> {
+    let lane = &state.jobs.lane;
+    let mut s = lock(&lane.state);
+    s.next += 1;
+    let ticket = s.next;
+    s.waiting.push_back(ticket);
+    loop {
+        if cancel.load(Ordering::SeqCst) {
+            s.waiting.retain(|t| *t != ticket);
+            lane.turn.notify_all();
+            anyhow::bail!("cancelled");
+        }
+        if !s.busy && s.waiting.front() == Some(&ticket) {
+            s.waiting.pop_front();
+            s.busy = true;
+            break;
+        }
+        // A freed lane and `cancel` both notify; the timeout is a backstop.
+        s = lane.turn.wait_timeout(s, std::time::Duration::from_secs(1)).unwrap_or_else(std::sync::PoisonError::into_inner).0;
+    }
+    drop(s);
+    struct Release<'a>(&'a Lane);
+    impl Drop for Release<'_> {
+        fn drop(&mut self) {
+            lock(&self.0.state).busy = false;
+            self.0.turn.notify_all();
+        }
+    }
+    let _release = Release(lane);
+    progress(0, "starting");
+    f()
+}
+
+/// Render, once the lane is ours.
+pub fn render(state: &AppState, req: &RenderRequest, progress: &dyn Fn(u8, &str), cancel: &AtomicBool) -> anyhow::Result<serde_json::Value> {
+    in_render_lane(state, cancel, progress, || render_now(state, req, progress, cancel))
+}
+
+fn render_now(state: &AppState, req: &RenderRequest, progress: &dyn Fn(u8, &str), cancel: &AtomicBool) -> anyhow::Result<serde_json::Value> {
+    let (sequence, preset, output) = render_target(state, req)?;
+    let project = read(&state.project).clone();
+    let mut opts = compile_options(state);
+    opts.bakes = bake_for(state, &project, &sequence, OverlayScope::All, None, &|p, m| progress(p / 2, m), Some(cancel))?;
+    opts.unbaked = UnbakedPolicy::Error;
+    opts.sequence = Some(sequence.clone());
+    let mlt = compile_project(state, &project, &opts, "render")?;
     let range = req.range.map(|(a, b)| {
         let f = project.fps.clip_frames(a, b);
         (f.in_, f.out)
@@ -471,7 +664,13 @@ pub fn render(state: &AppState, req: &RenderRequest, progress: &dyn Fn(u8, &str)
     let extra = vec![("ar".to_string(), project.sample_rate.to_string())];
     let job = RenderJob { mlt_file: mlt.clone(), output: output.clone(), preset, range, extra };
     progress(50, "rendering with melt");
-    kuma_mlt::render(&job, |p| progress(50 + p.percent / 2, &format!("frame {}", p.frame)))?;
+    if let Err(e) = kuma_mlt::render(&job, cancel, |p| progress(50 + p.percent / 2, &format!("frame {}", p.frame))) {
+        // A stopped encode leaves nothing behind.
+        if matches!(e, kuma_mlt::MeltError::Cancelled) {
+            let _ = std::fs::remove_file(&output);
+        }
+        return Err(e.into());
+    }
     Ok(serde_json::json!({ "output": output, "mlt": mlt, "preset": preset.id, "sequence": sequence }))
 }
 
@@ -577,7 +776,7 @@ pub fn sample_frames(state: &AppState, req: &SampleRequest, progress: &dyn Fn(u8
     let count = req.count.clamp(1, 32);
     // Only the overlays this sample can actually show: one frame must not pay for a bake
     // of every overlay on the timeline, nor fail because one somewhere else is broken.
-    let bakes = bake_for(state, &project, &sequence, scope, Some((req.t0, t1)), &|p, m| progress(p / 2, m))?;
+    let bakes = bake_for(state, &project, &sequence, scope, Some((req.t0, t1)), &|p, m| progress(p / 2, m), None)?;
     let out_dir = state.config.cache_dir().join("samples");
     std::fs::create_dir_all(&out_dir)?;
     let mut opts = compile_options(state);

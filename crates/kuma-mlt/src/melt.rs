@@ -5,6 +5,8 @@ use std::collections::VecDeque;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
 use crate::presets::ExportPreset;
 
@@ -14,6 +16,8 @@ pub enum MeltError {
     NotFound,
     #[error("melt failed (exit {code:?}): {stderr}")]
     Failed { code: Option<i32>, stderr: String },
+    #[error("cancelled")]
+    Cancelled,
     #[error("io: {0}")]
     Io(#[from] std::io::Error),
 }
@@ -55,7 +59,8 @@ fn melt_command() -> Command {
 
 fn command(job: &RenderJob) -> Command {
     let mut args: Vec<String> = Vec::new();
-    args.push("-silent".into());
+    // Not `-silent`: melt 7.22 takes it to mean no `-progress` lines either, and a render
+    // then sits at "rendering with melt" until it is done.
     args.push("-progress".into());
     args.push(job.mlt_file.to_string_lossy().into_owned());
     if let Some((in_, out)) = job.range {
@@ -75,45 +80,94 @@ fn command(job: &RenderJob) -> Command {
     cmd
 }
 
-/// Render synchronously, reporting progress lines as they arrive.
-pub fn render(job: &RenderJob, mut on_progress: impl FnMut(RenderProgress)) -> Result<(), MeltError> {
+/// Render synchronously, reporting progress lines as they arrive. Setting `cancel` stops
+/// melt and returns [`MeltError::Cancelled`]; the partial output is the caller's to remove.
+pub fn render(job: &RenderJob, cancel: &AtomicBool, mut on_progress: impl FnMut(RenderProgress)) -> Result<(), MeltError> {
     if !melt_available() {
         return Err(MeltError::NotFound);
     }
     if let Some(parent) = job.output.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let mut cmd = command(job);
-    cmd.stdout(Stdio::null()).stderr(Stdio::piped());
-    let mut child = cmd.spawn()?;
-    let stderr = child.stderr.take().expect("piped stderr");
     // Keep the last lines of diagnostics for the error message.
     let mut tail: VecDeque<String> = VecDeque::new();
-    // melt writes progress as "Current Frame: N, percentage: P" on stderr, using \r.
-    let reader = BufReader::new(stderr);
-    for chunk in reader.split(b'\r') {
-        let chunk = chunk?;
-        for line in chunk.split(|b| *b == b'\n') {
-            let line = String::from_utf8_lossy(line);
-            let line = line.trim();
-            if line.is_empty() {
-                continue;
-            }
-            if let Some(p) = parse_progress(line) {
-                on_progress(p);
-            } else {
-                tail.push_back(line.to_string());
-                if tail.len() > 100 {
-                    tail.pop_front();
-                }
+    let code = run_cancellable(command(job), cancel, |line| {
+        if let Some(p) = parse_progress(line) {
+            on_progress(p);
+        } else {
+            tail.push_back(line.to_string());
+            if tail.len() > 100 {
+                tail.pop_front();
             }
         }
-    }
-    let status = child.wait()?;
-    if !status.success() {
-        return Err(MeltError::Failed { code: status.code(), stderr: tail.into_iter().collect::<Vec<_>>().join("\n") });
+    })?;
+    if code != Some(0) {
+        return Err(MeltError::Failed { code, stderr: tail.into_iter().collect::<Vec<_>>().join("\n") });
     }
     Ok(())
+}
+
+/// Run `cmd`, handing each non-empty stderr line to `on_line`, and return its exit code.
+fn run_cancellable(mut cmd: Command, cancel: &AtomicBool, mut on_line: impl FnMut(&str)) -> Result<Option<i32>, MeltError> {
+    cmd.stdout(Stdio::null()).stderr(Stdio::piped());
+    let mut child = cmd.spawn()?;
+    let pid = child.id();
+    let stderr = child.stderr.take().expect("piped stderr");
+    let finished = AtomicBool::new(false);
+    std::thread::scope(|scope| -> Result<(), MeltError> {
+        // The reader blocks on stderr, so the flag is watched beside it. Killing the child
+        // closes the pipe, which ends the read.
+        scope.spawn(|| {
+            let done = || finished.load(Ordering::SeqCst);
+            let tick = || std::thread::sleep(Duration::from_millis(100));
+            while !done() && !cancel.load(Ordering::SeqCst) {
+                tick();
+            }
+            if done() {
+                return;
+            }
+            kill_tree(pid, "TERM");
+            for _ in 0..30 {
+                if done() {
+                    return;
+                }
+                tick();
+            }
+            kill_tree(pid, "KILL");
+        });
+        // melt writes progress as "Current Frame: N, percentage: P" on stderr, using \r.
+        let read = (|| -> Result<(), MeltError> {
+            for chunk in BufReader::new(stderr).split(b'\r') {
+                let chunk = chunk?;
+                for line in chunk.split(|b| *b == b'\n') {
+                    let line = String::from_utf8_lossy(line);
+                    let line = line.trim();
+                    if !line.is_empty() {
+                        on_line(line);
+                    }
+                }
+            }
+            Ok(())
+        })();
+        finished.store(true, Ordering::SeqCst);
+        read
+    })?;
+    let status = child.wait()?;
+    if cancel.load(Ordering::SeqCst) {
+        return Err(MeltError::Cancelled);
+    }
+    Ok(status.code())
+}
+
+/// Signal a process's children, then the process (`pkill`/`kill`, no `libc`). Children
+/// first: melt may run under `xvfb-run`. Not a process group of its own, which would stop
+/// a terminal's Ctrl-C from reaching melt.
+fn kill_tree(pid: u32, signal: &str) {
+    let quiet = |c: &mut Command| {
+        let _ = c.stdout(Stdio::null()).stderr(Stdio::null()).status();
+    };
+    quiet(Command::new("pkill").arg(format!("-{signal}")).arg("-P").arg(pid.to_string()));
+    quiet(Command::new("kill").arg(format!("-{signal}")).arg(pid.to_string()));
 }
 
 fn parse_progress(line: &str) -> Option<RenderProgress> {
@@ -164,5 +218,33 @@ mod tests {
         let p = parse_progress("Current Frame:        120, percentage:         26").unwrap();
         assert_eq!((p.frame, p.percent), (120, 26));
         assert!(parse_progress("something else").is_none());
+    }
+
+    #[test]
+    fn cancelling_kills_the_child_and_its_children() {
+        // A shell with a child of its own, like `xvfb-run` with melt under it.
+        let mut cmd = Command::new("sh");
+        cmd.args(["-c", "sleep 30 & wait"]);
+        let cancel = AtomicBool::new(false);
+        let started = std::time::Instant::now();
+        std::thread::scope(|s| {
+            s.spawn(|| {
+                std::thread::sleep(Duration::from_millis(300));
+                cancel.store(true, Ordering::SeqCst);
+            });
+            // The backgrounded sleep holds stderr open too: returning at all means it died.
+            assert!(matches!(run_cancellable(cmd, &cancel, |_| {}), Err(MeltError::Cancelled)));
+        });
+        assert!(started.elapsed() < Duration::from_secs(10));
+    }
+
+    #[test]
+    fn an_uncancelled_run_reports_its_exit_and_lines() {
+        let mut cmd = Command::new("sh");
+        cmd.args(["-c", "echo one >&2; printf 'two\\rthree\\n' >&2; exit 3"]);
+        let mut lines = vec![];
+        let code = run_cancellable(cmd, &AtomicBool::new(false), |l| lines.push(l.to_string())).unwrap();
+        assert_eq!(code, Some(3));
+        assert_eq!(lines, ["one", "two", "three"]);
     }
 }

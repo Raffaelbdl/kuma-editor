@@ -44,10 +44,14 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/bin/{id}/{file}", get(bin_asset))
         .route("/api/presets", get(presets))
         .route("/api/render", post(render))
+        .route("/api/render/target", get(render_target))
         .route("/api/bake", post(bake))
         .route("/api/sample", post(sample))
         .route("/api/snapshot", get(snapshot))
+        .route("/api/jobs", get(job_list))
+        .route("/api/jobs/clear", post(job_clear))
         .route("/api/jobs/{id}", get(job_get))
+        .route("/api/jobs/{id}/cancel", post(job_cancel))
         .route("/api/events", get(events_ws))
         .route("/api/preview/ws", get(preview_ws))
         .route("/api/preview/reload", post(preview_reload))
@@ -412,9 +416,28 @@ async fn transcribe(State(st): S, Json(req): Json<TranscribeRequest>) -> Json<Va
 
 // ---------- jobs ----------
 
-async fn render(State(st): S, Json(req): Json<RenderRequest>) -> Json<Value> {
+/// `p` relative to the project when it is inside it: a path as a person would type it.
+fn project_relative(st: &AppState, p: &std::path::Path) -> std::path::PathBuf {
+    p.strip_prefix(st.config.project_root()).unwrap_or(p).to_path_buf()
+}
+
+/// Queue a render. Sequence and output are settled now, so the queue shows what will be
+/// written whatever is opened meanwhile, and a bad preset is refused here.
+async fn render(State(st): S, Json(mut req): Json<RenderRequest>) -> ApiResult {
+    let (sequence, preset, output) = jobs::render_target(&st, &req).map_err(ApiError::bad_request)?;
+    let params = json!({ "sequence": sequence, "preset": preset.id, "output": output, "path": project_relative(&st, &output) });
+    req.sequence = Some(sequence);
+    req.output = Some(output);
     let s2 = st.clone();
-    Json(json!({ "job": jobs::spawn(st, "render", move |progress| jobs::render(&s2, &req, progress)) }))
+    let id = jobs::spawn_cancellable(st, "render", params, move |progress, cancel| jobs::render(&s2, &req, progress, cancel));
+    Ok(Json(json!({ "job": id })))
+}
+
+/// Where a render would write and what it would replace — a file there, or unfinished
+/// renders to the same path — so a client can warn first. Reads only.
+async fn render_target(State(st): S, Query(req): Query<RenderRequest>) -> ApiResult {
+    let (sequence, preset, output) = jobs::render_target(&st, &req).map_err(ApiError::bad_request)?;
+    Ok(Json(json!({ "sequence": sequence, "preset": preset.id, "path": project_relative(&st, &output), "exists": output.exists(), "pending": st.jobs.writing(&output), "output": output })))
 }
 
 #[derive(Deserialize)]
@@ -458,6 +481,31 @@ async fn snapshot(State(st): S, Query(q): Query<SnapshotQuery>) -> Result<Respon
 
 async fn job_get(State(st): S, Path(id): Path<u64>) -> ApiResult {
     st.jobs.get(id).map(|j| Json(json!(j))).ok_or(ApiError::not_found("no such job"))
+}
+
+#[derive(Deserialize)]
+struct JobListQuery {
+    kind: Option<String>,
+}
+
+/// The jobs still remembered, oldest first: events only tell a new window what happens next.
+async fn job_list(State(st): S, Query(q): Query<JobListQuery>) -> Json<Value> {
+    Json(json!({ "jobs": st.jobs.list(q.kind.as_deref()) }))
+}
+
+/// Clear finished jobs, for every window.
+async fn job_clear(State(st): S) -> Json<Value> {
+    let ids = st.jobs.clear_finished();
+    let _ = st.events.send(crate::state::Event::JobsCleared { ids: ids.clone() });
+    Json(json!({ "cleared": ids }))
+}
+
+async fn job_cancel(State(st): S, Path(id): Path<u64>) -> ApiResult {
+    match jobs::cancel(&st, id) {
+        Ok(job) => Ok(Json(json!(job))),
+        Err(e @ jobs::CancelError::NotFound) => Err(ApiError::not_found(e)),
+        Err(e) => Err(ApiError::new(StatusCode::CONFLICT, e)),
+    }
 }
 
 // ---------- websockets ----------

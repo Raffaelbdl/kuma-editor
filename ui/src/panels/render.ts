@@ -88,12 +88,14 @@ export function openRenderDialog(tab: Tab = "render"): void {
 
   // ---- the queue
   const list = el("div", "job-list");
-  const empty = el("p", "muted", "No renders yet.");
+  const empty = el("p", "muted", "No jobs yet.");
   const rows = new Map<number, JobRow>();
   // Rows are kept and updated in place: progress ticks many times a second, and a row
   // rebuilt under the pointer would swallow the click on its Cancel button.
   const draw = (jobs: Record<number, Job>) => {
-    const renders = Object.values(jobs).filter((j) => j.kind === "render").sort((a, b) => b.id - a.id);
+    // Every job, renders or not: the top bar counts them all, and this is where its
+    // click lands. Only renders carry a Cancel.
+    const renders = Object.values(jobs).sort((a, b) => b.id - a.id);
     const seen = new Set<number>();
     for (const j of renders) {
       seen.add(j.id);
@@ -162,7 +164,7 @@ function jobRow(id: number): JobRow {
       const queued = !j.done && j.message === "queued";
       const status = j.cancelled ? "cancelled" : j.done ? (j.ok ? "done" : "failed") : queued ? "queued" : "running";
       root.className = `job ${status}`;
-      title.textContent = `#${j.id} · ${binName(p.sequence)} · ${p.preset ?? ""}`;
+      title.textContent = j.kind === "render" ? `#${j.id} · ${binName(p.sequence)} · ${p.preset ?? ""}` : `#${j.id} · ${j.kind}`;
       bar.value = j.done && j.ok ? 100 : j.percent;
       state.textContent = status === "running" ? `${j.percent}% · ${j.message}`
         : status === "failed" ? `Failed: ${j.message}`

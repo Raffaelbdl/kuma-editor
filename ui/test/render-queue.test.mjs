@@ -68,6 +68,8 @@ describe("the render queue", { skip: why ? `skipping: ${why}` : false }, () => {
 
     await page.until(`${status(first)} === "running" && ${row(first)}.textContent.includes("frame")`, 60_000);
     assert.equal(await page.eval(status(second)), "queued", "a second render waits for the first");
+    // The top bar counts rather than narrates.
+    assert.equal(await page.eval(`document.querySelector("#topbar .status").textContent`), "1 job running, 1 job queued");
 
     await page.eval(cancel(first));
     await page.until(`${status(first)} === "cancelled"`, 20_000);
@@ -75,6 +77,7 @@ describe("the render queue", { skip: why ? `skipping: ${why}` : false }, () => {
     await page.until(`${status(second)} === "running"`, 20_000);
     await page.eval(cancel(second));
     await page.until(`${status(second)} === "cancelled"`, 20_000);
+    await page.until(`document.querySelector("#topbar .status").textContent === "2 jobs cancelled"`);
 
     // Nothing half-written is left behind, and the daemon agrees with the rows.
     assert.deepEqual(fs.readdirSync(path.join(tmp, "renders")).filter((f) => f.endsWith(".mp4")), []);

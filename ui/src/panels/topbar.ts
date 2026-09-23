@@ -3,7 +3,7 @@
 // are chosen and the queue of renders is watched and cancelled.
 
 import { Cmd, command, run } from "../commands";
-import { button, el, options } from "../dom";
+import { button, el, options, plural } from "../dom";
 import { icon } from "../icons";
 import { keysFor } from "../shortcuts";
 import { store } from "../store";
@@ -37,7 +37,7 @@ export function mountTopbar(host: HTMLElement): void {
   // What is running, and the way to the queue: a click on it is a click on the queue tab.
   const status = el("span", "status");
   status.onclick = () => openRenderDialog("queue");
-  status.title = "Open the render queue";
+  status.title = "Open the job queue";
   host.append(
     name, seqSel, rev, size,
     button("Undo", () => run(Cmd.undo)),
@@ -68,10 +68,18 @@ export function mountTopbar(host: HTMLElement): void {
   store.select((s) => [s.project, s.sequence, s.connected, s.jobs], (s) => {
     name.textContent = s.project?.name || "kuma";
     rev.textContent = s.project ? `r${s.project.revision}${s.connected ? "" : " · offline"}` : "";
-    const running = Object.entries(s.jobs).filter(([, j]) => !j.done);
-    status.classList.toggle("link", Object.values(s.jobs).some((j) => j.kind === "render"));
-    const last = Object.values(s.jobs).at(-1);
-    const output = last?.ok && last.result && typeof last.result === "object" && "output" in last.result ? String((last.result as { output: unknown }).output) : "";
-    status.textContent = running.length ? running.map(([id, j]) => `${j.kind} #${id} ${j.percent}% ${j.message}`).join(" · ") : output && `wrote ${output}`;
+    // A count, not a transcript: the detail — paths, frames, errors — is the queue's, one
+    // click away. Only what there is gets said.
+    const jobs = Object.values(s.jobs);
+    const count = (n: number, what: string) => (n ? [`${plural(n, "job")} ${what}`] : []);
+    const parts = [
+      ...count(jobs.filter((j) => !j.done && j.message !== "queued").length, "running"),
+      ...count(jobs.filter((j) => !j.done && j.message === "queued").length, "queued"),
+      ...count(jobs.filter((j) => j.done && j.ok).length, "finished"),
+      ...count(jobs.filter((j) => j.done && !j.ok && !j.cancelled).length, "failed"),
+      ...count(jobs.filter((j) => j.cancelled).length, "cancelled"),
+    ];
+    status.textContent = parts.join(", ");
+    status.classList.toggle("link", jobs.length > 0);
   });
 }

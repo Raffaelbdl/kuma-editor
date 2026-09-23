@@ -100,7 +100,19 @@ class Store {
   async init() {
     const [project, templates, seq] = await Promise.all([api.project(), api.templates(), api.sequence()]);
     this.set({ project, templates, sequence: seq.current, sequences: [seq.current] });
-    subscribeEvents((e) => this.onEvent(e), (connected) => this.set({ connected }));
+    subscribeEvents((e) => this.onEvent(e), (connected) => {
+      this.set({ connected });
+      // Events only say what happens from now on: what is already queued or running (or
+      // happened while the socket was down) comes from the daemon's own table.
+      if (connected) void this.loadJobs();
+    });
+  }
+
+  private async loadJobs() {
+    try {
+      const { jobs } = await api.jobs();
+      this.set({ jobs: { ...this.state.jobs, ...Object.fromEntries(jobs.map((j) => [j.id, j])) } });
+    } catch { /* an older daemon, or a dropped socket: events still arrive */ }
   }
 
   /**
@@ -143,7 +155,10 @@ class Store {
     } else if (e.type === "job") {
       const { type: _, ...job } = e;
       this.set({ jobs: { ...this.state.jobs, [e.id]: job } });
-      if (e.done) toast(e.ok ? `${e.kind} done` : `${e.kind} failed: ${e.message}`, e.ok ? "ok" : "err", e.ok ? 4000 : 12000);
+      if (e.done) {
+        if (e.cancelled) toast(`${e.kind} cancelled`, "ok");
+        else toast(e.ok ? `${e.kind} done` : `${e.kind} failed: ${e.message}`, e.ok ? "ok" : "err", e.ok ? 4000 : 12000);
+      }
     }
   }
 

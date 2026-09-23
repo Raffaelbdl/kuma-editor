@@ -1,17 +1,14 @@
-// The top bar: project, sequence picker, frame size, undo/redo, export preset, Render.
-// Buttons run commands. Render is registered here rather than received, because the
-// preset it needs is a control in this bar — and so is the timeline it renders.
+// The top bar: project, sequence picker, frame size, undo/redo, Render. Buttons run
+// commands. Render opens the render dialog (`render.ts`), where the sequence and preset
+// are chosen and the queue of renders is watched and cancelled.
 
-import { api } from "../api";
 import { Cmd, command, run } from "../commands";
 import { button, el, options } from "../dom";
 import { icon } from "../icons";
 import { keysFor } from "../shortcuts";
-import { startJob, store } from "../store";
+import { store } from "../store";
 import { orientation, sequenceIds } from "../types";
-
-/** A bin entry's name, for a label. */
-const binName = (id: string | undefined): string => (id && store.state.project?.bin[id]?.name) || id || "";
+import { openRenderDialog } from "./render";
 
 export function mountTopbar(host: HTMLElement): void {
   const name = el("span", "name");
@@ -34,32 +31,19 @@ export function mountTopbar(host: HTMLElement): void {
   // the control that flips it: one click swaps width and height.
   const size = button("", () => run(Cmd.swapOrientation), "", "mono");
 
-  const presets = el("select");
-  presets.style.width = "auto";
-  void api.presets().then((ps) => options(presets, ps.map((p) => ({ value: p.id, title: p.description }))));
+  command(Cmd.render, "Render…", () => openRenderDialog("render"));
 
-  // Which timeline Render means. The master is the finished video and stays the default,
-  // here as in the daemon; this control only appears once the two can differ — that is,
-  // once you are editing a sequence that is not the master — because until then there is
-  // nothing to choose and a dropdown saying so is noise.
-  const target = el("select");
-  target.style.width = "auto";
-  target.title = "Which timeline to render";
-  const renderMaster = () => target.hidden || target.value !== "open";
-
-  command(Cmd.render, "Render", () => {
-    const sequence = renderMaster() ? undefined : store.state.sequence;
-    startJob(`Render ${binName(sequence ?? store.state.project?.master)}`, () => api.render(presets.value, sequence));
-  });
-
-  const render = button("Render", () => run(Cmd.render), "", "primary");
+  const render = button("Render…", () => run(Cmd.render), "Render a sequence, and see the queue of renders", "primary");
+  // What is running, and the way to the queue: a click on it is a click on the queue tab.
   const status = el("span", "status");
+  status.onclick = () => openRenderDialog("queue");
+  status.title = "Open the render queue";
   host.append(
     name, seqSel, rev, size,
     button("Undo", () => run(Cmd.undo)),
     button("Redo", () => run(Cmd.redo)),
     el("span", "spacer"),
-    presets, target, render,
+    render,
     button("Reload preview", () => run(Cmd.reloadPreview)),
     // Chosen once and then left alone, so it is an icon rather than a word: the bar is
     // for what you reach for while editing. The desktop shell's View menu names the same
@@ -71,32 +55,12 @@ export function mountTopbar(host: HTMLElement): void {
     status,
   );
 
-  // Say what Render will do, wherever the answer comes from: the button's tooltip is
-  // where the click is, and it is the only place that was silent about it.
-  const describe = () => {
-    const id = renderMaster() ? store.state.project?.master : store.state.sequence;
-    render.title = `Render ${binName(id)}${id === store.state.project?.master ? " — the master, the whole video" : " — this sequence on its own"}`;
-  };
-  target.onchange = describe;
-
   // The picker rebuilds its options, so it gets its own subscription: job progress ticks
   // many times a second and must not tear the dropdown down with it.
   store.select((s) => [s.project, s.sequence], (s) => {
     if (!s.project) return;
     const entry = (id: string) => ({ value: id, label: `${s.project!.bin[id].name || id}${id === s.project!.master ? " (master)" : ""}` });
     options(seqSel, [...sequenceIds(s.project).map(entry), { value: "+", label: "+ new sequence…" }], s.sequence);
-    // The choice survives a switch — it is "the master" or "whichever is open", not a
-    // sequence id — so only the labels are rebuilt, with the current names in them.
-    const off = !!s.sequence && s.sequence !== s.project.master;
-    target.hidden = !off;
-    if (off) {
-      const keep = target.value === "open" ? "open" : "master";
-      options(target, [
-        { value: "master", label: `master · ${binName(s.project.master)}` },
-        { value: "open", label: `open · ${binName(s.sequence)}` },
-      ], keep);
-    }
-    describe();
     const { width, height } = s.project;
     size.textContent = `${width}×${height} ⇄`;
     size.title = `Switch to ${orientation({ width: height, height: width })} (${height}×${width})`;
@@ -105,6 +69,7 @@ export function mountTopbar(host: HTMLElement): void {
     name.textContent = s.project?.name || "kuma";
     rev.textContent = s.project ? `r${s.project.revision}${s.connected ? "" : " · offline"}` : "";
     const running = Object.entries(s.jobs).filter(([, j]) => !j.done);
+    status.classList.toggle("link", Object.values(s.jobs).some((j) => j.kind === "render"));
     const last = Object.values(s.jobs).at(-1);
     const output = last?.ok && last.result && typeof last.result === "object" && "output" in last.result ? String((last.result as { output: unknown }).output) : "";
     status.textContent = running.length ? running.map(([id, j]) => `${j.kind} #${id} ${j.percent}% ${j.message}`).join(" · ") : output && `wrote ${output}`;

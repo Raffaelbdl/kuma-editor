@@ -211,3 +211,20 @@ async fn media_is_added_into_a_folder_in_one_edit() {
     assert!(status.starts_with("HTTP/1.1 4"), "a dangling parent was accepted: {status}");
     assert!(!state.project.read().unwrap().bin.contains_key("boop"));
 }
+
+/// The queue's routes: a listing a fresh window can rebuild from, and a cancel that tells
+/// an unknown job from one that can no longer be stopped. A bad preset is refused when
+/// the render is asked for, not discovered as a failed job.
+#[tokio::test(flavor = "multi_thread")]
+async fn jobs_are_listed_and_cancels_are_checked() {
+    let (_state, addr, _dir) = daemon().await;
+    let (status, body) = get_body(&addr, "/api/jobs?kind=render");
+    assert!(status.contains("200"), "{status}");
+    assert_eq!(serde_json::from_str::<serde_json::Value>(&body).unwrap()["jobs"], serde_json::json!([]));
+
+    let (status, _, _) = request(&addr, "POST", "/api/jobs/42/cancel", "{}");
+    assert!(status.contains("404"), "{status}");
+
+    let (status, _, body) = request(&addr, "POST", "/api/render", r#"{"preset":"nope"}"#);
+    assert!(status.contains("400") && body.contains("unknown preset"), "{status} {body}");
+}

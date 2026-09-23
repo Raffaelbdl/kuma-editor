@@ -1,4 +1,4 @@
-import type { DaemonEvent, EffectPreset, Issue, LintReport, PatchOp, Preset, Project, SequenceState, TemplateInfo } from "./types";
+import type { DaemonEvent, EffectPreset, Issue, Job, LintReport, PatchOp, Preset, Project, SequenceState, TemplateInfo } from "./types";
 
 async function json<T>(url: string, init?: RequestInit): Promise<T> {
   const r = await fetch(url, { headers: { "content-type": "application/json" }, ...init });
@@ -37,10 +37,15 @@ export const api = {
    *  against the project as it is when the words are in. */
   transcribe: (req: ({ bin: string } | { clip: string }) & { id?: string; language?: string; replace?: boolean }) =>
     json<{ job: number }>("/api/transcribe", { method: "POST", body: JSON.stringify({ ...req, origin: "ui: transcribe" }) }),
-  /** Render `sequence`, or the project's master when it is left out — the daemon's own
-   *  default, so the two agree without the client having to know which is the master. */
-  render: (preset: string, sequence?: string) =>
-    json<{ job: number }>("/api/render", { method: "POST", body: JSON.stringify({ preset, sequence }) }),
+  /** Queue a render of `sequence`, or of the project's master when it is left out — the
+   *  daemon's own default, so the two agree without the client having to know which is
+   *  the master. `output` is project-relative; the daemon names one when it is left out. */
+  render: (preset: string, sequence?: string, output?: string) =>
+    json<{ job: number }>("/api/render", { method: "POST", body: JSON.stringify({ preset, sequence, output }) }),
+  /** The jobs the daemon still remembers, oldest first. */
+  jobs: (kind?: string) => json<{ jobs: Job[] }>(`/api/jobs${kind ? `?kind=${encodeURIComponent(kind)}` : ""}`),
+  /** Stop a queued or running render. It reports itself `cancelled` once it has. */
+  cancelJob: (id: number) => json<Job>(`/api/jobs/${id}/cancel`, { method: "POST", body: "{}" }),
   previewReload: (scale?: number) => json<{ mlt: string; scale: number }>("/api/preview/reload", { method: "POST", body: JSON.stringify(scale === undefined ? {} : { scale }) }),
   /** The live document for an overlay **bin entry**, at the length and in the frame the
    *  workbench is looking at. No clip: an entry is editable before anything places it.

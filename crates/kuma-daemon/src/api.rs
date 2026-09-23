@@ -47,7 +47,9 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/bake", post(bake))
         .route("/api/sample", post(sample))
         .route("/api/snapshot", get(snapshot))
+        .route("/api/jobs", get(job_list))
         .route("/api/jobs/{id}", get(job_get))
+        .route("/api/jobs/{id}/cancel", post(job_cancel))
         .route("/api/events", get(events_ws))
         .route("/api/preview/ws", get(preview_ws))
         .route("/api/preview/reload", post(preview_reload))
@@ -412,9 +414,17 @@ async fn transcribe(State(st): S, Json(req): Json<TranscribeRequest>) -> Json<Va
 
 // ---------- jobs ----------
 
-async fn render(State(st): S, Json(req): Json<RenderRequest>) -> Json<Value> {
+/// Queue a render. The sequence and output are settled now, not when its turn comes, so
+/// what the queue says it will write is what it writes; a bad preset or sequence is
+/// refused here rather than surfacing as a failed job.
+async fn render(State(st): S, Json(mut req): Json<RenderRequest>) -> ApiResult {
+    let (sequence, preset, output) = jobs::render_target(&st, &req).map_err(ApiError::bad_request)?;
+    let params = json!({ "sequence": sequence, "preset": preset.id, "output": output });
+    req.sequence = Some(sequence);
+    req.output = Some(output);
     let s2 = st.clone();
-    Json(json!({ "job": jobs::spawn(st, "render", move |progress| jobs::render(&s2, &req, progress)) }))
+    let id = jobs::spawn_cancellable(st, "render", params, move |progress, cancel| jobs::render_queued(&s2, &req, progress, cancel));
+    Ok(Json(json!({ "job": id })))
 }
 
 #[derive(Deserialize)]
@@ -458,6 +468,26 @@ async fn snapshot(State(st): S, Query(q): Query<SnapshotQuery>) -> Result<Respon
 
 async fn job_get(State(st): S, Path(id): Path<u64>) -> ApiResult {
     st.jobs.get(id).map(|j| Json(json!(j))).ok_or(ApiError::not_found("no such job"))
+}
+
+#[derive(Deserialize)]
+struct JobListQuery {
+    #[serde(default)]
+    kind: Option<String>,
+}
+
+/// The jobs the daemon still remembers, oldest first: how a window opened after they were
+/// started learns about them, since events only tell it what happens from then on.
+async fn job_list(State(st): S, Query(q): Query<JobListQuery>) -> Json<Value> {
+    Json(json!({ "jobs": st.jobs.list(q.kind.as_deref()) }))
+}
+
+async fn job_cancel(State(st): S, Path(id): Path<u64>) -> ApiResult {
+    match jobs::cancel(&st, id) {
+        Ok(job) => Ok(Json(json!(job))),
+        Err(e @ jobs::CancelError::NotFound) => Err(ApiError::not_found(e)),
+        Err(e) => Err(ApiError::new(StatusCode::CONFLICT, e)),
+    }
 }
 
 // ---------- websockets ----------

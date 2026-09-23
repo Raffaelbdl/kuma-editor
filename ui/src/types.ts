@@ -222,7 +222,15 @@ export type PatchOp =
   | { op: "remove"; path: string }
   | { op: "move"; from: string; path: string };
 
-export interface Job { id: number; kind: string; percent: number; message: string; done: boolean; ok: boolean; result: unknown }
+export interface Job {
+  id: number; kind: string; percent: number; message: string; done: boolean; ok: boolean; result: unknown;
+  /** Whether it can be stopped (renders can). */
+  cancellable?: boolean;
+  /** Finished because it was stopped: `done`, not `ok`, and not a failure. */
+  cancelled?: boolean;
+  /** What it was asked to do, settled when it started — a render's `{sequence, preset, output}`. */
+  params?: unknown;
+}
 
 export type DaemonEvent =
   | { type: "project_changed"; revision: number; origin: string }

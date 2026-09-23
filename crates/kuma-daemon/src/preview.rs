@@ -298,7 +298,7 @@ async fn compile_and_load(state: &Arc<AppState>) -> anyhow::Result<()> {
         for (i, half) in st.preview.halves.iter().enumerate() {
             opts.streams = half.stream;
             opts.bakes = if half.stream.video() {
-                crate::jobs::bake_for(&st, &project, &sequence, OverlayScope::Nested, None, &|_, _| {})?
+                crate::jobs::bake_for(&st, &project, &sequence, OverlayScope::Nested, None, &|_, _| {}, None)?
             } else {
                 Default::default()
             };

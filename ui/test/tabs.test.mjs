@@ -1,5 +1,5 @@
 // Which sequence the editor is acting on, in a real browser against a real daemon: the
-// tab strip that switches it, and the Render control that has to agree with it.
+// tab strip that switches it, and the render dialog that has to agree with it.
 //
 // What it pins is the thing a Rust test cannot see: which sequence the daemon has open is
 // *the* state a sequence tab switches, so a strip that disagrees with it is showing a
@@ -97,45 +97,45 @@ describe("the open sequence", { skip: why ? `skipping: ${why}` : false }, () => 
     assert.equal(await page.eval(OPEN_SEQUENCE), "main", "the daemon must follow the tab that took over");
   });
 
-  it("renders the master by default, and offers the open sequence once they differ", async () => {
+  it("asks which sequence to render, the master preselected, and queues it", async () => {
     // The request is captured rather than run: what is under test is which timeline the
-    // button asks for, and a real render would need melt and a minute.
+    // dialog asks for, and a real render would need melt and a minute.
     await page.eval(`window.__rendered = null; window.__realFetch = window.fetch;
       window.fetch = (u, o) => (String(u).includes("/api/render")
         ? (window.__rendered = JSON.parse(o.body), Promise.resolve(new Response('{"job":1}', { headers: { "content-type": "application/json" } })))
         : window.__realFetch(u, o));`);
     const renderBtn = `document.querySelector("#topbar button.primary")`;
-    const targetSel = `[...document.querySelectorAll("#topbar select")].find(s => s.title === "Which timeline to render")`;
+    const dialog = `document.querySelector("dialog.modal.render")`;
+    const seqSel = `${dialog}.querySelector('select[title="Which timeline to render"]')`;
+    const go = `${dialog}.querySelector(".render-pane button.primary")`;
+    const pick = (v) => `(() => { const t = ${seqSel}; t.value = ${JSON.stringify(v)}; t.dispatchEvent(new Event("change", { bubbles: true })); })()`;
 
-    // On the master there is nothing to choose, so nothing is offered.
-    await page.until(`${TABS} === "Main*"`);
-    assert.equal(await page.eval(`${targetSel}.hidden`), true);
-    await page.eval(`${renderBtn}.click()`);
-    assert.deepEqual(await page.until(`window.__rendered`), { preset: "youtube-1080p" }, "no sequence means the master, the daemon's own default");
-
-    // Editing another sequence is when the question arises.
+    // Even while another sequence is being edited, the master is what is offered first.
     await page.eval(`(() => { const s = document.querySelector("#topbar select"); s.value = "intro"; s.dispatchEvent(new Event("change", { bubbles: true })); })()`);
     await page.until(`${TABS} === "Main | Intro*"`);
-    assert.equal(await page.eval(`${targetSel}.hidden`), false);
-    assert.equal(await page.eval(`${targetSel}.value`), "master", "the master stays the default");
-    assert.deepEqual(await page.eval(`[...${targetSel}.options].map(o => o.textContent)`), ["master · Main", "open · Intro"]);
+    await page.eval(`${renderBtn}.click()`);
+    await page.until(`${dialog} && ${dialog}.querySelector(".render-pane select:not([title]) option")`);
+    assert.equal(await page.eval(`${seqSel}.value`), "main", "the master stays the default");
+    assert.deepEqual(await page.eval(`[...${seqSel}.options].map(o => o.textContent)`), ["Main (master)", "Intro"]);
+    assert.match(await page.eval(`${dialog}.querySelector(".render-pane input").placeholder`), /^renders\/tabs-youtube-1080p\.mp4$/);
 
-    await page.eval(`window.__rendered = null; ${renderBtn}.click()`);
-    assert.deepEqual(await page.until(`window.__rendered`), { preset: "youtube-1080p" }, "still the master until asked otherwise");
+    await page.eval(`${go}.click()`);
+    assert.deepEqual(await page.until(`window.__rendered`), { preset: "youtube-1080p" }, "no sequence means the master, the daemon's own default");
+    // Asking for a render shows the queue it joined.
+    await page.until(`${dialog}.querySelector(".queue-pane").hidden === false`);
 
-    await page.eval(`(() => { const t = ${targetSel}; t.value = "open"; t.dispatchEvent(new Event("change", { bubbles: true })); })()`);
-    await page.eval(`window.__rendered = null; ${renderBtn}.click()`);
+    // Back to the first tab, another sequence named.
+    await page.eval(`[...${dialog}.querySelectorAll("button.tab")].find(b => b.textContent === "Render").click()`);
+    await page.eval(pick("intro"));
+    assert.match(await page.eval(`${dialog}.querySelector(".render-pane input").placeholder`), /tabs-intro-youtube-1080p/);
+    await page.eval(`window.__rendered = null; ${go}.click()`);
     assert.deepEqual(await page.until(`window.__rendered`), { preset: "youtube-1080p", sequence: "intro" });
-    assert.match(await page.eval(`${renderBtn}.title`), /Intro — this sequence on its own/);
-
-    // Back on the master the control goes away, and with it the choice.
-    await page.eval(clickTab("Main"));
-    await page.until(`${targetSel}.hidden === true`);
-    await page.eval(`window.__rendered = null; ${renderBtn}.click()`);
-    assert.deepEqual(await page.until(`window.__rendered`), { preset: "youtube-1080p" });
 
     // Put the page back as it was found: these cases share one browser, in order.
+    await page.eval(`${dialog}.querySelector(".queue-pane .modal-actions button").click()`);
+    await page.until(`!${dialog}`);
     await page.eval(`window.fetch = window.__realFetch`);
+    await page.eval(clickTab("Main"));
     await page.eval(closeTab("Intro"));
     await page.until(`${TABS} === "Main*"`);
   });

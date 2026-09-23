@@ -390,7 +390,7 @@ impl KumaServer {
         self.job("/api/bake", &json!({ "clips": p.clips }), Duration::from_secs(1800)).await
     }
 
-    #[tool(description = "Render the timeline to a video file with an export preset. Renders the master unless `sequence` names another one. Waits up to wait_seconds; if still running, returns the job id to poll with job_status.")]
+    #[tool(description = "Render the timeline to a video file with an export preset. Renders the master unless `sequence` names another one. Renders run one at a time: a render asked for while another encodes waits `queued`. Waits up to wait_seconds; if still running, returns the job id to poll with job_status or stop with cancel_job.")]
     async fn render(&self, Parameters(p): Parameters<Render>) -> Result<CallToolResult, McpError> {
         let body = json!({
             "preset": p.preset.unwrap_or_else(|| "youtube-1080p".into()),
@@ -399,9 +399,14 @@ impl KumaServer {
         self.job("/api/render", &body, Duration::from_secs(p.wait_seconds.unwrap_or(900))).await
     }
 
-    #[tool(description = "Status of a background job (render/bake): percent, message, done, ok, result.")]
+    #[tool(description = "Status of a background job (render/bake): percent, message, done, ok, cancelled, result.")]
     async fn job_status(&self, Parameters(p): Parameters<JobArg>) -> Result<CallToolResult, McpError> {
         self.get(&format!("/api/jobs/{}", p.id)).await
+    }
+
+    #[tool(description = "Cancel a render job, whether it is queued or encoding. melt is stopped, the partial file is removed, and the job ends with `cancelled: true`. Refused for a job that has finished or is not a render.")]
+    async fn cancel_job(&self, Parameters(p): Parameters<JobArg>) -> Result<CallToolResult, McpError> {
+        self.post(&format!("/api/jobs/{}/cancel", p.id), &json!({})).await
     }
 
     #[tool(description = "Daemon health: project path and revision, hyperframes/browser/preview-engine availability, template library dirs and any manifest that failed to load.")]

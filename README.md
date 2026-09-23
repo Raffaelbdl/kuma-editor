@@ -316,7 +316,7 @@ claude mcp add --scope user    kuma -- kuma mcp --project /abs/path.kuma.json  #
 and the agent always share one state. Tools: `get_project`, `get_schema`, `apply_edits`,
 `undo`, `redo`, `validate_project`, `list_templates`, `template_guide`, `list_presets`,
 `add_media`, `probe_media`, `transcribe`, **`sample_frames`**, `bake_overlay`, `render`,
-`job_status`, `health`, `new_template`, `check_template`. `sample_frames` takes an
+`job_status`, `cancel_job`, `health`, `new_template`, `check_template`. `sample_frames` takes an
 `overlay` (a bin id) to look at one overlay entry on its own, which is how an agent checks
 an animation it is authoring; `new_template` scaffolds a template that already obeys the
 contract and `check_template` says whether one still does, without baking it.

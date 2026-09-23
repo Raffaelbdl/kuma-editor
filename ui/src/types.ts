@@ -23,7 +23,7 @@ export type BinSource =
 /** One entry in the project bin: media, a configured overlay, a colour, a sequence or a
  *  folder. `parent` is where it is listed in the browser (a transcript under its media);
  *  absent means the top level, and nothing about rendering reads it. */
-export interface BinItem { name: string; source: BinSource; meta?: MediaMeta | null; parent?: string; order?: number }
+export interface BinItem { name: string; source: BinSource; meta?: MediaMeta | null; parent?: string; order?: number; volume?: number }
 
 export type TrackKind = "video" | "audio" | "overlay";
 

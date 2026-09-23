@@ -101,6 +101,11 @@ pub fn validate(p: &Project, ctx: &ValidationContext) -> Vec<Issue> {
             // A sequence's own contents are checked below, with every other timeline.
             BinSource::Sequence(_) | BinSource::Folder { .. } => {}
         }
+        if item.volume != 1.0 && !item.is_timed_media() {
+            issues.push(Issue::error(format!("{ip}/volume"), "only a sound or video file, or a sequence, has a volume"));
+        } else if !(item.volume >= 0.0 && item.volume.is_finite()) {
+            issues.push(Issue::error(format!("{ip}/volume"), "volume must be >= 0"));
+        }
         // `parent` is organisation, but a dangling or circular one still breaks the
         // browser: the chain up from every entry must end at the top level.
         if let Some(parent) = &item.parent {
@@ -604,6 +609,21 @@ mod tests {
         let c: Clip = serde_json::from_value(json!({ "id": "a", "start": 0, "end": 5, "bin": "x" })).unwrap();
         assert_eq!(c.group, "");
         assert_eq!(serde_json::to_value(&c).unwrap().get("group"), None);
+    }
+
+    #[test]
+    fn only_timed_media_has_a_volume() {
+        let p = project(json!({
+            "bin": {
+                "song": { "source": { "path": "song.wav", "kind": "audio" }, "volume": 0.5 },
+                "loud": { "source": { "path": "loud.wav", "kind": "audio" }, "volume": -1 },
+                "logo": { "source": { "path": "logo.png", "kind": "image" }, "volume": 0.5 }
+            },
+            "tracks": []
+        }));
+        let issues = validate(&p, &ValidationContext::default());
+        let at = |id: &str| issues.iter().filter(|i| i.path == format!("/bin/{id}/volume")).count();
+        assert_eq!((at("song"), at("loud"), at("logo")), (0, 1, 1), "{issues:?}");
     }
 
     /// A keyframe's parameters are its unknown fields, so the validator is what says a

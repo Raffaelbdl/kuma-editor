@@ -579,11 +579,12 @@ fn emit_filters(ctx: &Ctx, p: &Plan, w: &mut XmlWriter) {
         w.close("filter");
     }
 
-    // Clip-level volume (static) unless a Volume effect folds it into its own level.
+    // Clip-level volume times the entry's (static) unless a Volume effect folds it in.
+    let volume = clip.volume * ctx.project.item(clip).map_or(1.0, |i| i.volume);
     let has_volume_effect = clip.effects.iter().any(|e| matches!(e, Effect::Volume { .. }));
-    if streams.audio() && !has_volume_effect && (clip.volume - 1.0).abs() > 1e-9 {
+    if streams.audio() && !has_volume_effect && (volume - 1.0).abs() > 1e-9 {
         open(w, "vol", "volume");
-        w.property("level", num(db(clip.volume)));
+        w.property("level", num(db(volume)));
         w.close("filter");
     }
 
@@ -662,7 +663,7 @@ fn emit_filters(ctx: &Ctx, p: &Plan, w: &mut XmlWriter) {
                 open(w, "vol", "volume");
                 // The clip's own volume folded in, so the placement's fader and this gain
                 // are one filter; a key without `gain` holds the static one.
-                w.property("level", anim(keyframes, &at, num(db(gain * clip.volume)), |k| num(db(k.or("gain", *gain) * clip.volume))));
+                w.property("level", anim(keyframes, &at, num(db(gain * volume)), |k| num(db(k.or("gain", *gain) * volume))));
                 w.close("filter");
             }
             Effect::Mlt { service, properties } => {
@@ -886,6 +887,23 @@ mod tests {
         let mut picture = CompileOptions::new("/proj");
         picture.streams = Streams::Video;
         assert!(!compile(&p, &picture).unwrap().contains(">volume<"));
+    }
+
+    /// An entry's volume multiplies the clip's fader, and a Volume effect's gain and keys.
+    #[test]
+    fn an_entry_volume_multiplies_the_clips() {
+        let p = project(json!({
+            "fps": 30,
+            "bin": { "song": { "source": { "path": "song.wav", "kind": "audio" }, "volume": 0.5 } },
+            "tracks": [{ "id": "a1", "kind": "audio", "clips": [
+                { "id": "a", "start": 0, "end": 2, "bin": "song", "volume": 0.5 },
+                { "id": "b", "start": 2, "end": 4, "bin": "song", "effects": [ { "type": "volume", "keyframes": [ { "t": 0, "gain": 1 } ] } ] }
+            ]}]
+        }));
+        let xml = compile(&p, &CompileOptions::new("/proj")).unwrap();
+        let level = |id: &str| xml.split(&format!(r#"<filter id="clip_{id}_vol"#)).nth(1).unwrap().split(r#"<property name="level">"#).nth(1).unwrap().split('<').next().unwrap().to_string();
+        assert_eq!(level("a"), "-12.0412");
+        assert_eq!(level("b"), "0=-6.0206");
     }
 
     #[test]

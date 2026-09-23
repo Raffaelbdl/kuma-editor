@@ -31,4 +31,4 @@ pub use validate::{validate, Issue, Severity, ValidationContext};
 ///     keyframed effect now uses.
 /// 2 — keyframes gained `ease` (`linear`, `hold`, `smooth`).
 /// 1 — the first format.
-pub const PROJECT_VERSION: u32 = 5;
+pub const PROJECT_VERSION: u32 = 6;

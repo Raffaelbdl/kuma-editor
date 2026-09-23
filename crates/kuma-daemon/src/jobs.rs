@@ -235,6 +235,7 @@ pub fn add_media(state: &AppState, path: &Path, id: Option<String>, parent: Opti
         meta: Some(probe.meta),
         parent,
         order: None,
+        volume: 1.0,
     };
     let (rev, warnings) = state.apply_patch(&[bin_op(&id, "", serde_json::to_value(item)?)?], base_revision, origin)?;
     Ok((id, rev, warnings))
@@ -361,6 +362,7 @@ pub fn transcribe(state: &AppState, req: &TranscribeRequest, progress: &dyn Fn(u
                 meta: None,
                 parent: Some(bin.clone()),
                 order: None,
+                volume: 1.0,
             };
             // The entry first: the clip that places it must find it.
             ops.push(bin_op(&id, "", serde_json::to_value(entry)?)?);
@@ -923,7 +925,7 @@ pub fn overlay_project(state: &AppState, doc: &Project, id: &str, req: &SampleRe
         clips: vec![clip],
         transitions: Vec::new(),
     };
-    let entry = |source| kuma_core::BinItem { name: String::new(), source, meta: None, parent: None, order: None };
+    let entry = |source| kuma_core::BinItem { name: String::new(), source, meta: None, parent: None, order: None, volume: 1.0 };
     let sequence = kuma_core::Sequence {
         tracks: vec![
             track(&format!("{seq_id}-v"), kuma_core::TrackKind::Video, clip(&format!("{seq_id}-bgc"), &bg_id)),

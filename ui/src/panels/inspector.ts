@@ -400,7 +400,7 @@ export class Inspector {
     // level to set at all. A capability, so a muted clip keeps its Muted box.
     const carries = clipStreams(store.state.project!, f.track, clip);
     if (carries.audio) {
-      this.host.appendChild(field("Volume", sliderField(clip.volume, (v) => void rep("/volume", v, "volume"), { min: 0, max: 2, step: 0.01, soft: true, title: "Gain: 1 is the clip as recorded" })));
+      this.host.appendChild(field("Volume", sliderField(clip.volume, (v) => void rep("/volume", v, "volume"), { min: 0, max: 2, step: 0.01, soft: true, title: "Gain for this placement, on top of its bin entry's: 1 is the clip as recorded" })));
       this.host.appendChild(field("Muted", checkbox(clip.muted, (v) => void rep("/muted", v, "mute"))));
     }
     this.host.appendChild(field("Label", textInput(clip.label, (v) => rep("/label", v, "label"))));
@@ -451,6 +451,9 @@ export class Inspector {
 
     this.host.appendChild(field("Name", textInput(item.name, (v) => store.patch([{ op: "replace", path: `${bp}/name`, value: v }], `name ${id}`))));
     this.renderSource(p, id, item, bp);
+    if (isTimedMedia(item)) {
+      this.host.appendChild(field("Volume", sliderField(item.volume ?? 1, (v) => void store.patch([{ op: "add", path: `${bp}/volume`, value: v }], `volume ${id}`), { min: 0, max: 2, step: 0.01, soft: true, title: "Gain for every placement of this entry: 1 is the source as recorded" })));
+    }
 
     const actions = el("div", "insp-actions");
     if (canPlace(p, id, store.state.sequence)) {

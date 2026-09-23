@@ -108,6 +108,7 @@ impl Project {
             meta: None,
             parent: None,
             order: None,
+            volume: 1.0,
         };
         Project {
             name: name.into(),
@@ -355,6 +356,10 @@ pub struct BinItem {
     /// only, like `parent`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub order: Option<u32>,
+    /// Linear audio gain multiplied into every placement's own `volume`, so a source is
+    /// levelled once. Timed media only; absent at 1.
+    #[serde(default = "one", skip_serializing_if = "is_one")]
+    pub volume: f64,
 }
 
 /// What a bin entry actually is. Exactly one variant.
@@ -566,6 +571,10 @@ pub struct Clip {
 
 fn one() -> f64 {
     1.0
+}
+
+fn is_one(v: &f64) -> bool {
+    *v == 1.0
 }
 
 impl Clip {

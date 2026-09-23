@@ -1702,8 +1702,8 @@ of what is next on the *model and compiler*; the desktop shell's own loose ends 
 end of its section above. The item this list gained from the sequence work comes first,
 because it is the part deliberately left out.
 
-- **One pipeline for every bin entry, not just sequences** — agreed direction, not built,
-  and the largest thing on this list.
+- **One pipeline for every bin entry, not just sequences** — agreed direction,
+  **postponed until a feature needs it**, and the largest thing on this list.
 
   Today `sample_frames` takes a *sequence* or an *overlay entry*, and the overlay case
   builds a throwaway one-clip project and runs the ordinary path — same bake, same
@@ -1789,6 +1789,21 @@ because it is the part deliberately left out.
   a sequence subject must not be wrapped in a synthetic root, since a nested sequence's
   background is transparent and wrapping would give it one that compiling it as root does
   not.
+
+  **Postponed until needed** — decided when bin-level volume was built without it. What
+  it fixes today is an API wart: `sample_frames` has two fields and a rule refusing both,
+  and that works and is tested. Its first phase changes no behaviour, so it pays nothing
+  on its own; the payoff is in the second and third, and the third (session state and the
+  tab strip) is the churn, in code that works. Doing it ahead of a feature means
+  reshaping those without a use to check the shape against.
+
+  The use that would justify it is a view of an entry on its own clock: a colour-grading
+  or other video editor on a bin entry, rendering one entry alone (an overlay to ProRes
+  4444 for somebody else's editor), sampling media by time into the file — and above all
+  **keyed** bin-level effects, whose clock is exactly the "time into the thing itself"
+  an entry subject defines. Static entry effects do not need it: bin volume went in as a
+  field and a multiply in the compiler (see *Bin-level effects* below). When one of those
+  is next, the phases above are its first step rather than a project of their own.
 
 - **Ship a starter set of design systems** before any public release. The mechanism is in
   and nothing is in it, which makes the feature invisible to anyone who has not read the
@@ -1905,25 +1920,44 @@ because it is the part deliberately left out.
   If only the audio case matters, the cheap version is a gain field on file entries and no
   general mechanism.
 
-- **The bake cache grows forever and nothing prunes it.** A successful bake only ever
-  adds a directory. The only deletions anywhere in the bake path are the scratch frames
-  inside one bake and the drop guard that cleans up after a failure, so every superseded
-  entry stays complete and unreachable. Keys are content hashes covering the template
-  folder, the vendor folder, the resolved vars, and the clip's duration and speed, which
-  means trimming a clip creates a new entry just as surely as editing markup does. The
-  frames are full-resolution PNG sequences, so a few seconds of 1080p overlay costs tens
-  of megabytes per superseded version. Fine for a proof of concept, not fine for a project
-  someone keeps for months.
+  **The audio case is built that way** (format version 6): `volume` on `BinItem`, linear,
+  absent at 1, multiplied into each placement's own level in the volume filter the clip
+  already had. Timed media only (`is_timed_media`): on a picture it is an error. It stacks
+  with the clip's volume, as Kdenlive's does. General and keyed entry effects stay open.
 
-  One accidental mitigation: because keys are content hashes rather than a sequence,
-  reverting a template to an earlier state hits that entry again instead of baking a third
-  copy, so switching back and forth between two versions costs two entries rather than one
-  per switch.
+- **Nothing in `.kuma/` is ever cleaned up: a way to prune the cache.** Three parts of
+  it grow without bound, and none has a delete path beyond the scratch of one job.
 
-  The fix when it is wanted is a prune that recomputes the live key set from the project
-  and deletes everything else. That needs no rendering, because the key function is pure
-  and can be evaluated for every overlay entry directly. A size or age cap is the lazier
-  version and is worse: it can evict the entry for a clip that is about to be rendered.
+  - **Bakes** (`.kuma/bakes/`). A successful bake only ever adds a directory; the only
+    deletions are the scratch frames inside one bake and the drop guard after a failure,
+    so every superseded entry stays complete and unreachable. Keys are content hashes
+    covering the template folder, the vendor folder, the resolved vars, and the clip's
+    duration and speed, so trimming a clip creates a new entry just as surely as editing
+    markup does. The frames are full-resolution PNG sequences: a few seconds of 1080p
+    overlay costs tens of megabytes per superseded version. One accidental mitigation:
+    reverting a template to an earlier state hits that entry again rather than baking a
+    third copy.
+  - **Sampled frames** (`.kuma/samples/`). Keyed by a hash of the compiled document plus
+    the frame, which is what keeps them honest — and means every edit strands the frames
+    sampled before it. An agent that checks its work with `sample_frames` after each edit
+    leaves a trail of PNGs behind it. They are pure cache: any of them can be regenerated.
+  - **Thumbnails** (`.kuma/thumbs/`). Keyed by bin id and overwritten in place, so they
+    only leak when an entry is removed — small, but orphaned for good.
+
+  The fix is one prune, offered on every surface the way render is: `kuma cache prune`,
+  a daemon route, an MCP tool, and a line in the editor that shows the cache's size and
+  offers to prune it. What it deletes differs per part: bakes whose key is not in the
+  live set, recomputed from the project — no rendering needed, since the key function is
+  pure and can be evaluated for every overlay entry directly; every sampled frame; and
+  thumbnails for ids no longer in the bin. It reports what it freed. A `--all` that
+  empties everything is the blunt version, costing a re-bake on the next preview.
+
+  A size or age cap is the lazier alternative and is worse: it can evict the bake for a
+  clip that is about to be rendered, and it runs behind the user's back where a prune is
+  asked for. Two things to respect whichever is built: a bake or sample in flight writes
+  into a `.tmp-` directory or a tempfile before its rename, and a prune must leave those
+  alone (or run in the jobs lane, after whatever is running); and the live key set must
+  cover every sequence, not only the master, since the preview bakes nested sequences too.
 
 - **A configured overlay cannot be shared between projects.** The template travels in the
   library and its manifest defaults with it, but an entry's var overrides live in the

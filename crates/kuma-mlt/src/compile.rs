@@ -48,7 +48,7 @@ use crate::xml::{num, XmlWriter};
 pub struct OverlayBake {
     /// File path, or an image-sequence pattern (`…/frame_%06d.png`).
     pub resource: PathBuf,
-    /// True for a single-image bake (static template).
+    /// True for a single-image bake (static overlay).
     pub is_still: bool,
 }
 
@@ -1052,7 +1052,7 @@ mod tests {
         let p = project(json!({
             "fps": 30,
             "bin": {
-                "tag": { "source": { "template": "location-tag" } },
+                "tag": { "source": { "overlay": "overlays/location-tag" } },
                 "part": { "source": { "tracks": [{ "id": "po1", "kind": "overlay", "clips": [
                     { "id": "o_in", "start": 0, "end": 4, "bin": "tag" }
                 ]}]}}
@@ -1108,7 +1108,7 @@ mod tests {
             "fps": 30,
             "bin": {
                 "x": { "source": { "path": "x.mp4" } },
-                "tag": { "source": { "template": "location-tag" } },
+                "tag": { "source": { "overlay": "overlays/location-tag" } },
                 "part": { "source": { "tracks": [
                     { "id": "pv", "clips": [ { "id": "p1", "start": 0, "end": 6, "bin": "x" } ] },
                     { "id": "po", "kind": "overlay", "clips": [ { "id": "o3", "start": 0, "end": 2, "bin": "tag" } ] }
@@ -1179,7 +1179,7 @@ mod tests {
     fn each_half_carries_one_stream() {
         let p = project(json!({
             "fps": 30,
-            "bin": { "x": { "source": { "path": "x.mp4" } }, "tag": { "source": { "template": "location-tag" } } },
+            "bin": { "x": { "source": { "path": "x.mp4" } }, "tag": { "source": { "overlay": "overlays/location-tag" } } },
             "tracks": [
                 { "id": "v1", "clips": [
                     { "id": "a", "start": 0, "end": 5, "bin": "x", "effects": [

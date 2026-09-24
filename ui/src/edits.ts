@@ -4,11 +4,11 @@
 // to place a clip.
 
 import { api } from "./api";
-import { checkbox, el, plural, selectInput } from "./dom";
+import { button, checkbox, el, plural, row, selectInput } from "./dom";
 import { askForm, askText } from "./modal";
 import { startJob, store, toast } from "./store";
 import type { ClipboardEntry, Found } from "./store";
-import type { BinItem, BinSource, Clip, PatchOp, Project, Track, TrackKind } from "./types";
+import type { BinItem, BinSource, Clip, OverlayManifest, OverlaySource, PatchOp, Project, Track, TrackKind } from "./types";
 import { binItem, binPath, childrenOf, clipPathOf, hasAudio, isFileSource, isOverlaySource, isTimedMedia, itemKind, orientation, parentOf, seqDuration, shiftEffect, trackFor, trackPathOf, trimEffect, wouldNest, wouldRecurse } from "./types";
 
 /** Clip ids are minted by kind: `o1` for an overlay, `c1` for anything else. */
@@ -37,35 +37,57 @@ export async function placeBinItem(binId: string, t: number, ti = -1, duration?:
   await place(clip, kind, ti, []);
 }
 
-/** Add a library template to the bin and place it, in one patch. */
-export async function addFromLibrary(templateId: string, t: number, ti = -1) {
-  const p = store.state.project!;
-  const tpl = store.state.templates.find((x) => x.id === templateId);
-  const binId = uniqueId(templateId, Object.keys(p.bin));
-  const item: BinItem = { name: tpl?.manifest.name || templateId, source: { template: templateId, vars: {} } };
-  const d = tpl?.manifest.duration_default ?? 4;
+/** An installed blueprint's manifest, and the name it goes by. */
+const blueprintOf = (id: string) => store.state.blueprints.find((b) => b.id === id)?.manifest;
+const blueprintName = (id: string) => blueprintOf(id)?.name || id;
+
+/** The bin id an entry named `label` would get. */
+const binIdFor = (label: string, fallback: string) => uniqueId(slug(label) || fallback, Object.keys(store.state.project!.bin));
+
+/** Copy a blueprint into the project and add it to the bin as `binId`, with `more` ops in
+ *  the same patch (one undo; undo leaves the copied folder on disk). */
+async function addBlueprint(blueprintId: string, binId: string, label: string, more: PatchOp[] = []): Promise<boolean> {
+  try {
+    const { overlay } = await api.copyBlueprint(blueprintId, slug(label) || undefined);
+    return !!(await addBinItem(label, blueprintId, { overlay, vars: {} }, binId, more));
+  } catch (e) {
+    toast((e as Error).message, "err");
+    return false;
+  }
+}
+
+/** Copy a blueprint in, add it and place it at `t`, in one patch. */
+export async function placeBlueprint(blueprintId: string, t: number, ti = -1) {
+  const label = blueprintName(blueprintId);
+  const binId = binIdFor(label, blueprintId);
+  const d = blueprintOf(blueprintId)?.duration_default ?? 4;
   const clip: Clip = { id: store.newId("o"), start: t, end: t + d, bin: binId, in: 0, speed: 1, volume: 1, muted: false, effects: [], label: "" };
-  await place(clip, "overlay", ti, [{ op: "add", path: binPath(binId), value: item }]);
+  if (await addBlueprint(blueprintId, binId, label, placeOps(clip, "overlay", ti))) store.selectItem("clip", clip.id);
 }
 
 function defaultDuration(item: BinItem, p: Project, binId: string): number {
   if (isFileSource(item.source)) return item.meta?.duration ?? 5;
   // A sequence goes down at its own length, the way dragging in a clip does.
   if (itemKind(item) === "sequence") return seqDuration(p, binId) || 4;
-  // An overlay goes down at the length its template was authored for — the same number
-  // `addFromLibrary` uses, so placing an entry and dragging in its template agree.
+  // An overlay goes down at the length it was authored for — the same number
+  // `placeBlueprint` uses, so placing an entry and dragging in its blueprint agree.
   if (isOverlaySource(item.source)) return overlayDuration(item);
   return 4;
 }
 
-/** The loaded template an overlay entry points at, if its library is on the search path. */
-export const templateOf = (id: string) => store.state.templates.find((t) => t.id === id);
+/** The manifest of an overlay entry's folder, when it loads. */
+export const manifestOf = (source: OverlaySource): OverlayManifest | undefined => store.state.manifests[source.overlay]?.manifest;
 
-/** How long an overlay runs when nothing says otherwise: the length its template was
- *  authored for. The clip that places it and the workbench that previews it must agree,
- *  so they ask here. */
+/** Why an overlay entry's folder has no manifest to show. */
+export const overlayError = (source: OverlaySource): string => store.state.manifests[source.overlay]?.error ?? `${source.overlay} is not loaded yet`;
+
+/** The bin entries using `folder`. */
+export const sharersOf = (folder: string): string[] =>
+  Object.entries(store.state.project?.bin ?? {}).filter(([, i]) => isOverlaySource(i.source) && i.source.overlay === folder).map(([id]) => id);
+
+/** How long an overlay runs by default: its manifest's length. */
 export const overlayDuration = (item: BinItem | undefined): number =>
-  (item && isOverlaySource(item.source) && templateOf(item.source.template)?.manifest.duration_default) || 4;
+  (item && isOverlaySource(item.source) && manifestOf(item.source)?.duration_default) || 4;
 
 /** `base`, or `base-2`, `base-3`… if taken. Bin ids allow letters, digits, `_` and `-`. */
 function uniqueId(base: string, taken: Iterable<string>): string {
@@ -80,9 +102,16 @@ function uniqueId(base: string, taken: Iterable<string>): string {
  *  exists), after `pre` ops. If the slot is taken the clip goes after the track's last
  *  clip instead. */
 async function place(clip: Clip, kind: TrackKind, ti: number, pre: PatchOp[]) {
+  const ops = [...pre, ...placeOps(clip, kind, ti)];
+  const ok = await store.patch(ops, `add ${clip.id}`);
+  if (ok) store.selectItem("clip", clip.id);
+}
+
+/** The ops `place` sends: a track of `kind` if there is none, then the clip. */
+function placeOps(clip: Clip, kind: TrackKind, ti: number): PatchOp[] {
   const tracks = store.tracks;
   if (ti < 0 || tracks[ti]?.kind !== kind) ti = tracks.findIndex((tr) => tr.kind === kind);
-  const ops: PatchOp[] = [...pre];
+  const ops: PatchOp[] = [];
   if (ti < 0) {
     // No track of that kind yet (e.g. a project created by hand): add one, then the clip.
     const { op, index } = newTrackOp(kind);
@@ -98,8 +127,7 @@ async function place(clip: Clip, kind: TrackKind, ti: number, pre: PatchOp[]) {
     }
   }
   ops.push({ op: "add", path: `${store.seqPath}/tracks/${ti}/clips/-`, value: clip });
-  const ok = await store.patch(ops, `add ${clip.id}`);
-  if (ok) store.selectItem("clip", clip.id);
+  return ops;
 }
 
 /** Build the patch op that inserts a new empty track of `kind`. Tracks composite in array
@@ -122,10 +150,9 @@ function newTrackOp(kind: TrackKind, tracks: { kind: TrackKind }[] = store.track
 
 /** Mint a bin entry named by the user: a slug of the name (or `fallback`) made unique,
  *  one patch. Returns the id, or null when the patch was refused. */
-async function addBinItem(name: string, fallback: string, source: BinSource): Promise<string | null> {
-  const id = uniqueId(slug(name) || fallback, Object.keys(store.state.project!.bin));
+async function addBinItem(name: string, fallback: string, source: BinSource, id = binIdFor(name, fallback), more: PatchOp[] = []): Promise<string | null> {
   const value: BinItem = { name, source };
-  return (await store.patch([{ op: "add", path: binPath(id), value }], `add ${fallback} ${id}`)) ? id : null;
+  return (await store.patch([{ op: "add", path: binPath(id), value }, ...more], `add ${fallback} ${id}`)) ? id : null;
 }
 
 /** Bin ids must match [A-Za-z_][A-Za-z0-9_-]*, so a leading digit takes an `s`. */
@@ -147,52 +174,102 @@ export async function promptNewFolder() {
   if (name) await addBinItem(name, "folder", { folder: true });
 }
 
-/**
- * Mint an overlay entry from a template and open it in the workbench — **without placing
- * it**. Creating an overlay and deciding where it plays are two different decisions, and
- * the second one should not be forced on you while you are still making the first.
- */
-export async function promptNewOverlay(template?: string) {
-  const templates = store.state.templates;
-  if (!templates.length) {
-    toast("No templates found. Run `kuma library`, or point KUMA_LIBRARY at a folder of them.", "err", 8000);
+/** A blueprint's two ways into the project: the workbench, or the timeline at the playhead. */
+export function blueprintActions(id: string, cls = "actions"): HTMLElement {
+  return row(cls,
+    button("Workbench", () => void promptNewOverlay(id), "Copy it into the project and open it in the workbench, unplaced"),
+    button("Timeline", () => void placeBlueprint(id, store.state.playhead), "Copy it into the project and place it at the playhead"),
+  );
+}
+
+/** Render the preview of one blueprint or overlay entry. */
+export const renderPreview = (which: { blueprints?: string[]; bins?: string[] }) => startJob("Preview", () => api.thumbs(which));
+
+/** An image of a rendered preview under `base`: the animated one, else the still, else
+ *  nothing. */
+export function previewImg(base: string): HTMLImageElement {
+  const img = el("img", "insp-thumb");
+  const v = `?v=${store.state.previewStamp}`;
+  img.src = `${base}/preview.webp${v}`;
+  img.alt = "";
+  img.onerror = () => {
+    if (img.src.includes("preview.webp")) img.src = `${base}/thumb.png${v}`;
+    else img.remove();
+  };
+  return img;
+}
+
+/** Copy a blueprint in as a new entry and open it in the workbench, without placing it. */
+export async function promptNewOverlay(blueprint?: string) {
+  const blueprints = store.state.blueprints;
+  if (!blueprints.length) {
+    toast("No blueprints found. Run `kuma library`, or point KUMA_LIBRARY at a folder of them.", "err", 8000);
     return;
   }
-  const pick = selectInput(templates.map((t) => ({ value: t.id, label: t.manifest.name || t.id, title: t.manifest.description })), template ?? templates[0].id, () => {
-    // The name follows the template until it has been typed in, so the common case is
+  const pick = selectInput(blueprints.map((t) => ({ value: t.id, label: blueprintName(t.id), title: t.manifest.description })), blueprint ?? blueprints[0].id, () => {
+    // The name follows the blueprint until it has been typed in, so the common case is
     // one click and the rarer one is still a free choice.
-    if (!typed) name.value = templateOf(pick.value)?.manifest.name ?? pick.value;
+    if (!typed) name.value = blueprintName(pick.value);
   });
   const name = el("input");
   name.type = "text";
-  name.value = templateOf(pick.value)?.manifest.name ?? pick.value;
+  name.value = blueprintName(pick.value);
   let typed = false;
   name.oninput = () => { typed = true; };
   const ok = await askForm({
     title: "New overlay",
-    note: "Adds a configured overlay to the bin and opens it in the workbench. Nothing is placed on a timeline until you place it.",
-    rows: [{ label: "Template", input: pick }, { label: "Name", input: name }],
+    note: "Copies the blueprint into this project's overlays/ and adds it to the bin, then opens it in the workbench. The copy is this project's to edit; the blueprint is not touched. Nothing is placed on a timeline until you place it.",
+    rows: [{ label: "Blueprint", input: pick }, { label: "Name", input: name }],
     ok: "Create",
   });
   if (!ok) return;
-  const label = name.value.trim() || templateOf(pick.value)?.manifest.name || pick.value;
-  const id = await addBinItem(label, pick.value, { template: pick.value, vars: {} });
-  if (id) store.openOverlay(id);
+  const label = name.value.trim() || blueprintName(pick.value);
+  const id = binIdFor(label, pick.value);
+  if (await addBlueprint(pick.value, id, label)) store.openOverlay(id);
 }
 
-/** Fork an overlay entry, vars and all, and open the copy. Iterating means keeping the
- *  version that works while trying another; a copy is the only way to do that, because
- *  editing an entry changes every clip that plays it. */
+/** A second entry on the same folder, vars and all, opened in the workbench. */
 export async function duplicateOverlay(id: string) {
   const p = store.state.project!;
   const item = p.bin[id];
   if (!item || !isOverlaySource(item.source)) return;
   const name = `${item.name || id} copy`;
-  const copyId = uniqueId(slug(name) || "overlay", Object.keys(p.bin));
-  const value: BinItem = { name, source: { template: item.source.template, vars: { ...(item.source.vars ?? {}) } } };
+  const copyId = binIdFor(name, "overlay");
+  const value: BinItem = { name, source: { overlay: item.source.overlay, vars: { ...(item.source.vars ?? {}) } } };
   // Listed where the original is, so a variant does not turn up at the other end of the bin.
   if (item.parent) value.parent = item.parent;
   if (await store.patch([{ op: "add", path: binPath(copyId), value }], `duplicate ${id}`)) store.openOverlay(copyId);
+}
+
+/** Give an overlay entry its own copy of the folder it shares. */
+export async function makeOverlayUnique(id: string) {
+  try {
+    const { overlay } = await api.makeUnique(id);
+    toast(`${id} now has its own folder: ${overlay}`, "ok");
+  } catch (e) {
+    toast((e as Error).message, "err");
+  }
+}
+
+/** Save an overlay entry as a blueprint (its vars as defaults), asking for the id and
+ *  before replacing one. */
+export async function saveAsBlueprint(id: string) {
+  const item = store.state.project?.bin[id];
+  if (!item || !isOverlaySource(item.source)) return;
+  const folder = item.source.overlay;
+  const suggested = slug(manifestOf(item.source)?.name || item.name || "") || folder.split("/").pop() || id;
+  const name = await askText({ title: "Save as blueprint", label: "Blueprint id", placeholder: suggested, value: suggested, ok: "Save" });
+  if (!name) return;
+  const bp = slug(name);
+  const exists = store.state.blueprints.some((b) => b.id === bp);
+  if (exists && !(await askForm({ title: "Replace blueprint?", note: `A blueprint “${bp}” is already in your library. Replace it with this overlay? Projects that copied it keep their copies.`, rows: [], ok: "Replace" }))) return;
+  try {
+    await api.saveBlueprint(id, bp, exists);
+    store.set({ blueprints: await api.reloadBlueprints() });
+    toast(`Saved ${folder} as blueprint “${bp}”`, "ok");
+  } catch (e) {
+    toast((e as Error).message, "err");
+  }
 }
 
 /** List `id` under `parent` (null for the top level), just before sibling `before`, or
@@ -240,7 +317,7 @@ export async function transcribe() {
   const binId = clip?.bin ?? (sel?.kind === "bin" ? sel.id : null);
   if (!binId || !hasAudio(p.bin[binId])) { toast("Select a clip or a media entry to transcribe", ""); return; }
   // An entry listed under this media that carries cues is already a transcript of it,
-  // whatever template it has since been pointed at.
+  // whatever folder it has since been pointed at.
   const existing = childrenOf(p, binId).find(([, i]) => isOverlaySource(i.source) && "cues" in (i.source.vars ?? {}));
 
   const language = selectInput(LANGUAGES.map(([value, label]) => ({ value, label })), savedLanguage(), () => {});
@@ -264,7 +341,7 @@ export async function transcribe() {
 }
 
 /** Landscape ⇄ portrait: swap the frame's width and height. Everything else follows — the
- *  compiler reads the profile off the project and templates size in `vh` — except
+ *  compiler reads the profile off the project and overlays size in `vh` — except
  *  pixel-valued transforms, which stay where they were. */
 export async function swapOrientation() {
   const p = store.state.project!;

@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use kuma_core::template::Region;
+use kuma_core::manifest::Region;
 use kuma_core::{BinSource, Project};
 use kuma_mlt::{compile, CompileOptions, OverlayBake, RenderJob, UnbakedPolicy};
 use kuma_overlay::{BakeRequest, TranscribeOptions};
@@ -218,6 +218,11 @@ where
 /// `parent` lists it under that entry, in the same edit.
 pub fn add_media(state: &AppState, path: &Path, id: Option<String>, parent: Option<String>, base_revision: Option<u64>, origin: &str) -> anyhow::Result<(String, u64, Vec<kuma_core::Issue>)> {
     let abs = resolve_path(state, path);
+    // An overlay folder, or its manifest, is imported rather than probed.
+    if abs.join(kuma_core::manifest::MANIFEST).is_file() || abs.file_name().is_some_and(|f| f == kuma_core::manifest::MANIFEST) {
+        let how = crate::overlays::Import { id, parent, ..Default::default() };
+        return crate::overlays::import_overlay(state, &abs.to_string_lossy(), how, base_revision, origin);
+    }
     if !abs.is_file() {
         anyhow::bail!("file not found: {}", abs.display());
     }
@@ -241,8 +246,17 @@ pub fn add_media(state: &AppState, path: &Path, id: Option<String>, parent: Opti
     Ok((id, rev, warnings))
 }
 
-/// The template a transcript lands in. Its `cues` var is the transcript; the rest is looks.
-const SUBTITLES_TEMPLATE: &str = "subtitles";
+/// The blueprint a transcript lands in. Its `cues` var is the transcript; the rest is looks.
+const SUBTITLES_BLUEPRINT: &str = "subtitles";
+
+/// The folder a new transcript shares: one a transcript in the bin uses (its manifest takes
+/// `cues`), else `overlays/subtitles` if an undone one left it. None means copy the blueprint.
+fn subtitles_folder(state: &AppState, p: &Project) -> Option<String> {
+    let takes_cues = |rel: &str| crate::overlays::resolve(state, rel).is_ok_and(|r| r.manifest.vars.values().any(|v| v.ty == kuma_core::VarType::Cues));
+    let left_behind = format!("overlays/{SUBTITLES_BLUEPRINT}");
+    let found = p.overlay_folders().into_iter().chain([left_behind.as_str()]).find(|rel| takes_cues(rel)).map(str::to_string);
+    found // bound first: the iterator borrows `left_behind`
+}
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct TranscribeRequest {
@@ -299,8 +313,9 @@ pub fn transcribe(state: &AppState, req: &TranscribeRequest, progress: &dyn Fn(u
     if item.meta.as_ref().is_some_and(|m| !m.has_audio) {
         anyhow::bail!("`{bin}` has no audio");
     }
-    if !read(&state.templates).loaded.contains_key(SUBTITLES_TEMPLATE) {
-        anyhow::bail!("the `{SUBTITLES_TEMPLATE}` template is not in any library; run `kuma library`");
+    let existing = subtitles_folder(state, &project);
+    if existing.is_none() {
+        state.blueprint_dir(SUBTITLES_BLUEPRINT)?;
     }
     // A courtesy, not the check that counts: refuse an id that is plainly taken before
     // spending minutes on it. The one that decides runs below, against the live project.
@@ -316,7 +331,12 @@ pub fn transcribe(state: &AppState, req: &TranscribeRequest, progress: &dyn Fn(u
     progress(90, "adding to the bin");
 
     let cues_value = serde_json::to_value(&cues)?;
-    let (outcome, rev, warnings) = state.apply_built(&req.origin, |p| {
+    // Copied outside the edit lock, and only once the words are in.
+    let overlay = match existing {
+        Some(folder) => folder,
+        None => crate::overlays::copy_blueprint(state, SUBTITLES_BLUEPRINT, None)?,
+    };
+    let (outcome, rev, warnings) = state.apply_built(&req.origin, None, |p| {
         // Everything below reads `p`, the project as it is now — never the snapshot above.
         let media_item = p.bin.get(&bin).ok_or_else(|| anyhow::anyhow!("`{bin}` is gone"))?;
         // The clip may have been moved, retrimmed or deleted while the model ran; its
@@ -358,7 +378,7 @@ pub fn transcribe(state: &AppState, req: &TranscribeRequest, progress: &dyn Fn(u
             }
             let entry = kuma_core::BinItem {
                 name: format!("Subtitles: {}", media_item.display_name(&bin)),
-                source: BinSource::Overlay { template: SUBTITLES_TEMPLATE.into(), vars },
+                source: BinSource::Overlay { overlay: overlay.clone(), vars },
                 meta: None,
                 parent: Some(bin.clone()),
                 order: None,
@@ -372,7 +392,7 @@ pub fn transcribe(state: &AppState, req: &TranscribeRequest, progress: &dyn Fn(u
         let place = placement.as_ref().filter(|_| !p.all_clips().any(|(_, _, c)| c.bin == id));
         if let Some((seq, c)) = place {
             // The overlay clip copies the media clip's start, end and speed, so at every
-            // timeline instant the template's own time is `source − in`: the cues line up.
+            // timeline instant the overlay's own time is `source − in`: the cues line up.
             let tracks = &p.seq(seq).ok_or_else(|| anyhow::anyhow!("`{seq}` is not a sequence"))?.tracks;
             let free = |t: &kuma_core::Track| t.kind == kuma_core::TrackKind::Overlay && !t.clips.iter().any(|x| x.start < c.end && x.end > c.start);
             let ti = match tracks.iter().position(free) {
@@ -396,10 +416,19 @@ fn add_op(pointer: &str, value: serde_json::Value) -> anyhow::Result<json_patch:
     Ok(json_patch::PatchOperation::Add(json_patch::AddOperation { path: pointer.parse()?, value }))
 }
 
-/// `add /bin/<id><rest>`, the id escaped as a pointer segment so a bad one is refused by
-/// the validator rather than landing somewhere else.
-fn bin_op(id: &str, rest: &str, value: serde_json::Value) -> anyhow::Result<json_patch::PatchOperation> {
-    add_op(&format!("/bin/{}{rest}", id.replace('~', "~0").replace('/', "~1")), value)
+/// `/bin/<id><rest>`, the id escaped so a bad one is refused rather than misplaced.
+fn bin_pointer(id: &str, rest: &str) -> String {
+    format!("/bin/{}{rest}", id.replace('~', "~0").replace('/', "~1"))
+}
+
+/// `add /bin/<id><rest>`.
+pub(crate) fn bin_op(id: &str, rest: &str, value: serde_json::Value) -> anyhow::Result<json_patch::PatchOperation> {
+    add_op(&bin_pointer(id, rest), value)
+}
+
+/// `replace /bin/<id><rest>`.
+pub(crate) fn bin_replace_op(id: &str, rest: &str, value: serde_json::Value) -> anyhow::Result<json_patch::PatchOperation> {
+    Ok(json_patch::PatchOperation::Replace(json_patch::ReplaceOperation { path: bin_pointer(id, rest).parse()?, value }))
 }
 
 pub type Bakes = HashMap<String, OverlayBake>;
@@ -455,7 +484,7 @@ fn overlay_clips(project: &Project, root: &str, nested_only: bool, within: Optio
         .collect()
 }
 
-/// Bake the overlays `scope` asks for. `Nested` is best effort: a template that will not
+/// Bake the overlays `scope` asks for. `Nested` is best effort: an overlay that will not
 /// bake — or no hyperframes at all — costs you that overlay in the preview and never the
 /// preview itself, which used to be free because overlays were skipped entirely.
 pub fn bake_for(
@@ -502,7 +531,8 @@ fn strict((out, errs): (Bakes, Vec<anyhow::Error>)) -> anyhow::Result<Bakes> {
 /// Whether a failure is fatal is the caller's to decide — the loop does not care. A set
 /// `cancel` stops it between two bakes, which the cache makes free to pick up again.
 fn bake_clips(state: &AppState, project: &Project, ids: &[String], progress: &dyn Fn(u8, &str), cancel: Option<&AtomicBool>) -> (Bakes, Vec<anyhow::Error>) {
-    let templates = read(&state.templates).loaded.clone();
+    // Clips of one entry, and entries of one folder, share a manifest: read each once.
+    let mut folders: std::collections::HashMap<String, Result<crate::overlays::Resolved, String>> = Default::default();
     let (mut out, mut errs) = (Bakes::new(), Vec::new());
     let n = ids.len().max(1);
     for (i, id) in ids.iter().enumerate() {
@@ -511,13 +541,17 @@ fn bake_clips(state: &AppState, project: &Project, ids: &[String], progress: &dy
             break;
         }
         let Some((_, _, clip)) = project.find_clip(id) else { continue };
-        let Some(BinSource::Overlay { template: overlay, vars }) = project.item(clip).map(|i| &i.source) else { continue };
-        let Some((dir, manifest)) = templates.get(overlay) else {
-            errs.push(anyhow::anyhow!("unknown template `{overlay}` for clip `{id}`"));
-            continue;
+        let Some(BinSource::Overlay { overlay, vars }) = project.item(clip).map(|i| &i.source) else { continue };
+        let resolved = folders.entry(overlay.clone()).or_insert_with(|| crate::overlays::resolve(state, overlay).map_err(|e| format!("{e:#}")));
+        let r = match resolved {
+            Ok(r) => r,
+            Err(e) => {
+                errs.push(anyhow::anyhow!("clip `{id}`: {e}"));
+                continue;
+            }
         };
         progress(((i * 100) / n) as u8, &format!("baking {id} ({overlay})"));
-        let req = BakeRequest { template_dir: dir, manifest, vars, fps: project.fps, width: project.width, height: project.height, duration: clip.duration(), speed: clip.speed };
+        let req = BakeRequest { overlay_dir: &r.dir, manifest: &r.manifest, vars, fps: project.fps, width: project.width, height: project.height, duration: clip.duration(), speed: clip.speed };
         match state.baker.bake(&req) {
             Ok(r) => {
                 out.insert(id.clone(), r.overlay_bake());
@@ -526,27 +560,6 @@ fn bake_clips(state: &AppState, project: &Project, ids: &[String], progress: &dy
         }
     }
     (out, errs)
-}
-
-/// Lint one template at the project's frame and rate, so a rule that depends on either
-/// judges the size the video is actually in. Blocking: it stages a copy and runs a
-/// subprocess, so callers on the runtime go through `spawn_blocking`.
-pub fn lint_template(state: &AppState, id: &str) -> anyhow::Result<kuma_overlay::LintReport> {
-    let project = read(&state.project).clone();
-    // Cloned out rather than borrowed: the lock must not be held across the subprocess,
-    // or a template rescan waits on a linter.
-    let (dir, manifest) = read(&state.templates).loaded.get(id).cloned().ok_or_else(|| anyhow::anyhow!("unknown template `{id}`"))?;
-    let req = kuma_overlay::BakeRequest {
-        template_dir: &dir,
-        manifest: &manifest,
-        vars: &serde_json::Map::new(),
-        fps: project.fps,
-        width: project.width,
-        height: project.height,
-        duration: manifest.duration_default,
-        speed: 1.0,
-    };
-    Ok(state.baker.lint(&req)?)
 }
 
 /// Compile options pointed at this project's directories. Callers set what they need on
@@ -702,7 +715,7 @@ pub struct SampleRequest {
     /// combined with `sequence`.
     #[serde(default)]
     pub overlay: Option<String>,
-    /// How long to run that overlay for. The template's own default when absent — an
+    /// How long to run that overlay for. The overlay's own default when absent — an
     /// entry has no length until a clip gives it one.
     #[serde(default)]
     pub duration: Option<f64>,
@@ -711,7 +724,7 @@ pub struct SampleRequest {
     /// frame of it over nothing is not a picture of anything.
     #[serde(default)]
     pub backdrop: Option<String>,
-    /// With `overlay`: the frame to render into, when it is not the project's. A template
+    /// With `overlay`: the frame to render into, when it is not the project's. An overlay
     /// has to look right at 1920×1080 and 1080×1920 alike, and checking the other way
     /// round should not mean editing the project to find out.
     #[serde(default)]
@@ -786,7 +799,7 @@ pub fn sample_frames(state: &AppState, req: &SampleRequest, progress: &dyn Fn(u8
     opts.sequence = Some(sequence.clone());
     let xml = compile_xml(&project, &opts)?;
     // The frame cache is keyed on the compiled document, which is the whole input: every
-    // producer, the bake directories (content hashes, so an overlay template edited on disk
+    // producer, the bake directories (content hashes, so an overlay edited on disk
     // changes it without a project revision), and whatever the compiler itself does, so a
     // kuma that compiles differently never serves a frame an older one sampled.
     let doc_stamp = hash_str(&xml);
@@ -834,11 +847,12 @@ pub fn sample_frames(state: &AppState, req: &SampleRequest, progress: &dyn Fn(u8
 /// An overlay entry as the workbench or an agent asks to see it: at some length, in some
 /// frame. Both are views, not document values — an entry has no length until a clip
 /// gives it one, and the project's frame is only the default — so they are resolved
-/// against the template and the project here, and **clamped rather than validated**:
+/// against the overlay's manifest and the project here, and **clamped rather than validated**:
 /// nothing is stored, and a silly number costs one render.
 #[derive(Debug, Clone)]
 pub struct EntryView {
-    pub template: String,
+    /// The entry's overlay folder, resolved.
+    pub overlay: crate::overlays::Resolved,
     pub vars: serde_json::Map<String, serde_json::Value>,
     pub duration: f64,
     pub width: u32,
@@ -854,21 +868,20 @@ pub enum EntryError {
     NoEntry(String),
     #[error("`{0}` is not an overlay entry")]
     NotOverlay(String),
-    #[error("unknown template `{0}`")]
-    NoTemplate(String),
+    /// The entry's folder is missing or its manifest does not load.
+    #[error("{0}")]
+    BadOverlay(String),
 }
 
 pub fn entry_view(state: &AppState, doc: &Project, id: &str, duration: Option<f64>, width: Option<u32>, height: Option<u32>) -> Result<EntryView, EntryError> {
     let item = doc.bin.get(id).ok_or_else(|| EntryError::NoEntry(id.into()))?;
-    let kuma_core::BinSource::Overlay { template, vars } = &item.source else {
+    let kuma_core::BinSource::Overlay { overlay, vars } = &item.source else {
         return Err(EntryError::NotOverlay(id.into()));
     };
-    let default = {
-        let templates = read(&state.templates);
-        templates.loaded.get(template).ok_or_else(|| EntryError::NoTemplate(template.clone()))?.1.duration_default
-    };
+    let overlay = crate::overlays::resolve(state, overlay).map_err(|e| EntryError::BadOverlay(format!("{e:#}")))?;
+    let default = overlay.manifest.duration_default;
     Ok(EntryView {
-        template: template.clone(),
+        overlay,
         vars: vars.clone(),
         duration: duration.filter(|d| d.is_finite() && *d > 0.0).map(|d| d.clamp(0.05, 3600.0)).unwrap_or(default),
         width: width.unwrap_or(doc.width).clamp(16, 16384),
@@ -991,7 +1004,7 @@ mod tests {
     fn a_preview_bakes_the_overlays_it_nests_and_no_others() {
         let p: Project = serde_json::from_value(json!({
             "bin": {
-                "tag": { "source": { "template": "location-tag" } },
+                "tag": { "source": { "overlay": "overlays/location-tag" } },
                 "inner": seq(json!([
                     overlay_track("io1", false, json!([clip("o_nested", "tag")])),
                     overlay_track("io2", true, json!([clip("o_hidden", "tag")]))
@@ -1022,7 +1035,7 @@ mod tests {
     fn a_time_window_narrows_the_root_but_not_what_it_nests() {
         let p: Project = serde_json::from_value(json!({
             "bin": {
-                "tag": { "source": { "template": "location-tag" } },
+                "tag": { "source": { "overlay": "overlays/location-tag" } },
                 "inner": seq(json!([overlay_track("io1", false, json!([clip("o_nested", "tag")]))])),
                 "main": seq(json!([
                     overlay_track("mo1", false, json!([

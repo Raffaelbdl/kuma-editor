@@ -521,15 +521,16 @@ a named, thumbnailed row in the browser mean something. The cost is that varying
 placement takes two operations instead of one, which JSON Patch absorbs into a single
 atomic call.
 
-**A two-tier model: reusable templates inline, one-offs in the bin** — rejected.
+**A two-tier model: reusable templates inline, one-offs in the bin** — rejected. (A
+different split was made later; see *Overlays and blueprints*.)
 Considered making the split by intent, so a location tag stayed a template plus vars on
 the clip while a bespoke animation became a bin entry. Dropped because the distinction is
 about expected reuse rather than about the content, and because the argument for it
 rested on an agent cost that does not exist: adding an entry and a clip is two operations
 in one patch, one revision, one undo entry. One mechanism is also less code than two.
 
-**HTML templates subsume title clips** — adopted.
-Kdenlive needs a separate title-clip producer. kuma does not, because a template with a
+**HTML overlays subsume title clips** — adopted.
+Kdenlive needs a separate title-clip producer. kuma does not, because an overlay with a
 text var is a title. `BinSource` therefore has three variants, not four.
 
 **Transitions stay out of the bin** — adopted.
@@ -608,13 +609,37 @@ rather than on the project revision and the bake paths: under the old key, a kum
 compiles differently kept serving frames an older one had sampled, which is how this bug
 first looked unfixed after it was fixed.
 
-## Templates and presets as user assets
+## Overlays and blueprints
 
-**Templates and presets live outside the codebase** — adopted.
-They are assets shared across projects, not source. kuma reads `$XDG_DATA_HOME/kuma`
-(default `~/.local/share/kuma`), then every directory in `KUMA_LIBRARY`, then the
-project's own `overlays/` and `presets/`; later wins on an id clash. A template authored
-for one video belongs in that project; a reusable one belongs in the library.
+**An overlay belongs to its project; a blueprint belongs to the user** — adopted, format
+version 7. "Template" meant two things: the library's reusable overlays, and every one-off
+an agent wrote into a project's `overlays/`, which the search path loaded as a template too.
+An entry named a template id, so a library edit re-styled finished videos and a project
+rendered differently on another machine.
+
+- An **overlay** is a project folder, `overlays/<name>/` (`overlay.json` + `index.html`);
+  an entry names it, `{ "overlay": "overlays/<name>", "vars" }`, relative and inside the
+  project. The folder is the identity: the manifest has no `id`.
+- A **blueprint** is the same shape in `<library>/blueprints/`, read only from libraries,
+  never through an entry.
+- Every move is a copy (`crates/kuma-daemon/src/overlays.rs`): using a blueprint copies it
+  in; a folder reaches the bin only by `import_overlay`; entries may share a folder and
+  **Make unique** copies it for one; **Save as blueprint** copies an entry back to the
+  library with its vars as defaults. Undo leaves copied folders on disk.
+- `kumaTemplate()` in `_vendor/kuma.js` keeps its name: every blueprint calls it.
+- **No migration**: a v6 project with template entries is refused on open, saying how to
+  convert it; one without is stamped.
+
+**Import copies from anywhere** — adopted, reversing a first cut that refused folders
+outside the project. Dragging an `overlay.json` in from any folder is the natural gesture;
+it is copied into `overlays/` first, so the project still owns what it plays.
+
+**Named vaults** — deferred. A shared set of blueprints for a series of videos, e.g.
+`<library>/vaults/<name>/`, chosen per project. `KUMA_LIBRARY` is a crude version today.
+
+**Blueprints and presets live outside the codebase** — adopted. kuma reads
+`$XDG_DATA_HOME/kuma`, then every `KUMA_LIBRARY` directory, later winning; presets also
+come from the project's `presets/`, blueprints never do.
 
 **`library/` in the repo is a starter set, not a runtime path** — adopted.
 `kuma library` installs it into the user library. Tests point `KUMA_LIBRARY` or the baker
@@ -1809,9 +1834,9 @@ because it is the part deliberately left out.
   and nothing is in it, which makes the feature invisible to anyone who has not read the
   guide; see *Design systems* above for what such a set has to demonstrate.
 
-- **Templates and overlays are the same word today and will not be** — a discussion to
-  have, deliberately not a decision, and best had *before* the second kind of template
-  exists rather than after.
+- **Templates and overlays are the same word today and will not be** — decided for HTML
+  overlays (see *Overlays and blueprints*); the paragraphs below describe the old names.
+  What other reusable kinds are called is still open.
 
   Today "template" means exactly one thing: a folder with `template.json` and `index.html`
   that bakes to an overlay. That meaning is wired in everywhere — `TemplateManifest`,
@@ -1959,7 +1984,8 @@ because it is the part deliberately left out.
   alone (or run in the jobs lane, after whatever is running); and the live key set must
   cover every sequence, not only the master, since the preview bakes nested sequences too.
 
-- **A configured overlay cannot be shared between projects.** The template travels in the
+- **A configured overlay cannot be shared between projects** — addressed by **Save as
+  blueprint**; the reasoning as it stood follows. The template travels in the
   library and its manifest defaults with it, but an entry's var overrides live in the
   project file, so a house lower third styled once has to be rebuilt in the next project.
   The fix is small because a saved configuration *is* a bin entry with the project
@@ -1992,6 +2018,6 @@ because it is the part deliberately left out.
 - A re-probe or reload action on a bin entry.
 - `kuma add-media` resolves a relative path against the shell's directory rather than the
   project's, which surprises when run from elsewhere.
-- Overlays bake at full frame size; there is no per-template bake region.
+- Overlays bake at full frame size; there is no per-overlay bake region.
 - Export presets are a `const` table in Rust and are not pluggable. Effect presets, being
   JSON on the library search path, already are.

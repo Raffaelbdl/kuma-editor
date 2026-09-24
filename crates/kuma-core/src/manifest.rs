@@ -1,7 +1,7 @@
-//! Overlay template manifests (`overlays/<id>/template.json`).
+//! Overlay manifests (`overlay.json`, beside the overlay's `index.html`).
 //!
-//! The manifest is what makes agent-free editing possible: the UI builds a properties
-//! panel from `vars`, and clip `vars` are validated against it.
+//! The same shape for a project's overlays and the library's blueprints. The UI builds a
+//! properties panel from `vars`, and an entry's `vars` are validated against it.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -12,9 +12,7 @@ use serde_json::{Map, Value};
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub struct TemplateManifest {
-    /// Directory name under `overlays/`. Must match the folder.
-    pub id: String,
+pub struct OverlayManifest {
     #[serde(default)]
     pub name: String,
     #[serde(default)]
@@ -22,13 +20,13 @@ pub struct TemplateManifest {
     /// Default clip duration when dropped on the timeline, seconds.
     #[serde(default = "default_duration")]
     pub duration_default: f64,
-    /// If true the template does not animate: it bakes to a single still frame.
+    /// If true the overlay does not animate: it bakes to a single still frame.
     #[serde(default, rename = "static")]
     pub is_static: bool,
     /// Typed variables exposed in the properties panel.
     #[serde(default)]
     pub vars: BTreeMap<String, VarSpec>,
-    /// Free-form tags for the library browser.
+    /// Free-form tags for the blueprint browser.
     #[serde(default)]
     pub tags: Vec<String>,
 }
@@ -58,7 +56,7 @@ pub enum VarType {
     Enum,
     Point,
     /// A list of timed lines, `[{ "start", "end", "text" }, …]` in seconds relative to
-    /// the clip start. What a subtitle template takes; the inspector edits it as rows.
+    /// the clip start. What a subtitles overlay takes; the inspector edits it as rows.
     Cues,
 }
 
@@ -83,16 +81,16 @@ pub struct VarSpec {
     pub options: Vec<String>,
 }
 
-impl TemplateManifest {
-    pub fn load(dir: &Path) -> Result<Self, TemplateError> {
-        let path = dir.join("template.json");
-        let err = |reason: String| TemplateError { path: path.clone(), reason };
+/// The manifest's file name inside an overlay folder.
+pub const MANIFEST: &str = "overlay.json";
+
+impl OverlayManifest {
+    /// Load `dir/overlay.json`. The folder name is the identity; the manifest has no id.
+    pub fn load(dir: &Path) -> Result<Self, ManifestError> {
+        let path = dir.join(MANIFEST);
+        let err = |reason: String| ManifestError { path: path.clone(), reason };
         let text = std::fs::read_to_string(&path).map_err(|e| err(format!("cannot read: {e}")))?;
-        let m: TemplateManifest = serde_json::from_str(&text).map_err(|e| err(format!("cannot parse: {e}")))?;
-        let folder = dir.file_name().and_then(|s| s.to_str()).unwrap_or("");
-        if m.id != folder {
-            return Err(err(format!("manifest id `{}` does not match folder `{folder}`", m.id)));
-        }
+        let m: OverlayManifest = serde_json::from_str(&text).map_err(|e| err(format!("cannot parse: {e}")))?;
         if let Some(problem) = m.check() {
             return Err(err(problem));
         }
@@ -100,7 +98,7 @@ impl TemplateManifest {
         // folder without one resolves fine and then 404s in preview and fails the bake.
         // Refuse it here instead, the way a bin entry with a missing file is refused.
         if !dir.join("index.html").is_file() {
-            return Err(err("index.html is missing from the template folder".into()));
+            return Err(err("index.html is missing from the overlay folder".into()));
         }
         Ok(m)
     }
@@ -122,19 +120,19 @@ impl TemplateManifest {
         None
     }
 
-    /// Load every `<root>/*/template.json`. A folder whose manifest fails to load is
-    /// reported, not silently skipped: a typo in one manifest would otherwise turn every
-    /// clip using it into an "unknown template" error.
-    pub fn load_all(root: &Path) -> (BTreeMap<String, (PathBuf, TemplateManifest)>, Vec<TemplateError>) {
+    /// Load every `<root>/*/overlay.json`, keyed by folder name. Failures are reported, not
+    /// skipped, so a typo does not make a blueprint vanish silently.
+    pub fn load_all(root: &Path) -> (BTreeMap<String, (PathBuf, OverlayManifest)>, Vec<ManifestError>) {
         let mut out = BTreeMap::new();
         let mut errors = Vec::new();
         let Ok(rd) = std::fs::read_dir(root) else { return (out, errors) };
         for entry in rd.flatten() {
             let dir = entry.path();
-            if dir.join("template.json").is_file() {
-                match TemplateManifest::load(&dir) {
+            let Some(name) = dir.file_name().and_then(|s| s.to_str()).map(str::to_string) else { continue };
+            if dir.join(MANIFEST).is_file() {
+                match OverlayManifest::load(&dir) {
                     Ok(m) => {
-                        out.insert(m.id.clone(), (dir, m));
+                        out.insert(name, (dir, m));
                     }
                     Err(e) => errors.push(e),
                 }
@@ -157,7 +155,7 @@ impl TemplateManifest {
         let mut problems = Vec::new();
         for (k, v) in overrides {
             let Some(spec) = self.vars.get(k) else {
-                problems.push(format!("unknown var `{k}` (template `{}`)", self.id));
+                problems.push(format!("unknown var `{k}`: the overlay's manifest does not declare it"));
                 continue;
             };
             if let Some(p) = spec.check(v) {
@@ -229,6 +227,19 @@ impl VarSpec {
     }
 }
 
+/// A bin entry's `overlay` folder must be relative and inside the project: overlays are the
+/// project's own copies (media, by contrast, may live anywhere).
+pub fn check_overlay_path(rel: &str) -> Option<String> {
+    let p = Path::new(rel);
+    if rel.is_empty() {
+        return Some("the overlay folder is empty".into());
+    }
+    if p.is_absolute() || p.components().any(|c| !matches!(c, std::path::Component::Normal(_) | std::path::Component::CurDir)) {
+        return Some(format!("`{rel}` must be a folder inside the project, relative to it (e.g. `overlays/{}`)", p.file_name().and_then(|s| s.to_str()).unwrap_or("title")));
+    }
+    None
+}
+
 pub(crate) fn is_css_color(s: &str) -> bool {
     let Some(hex) = s.strip_prefix('#') else { return false };
     matches!(hex.len(), 3 | 4 | 6 | 8) && hex.chars().all(|c| c.is_ascii_hexdigit())
@@ -237,7 +248,7 @@ pub(crate) fn is_css_color(s: &str) -> bool {
 /// A manifest that could not be loaded: which file, and why.
 #[derive(Debug, Clone, thiserror::Error, Serialize)]
 #[error("{path}: {reason}")]
-pub struct TemplateError {
+pub struct ManifestError {
     pub path: PathBuf,
     pub reason: String,
 }
@@ -247,9 +258,9 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    fn manifest() -> TemplateManifest {
+    fn manifest() -> OverlayManifest {
         serde_json::from_value(json!({
-            "id": "location-tag", "name": "Location tag",
+            "name": "Location tag",
             "vars": {
                 "label": { "type": "string", "default": "Paris" },
                 "accent": { "type": "color", "default": "#ff4f00" },
@@ -284,12 +295,21 @@ mod tests {
 
     #[test]
     fn manifest_checks_itself() {
-        let bad = |v: serde_json::Value| serde_json::from_value::<TemplateManifest>(v).unwrap().check().expect("should be rejected");
-        assert!(bad(json!({ "id": "t", "duration_default": 0 })).contains("duration"));
-        assert!(bad(json!({ "id": "t", "vars": { "s": { "type": "enum", "default": "a", "options": [] } } })).contains("options"));
-        assert!(bad(json!({ "id": "t", "vars": { "n": { "type": "number", "default": "big" } } })).contains("default"));
-        assert!(bad(json!({ "id": "t", "vars": { "n": { "type": "number", "default": 5, "max": 1 } } })).contains("max"));
+        let bad = |v: serde_json::Value| serde_json::from_value::<OverlayManifest>(v).unwrap().check().expect("should be rejected");
+        assert!(bad(json!({ "duration_default": 0 })).contains("duration"));
+        assert!(bad(json!({ "vars": { "s": { "type": "enum", "default": "a", "options": [] } } })).contains("options"));
+        assert!(bad(json!({ "vars": { "n": { "type": "number", "default": "big" } } })).contains("default"));
+        assert!(bad(json!({ "vars": { "n": { "type": "number", "default": 5, "max": 1 } } })).contains("max"));
         assert!(manifest().check().is_none());
+    }
+
+    #[test]
+    fn an_overlay_folder_stays_inside_the_project() {
+        assert!(check_overlay_path("overlays/title").is_none());
+        assert!(check_overlay_path("./overlays/title").is_none());
+        for bad in ["", "/abs/title", "../other/overlays/title", "overlays/../../x"] {
+            assert!(check_overlay_path(bad).is_some(), "{bad:?} should be refused");
+        }
     }
 
     #[test]
@@ -306,19 +326,21 @@ mod tests {
     /// A folder carrying a manifest but no markup used to load, resolve and validate
     /// cleanly, then 404 in the live preview and fail the bake.
     #[test]
-    fn a_template_folder_needs_its_index_html() {
+    fn an_overlay_folder_needs_its_index_html() {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path().join("location-tag");
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("template.json"), r#"{ "id": "location-tag" }"#).unwrap();
+        std::fs::write(dir.join(MANIFEST), r#"{ "name": "Location tag" }"#).unwrap();
 
-        let e = TemplateManifest::load(&dir).expect_err("no index.html yet");
+        let e = OverlayManifest::load(&dir).expect_err("no index.html yet");
         assert!(e.reason.contains("index.html"), "{e:?}");
         // load_all reports it rather than skipping the folder silently.
-        let (loaded, errors) = TemplateManifest::load_all(tmp.path());
+        let (loaded, errors) = OverlayManifest::load_all(tmp.path());
         assert!(loaded.is_empty() && errors.len() == 1, "{loaded:?} {errors:?}");
 
         std::fs::write(dir.join("index.html"), "<div data-composition-id=\"main\"></div>").unwrap();
-        assert_eq!(TemplateManifest::load(&dir).unwrap().id, "location-tag");
+        assert_eq!(OverlayManifest::load(&dir).unwrap().name, "Location tag");
+        // Keyed by folder, since the manifest carries no id of its own.
+        assert!(OverlayManifest::load_all(tmp.path()).0.contains_key("location-tag"));
     }
 }

@@ -70,7 +70,7 @@ describe("themes", () => {
 
   it("never sets a colour scheme in a palette", () => {
     // A `color-scheme: dark` inherited by the overlay iframes stops Chromium compositing
-    // them and paints a template's white canvas over the video — the bug `composite.test`
+    // them and paints an overlay's white canvas over the video — the bug `composite.test`
     // exists for. Themes are chrome; they do not get to touch that.
     assert.equal(/color-scheme\s*:/.test(sheet), false);
   });

@@ -1,21 +1,21 @@
-//! Checking a template against the contract, before a bake proves it the slow way.
+//! Checking an overlay against the contract, before a bake proves it the slow way.
 //!
-//! A template that breaks the contract fails far from its cause: a missing
+//! An overlay that breaks the contract fails far from its cause: a missing
 //! `data-no-timeline` waits 45 seconds for a timeline that will never register, a
 //! `Date.now()` renders a frozen or wrong frame with no error at all, and an undeclared
 //! var reaches the document as `undefined`. All of it is visible in the markup, so it is
 //! read here — where the answer costs a second and names the fix.
 //!
 //! Two sources, one report. hyperframes ships its own linter and knows its own runtime;
-//! kuma knows its contract (`library/overlays/CLAUDE.md`), which is stricter on the two
+//! kuma knows its contract (`library/blueprints/CLAUDE.md`), which is stricter on the two
 //! things that make a bake deterministic: no wall clock, and nothing fetched over the
-//! network. What is checked is the **staged** template — the injection applied, `_vendor/`
+//! network. What is checked is the **staged** overlay — the injection applied, `_vendor/`
 //! in place — so a rule never fires on something the renderer would not have seen.
 
 use std::path::Path;
 use std::process::Command;
 
-use kuma_core::template::TemplateManifest;
+use kuma_core::manifest::OverlayManifest;
 use serde::{Deserialize, Serialize};
 
 use crate::bake::{BakeError, BakeRequest, Baker};
@@ -51,7 +51,8 @@ impl Finding {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LintReport {
-    pub template: String,
+    /// The overlay folder's name.
+    pub overlay: String,
     pub findings: Vec<Finding>,
     /// Why hyperframes' own linter did not run, when it did not. Its absence is not a
     /// pass and not a failure — the same stance the render tests take.
@@ -66,7 +67,7 @@ impl LintReport {
     pub fn warnings(&self) -> usize {
         self.findings.iter().filter(|f| f.level == Level::Warning).count()
     }
-    /// True when nothing would stop this template rendering correctly.
+    /// True when nothing would stop this overlay rendering correctly.
     pub fn ok(&self) -> bool {
         self.errors() == 0
     }
@@ -91,7 +92,7 @@ const FORBIDDEN: &[(&str, &str)] = &[
 ];
 
 impl Baker {
-    /// Lint a template: kuma's contract over the staged document, plus hyperframes' own
+    /// Lint an overlay: kuma's contract over the staged document, plus hyperframes' own
     /// linter when it is installed. `req` decides the size and length the document is
     /// staged at, exactly as a bake would.
     pub fn lint(&self, req: &BakeRequest) -> Result<LintReport, BakeError> {
@@ -103,7 +104,7 @@ impl Baker {
         let renderer_skipped = match hyperframes_lint(&self.hyperframes, &staged.dir) {
             Ok(mut fs) => {
                 // hyperframes looks for a literal `window.__timelines[...]` assignment.
-                // kuma templates register through `timeline()` in `_vendor/kuma.js`, so
+                // kuma overlays register through `timeline()` in `_vendor/kuma.js`, so
                 // its miss is a false positive whenever our own check is satisfied — and
                 // a report full of false positives is a report nobody reads.
                 let registered = !findings.iter().any(|f| f.code == "no_timeline");
@@ -116,19 +117,20 @@ impl Baker {
             Err(e) => Some(e),
         };
         findings.sort_by_key(|f| f.level == Level::Warning);
-        Ok(LintReport { template: req.manifest.id.clone(), findings, renderer_skipped })
+        let overlay = req.overlay_dir.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+        Ok(LintReport { overlay, findings, renderer_skipped })
     }
 }
 
 /// kuma's own contract, read off the staged document.
-fn contract_findings(html: &str, manifest: &TemplateManifest, dir: &Path) -> Vec<Finding> {
+fn contract_findings(html: &str, manifest: &OverlayManifest, dir: &Path) -> Vec<Finding> {
     let mut out = Vec::new();
     let scripts = script_text(html);
     // The staged document carries kuma's own injection: `window.kuma = …` and a
     // `:root { --var-<name>: … }` for every var in the manifest. The var rules read the
-    // template's markup, not that — or every declared var would look read. Its own
+    // overlay's markup, not that — or every declared var would look read. Its own
     // linked stylesheets are part of what it reads, though: `_vendor/kuma.css` is what
-    // turns `size` into `--u`, so a template that only sizes in `--u` still uses `size`.
+    // turns `size` into `--u`, so an overlay that only sizes in `--u` still uses `size`.
     let mut own = without_injection(html);
     for href in local_refs(html).into_iter().filter(|h| h.ends_with(".css")) {
         if let Ok(css) = std::fs::read_to_string(dir.join(&href)) {
@@ -161,7 +163,7 @@ fn contract_findings(html: &str, manifest: &TemplateManifest, dir: &Path) -> Vec
         }
     }
     if html.contains("fonts.googleapis.com") || html.contains("fonts.gstatic.com") {
-        out.push(Finding::error("remote_font", "a Google Fonts URL is referenced", "bundle the font in the template folder and reference it with a relative `@font-face` src"));
+        out.push(Finding::error("remote_font", "a Google Fonts URL is referenced", "bundle the font in the overlay folder and reference it with a relative `@font-face` src"));
     }
     if html.contains("<video") && html.contains("autoplay") {
         out.push(Finding::error("autoplay_video", "an autoplaying `<video>` cannot be seeked deterministically", "drive the video from the timeline, or bake it as media and place it on a video track"));
@@ -172,18 +174,18 @@ fn contract_findings(html: &str, manifest: &TemplateManifest, dir: &Path) -> Vec
     // control that does nothing.
     let used = used_vars(&own);
     for name in used.iter().filter(|n| !manifest.vars.contains_key(*n)) {
-        out.push(Finding::error("unknown_var", format!("`{name}` is read but not declared in template.json"), "declare it under `vars` with a type and a default, or stop reading it"));
+        out.push(Finding::error("unknown_var", format!("`{name}` is read but not declared in overlay.json"), "declare it under `vars` with a type and a default, or stop reading it"));
     }
     for name in manifest.vars.keys() {
         if !used.contains(name) {
-            out.push(Finding::warn("unused_var", format!("`{name}` is declared in template.json but never read"), "read it as `vars.<name>` or `var(--var-<name>)`, or remove it from the manifest"));
+            out.push(Finding::warn("unused_var", format!("`{name}` is declared in overlay.json but never read"), "read it as `vars.<name>` or `var(--var-<name>)`, or remove it from the manifest"));
         }
     }
     if has_timeline && !reads_duration(&scripts) {
         out.push(Finding::warn(
             "duration_not_read",
             "the animation never reads `duration`",
-            "anchor the out-animation to the clip's real length (`duration` from `kumaTemplate`), or it plays at the template's default length whatever the clip is",
+            "anchor the out-animation to the clip's real length (`duration` from `kumaTemplate`), or it plays at the overlay's default length whatever the clip is",
         ));
     }
 
@@ -191,13 +193,13 @@ fn contract_findings(html: &str, manifest: &TemplateManifest, dir: &Path) -> Vec
     // `_vendor/` reference that only the shared library satisfies is not a miss.
     for href in local_refs(html) {
         if !dir.join(&href).is_file() {
-            out.push(Finding::error("missing_asset", format!("`{href}` is referenced but not in the template folder"), "add the file, or fix the path (it resolves against the template folder)"));
+            out.push(Finding::error("missing_asset", format!("`{href}` is referenced but not in the overlay folder"), "add the file, or fix the path (it resolves against the overlay folder)"));
         }
     }
     out
 }
 
-/// The template's own markup: the staged document with kuma's injected script and var
+/// The overlay's own markup: the staged document with kuma's injected script and var
 /// declarations cut out again.
 fn without_injection(html: &str) -> String {
     let mut out = html.to_string();
@@ -236,9 +238,9 @@ fn reads_duration(scripts: &str) -> bool {
 }
 
 /// Everything inside `<script>` tags, comments removed — where the rules about behaviour
-/// apply. kuma's own injected script is skipped: it is not the template's to answer for.
+/// apply. kuma's own injected script is skipped: it is not the overlay's to answer for.
 ///
-/// Comments come out because a template that *warns* about `Date.now()` is not using it,
+/// Comments come out because an overlay that *warns* about `Date.now()` is not using it,
 /// and a linter that cannot tell the two apart is one people learn to ignore. The
 /// scaffold this crate writes says exactly that in a comment, and used to fail its own
 /// check.
@@ -316,7 +318,7 @@ fn strip_comments(js: &str) -> String {
 }
 
 /// Var names the document reads, either as `vars.<name>` in script or `--var-<name>` in
-/// CSS. Both are how a value reaches a template, so both count as using it.
+/// CSS. Both are how a value reaches an overlay, so both count as using it.
 fn used_vars(html: &str) -> std::collections::BTreeSet<String> {
     let mut out = std::collections::BTreeSet::new();
     let ident = |s: &str| -> String { s.chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '_').collect() };
@@ -413,15 +415,15 @@ fn parse_hyperframes(text: &str) -> Vec<Finding> {
 mod tests {
     use super::*;
 
-    fn manifest(vars: &[&str]) -> TemplateManifest {
+    fn manifest(vars: &[&str]) -> OverlayManifest {
         let vars: serde_json::Map<String, serde_json::Value> =
             vars.iter().map(|v| ((*v).to_string(), serde_json::json!({ "type": "string", "default": "x" }))).collect();
-        serde_json::from_value(serde_json::json!({ "id": "t", "vars": vars })).unwrap()
+        serde_json::from_value(serde_json::json!({ "vars": vars })).unwrap()
     }
 
-    /// The template that follows the contract: nothing to report.
+    /// The overlay that follows the contract: nothing to report.
     #[test]
-    fn a_contract_abiding_template_is_clean() {
+    fn a_contract_abiding_overlay_is_clean() {
         let html = r##"<html><head></head><body>
           <script src="_vendor/kuma.js"></script>
           <div id="root" data-composition-id="main" data-start="0" data-duration="4"><span id="label"></span></div>
@@ -440,12 +442,12 @@ mod tests {
     #[test]
     fn each_rule_catches_its_own_fault() {
         let dir = tempfile::tempdir().unwrap();
-        let codes = |html: &str, m: &TemplateManifest| -> Vec<String> { contract_findings(html, m, dir.path()).into_iter().map(|f| f.code).collect() };
+        let codes = |html: &str, m: &OverlayManifest| -> Vec<String> { contract_findings(html, m, dir.path()).into_iter().map(|f| f.code).collect() };
 
         let no_root = "<div><script>const tl = timeline();</script></div>";
         assert!(codes(no_root, &manifest(&[])).contains(&"no_composition_root".to_string()));
 
-        // A static template says so; one that neither animates nor says so is the 45-second
+        // A static overlay says so; one that neither animates nor says so is the 45-second
         // bake failure this whole file exists to prevent.
         let silent = r#"<div data-composition-id="main"></div>"#;
         assert!(codes(silent, &manifest(&[])).contains(&"no_timeline".to_string()));
@@ -455,8 +457,8 @@ mod tests {
         let clock = r#"<div data-composition-id="main" data-no-timeline></div><script>setTimeout(f, 10)</script>"#;
         assert!(codes(clock, &manifest(&[])).contains(&"wall_clock".to_string()));
         // The same call in a comment-free string is still a call as far as this is
-        // concerned; what matters is that nothing in the template's own scripts reads a
-        // clock. kuma's injected script is not the template's to answer for.
+        // concerned; what matters is that nothing in the overlay's own scripts reads a
+        // clock. kuma's injected script is not the overlay's to answer for.
         let injected = r#"<div data-composition-id="main" data-no-timeline></div><script id="kuma-inject">Date.now()</script>"#;
         assert!(!codes(injected, &manifest(&[])).contains(&"wall_clock".to_string()));
 
@@ -472,7 +474,7 @@ mod tests {
     }
 
     /// `gsap.timeline()` on its own registers nothing; the 45-second bake timeout is exactly
-    /// this template. And `duration: 0.45` on a tween is not a read of the clip's length.
+    /// this overlay. And `duration: 0.45` on a tween is not a read of the clip's length.
     #[test]
     fn a_bare_gsap_timeline_and_a_tween_duration_do_not_count() {
         let dir = tempfile::tempdir().unwrap();
@@ -491,7 +493,7 @@ mod tests {
     }
 
     /// The staged document declares every var in `:root`; that is kuma's doing, not the
-    /// template's, and must not make an unused var look used.
+    /// overlay's, and must not make an unused var look used.
     #[test]
     fn injected_declarations_do_not_count_as_reads() {
         let dir = tempfile::tempdir().unwrap();

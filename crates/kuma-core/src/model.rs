@@ -267,6 +267,17 @@ impl Project {
             .unwrap_or_default()
     }
 
+    /// Every overlay folder the bin uses, once each and in order. Entries may share one.
+    pub fn overlay_folders(&self) -> std::collections::BTreeSet<&str> {
+        self.bin
+            .values()
+            .filter_map(|i| match &i.source {
+                BinSource::Overlay { overlay, .. } => Some(overlay.as_str()),
+                _ => None,
+            })
+            .collect()
+    }
+
     /// Lowest free `<prefix><n>` track or clip id — one namespace, the whole project.
     pub fn free_track_or_clip_id(&self, prefix: &str) -> String {
         let taken: HashSet<&str> = self.sequences().flat_map(|(_, s)| s.tracks.iter().flat_map(|t| std::iter::once(t.id.as_str()).chain(t.clips.iter().map(|c| c.id.as_str())))).collect();
@@ -377,12 +388,13 @@ pub enum BinSource {
         #[serde(default)]
         proxy: Option<String>,
     },
-    /// A configured HTML overlay: a template id plus the variables for this instance.
-    /// Two entries of the same template with different vars are two separate items.
+    /// A configured HTML overlay: a project folder plus this entry's vars. Entries may
+    /// share a folder.
     Overlay {
-        /// Template id, resolved against the template libraries.
-        template: String,
-        /// Variable overrides, validated against the template manifest.
+        /// The folder (`overlay.json` + `index.html`), relative and inside the project:
+        /// `overlays/<name>`. Blueprints are copied there, never referenced.
+        overlay: String,
+        /// Variable overrides, validated against the folder's manifest.
         #[serde(default)]
         vars: Map<String, Value>,
     },
@@ -887,7 +899,7 @@ mod tests {
           "fps": {"num": 30000, "den": 1001}, "width": 1920, "height": 1080,
           "bin": {
             "screen": { "name": "Screen recording", "source": { "path": "media/screen.mp4", "kind": "video" } },
-            "third":  { "name": "Intro title", "source": { "template": "lower-third", "vars": { "title": "kuma" } } },
+            "third":  { "name": "Intro title", "source": { "overlay": "overlays/lower-third", "vars": { "title": "kuma" } } },
             "main": { "name": "Main", "source": { "tracks": [
               { "id": "v1", "kind": "video", "clips": [
                 { "id": "c1", "start": 0.0, "end": 12.5, "bin": "screen", "in": 3.2,
@@ -960,7 +972,7 @@ mod tests {
                 "song": { "source": { "path": "song.mp3", "kind": "audio" } },
                 "logo": { "source": { "path": "logo.png", "kind": "image" } },
                 "red": { "source": { "color": "#f00" } },
-                "tag": { "source": { "template": "location-tag" } },
+                "tag": { "source": { "overlay": "overlays/location-tag" } },
                 "part": seq(json!([{ "id": "pa", "kind": "audio", "clips": [ { "id": "p1", "start": 0, "end": 2, "bin": "song" } ] }])),
                 "main": seq(json!([
                     { "id": "v1", "clips": [

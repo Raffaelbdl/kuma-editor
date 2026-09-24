@@ -33,10 +33,16 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/project/validate", get(validate_project))
         .route("/api/sequence", get(get_sequence).post(open_sequence))
         .route("/api/schema", get(schema))
-        .route("/api/templates", get(templates).post(reload_templates))
-        .route("/api/templates/thumbs", post(thumbs))
-        .route("/api/templates/{id}", post(new_template))
-        .route("/api/templates/{id}/lint", get(lint_template))
+        .route("/api/blueprints", get(blueprints).post(reload_blueprints))
+        .route("/api/blueprints/thumbs", post(thumbs))
+        .route("/api/blueprints/{id}/copy", post(copy_blueprint))
+        .route("/api/blueprints/{id}/lint", get(lint_blueprint))
+        .route("/api/overlays", get(overlays))
+        .route("/api/overlays/new", post(new_overlay))
+        .route("/api/overlays/lint", get(lint_overlay))
+        .route("/api/overlays/import", post(import_overlay))
+        .route("/api/overlays/unique", post(make_unique))
+        .route("/api/overlays/save-blueprint", post(save_blueprint))
         .route("/api/presets/effects", get(effect_presets))
         .route("/api/media/probe", get(probe_media))
         .route("/api/bin", post(add_media))
@@ -59,7 +65,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/overlay-preview/{clip}/{*rest}", get(overlay_file))
         .route("/overlay-entry/{id}", get(overlay_entry))
         .route("/overlay-entry/{id}/{*rest}", get(overlay_entry_file))
-        .route("/overlays/{id}/{*rest}", get(overlay_static))
+        .route("/blueprints/{id}/{*rest}", get(blueprint_static))
         .route("/vendor/{*rest}", get(vendor));
     let ui = state.config.repo_root.join("ui/dist");
     if ui.is_dir() {
@@ -71,8 +77,8 @@ pub fn router(state: Arc<AppState>) -> Router {
     // *heuristic* freshness: it invents a lifetime from `Last-Modified` and serves the
     // response for as long as it likes without revalidating. For `ui/dist` that means a
     // rebuilt editor has no effect on a window whose profile cached the old bundle — it
-    // keeps running it and fails on the shape of a newer project. The same applies to a
-    // template being authored, to a regenerated thumbnail that keeps its URL, and to API
+    // keeps running it and fails on the shape of a newer project. The same applies to an
+    // overlay being authored, to a regenerated thumbnail that keeps its URL, and to API
     // JSON, which is live state and was never safe to cache.
     //
     // `no-cache` still allows storing it; it only requires revalidation, which on
@@ -109,7 +115,7 @@ impl From<anyhow::Error> for ApiError {
     }
 }
 
-/// An entry that is not there — or names a template that is not — is gone; one that is
+/// An entry that is not there — or whose overlay folder is not — is gone; one that is
 /// there and is not an overlay is the wrong thing to have asked for.
 impl From<jobs::EntryError> for ApiError {
     fn from(e: jobs::EntryError) -> Self {
@@ -159,9 +165,9 @@ async fn health(State(st): S) -> Json<Value> {
         "revision": revision,
         "hyperframes": st.baker.version,
         "browser": st.baker.browser,
-        "template_dirs": st.config.all_template_dirs(),
-        "templates_loaded": read(&st.templates).loaded.len(),
-        "template_errors": read(&st.templates).errors,
+        "blueprint_dirs": st.config.blueprint_dirs(),
+        "blueprints_loaded": read(&st.blueprints).loaded.len(),
+        "blueprint_errors": read(&st.blueprints).errors,
         // Not loaded by the daemon: a design system is a folder copied into the project
         // for an agent to read (`kuma design-system <id>`). Reported so `doctor` and an
         // agent can see whether this project has one.
@@ -232,49 +238,139 @@ async fn open_sequence(State(st): S, Json(req): Json<OpenSequence>) -> ApiResult
 }
 
 async fn schema() -> Json<Value> {
-    Json(json!({ "project": kuma_core::schema::project_schema(), "template": kuma_core::schema::template_schema() }))
+    Json(json!({ "project": kuma_core::schema::project_schema(), "overlay": kuma_core::schema::overlay_schema() }))
 }
 
-async fn templates(State(st): S) -> Json<Value> {
-    Json(json!(st.template_infos()))
+async fn blueprints(State(st): S) -> Json<Value> {
+    Json(json!(st.blueprint_infos()))
 }
 
-async fn reload_templates(State(st): S) -> Json<Value> {
-    st.reload_templates();
-    Json(json!(st.template_infos()))
+async fn reload_blueprints(State(st): S) -> Json<Value> {
+    st.reload_blueprints();
+    Json(json!(st.blueprint_infos()))
+}
+
+fn bad_request_err(e: anyhow::Error) -> ApiError {
+    ApiError::bad_request(format!("{e:#}"))
+}
+
+/// A bad request, except an edit refusal, which keeps its 409/422.
+fn edit_or_bad_request(e: anyhow::Error) -> ApiError {
+    match e.downcast::<EditError>() {
+        Ok(edit) => ApiError::from(edit),
+        Err(other) => bad_request_err(other),
+    }
 }
 
 #[derive(Deserialize, Default)]
-struct NewTemplate {
+struct CopyBlueprint {
+    #[serde(default)]
+    folder: Option<String>,
+}
+
+/// Copy a blueprint into the project, without an edit: the editor adds the entry in the
+/// same patch as the clip it drops.
+async fn copy_blueprint(State(st): S, Path(id): Path<String>, body: Option<Json<CopyBlueprint>>) -> ApiResult {
+    let folder = body.and_then(|b| b.0.folder);
+    let overlay = blocking(move || crate::overlays::copy_blueprint(&st, &id, folder.as_deref())).await?.map_err(bad_request_err)?;
+    Ok(Json(json!({ "overlay": overlay })))
+}
+
+async fn lint_blueprint(State(st): S, Path(id): Path<String>) -> ApiResult {
+    let report = blocking(move || crate::overlays::lint_blueprint(&st, &id)).await?.map_err(bad_request_err)?;
+    Ok(Json(json!(report)))
+}
+
+/// The manifest of every overlay folder the bin uses, or why it does not load.
+async fn overlays(State(st): S) -> ApiResult {
+    let folders: Vec<String> = read(&st.project).overlay_folders().into_iter().map(str::to_string).collect();
+    let out = blocking(move || {
+        folders
+            .into_iter()
+            .map(|rel| {
+                let v = match crate::overlays::resolve(&st, &rel) {
+                    Ok(r) => json!({ "manifest": r.manifest }),
+                    Err(e) => json!({ "error": format!("{e:#}") }),
+                };
+                (rel, v)
+            })
+            .collect::<serde_json::Map<String, Value>>()
+    })
+    .await?;
+    Ok(Json(Value::Object(out)))
+}
+
+#[derive(Deserialize)]
+struct NewOverlay {
+    id: String,
     #[serde(default)]
     name: String,
     #[serde(default)]
     description: String,
 }
 
-/// Scaffold a template into the **project's** `overlays/`, where a one-off written for
-/// this video belongs. It lands last on the search path, so it also shadows a library
-/// template of the same id — which is how a shipped template is forked and edited.
-async fn new_template(State(st): S, Path(id): Path<String>, body: Option<Json<NewTemplate>>) -> ApiResult {
-    let req = body.map(|b| b.0).unwrap_or_default();
-    let dir = st.config.project_root().join("overlays");
-    let out = kuma_overlay::new_template(&dir, &id, &req.name, &req.description).map_err(ApiError::bad_request)?;
-    st.reload_templates();
-    // The scaffold is on disk from here on, so this is a success whatever the check
-    // says: a failed check is reported beside the folder, not instead of it, or a retry
-    // would be refused for a template the caller was never told exists.
-    let lint = blocking({ let st = st.clone(); let id = id.clone(); move || jobs::lint_template(&st, &id) }).await?;
+/// Scaffold `overlays/<id>/` and lint it. Not an edit: the folder reaches the bin when
+/// imported. A failed lint is reported beside the folder, which exists either way.
+async fn new_overlay(State(st): S, Json(req): Json<NewOverlay>) -> ApiResult {
+    let dir = kuma_overlay::new_overlay(&st.config.overlays_dir(), &req.id, &req.name, &req.description).map_err(ApiError::bad_request)?;
+    let overlay = format!("overlays/{}", req.id);
+    let lint = blocking({ let (st, dir) = (st.clone(), dir.clone()); move || crate::overlays::lint(&st, &dir) }).await?;
     Ok(Json(match lint {
-        Ok(report) => json!({ "id": id, "dir": out, "lint": report }),
-        Err(e) => json!({ "id": id, "dir": out, "lint": Value::Null, "lint_error": format!("{e:#}") }),
+        Ok(report) => json!({ "overlay": overlay, "dir": dir, "lint": report }),
+        Err(e) => json!({ "overlay": overlay, "dir": dir, "lint": Value::Null, "lint_error": format!("{e:#}") }),
     }))
 }
 
-/// Check a template against the contract before a bake proves it the slow way. Reads
-/// only: nothing is rendered and nothing is written.
-async fn lint_template(State(st): S, Path(id): Path<String>) -> ApiResult {
-    let report = blocking(move || jobs::lint_template(&st, &id)).await?.map_err(|e| ApiError::bad_request(format!("{e:#}")))?;
+#[derive(Deserialize)]
+struct OverlayPath {
+    path: String,
+}
+
+async fn lint_overlay(State(st): S, Query(q): Query<OverlayPath>) -> ApiResult {
+    let report = blocking(move || crate::overlays::lint_overlay(&st, &q.path)).await?.map_err(bad_request_err)?;
     Ok(Json(json!(report)))
+}
+
+#[derive(Deserialize)]
+struct ImportOverlay {
+    path: String,
+    #[serde(flatten)]
+    how: crate::overlays::Import,
+    #[serde(default)]
+    base_revision: Option<u64>,
+    #[serde(default = "default_origin")]
+    origin: String,
+}
+
+async fn import_overlay(State(st): S, Json(req): Json<ImportOverlay>) -> ApiResult {
+    let (id, rev, warnings) =
+        blocking(move || crate::overlays::import_overlay(&st, &req.path, req.how, req.base_revision, &req.origin)).await?.map_err(edit_or_bad_request)?;
+    Ok(Json(json!({ "id": id, "revision": rev, "warnings": warnings })))
+}
+
+#[derive(Deserialize)]
+struct MakeUnique {
+    bin: String,
+    #[serde(default = "default_origin")]
+    origin: String,
+}
+
+async fn make_unique(State(st): S, Json(req): Json<MakeUnique>) -> ApiResult {
+    let (overlay, rev) = blocking(move || crate::overlays::make_unique(&st, &req.bin, &req.origin)).await?.map_err(edit_or_bad_request)?;
+    Ok(Json(json!({ "overlay": overlay, "revision": rev })))
+}
+
+#[derive(Deserialize)]
+struct SaveBlueprint {
+    bin: String,
+    id: String,
+    #[serde(default)]
+    force: bool,
+}
+
+async fn save_blueprint(State(st): S, Json(req): Json<SaveBlueprint>) -> ApiResult {
+    let dir = blocking(move || crate::overlays::save_blueprint(&st, &req.bin, &req.id, req.force)).await?.map_err(bad_request_err)?;
+    Ok(Json(json!({ "dir": dir })))
 }
 
 async fn presets() -> Json<Value> {
@@ -299,23 +395,31 @@ async fn effect_presets(State(st): S) -> Json<Value> {
 
 #[derive(Deserialize)]
 struct ThumbsReq {
+    /// Blueprints to render. With neither list, everything is rendered.
     #[serde(default)]
-    templates: Option<Vec<String>>,
+    blueprints: Option<Vec<String>>,
+    /// Overlay bin entries to render.
+    #[serde(default)]
+    bins: Option<Vec<String>>,
 }
 
-/// Generate `thumb.png` for every template (or the given ids) as a background job.
+/// Previews (a still and an animated WebP) for blueprints and overlay bin entries, as a
+/// background job: the ones named, or all of them.
 async fn thumbs(State(st): S, Json(req): Json<ThumbsReq>) -> Json<Value> {
     let s2 = st.clone();
     let id = jobs::spawn(st, "thumbs", move |progress| {
-        let templates = read(&s2.templates).loaded.clone();
-        let wanted: Vec<_> = templates.iter().filter(|(id, _)| req.templates.as_ref().map(|t| t.contains(id)).unwrap_or(true)).collect();
+        let all = req.blueprints.is_none() && req.bins.is_none();
+        let wants = |list: &Option<Vec<String>>, id: &String| all || list.as_ref().is_some_and(|l| l.contains(id));
+        let blueprints = read(&s2.blueprints).loaded.clone();
+        let wanted: Vec<_> = blueprints.iter().filter(|(id, _)| wants(&req.blueprints, id)).collect();
         // Every overlay bin entry too, rendered with its own vars: two entries of one
-        // template look different in the browser because they *are* different.
+        // folder look different in the browser because they *are* different.
         let entries: Vec<(String, String, serde_json::Map<String, Value>)> = read(&s2.project)
             .bin
             .iter()
+            .filter(|(id, _)| wants(&req.bins, id))
             .filter_map(|(id, item)| match &item.source {
-                BinSource::Overlay { template, vars } => Some((id.clone(), template.clone(), vars.clone())),
+                BinSource::Overlay { overlay, vars } => Some((id.clone(), overlay.clone(), vars.clone())),
                 _ => None,
             })
             .collect();
@@ -330,20 +434,21 @@ async fn thumbs(State(st): S, Json(req): Json<ThumbsReq>) -> Json<Value> {
             s2.baker.thumbnail(dir, manifest, &empty, &out).map_err(|e| anyhow::anyhow!("{id}: {e}"))?;
             let motion = dir.join("preview.webp");
             let preview = s2.baker.preview(dir, manifest, &empty, &motion);
-            done.push(json!({ "template": id, "thumb": out, "preview": preview.as_ref().ok().map(|_| motion), "preview_error": preview.err().map(|e| e.to_string()) }));
+            done.push(json!({ "blueprint": id, "thumb": out, "preview": preview.as_ref().ok().map(|_| motion), "preview_error": preview.err().map(|e| e.to_string()) }));
         }
-        for (i, (id, template, vars)) in entries.iter().enumerate() {
+        for (i, (id, overlay, vars)) in entries.iter().enumerate() {
             progress((((wanted.len() + i) * 100) / n) as u8, &format!("thumbnail {id}"));
-            let Some((dir, manifest)) = templates.get(template) else { continue };
+            // An entry whose folder is broken has nothing to show; validation says why.
+            let Ok(r) = crate::overlays::resolve(&s2, overlay) else { continue };
             let out = bin_asset_path(&s2, id, "png");
-            s2.baker.thumbnail(dir, manifest, vars, &out).map_err(|e| anyhow::anyhow!("{id}: {e}"))?;
+            s2.baker.thumbnail(&r.dir, &r.manifest, vars, &out).map_err(|e| anyhow::anyhow!("{id}: {e}"))?;
             let motion = bin_asset_path(&s2, id, "webp");
-            // A preview is a nicety: a template whose still baked and whose animation does
+            // A preview is a nicety: an overlay whose still baked and whose animation does
             // not encode (no libwebp in this ffmpeg) must not fail the whole job.
-            let preview = s2.baker.preview(dir, manifest, vars, &motion);
+            let preview = s2.baker.preview(&r.dir, &r.manifest, vars, &motion);
             done.push(json!({ "bin": id, "thumb": out, "preview": preview.as_ref().ok().map(|_| motion), "preview_error": preview.err().map(|e| e.to_string()) }));
         }
-        s2.reload_templates();
+        s2.reload_blueprints();
         Ok(json!({ "thumbs": done }))
     });
     Json(json!({ "job": id }))
@@ -397,13 +502,7 @@ struct AddMedia {
 
 /// Probe a media file and add it to the bin. The id defaults to the file stem.
 async fn add_media(State(st): S, Json(req): Json<AddMedia>) -> ApiResult {
-    let (id, rev, warnings) = blocking(move || jobs::add_media(&st, &req.path, req.id, req.parent, req.base_revision, &req.origin))
-        .await?
-        // Keep the 409/422 contract of every other edit; anything else is the caller's input.
-        .map_err(|e| match e.downcast::<EditError>() {
-            Ok(edit) => ApiError::from(edit),
-            Err(other) => ApiError::bad_request(format!("{other:#}")),
-        })?;
+    let (id, rev, warnings) = blocking(move || jobs::add_media(&st, &req.path, req.id, req.parent, req.base_revision, &req.origin)).await?.map_err(edit_or_bad_request)?;
     Ok(Json(json!({ "id": id, "revision": rev, "warnings": warnings })))
 }
 
@@ -627,8 +726,17 @@ async fn preview_reload(State(st): S, body: Option<Json<PreviewReload>>) -> ApiR
 
 // ---------- overlay preview (live DOM) ----------
 
-/// Serve a template instance with kuma's contract injected and the hyperframes runtime
-/// preloaded, so the UI can drive it with `seek(t)`.
+/// An overlay clip, with its entry's folder and vars.
+fn clip_overlay<'a>(project: &'a Project, clip: &str) -> Result<(&'a kuma_core::Clip, &'a str, &'a serde_json::Map<String, Value>), ApiError> {
+    let (_, _, c) = project.find_clip(clip).ok_or(ApiError::not_found("no such clip"))?;
+    match project.item(c).map(|i| &i.source) {
+        Some(BinSource::Overlay { overlay, vars }) => Ok((c, overlay, vars)),
+        _ => Err(ApiError::bad_request("not an overlay clip")),
+    }
+}
+
+/// Serve an overlay with kuma's contract injected and the hyperframes runtime preloaded,
+/// so the UI can drive it with `seek(t)`.
 ///
 /// There are two ways in because an overlay is addressable twice over, exactly as the bin
 /// splits it: a **clip** is a placement and is what decides how long the thing runs, while
@@ -636,24 +744,22 @@ async fn preview_reload(State(st): S, body: Option<Json<PreviewReload>>) -> ApiR
 /// overlay workbench iterates on. Both end in the same contract.
 async fn overlay_preview(State(st): S, Path(clip): Path<String>) -> Result<Response, ApiError> {
     let project = read(&st.project).clone();
-    let (_, _, c) = project.find_clip(&clip).ok_or(ApiError::not_found("no such clip"))?;
-    // The bin entry decides the template and its vars; the clip decides how long it runs.
-    let Some(BinSource::Overlay { template, vars }) = project.item(c).map(|i| &i.source) else {
-        return Err(ApiError::bad_request("not an overlay clip"));
-    };
+    // The bin entry decides the overlay and its vars; the clip decides how long it runs.
+    let (c, overlay, vars) = clip_overlay(&project, &clip)?;
+    let r = crate::overlays::resolve(&st, overlay).map_err(|e| ApiError::not_found(format!("{e:#}")))?;
     // Clip ids are validated to be URL-safe.
     let base = format!("/overlay-preview/{}/", c.id);
-    overlay_document(&st, &project, template, vars, c.duration() * c.speed.abs(), c.speed, Some(&c.id), &base, None)
+    overlay_document(&project, &r, vars, c.duration() * c.speed.abs(), c.speed, Some(&c.id), &base, None)
 }
 
 #[derive(Deserialize)]
 struct EntryPreview {
     /// How long to render the entry for. An entry has no length of its own — a clip is
     /// what gives it one — so the workbench says which length it is looking at, and
-    /// without one the template's own default applies.
+    /// without one the overlay's own default applies.
     #[serde(default)]
     duration: Option<f64>,
-    /// The frame to render into, when it is not the project's. A template is required to
+    /// The frame to render into, when it is not the project's. An overlay is required to
     /// look right at 1920×1080 and 1080×1920 alike, so the workbench can ask for a frame
     /// the project is not in — which changes nothing about the project.
     #[serde(default)]
@@ -669,17 +775,16 @@ async fn overlay_entry(State(st): S, Path(id): Path<String>, Query(q): Query<Ent
     let view = jobs::entry_view(&st, &project, &id, q.duration, q.width, q.height)?;
     // Bin ids are validated to be URL-safe.
     let base = format!("/overlay-entry/{id}/");
-    overlay_document(&st, &project, &view.template, &view.vars, view.duration, 1.0, None, &base, Some((view.width, view.height)))
+    overlay_document(&project, &view.overlay, &view.vars, view.duration, 1.0, None, &base, Some((view.width, view.height)))
 }
 
 
 
-/// The template's markup with kuma's contract injected — the one place the live preview's
+/// The overlay's markup with kuma's contract injected — the one place the live preview's
 /// document is built, whichever of the two routes above asked for it.
 fn overlay_document(
-    st: &AppState,
     project: &Project,
-    template: &str,
+    overlay: &crate::overlays::Resolved,
     vars: &serde_json::Map<String, Value>,
     duration: f64,
     speed: f64,
@@ -688,8 +793,7 @@ fn overlay_document(
     // The frame to render into; the project's own unless the caller is looking at another.
     frame: Option<(u32, u32)>,
 ) -> Result<Response, ApiError> {
-    let templates = read(&st.templates);
-    let (dir, manifest) = templates.loaded.get(template).ok_or(ApiError::not_found("unknown template"))?;
+    let (dir, manifest) = (&overlay.dir, &overlay.manifest);
     let html = std::fs::read_to_string(dir.join("index.html")).map_err(|e| anyhow::anyhow!(e))?;
     let head_extra = format!("<base href=\"{base}\">\n<script src=\"/vendor/hyperframe.runtime.iife.js\"></script>\n");
     let (width, height) = frame.unwrap_or((project.width, project.height));
@@ -708,31 +812,31 @@ fn overlay_document(
     Ok(([(header::CONTENT_TYPE, "text/html; charset=utf-8"), (header::CACHE_CONTROL, "no-store")], out).into_response())
 }
 
-/// Files referenced by a previewed overlay, resolved against its template dir.
+/// Files referenced by a previewed overlay, from its folder (no manifest read).
 async fn overlay_file(State(st): S, Path((clip, rest)): Path<(String, String)>) -> Result<Response, ApiError> {
-    let project = read(&st.project).clone();
-    let (_, _, c) = project.find_clip(&clip).ok_or(ApiError::not_found("no such clip"))?;
-    let Some(BinSource::Overlay { template, .. }) = project.item(c).map(|i| &i.source) else {
-        return Err(ApiError::bad_request("not an overlay clip"));
+    let dir = {
+        let project = read(&st.project);
+        let (_, overlay, _) = clip_overlay(&project, &clip)?;
+        crate::overlays::folder(&st, overlay).map_err(ApiError::bad_request)?
     };
-    serve_template_file(&st, template, &rest)
+    serve_overlay_file(&st, &dir, &rest)
 }
 
-/// Files referenced by a previewed overlay entry, resolved against its template dir.
+/// Files referenced by a previewed overlay entry, resolved against its folder.
 async fn overlay_entry_file(State(st): S, Path((id, rest)): Path<(String, String)>) -> Result<Response, ApiError> {
     let project = read(&st.project).clone();
     let view = jobs::entry_view(&st, &project, &id, None, None, None)?;
-    serve_template_file(&st, &view.template, &rest)
+    serve_overlay_file(&st, &view.overlay.dir, &rest)
 }
 
-async fn overlay_static(State(st): S, Path((id, rest)): Path<(String, String)>) -> Result<Response, ApiError> {
-    serve_template_file(&st, &id, &rest)
+/// A blueprint's files: its thumbnails for the browser.
+async fn blueprint_static(State(st): S, Path((id, rest)): Path<(String, String)>) -> Result<Response, ApiError> {
+    let dir = st.blueprint_dir(&id).map_err(ApiError::not_found)?;
+    serve_overlay_file(&st, &dir, &rest)
 }
 
-/// A file inside a template folder. `_vendor/...` resolves exactly as the bake stages it.
-fn serve_template_file(st: &AppState, template: &str, rest: &str) -> Result<Response, ApiError> {
-    let templates = read(&st.templates);
-    let (dir, _) = templates.loaded.get(template).ok_or(ApiError::not_found("unknown template"))?;
+/// A file inside an overlay folder. `_vendor/...` resolves exactly as the bake stages it.
+fn serve_overlay_file(st: &AppState, dir: &std::path::Path, rest: &str) -> Result<Response, ApiError> {
     let mut path = safe_join(dir, rest).ok_or(ApiError::bad_request("bad path"))?;
     if !path.is_file() {
         if let Some((vendor, v)) = rest.strip_prefix("_vendor/").and_then(|v| st.baker.vendor_for(dir).map(|d| (d, v))) {

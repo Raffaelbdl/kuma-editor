@@ -1,9 +1,9 @@
-//! The bake driver: template instance → hyperframes → RGBA PNG frames (cached).
+//! The bake driver: overlay folder + vars → hyperframes → RGBA PNG frames (cached).
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use kuma_core::template::TemplateManifest;
+use kuma_core::manifest::OverlayManifest;
 
 use crate::inject::Contract;
 use kuma_core::Fps;
@@ -12,8 +12,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 
-/// Generated into the template folder by `thumbnail()` and `preview()`; never part of a
-/// bake. They must stay out of the content hash as well as the staging: a template whose
+/// Generated into a blueprint's folder by `thumbnail()` and `preview()`; never part of a
+/// bake, and never copied with a blueprint into a project. They must stay out of the
+/// content hash as well as the staging: an overlay whose
 /// hash changed when its own preview was generated would invalidate every bake of it, and
 /// the preview is itself a bake.
 const GENERATED: &[&str] = &["thumb.png", "preview.webp"];
@@ -24,8 +25,8 @@ const PREVIEW_FPS: i64 = 12;
 
 #[derive(Debug, Clone)]
 pub struct BakeRequest<'a> {
-    pub template_dir: &'a Path,
-    pub manifest: &'a TemplateManifest,
+    pub overlay_dir: &'a Path,
+    pub manifest: &'a OverlayManifest,
     /// Variable overrides (defaults are applied from the manifest).
     pub vars: &'a Map<String, Value>,
     pub fps: Fps,
@@ -54,7 +55,7 @@ impl BakeResult {
     }
 }
 
-/// A template staged for the renderer: where it went and the timing it carries.
+/// An overlay staged for the renderer: where it went and the timing it carries.
 #[derive(Debug, Clone)]
 pub struct Staged {
     pub dir: PathBuf,
@@ -68,7 +69,7 @@ pub struct Staged {
 pub enum BakeError {
     #[error("hyperframes not found: {0}")]
     NoRenderer(String),
-    #[error("template entry `{0}` not found")]
+    #[error("overlay entry file `{0}` not found")]
     NoEntry(PathBuf),
     #[error("invalid vars: {0:?}")]
     Vars(Vec<String>),
@@ -96,7 +97,7 @@ pub struct Baker {
     pub browser: Option<PathBuf>,
     /// Installed hyperframes version (part of the cache key); `None` if it cannot run.
     pub version: Option<String>,
-    /// Shared `_vendor/` library used when a template has none of its own.
+    /// Shared `_vendor/` library used when an overlay has none of its own.
     pub vendor_dir: PathBuf,
 }
 
@@ -120,10 +121,10 @@ impl Baker {
         b
     }
 
-    /// The `_vendor/` folder a template resolves `_vendor/...` against: its own, else its
+    /// The `_vendor/` folder an overlay resolves `_vendor/...` against: its own, else its
     /// sibling, else the shared library. The preview route serves exactly this folder.
-    pub fn vendor_for(&self, template_dir: &Path) -> Option<PathBuf> {
-        [template_dir.join("_vendor"), template_dir.parent()?.join("_vendor"), self.vendor_dir.clone()].into_iter().find(|p| p.is_dir())
+    pub fn vendor_for(&self, overlay_dir: &Path) -> Option<PathBuf> {
+        [overlay_dir.join("_vendor"), overlay_dir.parent()?.join("_vendor"), self.vendor_dir.clone()].into_iter().find(|p| p.is_dir())
     }
 
     pub fn available(&self) -> Result<String, BakeError> {
@@ -137,7 +138,7 @@ impl Baker {
         Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
     }
 
-    /// Cache key for a request: everything that changes the pixels (template files, the
+    /// Cache key for a request: everything that changes the pixels (overlay files, the
     /// vendor library, resolved vars, renderer and browser builds, fps, size, duration
     /// and speed — the last two ignored for stills) and nothing else.
     pub fn key(&self, req: &BakeRequest) -> Result<String, BakeError> {
@@ -150,8 +151,8 @@ impl Baker {
             let meta = std::fs::metadata(b).ok();
             h.update(format!("{} {:?} {:?}", b.display(), meta.as_ref().map(|m| m.len()), meta.and_then(|m| m.modified().ok())).as_bytes());
         }
-        h.update(hash_dir(req.template_dir)?.as_bytes());
-        if let Some(v) = self.vendor_for(req.template_dir) {
+        h.update(hash_dir(req.overlay_dir)?.as_bytes());
+        if let Some(v) = self.vendor_for(req.overlay_dir) {
             h.update(hash_dir(&v)?.as_bytes());
         }
         let vars = req.manifest.resolve_vars(req.vars);
@@ -188,16 +189,16 @@ impl Baker {
         Ok(result)
     }
 
-    /// Stage a template into `src`: its own files, the shared `_vendor/` when it has none
+    /// Stage an overlay into `src`: its own files, the shared `_vendor/` when it has none
     /// of its own, and `index.html` with the contract injected — byte for byte what the
     /// renderer opens. The bake renders this; the lint reads it, so what is checked is
     /// what would run rather than the source with the injection imagined on top.
     pub fn stage(&self, req: &BakeRequest, src: &Path) -> Result<Staged, BakeError> {
-        // Shared libraries live in `_vendor/` and are referenced by templates as
-        // `_vendor/...`; a template's own copy (already staged with it) wins, exactly as
+        // Shared libraries live in `_vendor/` and are referenced by overlays as
+        // `_vendor/...`; an overlay's own copy (already staged with it) wins, exactly as
         // the preview serves it.
-        copy_dir(req.template_dir, src)?;
-        if let Some(vendor) = self.vendor_for(req.template_dir).filter(|v| !v.starts_with(req.template_dir)) {
+        copy_dir(req.overlay_dir, src)?;
+        if let Some(vendor) = self.vendor_for(req.overlay_dir).filter(|v| !v.starts_with(req.overlay_dir)) {
             copy_dir(&vendor, &src.join("_vendor"))?;
         }
         let vars = req.manifest.resolve_vars(req.vars);
@@ -218,7 +219,7 @@ impl Baker {
 
     /// Render into `work`; the result describes paths under `dir`, where `work` ends up.
     fn bake_into(&self, req: &BakeRequest, work: &Path, dir: &Path) -> Result<BakeResult, BakeError> {
-        // 1. Stage the template with kuma's injection script.
+        // 1. Stage the overlay with kuma's injection script.
         let staged = self.stage(req, &work.join("src"))?;
         let (src, is_still, speed) = (staged.dir, staged.is_still, staged.speed);
         // The renderer takes the same resolved vars the staged document carries.
@@ -282,16 +283,15 @@ impl Baker {
         })
     }
 
-    /// Bake a library thumbnail for a template — a 480px-wide frame about 1 s in, after
-    /// most entrance animations have settled — written to `<template>/thumb.png`.
-    /// Render a still of `template_dir` with `vars` to `out`. Used both for a template's
-    /// own `thumb.png` (manifest defaults) and for a bin entry's thumbnail, which shows
-    /// that entry's actual configuration.
-    pub fn thumbnail(&self, template_dir: &Path, manifest: &TemplateManifest, vars: &Map<String, Value>, out: &Path) -> Result<(), BakeError> {
+    /// Render a still of `overlay_dir` with `vars` to `out` — a 480px-wide frame about 1 s
+    /// in, after most entrance animations have settled. Used both for a blueprint's own
+    /// `thumb.png` (manifest defaults) and for a bin entry's thumbnail, which shows that
+    /// entry's actual configuration.
+    pub fn thumbnail(&self, overlay_dir: &Path, manifest: &OverlayManifest, vars: &Map<String, Value>, out: &Path) -> Result<(), BakeError> {
         // The same bake the moving preview is cut from, so the two cost one render and
         // share a cache entry; the still is its frame at t = 1 s, after most entrances
         // have settled.
-        let r = self.bake(&Self::preview_request(template_dir, manifest, vars))?;
+        let r = self.bake(&Self::preview_request(overlay_dir, manifest, vars))?;
         if let Some(dir) = out.parent() {
             std::fs::create_dir_all(dir)?;
         }
@@ -303,10 +303,10 @@ impl Baker {
     /// The one bake both previews are cut from: 12 fps, 480×270, the first seconds. Enough
     /// to see the entrance and the first beat of the loop; the exit is anchored to a
     /// length this preview does not have, so showing it would be a lie anyway. A still
-    /// template renders one frame of it.
-    fn preview_request<'a>(template_dir: &'a Path, manifest: &'a TemplateManifest, vars: &'a Map<String, Value>) -> BakeRequest<'a> {
+    /// overlay renders one frame of it.
+    fn preview_request<'a>(overlay_dir: &'a Path, manifest: &'a OverlayManifest, vars: &'a Map<String, Value>) -> BakeRequest<'a> {
         BakeRequest {
-            template_dir,
+            overlay_dir,
             manifest,
             vars,
             fps: Fps::new(PREVIEW_FPS as u32, 1),
@@ -317,7 +317,7 @@ impl Baker {
         }
     }
 
-    /// Bake a **moving** preview of a template instance: an animated WebP with alpha,
+    /// Bake a **moving** preview of an overlay with some vars: an animated WebP with alpha,
     /// written to `out`.
     ///
     /// A still cannot show what an overlay is. Every one of these is an animation, and the
@@ -327,10 +327,10 @@ impl Baker {
     ///
     /// WebP because it is the only format that is animated, alpha-capable and understood
     /// by every browser; the alpha matters because the preview sits on the editor's own
-    /// background, not on black. A still template renders one frame and the result is a
+    /// background, not on black. A still overlay renders one frame and the result is a
     /// one-frame WebP, which is simply a picture.
-    pub fn preview(&self, template_dir: &Path, manifest: &TemplateManifest, vars: &Map<String, Value>, out: &Path) -> Result<(), BakeError> {
-        let r = self.bake(&Self::preview_request(template_dir, manifest, vars))?;
+    pub fn preview(&self, overlay_dir: &Path, manifest: &OverlayManifest, vars: &Map<String, Value>, out: &Path) -> Result<(), BakeError> {
+        let r = self.bake(&Self::preview_request(overlay_dir, manifest, vars))?;
         if let Some(dir) = out.parent() {
             std::fs::create_dir_all(dir)?;
         }
@@ -409,13 +409,15 @@ fn gcd(a: u64, b: u64) -> u64 {
 }
 
 /// Files that are neither staged nor hashed: dotfiles and anything kuma generated into
-/// the template folder itself.
+/// the overlay folder itself.
 fn ignored(name: &std::ffi::OsStr) -> bool {
     let n = name.to_string_lossy();
     n.starts_with('.') || GENERATED.contains(&n.as_ref())
 }
 
-fn copy_dir(src: &Path, dst: &Path) -> std::io::Result<()> {
+/// Copy an overlay folder, leaving out dotfiles and what is generated from it (thumbnails,
+/// previews) at every depth. What the bake stages, and what a blueprint copy carries.
+pub fn copy_dir(src: &Path, dst: &Path) -> std::io::Result<()> {
     std::fs::create_dir_all(dst)?;
     for entry in std::fs::read_dir(src)? {
         let entry = entry?;
@@ -492,6 +494,21 @@ fn find_playwright_headless_shell() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_copied_folder_leaves_its_generated_previews_behind() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("src");
+        std::fs::create_dir_all(src.join("fonts")).unwrap();
+        for f in ["overlay.json", "index.html", "thumb.png", "preview.webp", "fonts/a.woff2", ".DS_Store"] {
+            std::fs::write(src.join(f), b"x").unwrap();
+        }
+        let dst = tmp.path().join("dst");
+        copy_dir(&src, &dst).unwrap();
+        assert!(dst.join("overlay.json").is_file() && dst.join("index.html").is_file() && dst.join("fonts/a.woff2").is_file());
+        assert!(!dst.join("thumb.png").exists() && !dst.join("preview.webp").exists() && !dst.join(".DS_Store").exists());
+    }
+
 
     #[test]
     fn effective_fps_implements_speed() {

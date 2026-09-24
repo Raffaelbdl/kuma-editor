@@ -21,7 +21,7 @@ you read, so you never overwrite a human edit made meanwhile. Every edit is vali
 undoable; label your edits with `note`.
 
 Everything placeable lives in `bin`, keyed by a short id: media files (`{"source": {"path": …}}`),
-configured overlays (`{"source": {"template": …, "vars": {…}}}`), colours, and *sequences*
+configured overlays (`{"source": {"overlay": "overlays/<name>", "vars": {…}}}`), colours, and *sequences*
 (`{"source": {"tracks": [...], "markers": [...]}}`). A clip is a *placement* of one entry: it carries
 `bin`, `start`, `end`, `in`, `speed` and `effects`, never a source of its own. So changing an
 overlay's text edits its bin entry and every placement follows; to vary the text, add a second entry.
@@ -46,14 +46,16 @@ be empty when placed. Track and clip ids are unique across the *whole project*, 
 
 If the project directory holds a `design-system/` folder, read `design-system/DESIGN.md` before
 authoring or restyling an overlay and take its colours, type, geometry and motion from there;
-`tokens.css` beside it is the same values as a `:root` block to copy into a template. Nothing is
+`tokens.css` beside it is the same values as a `:root` block to copy into an overlay. Nothing is
 injected at runtime — a design system is a document, and applying it is your edit. `health` says
 whether this project has one.
 
-Overlay entries reference an HTML template (`list_templates`). Templates live in the user's library
-(`~/.local/share/kuma/overlays/<id>/`) or in the project's own `overlays/<id>/`, as a folder with
-`index.html` + `template.json`; call `template_guide` before authoring one. Overlays are live DOM in
-the editor's preview and are baked to alpha frames at export.
+An overlay entry names a folder in the project (`overlays/<name>/`: `index.html` +
+`overlay.json`) plus its `vars`; entries may share a folder. To make one: `new_overlay`, edit,
+`check_overlay`, then `import_overlay` (writing a folder does not add it to the bin). Or copy a
+**blueprint** from the user's library (`list_blueprints`, `add_blueprint`). `make_overlay_unique`
+before editing a shared folder; `save_blueprint` only when the user asks. See `overlay_guide`.
+Overlays are live DOM in the preview and baked to alpha frames at export.
 
 To look at the footage, call `sample_frames` with a time range (and an optional pixel `rect`); it
 returns the composited frames as images plus their PNG paths. To look at an *overlay you are
@@ -62,11 +64,11 @@ own over a backdrop, with no placement anywhere, and `t0`/`t1` count from the st
 so an animation can be checked frame by frame before anything is placed in the cut — in another
 frame with `frame: [1080, 1920]`, and over `backdrop` white and black to see whether it stays
 legible over footage you have not seen. It is the same view the editor's overlay workbench gives a
-person, and `template_guide` ends with the checklist to run through.
+person, and `overlay_guide` ends with the checklist to run through.
 
 Subtitles: `transcribe` runs a local speech-to-text model (whisper.cpp) and adds a `subtitles`
 overlay entry whose `cues` var is `[{start, end, text}, …]` in source seconds, one cue per word (the
-template groups them by its `words_per_line` var and can stress the word being said), listed under the media
+overlay groups them by its `words_per_line` var and can stress the word being said), listed under the media
 (`parent`). Given a `clip`, it also places the subtitles over that clip, aligned; given a `bin`, the
 entry is yours to place (set its `offset` var to a trimmed clip's `in`). Fix a misheard word by
 patching the cue's `text`; re-transcribe with `replace` to overwrite the words in place and keep the
@@ -136,10 +138,10 @@ pub struct ApplyEdits {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
-pub struct NewTemplate {
-    /// Folder name and id: `[A-Za-z_][A-Za-z0-9_-]*`.
+pub struct NewOverlay {
+    /// Folder name under `overlays/`: `[A-Za-z_][A-Za-z0-9_-]*`.
     pub id: String,
-    /// Human-readable name for the library browser. Defaults to the id.
+    /// Display name; defaults to the id.
     #[serde(default)]
     pub name: Option<String>,
     #[serde(default)]
@@ -147,9 +149,57 @@ pub struct NewTemplate {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
-pub struct CheckTemplate {
-    /// Template id, as `list_templates` gives it.
-    pub template: String,
+pub struct OverlayPath {
+    /// The overlay folder or its `overlay.json`, e.g. `overlays/title`.
+    pub path: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct ImportOverlay {
+    /// The overlay folder or its `overlay.json`, e.g. `overlays/title`.
+    pub path: String,
+    /// Bin id; minted from the folder name when omitted.
+    #[serde(default)]
+    pub id: Option<String>,
+    /// Display name; the manifest's `name` when omitted.
+    #[serde(default)]
+    pub name: Option<String>,
+    /// Var overrides, checked against the manifest.
+    #[serde(default)]
+    pub vars: Option<serde_json::Map<String, Value>>,
+    #[serde(default)]
+    pub base_revision: Option<u64>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct AddBlueprint {
+    /// Blueprint id, from `list_blueprints`.
+    pub blueprint: String,
+    /// Bin id; minted from the folder name when omitted.
+    #[serde(default)]
+    pub id: Option<String>,
+    #[serde(default)]
+    pub name: Option<String>,
+    /// Var overrides, checked against the manifest.
+    #[serde(default)]
+    pub vars: Option<serde_json::Map<String, Value>>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct BinArg {
+    /// Bin id of an overlay entry.
+    pub bin: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct SaveBlueprint {
+    /// The overlay bin entry to save; its vars become the blueprint's defaults.
+    pub bin: String,
+    /// The blueprint's id (its folder name in the library).
+    pub id: String,
+    /// Replace an existing blueprint of that id; only when the user said so.
+    #[serde(default)]
+    pub force: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -179,7 +229,7 @@ pub struct SampleFrames {
     /// seconds into the overlay. Not combinable with `sequence`.
     #[serde(default)]
     pub overlay: Option<String>,
-    /// With `overlay`: how long to run it for. The template's `duration_default` when
+    /// With `overlay`: how long to run it for. The manifest's `duration_default` when
     /// omitted — an entry has no length until a clip gives it one.
     #[serde(default)]
     pub duration: Option<f64>,
@@ -188,7 +238,7 @@ pub struct SampleFrames {
     #[serde(default)]
     pub backdrop: Option<String>,
     /// With `overlay`: `[width, height]` to render it into instead of the project's frame.
-    /// A template must look right at 1920×1080 and 1080×1920 alike; this is how to check
+    /// An overlay must look right at 1920×1080 and 1080×1920 alike; this is how to check
     /// the other way round without editing the project.
     #[serde(default)]
     pub frame: Option<(u32, u32)>,
@@ -260,7 +310,7 @@ pub struct Transcribe {
     /// ISO 639-1 language code, or `auto` (default).
     #[serde(default)]
     pub language: Option<String>,
-    /// Longest cue in characters. Default 1: one cue per word, which the `subtitles` template groups into lines itself; 0 keeps whisper's own sentences.
+    /// Longest cue in characters. Default 1: one cue per word, which the `subtitles` overlay groups into lines itself; 0 keeps whisper's own sentences.
     #[serde(default)]
     pub max_chars: Option<u32>,
     /// Seconds to wait for the model before returning the job id (default 600).
@@ -285,7 +335,7 @@ impl KumaServer {
         self.get("/api/project").await
     }
 
-    #[tool(description = "JSON Schema for project files and overlay template manifests. Validate your edits against it.")]
+    #[tool(description = "JSON Schema for project files (`project`) and overlay manifests, `overlay.json` (`overlay`). Validate your edits against it.")]
     async fn get_schema(&self) -> Result<CallToolResult, McpError> {
         self.get("/api/schema").await
     }
@@ -311,14 +361,21 @@ impl KumaServer {
         self.get("/api/project/validate").await
     }
 
-    #[tool(description = "Rescan the template libraries and list the templates with their manifests (typed vars, defaults, default duration). A template folder you just wrote appears here without a restart; manifests that failed to load are listed by `health`.")]
-    async fn list_templates(&self) -> Result<CallToolResult, McpError> {
-        self.post("/api/templates", &json!({})).await
+    #[tool(description = "Rescan the user's library and list its blueprints (reusable overlays) with their manifests. Failed manifests are listed by `health`.")]
+    async fn list_blueprints(&self) -> Result<CallToolResult, McpError> {
+        self.post("/api/blueprints", &json!({})).await
     }
 
-    #[tool(description = "The overlay template authoring contract (root attributes, kuma.js helper, vars, seekable animation rules, manifest format). Read it before writing a template.")]
-    async fn template_guide(&self) -> Result<CallToolResult, McpError> {
-        Ok(CallToolResult::success(vec![ContentBlock::text(include_str!("../../../library/overlays/CLAUDE.md"))]))
+    #[tool(description = "Copy a blueprint into the project's `overlays/` and add it to the bin. Returns the bin id; the copy is the project's to edit.")]
+    async fn add_blueprint(&self, Parameters(p): Parameters<AddBlueprint>) -> Result<CallToolResult, McpError> {
+        let copied = self.client.post(&format!("/api/blueprints/{}/copy", p.blueprint), &json!({})).await.map_err(err)?;
+        let body = json!({ "path": copied["overlay"], "id": p.id, "name": p.name, "vars": p.vars.unwrap_or_default(), "origin": format!("claude: add {}", p.blueprint) });
+        self.post("/api/overlays/import", &body).await
+    }
+
+    #[tool(description = "The overlay authoring contract (root attributes, kuma.js helper, vars, seekable animation rules, manifest format). Read it before writing an overlay.")]
+    async fn overlay_guide(&self) -> Result<CallToolResult, McpError> {
+        Ok(CallToolResult::success(vec![ContentBlock::text(include_str!("../../../library/blueprints/CLAUDE.md"))]))
     }
 
     #[tool(description = "List export presets (YouTube 1080p/4K, draft, VP9, ProRes). A 9:16 project renders vertical with the same presets.")]
@@ -331,7 +388,7 @@ impl KumaServer {
         Ok(ok_json(&self.client.get_query("/api/media/probe", &[("path", &p.path)]).await.map_err(err)?))
     }
 
-    #[tool(description = "Probe a media file and add it to the project bin. Returns the bin id to reference from a clip.")]
+    #[tool(description = "Probe a media file and add it to the project bin (an overlay folder of the project is imported instead). Returns the bin id to reference from a clip.")]
     async fn add_media(&self, Parameters(p): Parameters<AddMedia>) -> Result<CallToolResult, McpError> {
         self.post("/api/bin", &json!({ "path": p.path, "id": p.id, "parent": p.parent, "base_revision": p.base_revision, "origin": "claude: add media" })).await
     }
@@ -342,16 +399,31 @@ impl KumaServer {
         self.job("/api/transcribe", &body, Duration::from_secs(p.wait_seconds.unwrap_or(600))).await
     }
 
-    #[tool(description = "Scaffold a new overlay template in the project's `overlays/` folder and return where it landed plus its lint report. It is a working, contract-abiding skeleton — root timing attributes, a registered paused GSAP timeline, typed vars, sizing that survives both orientations — meant to be edited rather than read. Start here instead of writing a template from scratch; call `template_guide` for the contract it follows. An id that already exists is refused rather than overwritten.")]
-    async fn new_template(&self, Parameters(p): Parameters<NewTemplate>) -> Result<CallToolResult, McpError> {
-        let body = json!({ "name": p.name.unwrap_or_default(), "description": p.description.unwrap_or_default() });
-        self.post(&format!("/api/templates/{}", p.id), &body).await
+    #[tool(description = "Scaffold `overlays/<id>/`, a contract-abiding skeleton to edit, and return its lint report. Does not touch the bin: `import_overlay` it when ready. Refuses an existing id.")]
+    async fn new_overlay(&self, Parameters(p): Parameters<NewOverlay>) -> Result<CallToolResult, McpError> {
+        let body = json!({ "id": p.id, "name": p.name.unwrap_or_default(), "description": p.description.unwrap_or_default() });
+        self.post("/api/overlays/new", &body).await
     }
 
-    #[tool(description = "Check an overlay template against the authoring contract — the composition root, timeline registration, wall-clock and network use, manifest/markup agreement on vars, and missing assets — plus hyperframes' own linter. Reads only: nothing is rendered or written. Run it after writing or editing a template, before baking: a contract break otherwise surfaces as a 45-second bake timeout or a silently wrong frame.")]
-    async fn check_template(&self, Parameters(p): Parameters<CheckTemplate>) -> Result<CallToolResult, McpError> {
-        // A template id is a folder name, so it carries no path separator to escape.
-        self.get(&format!("/api/templates/{}/lint", p.template)).await
+    #[tool(description = "Check an overlay folder against the authoring contract (plus hyperframes' linter) without rendering. Run it after every edit: a contract break otherwise shows up as a 45 s bake timeout or a wrong frame.")]
+    async fn check_overlay(&self, Parameters(p): Parameters<OverlayPath>) -> Result<CallToolResult, McpError> {
+        Ok(ok_json(&self.client.get_query("/api/overlays/lint", &[("path", &p.path)]).await.map_err(err)?))
+    }
+
+    #[tool(description = "Add an overlay folder to the bin, optionally with vars; one outside the project is copied into `overlays/` first. Returns the bin id. Import one folder twice, with other vars, for a second wording.")]
+    async fn import_overlay(&self, Parameters(p): Parameters<ImportOverlay>) -> Result<CallToolResult, McpError> {
+        let body = json!({ "path": p.path, "id": p.id, "name": p.name, "vars": p.vars.unwrap_or_default(), "base_revision": p.base_revision, "origin": "claude: import overlay" });
+        self.post("/api/overlays/import", &body).await
+    }
+
+    #[tool(description = "Give an overlay entry its own copy of the folder it shares, so editing it changes that entry alone. Returns the new folder.")]
+    async fn make_overlay_unique(&self, Parameters(p): Parameters<BinArg>) -> Result<CallToolResult, McpError> {
+        self.post("/api/overlays/unique", &json!({ "bin": p.bin, "origin": "claude: make overlay unique" })).await
+    }
+
+    #[tool(description = "Save an overlay entry into the user's library as a blueprint, its vars as the defaults. Only when the user asks. Refuses to replace one unless `force`.")]
+    async fn save_blueprint(&self, Parameters(p): Parameters<SaveBlueprint>) -> Result<CallToolResult, McpError> {
+        self.post("/api/overlays/save-blueprint", &json!({ "bin": p.bin, "id": p.id, "force": p.force.unwrap_or(false) })).await
     }
 
     #[tool(description = "Render exact composited frames (through the real MLT graph, overlays included) and return them as images. Use a rect to zoom into a region. Pass `sequence` to look at a nested sequence instead of the master, or `overlay` to look at one overlay bin entry on its own — no placement needed, times counted from the start of the overlay, which is how to check an animation you are authoring before it is in the cut. Frames are also written as PNGs whose paths are returned.")]
@@ -409,7 +481,7 @@ impl KumaServer {
         self.post(&format!("/api/jobs/{}/cancel", p.id), &json!({})).await
     }
 
-    #[tool(description = "Daemon health: project path and revision, hyperframes/browser/preview-engine availability, template library dirs and any manifest that failed to load.")]
+    #[tool(description = "Daemon health: project path and revision, hyperframes/browser/preview-engine availability, blueprint library dirs and any blueprint manifest that failed to load.")]
     async fn health(&self) -> Result<CallToolResult, McpError> {
         let mut h = self.client.get("/api/health").await.map_err(err)?;
         if let Some(obj) = h.as_object_mut() {

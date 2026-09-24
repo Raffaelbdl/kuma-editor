@@ -1,5 +1,4 @@
 {
-  "id": "label-pin",
   "name": "Label pin",
   "description": "A numbered badge with a short label at a point. Good for step markers on screencasts.",
   "duration_default": 3.0,

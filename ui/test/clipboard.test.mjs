@@ -28,7 +28,7 @@ const PROJECT = JSON.stringify({
   fps: { num: 30, den: 1 }, width: 1920, height: 1080, sample_rate: 48000,
   bin: {
     red: { name: "Red", source: { color: "#ff0000" } },
-    probe: { name: "Probe", source: { template: "probe", vars: {} } },
+    probe: { name: "Probe", source: { overlay: "overlays/probe", vars: {} } },
     main: { name: "Main", source: { markers: [], tracks: [
       track("v1", "video", "Video", [clip("c1", "red", 0, 4)]),
       track("v2", "video", "Video 2"),
@@ -107,9 +107,9 @@ describe("the timeline clipboard", { skip: why ? `skipping: ${why}` : false }, (
 
   before(async () => {
     tmp = fs.mkdtempSync(path.join(os.tmpdir(), "kuma-clipboard-"));
-    const tpl = path.join(tmp, "library/overlays/probe");
+    const tpl = path.join(tmp, "overlays/probe");
     fs.mkdirSync(tpl, { recursive: true });
-    fs.writeFileSync(path.join(tpl, "template.json"), JSON.stringify({ id: "probe", name: "Probe", static: true }));
+    fs.writeFileSync(path.join(tpl, "overlay.json"), JSON.stringify({ name: "Probe", static: true }));
     fs.writeFileSync(path.join(tpl, "index.html"), TEMPLATE);
     const projectFile = path.join(tmp, "clipboard.kuma.json");
     fs.writeFileSync(projectFile, PROJECT);

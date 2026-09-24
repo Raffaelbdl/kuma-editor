@@ -65,7 +65,7 @@ export function initTitlebar(app: DesktopBridge, title: string): void {
     b.setAttribute("aria-label", title);
     // Inline SVG rather than glyphs: the box-drawing characters these usually use are
     // not in every font and fall back to tofu. `path` is a literal defined below, never
-    // anything from the project or a template, so this is not the `innerHTML` that
+    // anything from the project or an overlay, so this is not the `innerHTML` that
     // `dom.ts` warns about.
     b.innerHTML = `<svg viewBox="0 0 12 12" width="12" height="12" aria-hidden="true">${path}</svg>`;
     b.onclick = () => void app.windowControl(action);

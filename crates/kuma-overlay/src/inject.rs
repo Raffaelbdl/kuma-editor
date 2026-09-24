@@ -1,7 +1,7 @@
-//! The kuma ⇄ template contract, applied to a template's HTML.
+//! The kuma ⇄ overlay contract, applied to an overlay's HTML.
 //!
 //! Both consumers of an overlay — the bake (hyperframes) and the live preview (an iframe in
-//! the editor) — must hand the template identical inputs, so this is the one place that
+//! the editor) — must hand the overlay identical inputs, so this is the one place that
 //! builds them:
 //!
 //! * `window.kuma = { vars, fps, width, height, duration, speed, bake, clip }` in `<head>`;
@@ -65,8 +65,8 @@ impl Contract<'_> {
         .to_string()
         .replace("</", "<\\/");
         let head = format!("{}<script id=\"kuma-inject\">window.kuma = {payload};</script>\n", self.head_extra);
-        // The script goes first so the template's own scripts see `window.kuma`; the vars
-        // go last so they win over any `:root { --var-… }` fallback in the template's CSS.
+        // The script goes first so the overlay's own scripts see `window.kuma`; the vars
+        // go last so they win over any `:root { --var-… }` fallback in the overlay's CSS.
         let style = format!("<style id=\"kuma-vars\">:root {{ {css_vars} }}</style>\n");
         // Insert after the opening `<head …>` (else `<html …>`, else the doctype) so the
         // document never drops into quirks mode, and the style before `</head>`.
@@ -251,7 +251,7 @@ mod tests {
         let html = c.apply("<html><head><title>x</title></head><body><div data-composition-id=\"main\" data-duration=\"4\"></div></body></html>");
         assert!(html.find("<base").unwrap() < html.find("kuma-inject").unwrap());
         assert!(html.find("kuma-inject").unwrap() < html.find("<title>").unwrap());
-        // The vars style comes after the template's own <head> content so it wins the cascade.
+        // The vars style comes after the overlay's own <head> content so it wins the cascade.
         assert!(html.find("<title>").unwrap() < html.find("kuma-vars").unwrap());
         assert!(html.find("kuma-vars").unwrap() < html.find("</head>").unwrap());
         assert!(html.contains("window.kuma = {"));

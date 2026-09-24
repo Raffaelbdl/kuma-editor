@@ -336,7 +336,7 @@ export class Preview {
       wrap.style.width = `${p.width}px`;
       wrap.style.height = `${p.height}px`;
       // Hidden by **visibility**, never `display`: a `display: none` wrapper gives its
-      // iframe a 0×0 viewport, so a template that measures itself as it loads would read
+      // iframe a 0×0 viewport, so an overlay that measures itself as it loads would read
       // zeros and keep whatever it had, while the bake — full-size — got it right.
       wrap.style.visibility = "hidden";
       const iframe = document.createElement("iframe");
@@ -381,7 +381,7 @@ export class Preview {
 }
 
 /** Everything the overlay document is a function of: its injected `window.kuma`. The bin
- *  entry carries the template and its vars; the clip decides how long it runs. */
+ *  entry carries the overlay folder and its vars; the clip decides how long it runs. */
 function contentKey(p: Project, c: Clip): string {
   return JSON.stringify([binItem(p, c)?.source, c.speed, c.end - c.start, p.width, p.height, p.fps]);
 }

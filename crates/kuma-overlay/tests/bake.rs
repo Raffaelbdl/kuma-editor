@@ -1,9 +1,9 @@
-//! Bakes the real `location-tag` template through hyperframes. Skips when the renderer or
+//! Bakes the real `location-tag` blueprint through hyperframes. Skips when the renderer or
 //! a browser is unavailable.
 
 use std::path::PathBuf;
 
-use kuma_core::template::TemplateManifest;
+use kuma_core::manifest::OverlayManifest;
 use kuma_core::Fps;
 use kuma_overlay::{BakeRequest, Baker};
 use serde_json::{json, Map};
@@ -26,7 +26,7 @@ fn rgba_at(png: &std::path::Path, x: u32, y: u32) -> [u8; 4] {
 fn bakes_location_tag_with_alpha_and_caches() {
     let root = repo_root();
     let tmp = tempfile::tempdir().unwrap();
-    let baker = Baker::discover(&root, root.join("library/overlays/_vendor"), tmp.path().join("cache"));
+    let baker = Baker::discover(&root, root.join("library/blueprints/_vendor"), tmp.path().join("cache"));
     if baker.available().is_err() {
         eprintln!("hyperframes unavailable; skipping bake test");
         return;
@@ -35,14 +35,14 @@ fn bakes_location_tag_with_alpha_and_caches() {
         eprintln!("no headless browser found; skipping bake test");
         return;
     }
-    let dir = root.join("library/overlays/location-tag");
-    let manifest = TemplateManifest::load(&dir).unwrap();
+    let dir = root.join("library/blueprints/location-tag");
+    let manifest = OverlayManifest::load(&dir).unwrap();
     let mut vars = Map::new();
     vars.insert("label".into(), json!("Tokyo"));
     vars.insert("accent".into(), json!("#00a0ff"));
 
     let req = BakeRequest {
-        template_dir: &dir, manifest: &manifest, vars: &vars, fps: Fps::new(30, 1), width: 1920, height: 1080,
+        overlay_dir: &dir, manifest: &manifest, vars: &vars, fps: Fps::new(30, 1), width: 1920, height: 1080,
         duration: 2.0, speed: 1.0,
     };
     let r = baker.bake(&req).expect("bake");
@@ -72,7 +72,7 @@ fn bakes_location_tag_with_alpha_and_caches() {
     assert_eq!(r3.frames, 60);
     assert_ne!(r3.key, r.key);
 
-    // A clip LONGER than the template's markup default (4 s) must keep animating: the bake
+    // A clip LONGER than the overlay's markup default (4 s) must keep animating: the bake
     // used to render only the default and pad the rest with the last frame.
     let long = BakeRequest { fps: Fps::new(4, 1), duration: 8.0, speed: 1.0, ..req.clone() };
     let r4 = baker.bake(&long).expect("long bake");
@@ -80,16 +80,16 @@ fn bakes_location_tag_with_alpha_and_caches() {
     let f = |n: u32| std::fs::read(r4.dir.join(format!("frames/frame_{n:06}.png"))).unwrap();
     // t=4.0 (past the 4 s default) must still show the tag: frame 1 (t=0) is the empty
     // pre-entrance state, so a frozen/unmounted overlay would make them identical.
-    assert_ne!(f(17), f(1), "overlay must still be mounted past the template's default duration");
-    // The template anchors its out-animation to the real end (7.55–8 s): t=7.75 differs from t=4.0.
+    assert_ne!(f(17), f(1), "overlay must still be mounted past the overlay's default duration");
+    // The overlay anchors its out-animation to the real end (7.55–8 s): t=7.75 differs from t=4.0.
     assert_ne!(f(32), f(17), "out-animation must happen at the clip's real end, not the default's");
 
-    // A static template bakes a single still frame regardless of the clip duration or speed.
-    let wm_dir = root.join("library/overlays/watermark");
-    let wm = TemplateManifest::load(&wm_dir).unwrap();
+    // A static overlay bakes a single still frame regardless of the clip duration or speed.
+    let wm_dir = root.join("library/blueprints/watermark");
+    let wm = OverlayManifest::load(&wm_dir).unwrap();
     let novars = Map::new();
     let still = baker
-        .bake(&BakeRequest { template_dir: &wm_dir, manifest: &wm, vars: &novars, fps: Fps::new(30, 1), width: 1920, height: 1080, duration: 10.0, speed: 2.0 })
+        .bake(&BakeRequest { overlay_dir: &wm_dir, manifest: &wm, vars: &novars, fps: Fps::new(30, 1), width: 1920, height: 1080, duration: 10.0, speed: 2.0 })
         .expect("static bake");
     assert!(still.is_still);
     assert_eq!(still.frames, 1);
@@ -104,10 +104,10 @@ fn bakes_location_tag_with_alpha_and_caches() {
 /// dark panels as a black rectangle — both have to be checked in the file, because both
 /// look fine to the encoder.
 #[test]
-fn previews_a_template_as_an_animated_webp_with_alpha() {
+fn previews_an_overlay_as_an_animated_webp_with_alpha() {
     let root = repo_root();
     let tmp = tempfile::tempdir().unwrap();
-    let baker = Baker::discover(&root, root.join("library/overlays/_vendor"), tmp.path().join("cache"));
+    let baker = Baker::discover(&root, root.join("library/blueprints/_vendor"), tmp.path().join("cache"));
     if baker.available().is_err() || (baker.browser.is_none() && std::env::var_os("KUMA_ALLOW_BROWSER_DOWNLOAD").is_none()) {
         eprintln!("hyperframes or a browser is unavailable; skipping preview test");
         return;
@@ -116,8 +116,8 @@ fn previews_a_template_as_an_animated_webp_with_alpha() {
         eprintln!("ffmpeg unavailable; skipping preview test");
         return;
     }
-    let dir = root.join("library/overlays/location-tag");
-    let manifest = TemplateManifest::load(&dir).unwrap();
+    let dir = root.join("library/blueprints/location-tag");
+    let manifest = OverlayManifest::load(&dir).unwrap();
     let out = tmp.path().join("preview.webp");
     baker.preview(&dir, &manifest, &Map::new(), &out).expect("preview encoded");
 

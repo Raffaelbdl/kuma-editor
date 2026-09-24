@@ -12,7 +12,7 @@ import { button, capitalize, checkbox, dragPointer, el, options, plural, row, se
 import { keysFor } from "../shortcuts";
 import { store, toast } from "../store";
 import type { BinItem, Clip, Cue, Ease, Effect, PatchOp, Project, Streams, VarSpec } from "../types";
-import { moveBinItem, placeBinItem } from "../edits";
+import { blueprintActions, makeOverlayUnique, manifestOf, moveBinItem, overlayError, placeBinItem, previewImg, renderPreview, saveAsBlueprint, sharersOf } from "../edits";
 import type { Animation } from "../keyframes";
 import { animationOf } from "../keyframes";
 import { icon, svgEl } from "../icons";
@@ -352,7 +352,7 @@ export class Inspector {
     // selected clip decides what the panel can edit at all — a keyed value has no "now" to
     // write to from outside it — and that flips rarely. The values themselves follow the
     // playhead without a re-render; see `renderEffects`.
-    store.select((s) => [s.project, s.selection, s.templates, s.sequence, playheadInClip()], () => this.render());
+    store.select((s) => [s.project, s.selection, s.manifests, s.blueprints, s.sequence, playheadInClip(), s.previewStamp], () => this.render());
   }
 
   private render() {
@@ -361,6 +361,7 @@ export class Inspector {
     const sel = store.state.selection;
     this.host.innerHTML = "";
     if (sel?.kind === "bin") return this.renderBinEntry(sel.id);
+    if (sel?.kind === "blueprint") return this.renderBlueprint(sel.id);
     const f = store.findClip(store.selectedClip);
     if (!f) {
       this.host.innerHTML = `<h3>Inspector</h3>
@@ -428,6 +429,25 @@ export class Inspector {
     this.host.appendChild(actions);
   }
 
+  /** A blueprint in the library: what it is, and the ways into the project. */
+  private renderBlueprint(id: string) {
+    const bp = store.state.blueprints.find((b) => b.id === id);
+    if (!bp) return;
+    const m = bp.manifest;
+    const h = el("h3", "", "Blueprint ");
+    h.appendChild(el("span", "mono muted", id));
+    this.host.appendChild(h);
+    this.host.appendChild(field("Name", el("div", "", m.name || id)));
+    if (m.description) this.host.appendChild(el("p", "muted", m.description));
+    this.host.appendChild(previewImg(`/blueprints/${encodeURIComponent(id)}`));
+    this.host.appendChild(field("Vars", el("div", "mono muted", Object.keys(m.vars).join(" · ") || "none")));
+    this.host.appendChild(field("Length", el("div", "mono muted", `${m.duration_default}s${m.static ? " · still" : ""}`)));
+    if (m.tags.length) this.host.appendChild(field("Tags", el("div", "mono muted", m.tags.join(" · "))));
+    const actions = blueprintActions(id, "insp-actions");
+    actions.appendChild(button("Preview", () => void renderPreview({ blueprints: [id] }), "Render its animated preview"));
+    this.host.appendChild(actions);
+  }
+
   /**
    * A bin entry: what it *is*. Every clip that places it follows these, which is why the
    * panel says so rather than leaving it to be discovered by editing one and watching
@@ -472,6 +492,8 @@ export class Inspector {
       const open = button("Open", () => store.openOverlay(id), "Iterate on it in the overlay workbench");
       (open as HTMLButtonElement).disabled = id === store.state.tab;
       actions.appendChild(open);
+      actions.appendChild(button("Preview", () => void renderPreview({ bins: [id] }), "Render its animated preview with these vars"));
+      actions.appendChild(button("Save as blueprint", () => void saveAsBlueprint(id), "Copy this overlay into your library, to reuse in other projects"));
     }
     const remove = button("Remove from bin", () => {
       if (places) return toast(`${id} is placed by ${plural(places, "clip")}`, "err");
@@ -517,29 +539,25 @@ export class Inspector {
     if (!isOverlaySource(item.source)) return;
 
     const source = item.source;
-    const tpl = store.state.templates.find((t) => t.id === source.template);
-    this.host.appendChild(field("Template", el("div", "mono muted", source.template)));
-    if (!tpl) {
-      this.host.appendChild(el("p", "muted", "Unknown template — is its library on the search path?"));
+    const manifest = manifestOf(source);
+    this.host.appendChild(field("Folder", el("div", "mono muted", source.overlay)));
+    // A shared folder: editing it changes every entry on it.
+    const others = sharersOf(source.overlay).filter((x) => x !== id);
+    if (others.length) {
+      const note = el("p", "muted tiny", `Shares its folder with ${others.join(", ")}: editing the HTML changes ${others.length > 1 ? "them all" : "both"}.`);
+      this.host.appendChild(note);
+      this.host.appendChild(row("actions", button("Make unique", () => void makeOverlayUnique(id), "Copy the folder so this entry has its own, and edit it alone")));
+    }
+    if (!manifest) {
+      this.host.appendChild(el("p", "muted", overlayError(source)));
       return;
     }
-    // The row cannot show this and stay one line, but an overlay is the one entry kind
-    // whose look is the point, so it moves here rather than being dropped. Absent until
-    // the `thumbs` job has run, and it removes itself when there is nothing to show.
-    const thumb = el("img", "insp-thumb");
-    // The entry's own moving preview when the `thumbs` job has made one, its still
-    // otherwise, and nothing at all until then.
-    thumb.src = `/api/bin/${encodeURIComponent(id)}/preview.webp`;
-    thumb.alt = "";
-    thumb.onerror = () => {
-      if (thumb.src.endsWith("preview.webp")) thumb.src = `/api/bin/${encodeURIComponent(id)}/thumb.png`;
-      else thumb.remove();
-    };
-    this.host.appendChild(thumb);
+    // Absent until Preview has rendered one.
+    this.host.appendChild(previewImg(`/api/bin/${encodeURIComponent(id)}`));
 
     const vars = source.vars ?? {};
     const setVar = (k: string, v: unknown) => store.patch([{ op: "add", path: `${bp}/source/vars`, value: { ...vars, [k]: v } }], `var ${k}`);
-    for (const [k, spec] of Object.entries(tpl.manifest.vars)) {
+    for (const [k, spec] of Object.entries(manifest.vars)) {
       const cur = k in vars ? vars[k] : spec.default;
       this.host.appendChild(field(spec.label ?? k, varInput(spec, cur, (v) => setVar(k, v))));
     }

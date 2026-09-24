@@ -1,4 +1,4 @@
-//! A new template that already obeys the contract.
+//! A new overlay that already obeys the contract.
 //!
 //! Authoring one from the prose costs an agent minutes and still gets the two easy things
 //! wrong — the timeline registration and the root's timing attributes — which a bake only
@@ -12,11 +12,11 @@
 
 use std::path::{Path, PathBuf};
 
-/// Write `overlays/<id>/` under `dir` (a library's `overlays/` or a project's own).
-/// Refuses to overwrite: a template being edited is somebody's work.
-pub fn new_template(dir: &Path, id: &str, name: &str, description: &str) -> Result<PathBuf, String> {
+/// Write `<dir>/<id>/`: `dir` is a project's `overlays/`, or a library's `blueprints/`.
+/// Refuses to overwrite: an overlay being edited is somebody's work.
+pub fn new_overlay(dir: &Path, id: &str, name: &str, description: &str) -> Result<PathBuf, String> {
     if !kuma_core::is_valid_id(id) {
-        return Err(format!("`{id}` must match [A-Za-z_][A-Za-z0-9_-]*: the id is the folder name and a URL segment"));
+        return Err(format!("`{id}` must match [A-Za-z_][A-Za-z0-9_-]*: it is the folder name and a URL segment"));
     }
     let out = dir.join(id);
     if out.exists() {
@@ -27,7 +27,7 @@ pub fn new_template(dir: &Path, id: &str, name: &str, description: &str) -> Resu
     let write = |file: &str, body: String| -> Result<(), String> {
         std::fs::write(out.join(file), body).map_err(|e| format!("{file}: {e}"))
     };
-    write("template.json", manifest(id, name, description))?;
+    write(kuma_core::manifest::MANIFEST, manifest(name, description))?;
     write("index.html", INDEX.replace("{{NAME}}", &escape(name)))?;
     Ok(out)
 }
@@ -36,9 +36,8 @@ fn escape(s: &str) -> String {
     s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
 }
 
-fn manifest(id: &str, name: &str, description: &str) -> String {
+fn manifest(name: &str, description: &str) -> String {
     let m = serde_json::json!({
-        "id": id,
         "name": name,
         "description": if description.is_empty() { "A new overlay." } else { description },
         "duration_default": 4.0,
@@ -94,7 +93,7 @@ const INDEX: &str = r##"<!doctype html>
       <div id="card" class="clip card" data-start="0" data-duration="4">{{NAME}}</div>
     </div>
     <script>
-      // The defaults are repeated from template.json so the page also works opened on its
+      // The defaults are repeated from overlay.json so the page also works opened on its
       // own; kuma overrides them with the entry's vars.
       const { vars, duration, text, timeline } = kumaTemplate({
         label: "{{NAME}}", accent: "#ff4f00", at: { x: 0.5, y: 0.8 }, size: 1,

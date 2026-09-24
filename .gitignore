@@ -22,5 +22,5 @@ app/dist/
 *.log
 .DS_Store
 # Overlay thumbnails and moving previews are generated (kuma thumbs)
-library/overlays/*/thumb.png
-library/overlays/*/preview.webp
+library/blueprints/*/thumb.png
+library/blueprints/*/preview.webp

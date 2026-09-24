@@ -12,10 +12,10 @@ use kuma_daemon::{AppState, Config};
 
 /// `tag` is an overlay entry **no clip places** — the case the whole feature is about.
 const PROJECT: &str = r##"{
-  "version": 1, "name": "t", "master": "main",
+  "version": 7, "name": "t", "master": "main",
   "fps": { "num": 30, "den": 1 }, "width": 320, "height": 240, "sample_rate": 48000,
   "bin": {
-    "tag": { "name": "Tag", "source": { "template": "probe", "vars": {} } },
+    "tag": { "name": "Tag", "source": { "overlay": "overlays/probe", "vars": {} } },
     "navy": { "name": "Navy", "source": { "color": "#102030" } },
     "main": { "name": "Main", "source": { "tracks": [
       { "id": "v1", "kind": "video", "name": "V", "muted": false, "hidden": false, "transitions": [],
@@ -30,9 +30,9 @@ fn fixture() -> (Arc<AppState>, tempfile::TempDir) {
     let project_file = dir.path().join("t.kuma.json");
     std::fs::write(&project_file, PROJECT).unwrap();
 
-    let tpl = dir.path().join("library/overlays/probe");
+    let tpl = dir.path().join("overlays/probe");
     std::fs::create_dir_all(&tpl).unwrap();
-    std::fs::write(tpl.join("template.json"), r#"{ "id": "probe", "name": "Probe", "duration_default": 3 }"#).unwrap();
+    std::fs::write(tpl.join("overlay.json"), r#"{ "name": "Probe", "duration_default": 3 }"#).unwrap();
     std::fs::write(tpl.join("index.html"), "<html><body data-composition-id=\"root\"></body></html>").unwrap();
 
     let config = Config {
@@ -109,9 +109,9 @@ fn the_synthetic_project_has_the_shape_the_sample_relies_on() {
     assert_eq!((p.width, p.height), (doc.width, doc.height));
     let clips: Vec<_> = p.all_clips().map(|(_, _, c)| c).collect();
     assert_eq!(clips.len(), 2);
-    assert!(clips.iter().all(|c| c.start == 0.0 && c.end == 3.0), "both clips run the template's default 3 s: {clips:?}");
+    assert!(clips.iter().all(|c| c.start == 0.0 && c.end == 3.0), "both clips run the overlay's default 3 s: {clips:?}");
     assert!(clips.iter().any(|c| c.bin == "tag"));
-    // The entry itself travels unchanged: same template, same vars, same name.
+    // The entry itself travels unchanged: same folder, same vars, same name.
     assert_eq!(serde_json::to_value(&p.bin["tag"]).unwrap(), serde_json::to_value(&doc.bin["tag"]).unwrap());
 
     // The frame the caller asked for, and a length; the document is untouched by both.

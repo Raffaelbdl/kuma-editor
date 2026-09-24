@@ -1,5 +1,4 @@
 {
-  "id": "lower-third",
   "name": "Lower third",
   "description": "Name and title bar anchored to the bottom, with an accent rule. Slides in from the side and out at the end.",
   "duration_default": 5.0,

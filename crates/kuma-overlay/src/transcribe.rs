@@ -2,7 +2,7 @@
 //!
 //! `whisper-cli` reads 16 kHz mono WAV, so the media is extracted with ffmpeg first; the
 //! JSON it writes (`-oj`) becomes a list of cues in **source seconds**. That list is the
-//! `cues` var of the `subtitles` overlay template, and nothing else about the model
+//! `cues` var of the `subtitles` overlay, and nothing else about the model
 //! reaches the project: a cue is `{ start, end, text }` and is edited like any other var.
 
 use std::collections::VecDeque;
@@ -29,7 +29,7 @@ pub struct TranscribeOptions {
     pub language: Option<String>,
     /// Longest cue in characters: whisper re-splits its segments on word boundaries to
     /// fit. The default, `1`, is one cue per word — the finest timing whisper gives, and
-    /// the form a template can group into lines of any length. `0` keeps whisper's own
+    /// the form an overlay can group into lines of any length. `0` keeps whisper's own
     /// segments (sentences); anything else, lines of about that many characters.
     #[serde(default)]
     pub max_chars: Option<u32>,

@@ -1,5 +1,5 @@
 // Tiny DOM helpers. Everything user- or model-controlled goes through `textContent`,
-// never `innerHTML`, so a clip label or template description cannot inject markup.
+// never `innerHTML`, so a clip label or overlay description cannot inject markup.
 
 export function el<K extends keyof HTMLElementTagNameMap>(tag: K, className = "", text?: string): HTMLElementTagNameMap[K] {
   const e = document.createElement(tag);
@@ -78,8 +78,8 @@ export function selectInput(items: { value: string; label?: string; title?: stri
   return s;
 }
 
-/** The one drag payload the editor uses: a bin entry, or a template not yet in the bin. */
-export interface DragPayload { bin?: string; template?: string }
+/** The one drag payload the editor uses: a bin entry, or a blueprint not yet in the project. */
+export interface DragPayload { bin?: string; blueprint?: string }
 const DRAG_TYPE = "application/x-kuma";
 export function setDragPayload(e: DragEvent, payload: DragPayload): void {
   e.dataTransfer?.setData(DRAG_TYPE, JSON.stringify(payload));

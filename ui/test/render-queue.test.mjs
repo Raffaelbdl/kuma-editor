@@ -40,7 +40,7 @@ describe("the render queue", { skip: why ? `skipping: ${why}` : false }, () => {
     tmp = fs.mkdtempSync(path.join(os.tmpdir(), "kuma-queue-"));
     const projectFile = path.join(tmp, "queue.kuma.json");
     fs.writeFileSync(projectFile, PROJECT);
-    fs.mkdirSync(path.join(tmp, "library/overlays"), { recursive: true });
+    fs.mkdirSync(path.join(tmp, "library/blueprints"), { recursive: true });
     daemon = await startDaemon(projectFile, path.join(tmp, "library"));
     page = await driver(daemon.url);
     await page.until(`document.querySelector("#topbar button.primary")`);

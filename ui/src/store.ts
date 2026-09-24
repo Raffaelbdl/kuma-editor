@@ -1,5 +1,5 @@
 import { api, subscribeEvents } from "./api";
-import type { Clip, DaemonEvent, Job, PatchOp, Project, TemplateInfo, Track, TrackKind } from "./types";
+import type { BlueprintInfo, Clip, DaemonEvent, Job, OverlayInfo, PatchOp, Project, Track, TrackKind } from "./types";
 import { allClips, clipPathOf, fpsValue, freeId, isOverlaySource, nearest, seqDuration, seqPath, sequenceIds, sequenceOf } from "./types";
 
 /** A clip found in the project: where it is, as the record every edit of it starts from. */
@@ -12,7 +12,7 @@ export interface Found { seq: string; track: Track; ti: number; clip: Clip; ci: 
  * is about *that* entry. The list is in click order, so its last member is the one a
  * single-clip action means.
  */
-export type Selection = { kind: "clip"; ids: string[] } | { kind: "bin"; id: string } | null;
+export type Selection = { kind: "clip"; ids: string[] } | { kind: "bin"; id: string } | { kind: "blueprint"; id: string } | null;
 
 /** A clip waiting to be pasted, with the track it came off. The *kind* travels rather than
  *  being derived from the entry — a video file on an audio track is an audio clip — and
@@ -29,7 +29,12 @@ export const SEQUENCE_TAB = "";
 
 export interface State {
   project: Project | null;
-  templates: TemplateInfo[];
+  /** Reusable overlays in the user's library, to copy into the project. */
+  blueprints: BlueprintInfo[];
+  /** The manifest of every overlay folder the bin uses, by folder. */
+  manifests: Record<string, OverlayInfo>;
+  /** Bumped when a preview render finishes: preview images' cache key. */
+  previewStamp: number;
   /** The sequence open for editing. The daemon owns this (the preview compiles it), so it
    *  is set through the API rather than locally. Empty until the first load. */
   sequence: string;
@@ -63,7 +68,7 @@ export interface State {
 type Listener = (s: State) => void;
 
 class Store {
-  state: State = { project: null, templates: [], sequence: "", selection: null, track: null, clipboard: null, autoKey: false, playhead: 0, playing: false, zoom: 60, tab: SEQUENCE_TAB, sequences: [], overlays: [], connected: false, jobs: {} };
+  state: State = { project: null, blueprints: [], manifests: {}, previewStamp: 0, sequence: "", selection: null, track: null, clipboard: null, autoKey: false, playhead: 0, playing: false, zoom: 60, tab: SEQUENCE_TAB, sequences: [], overlays: [], connected: false, jobs: {} };
   private listeners = new Set<Listener>();
   private refreshing: Promise<void> | null = null;
   private refreshAgain = false;
@@ -98,8 +103,8 @@ class Store {
   }
 
   async init() {
-    const [project, templates, seq] = await Promise.all([api.project(), api.templates(), api.sequence()]);
-    this.set({ project, templates, sequence: seq.current, sequences: [seq.current] });
+    const [project, blueprints, manifests, seq] = await Promise.all([api.project(), api.blueprints(), api.overlays(), api.sequence()]);
+    this.set({ project, blueprints, manifests, sequence: seq.current, sequences: [seq.current] });
     subscribeEvents((e) => this.onEvent(e), (connected) => {
       this.set({ connected });
       // Events only say what happens from now on: what is already queued or running (or
@@ -158,7 +163,7 @@ class Store {
       this.set({ jobs });
     } else if (e.type === "job") {
       const { type: _, ...job } = e;
-      this.set({ jobs: { ...this.state.jobs, [e.id]: job } });
+      this.set({ jobs: { ...this.state.jobs, [e.id]: job }, ...(e.kind === "thumbs" && e.state === "done" ? { previewStamp: e.id } : {}) });
       if (e.state === "failed") toast(`${e.kind} failed: ${e.message}`, "err", 12000);
       else if (e.state === "done" || e.state === "cancelled") toast(`${e.kind} ${e.state}`, "ok", 4000);
     }
@@ -178,7 +183,7 @@ class Store {
       try {
         do {
           this.refreshAgain = false;
-          const project = await api.project();
+          const [project, manifests] = await Promise.all([api.project(), api.overlays().catch(() => this.state.manifests)]);
           // The open sequence can be deleted out from under us (undo, an agent edit); the
           // daemon falls back to the master and so do we, rather than showing nothing.
           const sequence = sequenceOf(project, this.state.sequence) ? this.state.sequence : project.master;
@@ -191,7 +196,7 @@ class Store {
           const sequences = withId(this.state.sequences.filter((id) => sequenceOf(project, id)), sequence);
           const overlays = this.state.overlays.filter((id) => isOverlayEntry(project, id));
           const tab = overlays.includes(this.state.tab) ? this.state.tab : SEQUENCE_TAB;
-          this.set({ project, sequence, sequences, selection, track, overlays, tab });
+          this.set({ project, manifests, sequence, sequences, selection, track, overlays, tab });
         } while (this.refreshAgain);
       } catch (e) {
         toast(`Cannot reload the project: ${(e as Error).message}`, "err");
@@ -202,11 +207,17 @@ class Store {
     return this.refreshing;
   }
 
+  /** Re-read the manifests after a folder was edited on disk. */
+  async reloadOverlays() {
+    this.set({ manifests: await api.overlays() });
+  }
+
   /** A selection survives a refresh only while the things it names still exist — each of
    *  them, so deleting one of three selected clips leaves the other two selected. */
   private stillThere(project: Project, sel: Selection): Selection {
     if (!sel) return null;
     if (sel.kind === "bin") return sel.id in project.bin ? sel : null;
+    if (sel.kind === "blueprint") return this.state.blueprints.some((b) => b.id === sel.id) ? sel : null;
     const live = new Set(allClips(project).map((c) => c.id));
     const ids = sel.ids.filter((id) => live.has(id));
     return ids.length ? { kind: "clip", ids } : null;
@@ -235,10 +246,10 @@ class Store {
     this.set({ overlays, tab });
   }
 
-  /** Point the inspector at a clip or a bin entry, and at nothing else. (`select` above is
-   *  the subscription helper; these are deliberately not the same word.) */
-  selectItem(kind: "clip" | "bin", id: string) {
-    this.set({ selection: kind === "clip" ? { kind: "clip", ids: [id] } : { kind: "bin", id } });
+  /** Point the inspector at a clip, a bin entry or a blueprint, and at nothing else.
+   *  (`select` above is the subscription helper; these are deliberately not the same word.) */
+  selectItem(kind: "clip" | "bin" | "blueprint", id: string) {
+    this.set({ selection: kind === "clip" ? { kind: "clip", ids: [id] } : { kind, id } });
   }
 
   /** Point the inspector at several clips, and aim the next paste at a track in the same
@@ -415,6 +426,7 @@ export const store = new Store();
 
 /** `ids` with `id` in it, appended if it was not — how a tab strip gains one. */
 const withId = (ids: string[], id: string): string[] => (ids.includes(id) ? ids : [...ids, id]);
+
 
 /** An entry the workbench can open: one that exists and is an overlay. */
 export const isOverlayEntry = (p: Project | null, id: string): boolean =>

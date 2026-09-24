@@ -1,5 +1,4 @@
 {
-  "id": "countdown",
   "name": "Countdown",
   "description": "Counts down from a number, one digit per second, with a ring that empties. Set the clip length to match.",
   "duration_default": 3.0,

@@ -304,7 +304,7 @@ async fn compile_and_load(state: &Arc<AppState>) -> anyhow::Result<()> {
             };
             let xml = crate::jobs::compile_xml(&project, &opts)?;
             // The document is the whole input: profile, every producer, and the bake
-            // directories — whose names are themselves content hashes, so a template edited
+            // directories — whose names are themselves content hashes, so an overlay edited
             // on disk changes this even though the project document did not.
             let stamp = stamp(&xml);
             tracing::debug!("preview: compiled {}, {} bytes, stamp {stamp:016x}", half.name, xml.len());

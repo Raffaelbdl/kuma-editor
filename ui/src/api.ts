@@ -1,4 +1,4 @@
-import type { DaemonEvent, EffectPreset, Issue, Job, LintReport, PatchOp, Preset, Project, SequenceState, TemplateInfo } from "./types";
+import type { BlueprintInfo, DaemonEvent, EffectPreset, Issue, Job, LintReport, OverlayInfo, PatchOp, Preset, Project, SequenceState } from "./types";
 
 async function json<T>(url: string, init?: RequestInit): Promise<T> {
   const r = await fetch(url, { headers: { "content-type": "application/json" }, ...init });
@@ -25,13 +25,27 @@ export const api = {
   sequence: () => json<SequenceState>("/api/sequence"),
   openSequence: (sequence: string) =>
     json<{ current: string }>("/api/sequence", { method: "POST", body: JSON.stringify({ sequence }) }),
-  templates: () => json<TemplateInfo[]>("/api/templates"),
+  blueprints: () => json<BlueprintInfo[]>("/api/blueprints"),
+  /** Rescan the libraries for blueprints. */
+  reloadBlueprints: () => json<BlueprintInfo[]>("/api/blueprints", { method: "POST", body: "{}" }),
+  /** Copy a blueprint into `overlays/`; not an edit. Returns the folder. */
+  copyBlueprint: (id: string, folder?: string) =>
+    json<{ overlay: string }>(`/api/blueprints/${encodeURIComponent(id)}/copy`, { method: "POST", body: JSON.stringify({ folder }) }),
+  /** The manifest of every overlay folder the bin uses, by folder. */
+  overlays: () => json<Record<string, OverlayInfo>>("/api/overlays"),
+  /** Give an overlay entry its own copy of the folder it shares. One edit. */
+  makeUnique: (bin: string) =>
+    json<{ overlay: string; revision: number }>("/api/overlays/unique", { method: "POST", body: JSON.stringify({ bin, origin: "ui: make unique" }) }),
+  /** Save an overlay entry as a blueprint, its vars as defaults. */
+  saveBlueprint: (bin: string, id: string, force = false) =>
+    json<{ dir: string }>("/api/overlays/save-blueprint", { method: "POST", body: JSON.stringify({ bin, id, force }) }),
   presets: () => json<Preset[]>("/api/presets"),
   effectPresets: () => json<EffectPreset[]>("/api/presets/effects"),
-  thumbs: () => json<{ job: number }>("/api/templates/thumbs", { method: "POST", body: "{}" }),
-  /** Check a template against the authoring contract. Reads only. */
-  lintTemplate: (id: string) => json<LintReport>(`/api/templates/${encodeURIComponent(id)}/lint`),
-  reloadTemplates: () => json<TemplateInfo[]>("/api/templates", { method: "POST", body: "{}" }),
+  /** Render previews of the given blueprints and overlay entries. */
+  thumbs: (which: { blueprints?: string[]; bins?: string[] }) => json<{ job: number }>("/api/blueprints/thumbs", { method: "POST", body: JSON.stringify(which) }),
+  /** Check an overlay folder against the authoring contract. Reads only. */
+  lintOverlay: (path: string) => json<LintReport>(`/api/overlays/lint?${new URLSearchParams({ path })}`),
+  /** Add a media file, or an overlay folder of the project (or its `overlay.json`). */
   addMedia: (path: string, base_revision: number, parent?: string | null) =>
     json<{ id: string; revision: number }>("/api/bin", { method: "POST", body: JSON.stringify({ path, base_revision, parent: parent ?? undefined, origin: "ui: add media" }) }),
   /** Speech to text. From a `bin` entry the result is added unplaced; from a `clip` it is

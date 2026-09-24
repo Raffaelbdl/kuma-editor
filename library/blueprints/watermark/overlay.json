@@ -1,5 +1,4 @@
 {
-  "id": "watermark",
   "name": "Watermark",
   "description": "Static text watermark in a corner. Bakes to a single still frame.",
   "duration_default": 10.0,

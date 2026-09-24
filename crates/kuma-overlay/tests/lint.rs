@@ -5,7 +5,7 @@
 
 use std::path::{Path, PathBuf};
 
-use kuma_core::template::TemplateManifest;
+use kuma_core::manifest::OverlayManifest;
 use kuma_core::Fps;
 use kuma_overlay::{BakeRequest, Baker, LintReport};
 use serde_json::Map;
@@ -15,9 +15,9 @@ fn repo_root() -> PathBuf {
 }
 
 fn lint(baker: &Baker, dir: &Path) -> LintReport {
-    let manifest = TemplateManifest::load(dir).unwrap_or_else(|e| panic!("{}: {e:?}", dir.display()));
+    let manifest = OverlayManifest::load(dir).unwrap_or_else(|e| panic!("{}: {e:?}", dir.display()));
     let req = BakeRequest {
-        template_dir: dir,
+        overlay_dir: dir,
         manifest: &manifest,
         vars: &Map::new(),
         fps: Fps::new(30, 1),
@@ -31,25 +31,25 @@ fn lint(baker: &Baker, dir: &Path) -> LintReport {
 
 fn baker(tmp: &tempfile::TempDir) -> (Baker, PathBuf) {
     let root = repo_root();
-    let vendor = root.join("library/overlays/_vendor");
+    let vendor = root.join("library/blueprints/_vendor");
     (Baker::discover(&root, vendor, tmp.path().join("cache")), root)
 }
 
 #[test]
-fn every_shipped_template_passes_its_own_contract() {
+fn every_shipped_blueprint_passes_its_own_contract() {
     let tmp = tempfile::tempdir().unwrap();
     let (baker, root) = baker(&tmp);
     let mut checked = 0;
-    for entry in std::fs::read_dir(root.join("library/overlays")).unwrap() {
+    for entry in std::fs::read_dir(root.join("library/blueprints")).unwrap() {
         let dir = entry.unwrap().path();
-        if !dir.join("template.json").is_file() {
-            continue; // `_vendor/` and anything else that is not a template
+        if !dir.join(kuma_core::manifest::MANIFEST).is_file() {
+            continue; // `_vendor/` and anything else that is not a blueprint
         }
         let report = lint(&baker, &dir);
         assert!(report.ok(), "{}:\n  {}", dir.display(), report.lines().join("\n  "));
         checked += 1;
     }
-    assert!(checked >= 8, "only {checked} templates were checked — did the library move?");
+    assert!(checked >= 8, "only {checked} blueprints were checked — did the library move?");
 }
 
 /// The skeleton an agent edits must itself be beyond reproach: it is read as an example of
@@ -60,27 +60,27 @@ fn the_scaffold_lints_clean() {
     let (baker, _) = baker(&tmp);
     let overlays = tmp.path().join("overlays");
     std::fs::create_dir_all(&overlays).unwrap();
-    let dir = kuma_overlay::new_template(&overlays, "fresh", "Fresh", "").expect("scaffolded");
+    let dir = kuma_overlay::new_overlay(&overlays, "fresh", "Fresh", "").expect("scaffolded");
 
     let report = lint(&baker, &dir);
     assert!(report.findings.is_empty(), "the scaffold is not clean:\n  {}", report.lines().join("\n  "));
 
     // And it is refused rather than overwritten the second time.
-    assert!(kuma_overlay::new_template(&overlays, "fresh", "Fresh", "").is_err());
+    assert!(kuma_overlay::new_overlay(&overlays, "fresh", "Fresh", "").is_err());
     // An id that could not be a folder or a URL segment is refused before anything is written.
-    assert!(kuma_overlay::new_template(&overlays, "2 bad/id", "", "").is_err());
+    assert!(kuma_overlay::new_overlay(&overlays, "2 bad/id", "", "").is_err());
     assert!(!overlays.join("2 bad").exists());
 }
 
-/// The check has to fail on a template that would fail to bake, or it is decoration. The
+/// The check has to fail on an overlay that would fail to bake, or it is decoration. The
 /// fault here is the one that costs 45 seconds and a cryptic timeout in real life.
 #[test]
-fn a_template_that_would_not_bake_is_refused() {
+fn an_overlay_that_would_not_bake_is_refused() {
     let tmp = tempfile::tempdir().unwrap();
     let (baker, _) = baker(&tmp);
     let dir = tmp.path().join("overlays/broken");
     std::fs::create_dir_all(&dir).unwrap();
-    std::fs::write(dir.join("template.json"), r#"{ "id": "broken", "name": "Broken", "vars": {} }"#).unwrap();
+    std::fs::write(dir.join(kuma_core::manifest::MANIFEST), r#"{ "name": "Broken", "vars": {} }"#).unwrap();
     std::fs::write(
         dir.join("index.html"),
         r#"<html><body><div id="root" data-composition-id="main" data-start="0" data-duration="4">x</div>
@@ -90,7 +90,7 @@ fn a_template_that_would_not_bake_is_refused() {
 
     let report = lint(&baker, &dir);
     let codes: Vec<&str> = report.findings.iter().map(|f| f.code.as_str()).collect();
-    assert!(!report.ok(), "a template with no timeline and a wall clock passed: {codes:?}");
+    assert!(!report.ok(), "an overlay with no timeline and a wall clock passed: {codes:?}");
     assert!(codes.contains(&"no_timeline"), "{codes:?}");
     assert!(codes.contains(&"wall_clock"), "{codes:?}");
 }

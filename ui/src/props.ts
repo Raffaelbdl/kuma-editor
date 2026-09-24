@@ -1,7 +1,7 @@
 // Property editors: the small reusable controls the inspector is built from.
 //
 // One control per *shape* — a number, a vector, a bounded amount — so an effect field, a
-// template var and a clip field all get the same one, and `x` is dragged the same way
+// overlay var and a clip field all get the same one, and `x` is dragged the same way
 // wherever you meet it. A number is a slider you can type in: drag sideways to change it,
 // click without moving to put a caret in it, `Shift` for fine and `Alt` for coarse. A
 // vector is one row wearing its axis colours, X red through W amber.

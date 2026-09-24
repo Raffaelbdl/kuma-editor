@@ -1,6 +1,6 @@
 // Does the editor composite an overlay over the stage, or paint over it? A dark
 // `color-scheme` on the root once stopped Chromium compositing the overlay iframes, so a
-// template's white canvas covered the video and nothing failed — only a real browser
+// overlay's white canvas covered the video and nothing failed — only a real browser
 // drawing a real iframe can see that.
 //
 // The assertions are position-independent on purpose: half the overlay is red, so red
@@ -36,7 +36,7 @@ const PROJECT = JSON.stringify({
   version: 1, name: "composite", master: "main",
   fps: { num: 30, den: 1 }, width: 1920, height: 1080, sample_rate: 48000,
   bin: {
-    probe: { name: "Probe", source: { template: "probe", vars: {} } },
+    probe: { name: "Probe", source: { overlay: "overlays/probe", vars: {} } },
     main: { name: "Main", source: { markers: [], tracks: [
       { id: "o1", kind: "overlay", name: "O", muted: false, hidden: false, transitions: [],
         clips: [{ id: "o1c1", start: 0, end: 4, bin: "probe", in: 0, speed: 1, volume: 1, muted: false, effects: [], label: "" }] },
@@ -51,9 +51,9 @@ describe("preview compositing", { skip: why ? `skipping: ${why}` : false }, () =
 
   before(async () => {
     tmp = fs.mkdtempSync(path.join(os.tmpdir(), "kuma-composite-"));
-    const tpl = path.join(tmp, "library/overlays/probe");
+    const tpl = path.join(tmp, "overlays/probe");
     fs.mkdirSync(tpl, { recursive: true });
-    fs.writeFileSync(path.join(tpl, "template.json"), JSON.stringify({ id: "probe", name: "Probe", static: true }));
+    fs.writeFileSync(path.join(tpl, "overlay.json"), JSON.stringify({ name: "Probe", static: true }));
     fs.writeFileSync(path.join(tpl, "index.html"), TEMPLATE);
     const projectFile = path.join(tmp, "composite.kuma.json");
     fs.writeFileSync(projectFile, PROJECT);
@@ -84,7 +84,7 @@ describe("preview compositing", { skip: why ? `skipping: ${why}` : false }, () =
   it("leaves the rest of the stage transparent", () => {
     const img = decodePng(fs.readFileSync(shot));
     const white = count(img, ([r, g, b]) => r > 240 && g > 240 && b > 240);
-    // A template declares no colour scheme, so it is a light-scheme document; give the
+    // An overlay declares no colour scheme, so it is a light-scheme document; give the
     // embedder a dark one and Chromium stops compositing the iframe and paints that
     // document's white canvas over the whole stage — tens of thousands of pixels. Text
     // antialiasing contributes a few hundred at most.

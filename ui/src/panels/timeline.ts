@@ -1,7 +1,7 @@
 // Timeline: tracks, clips (move/trim), transitions, playhead, zoom.
 
 import { button, dragPayload, dragPointer, el, isFileDrag } from "../dom";
-import { placeBinItem, addFromLibrary } from "../edits";
+import { placeBinItem, placeBlueprint } from "../edits";
 import { icon } from "../icons";
 import { animationOf, keysOf } from "../keyframes";
 import { store } from "../store";
@@ -171,10 +171,11 @@ export class Timeline {
     box.style.width = `${w}px`;
     const item = binItem(p, c);
     const name = item ? item.name || c.bin : `? ${c.bin}`;
-    // The template is worth showing only when the entry was not named after it.
-    const template = item && isOverlaySource(item.source) && item.source.template !== name ? item.source.template : "";
+    // The overlay's folder is worth showing only when the entry was not named after it.
+    const folder = item && isOverlaySource(item.source) ? item.source.overlay.split("/").pop() ?? "" : "";
+    const overlay = folder !== name ? folder : "";
     const seq = item && isSequenceSource(item.source) ? `sequence · ${seqDuration(p, c.bin).toFixed(1)}s` : "";
-    const sub = c.speed !== 1 ? `${c.speed}×` : template || seq;
+    const sub = c.speed !== 1 ? `${c.speed}×` : overlay || seq;
     box.title = `${c.id}  ${c.start.toFixed(2)}–${c.end.toFixed(2)}s${c.group ? ` · grouped (${c.group}) — selecting one selects them all, and a drag moves the block` : ""}`;
     const hl = el("div", "handle l");
     const hr = el("div", "handle r");
@@ -408,7 +409,7 @@ export class Timeline {
     const row = (e.target as HTMLElement).closest(".tl-track") as HTMLElement | null;
     const ti = row ? Number(row.dataset.ti) : -1;
     if (payload.bin) await placeBinItem(payload.bin, t, ti);
-    else if (payload.template) await addFromLibrary(payload.template, t, ti);
+    else if (payload.blueprint) await placeBlueprint(payload.blueprint, t, ti);
   }
 }
 

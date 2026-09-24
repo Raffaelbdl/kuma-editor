@@ -101,7 +101,7 @@ Chrome headless shell if hyperframes should not download one.
   reusable across projects, and is never read through an entry: using one **copies** it
   into the project (`overlays.rs`), so editing a blueprint cannot re-style a finished
   video. An overlay folder reaches the bin only by being imported — writing one does not
-  add it — and entries may share a folder; "make unique" copies it for one of them. Undoing
+  add it, and one outside the project is copied in first — and entries may share a folder; "make unique" copies it for one of them. Undoing
   an import leaves its folder on disk: nothing deletes a folder, it may hold someone's work.
 - Clients ask for a preview reload on **every** edit and never decide whether one is
   needed: `preview::reload` compiles, compares the document against what the engine holds,

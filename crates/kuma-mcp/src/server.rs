@@ -410,7 +410,7 @@ impl KumaServer {
         Ok(ok_json(&self.client.get_query("/api/overlays/lint", &[("path", &p.path)]).await.map_err(err)?))
     }
 
-    #[tool(description = "Add an overlay folder of this project to the bin, optionally with vars. Returns the bin id. Import one folder twice, with other vars, for a second wording.")]
+    #[tool(description = "Add an overlay folder to the bin, optionally with vars; one outside the project is copied into `overlays/` first. Returns the bin id. Import one folder twice, with other vars, for a second wording.")]
     async fn import_overlay(&self, Parameters(p): Parameters<ImportOverlay>) -> Result<CallToolResult, McpError> {
         let body = json!({ "path": p.path, "id": p.id, "name": p.name, "vars": p.vars.unwrap_or_default(), "base_revision": p.base_revision, "origin": "claude: import overlay" });
         self.post("/api/overlays/import", &body).await

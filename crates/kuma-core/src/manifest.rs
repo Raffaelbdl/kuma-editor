@@ -227,8 +227,8 @@ impl VarSpec {
     }
 }
 
-/// A bin entry's `overlay` folder must be relative and inside the project, so the project
-/// carries everything it renders.
+/// A bin entry's `overlay` folder must be relative and inside the project: overlays are the
+/// project's own copies (media, by contrast, may live anywhere).
 pub fn check_overlay_path(rel: &str) -> Option<String> {
     let p = Path::new(rel);
     if rel.is_empty() {

@@ -213,12 +213,15 @@ async fn an_overlay_is_scaffolded_checked_and_imported_over_http() {
     let (status, _) = post(&addr, "/api/overlays/import", r#"{ "path": "overlays/fresh", "vars": { "nope": 1 } }"#);
     assert!(status.contains("400"), "{status}");
 
-    // A folder outside the project is not an overlay of it.
+    // A folder from outside the project is copied in (beside `overlays/probe`), then imported.
     let elsewhere = tempfile::tempdir().unwrap();
-    let outside = elsewhere.path().join("probe");
     kuma_overlay::new_overlay(elsewhere.path(), "probe", "", "").unwrap();
-    let (status, reply) = post(&addr, "/api/overlays/import", &format!(r#"{{ "path": {:?} }}"#, outside.to_string_lossy()));
-    assert!(status.contains("400") && reply["error"].as_str().is_some_and(|e| e.contains("outside the project")), "{status}: {reply}");
+    let manifest = elsewhere.path().join("probe/overlay.json");
+    let (status, reply) = post(&addr, "/api/bin", &format!(r#"{{ "path": {:?} }}"#, manifest.to_string_lossy()));
+    assert!(status.contains("200"), "{status}: {reply}");
+    let id = reply["id"].as_str().unwrap().to_string();
+    assert!(matches!(&state.project.read().unwrap().bin[&id].source, kuma_core::BinSource::Overlay { overlay, .. } if overlay == "overlays/probe-2"));
+    assert!(state.config.project_root().join("overlays/probe-2/index.html").is_file());
 }
 
 /// A blueprint reaches the bin by being copied: the entry points into the project, never

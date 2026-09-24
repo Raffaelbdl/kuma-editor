@@ -630,8 +630,9 @@ rendered differently on another machine.
 - **No migration**: a v6 project with template entries is refused on open, saying how to
   convert it; one without is stamped.
 
-**Rejected: import copies from anywhere.** The agent can write the folder in the project;
-an import that copies makes "which copy did I edit?" a question.
+**Import copies from anywhere** — adopted, reversing a first cut that refused folders
+outside the project. Dragging an `overlay.json` in from any folder is the natural gesture;
+it is copied into `overlays/` first, so the project still owns what it plays.
 
 **Named vaults** — deferred. A shared set of blueprints for a series of videos, e.g.
 `<library>/vaults/<name>/`, chosen per project. `KUMA_LIBRARY` is a crude version today.

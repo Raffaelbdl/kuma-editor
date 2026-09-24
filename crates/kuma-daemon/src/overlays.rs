@@ -33,19 +33,24 @@ pub fn resolve(state: &AppState, rel: &str) -> anyhow::Result<Resolved> {
     Ok(Resolved { dir, manifest })
 }
 
-/// A folder (or its `overlay.json`), relative or absolute, as the path an entry stores.
-/// Refused outside the project.
-pub fn folder_in_project(state: &AppState, given: &str) -> anyhow::Result<String> {
+/// A folder (or its `overlay.json`), relative or absolute: its canonical path, and the path
+/// an entry would store when it is inside the project.
+fn locate(state: &AppState, given: &str) -> anyhow::Result<(PathBuf, Option<String>)> {
     let mut p = PathBuf::from(given);
     if p.file_name().is_some_and(|f| f == MANIFEST) {
         p.pop();
     }
     let abs = crate::jobs::resolve_path(state, &p);
     let (abs, root) = (abs.canonicalize().map_err(|e| anyhow::anyhow!("{}: {e}", abs.display()))?, state.config.project_root().canonicalize()?);
-    let rel = abs.strip_prefix(&root).map_err(|_| anyhow::anyhow!("{} is outside the project; write overlays under {}", abs.display(), root.join("overlays").display()))?;
-    let rel = rel.components().map(|c| c.as_os_str().to_string_lossy()).collect::<Vec<_>>().join("/");
-    anyhow::ensure!(!rel.is_empty(), "the project directory itself is not an overlay folder");
-    Ok(rel)
+    let rel = abs.strip_prefix(&root).ok().map(|r| r.components().map(|c| c.as_os_str().to_string_lossy()).collect::<Vec<_>>().join("/"));
+    anyhow::ensure!(rel.as_deref() != Some(""), "the project directory itself is not an overlay folder");
+    Ok((abs, rel))
+}
+
+/// A folder inside the project, as the path an entry stores; refused outside it.
+pub fn folder_in_project(state: &AppState, given: &str) -> anyhow::Result<String> {
+    let (abs, rel) = locate(state, given)?;
+    rel.ok_or_else(|| anyhow::anyhow!("{} is outside the project", abs.display()))
 }
 
 fn overlay_entry(p: &Project, bin: &str) -> anyhow::Result<(String, Map<String, Value>)> {
@@ -92,7 +97,17 @@ pub struct Import {
 /// Add an overlay folder of this project to the bin. Returns the bin id.
 pub fn import_overlay(state: &AppState, path: &str, how: Import, base_revision: Option<u64>, origin: &str) -> anyhow::Result<(String, u64, Vec<kuma_core::Issue>)> {
     let Import { id, name, vars, parent } = how;
-    let rel = folder_in_project(state, path)?;
+    let rel = match locate(state, path)? {
+        (_, Some(rel)) => rel,
+        // A folder from elsewhere is copied into `overlays/` first, so the project owns it.
+        (abs, None) => {
+            OverlayManifest::load(&abs).map_err(|e| anyhow::anyhow!("{e}"))?;
+            let base = abs.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "overlay".into());
+            let folder = free_folder(&state.config.overlays_dir(), &base);
+            copy_dir(&abs, &state.config.overlays_dir().join(&folder))?;
+            format!("overlays/{folder}")
+        }
+    };
     let r = resolve(state, &rel)?;
     let problems = r.manifest.check_vars(&vars);
     anyhow::ensure!(problems.is_empty(), "{}", problems.join("; "));

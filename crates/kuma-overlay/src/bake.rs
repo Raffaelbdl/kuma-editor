@@ -172,8 +172,15 @@ impl Baker {
     /// vendor library, resolved vars, renderer and browser builds, fps, size, duration
     /// and speed — the last two ignored for stills) and nothing else.
     pub fn key(&self, req: &BakeRequest) -> Result<String, BakeError> {
+        self.key_with(&self.folder_digest(req.overlay_dir)?, req)
+    }
+
+    /// The part of the key that depends on the folder alone — its files, the vendor
+    /// library it uses, the renderer and browser builds — and costs a read of every file.
+    /// Whoever keys many requests against one folder computes it once.
+    pub fn folder_digest(&self, overlay_dir: &Path) -> Result<String, BakeError> {
         let mut h = Sha256::new();
-        h.update(b"kuma-bake-v4\n");
+        h.update(b"kuma-bake-v5\n");
         if let Some(v) = &self.version {
             h.update(v.as_bytes());
         }
@@ -181,10 +188,18 @@ impl Baker {
             let meta = std::fs::metadata(b).ok();
             h.update(format!("{} {:?} {:?}", b.display(), meta.as_ref().map(|m| m.len()), meta.and_then(|m| m.modified().ok())).as_bytes());
         }
-        h.update(hash_dir(req.overlay_dir)?.as_bytes());
-        if let Some(v) = self.vendor_for(req.overlay_dir) {
+        h.update(hash_dir(overlay_dir)?.as_bytes());
+        if let Some(v) = self.vendor_for(overlay_dir) {
             h.update(hash_dir(&v)?.as_bytes());
         }
+        Ok(hex::encode(h.finalize()))
+    }
+
+    /// [`key`](Self::key) with `req.overlay_dir`'s [`folder_digest`](Self::folder_digest)
+    /// already in hand.
+    pub fn key_with(&self, folder_digest: &str, req: &BakeRequest) -> Result<String, BakeError> {
+        let mut h = Sha256::new();
+        h.update(folder_digest.as_bytes());
         let vars = req.manifest.resolve_vars(req.vars);
         h.update(serde_json::to_vec(&vars).unwrap_or_default());
         // The fonts drawn, by content: the same family name can be different files on
@@ -349,17 +364,11 @@ impl Baker {
         Ok(())
     }
 
-    /// The cache key of the bake `thumbnail` and `preview` are cut from, so a prune can
-    /// tell it is still wanted.
-    pub fn preview_key(&self, overlay_dir: &Path, manifest: &OverlayManifest, vars: &Map<String, Value>) -> Result<String, BakeError> {
-        self.key(&Self::preview_request(overlay_dir, manifest, vars))
-    }
-
     /// The one bake both previews are cut from: 12 fps, 480×270, the first seconds. Enough
     /// to see the entrance and the first beat of the loop; the exit is anchored to a
     /// length this preview does not have, so showing it would be a lie anyway. A still
-    /// overlay renders one frame of it.
-    fn preview_request<'a>(overlay_dir: &'a Path, manifest: &'a OverlayManifest, vars: &'a Map<String, Value>) -> BakeRequest<'a> {
+    /// overlay renders one frame of it. Public so a prune can key it and keep it.
+    pub fn preview_request<'a>(overlay_dir: &'a Path, manifest: &'a OverlayManifest, vars: &'a Map<String, Value>) -> BakeRequest<'a> {
         BakeRequest {
             overlay_dir,
             manifest,
@@ -390,7 +399,7 @@ impl Baker {
             std::fs::create_dir_all(dir)?;
         }
         let frames = r.dir.join("frames").join("frame_%06d.png");
-        let tmp = out.with_extension("webp.tmp");
+        let tmp = out.with_extension("webp.tmp-");
         // `-loop 0` is the animation's own loop, forever; `yuva420p` keeps the alpha. No
         // frame-rate mode flag: `-fps_mode` only exists from ffmpeg 5.1, Ubuntu 22.04
         // ships 4.4, and an image sequence with `-framerate` needs none.
@@ -418,9 +427,10 @@ fn frame_name(n: i64) -> String {
     format!("frame_{n:06}.png")
 }
 
-/// Whether a name in the cache directory is a bake still being written: its private
-/// directory, `<key>.tmp-<pid>-<nanos>`, which only becomes an entry by being renamed.
-/// Nothing but the bake that made one may touch it.
+/// Whether a name in `.kuma/` is something still being written, which only becomes an
+/// entry by being renamed: a bake's private `<key>.tmp-<pid>-<nanos>`, a preview's
+/// `<name>.webp.tmp-`, a sampled frame's tempfile. Every writer into the cache names its
+/// scratch so, and a prune leaves anything this matches alone.
 pub fn is_in_flight(name: &str) -> bool {
     name.contains(".tmp-")
 }

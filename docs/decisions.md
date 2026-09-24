@@ -1843,7 +1843,8 @@ about to be rendered, and it runs behind the user's back.
   recomputed from the project, because the key is a pure function of folder, vars and
   clip. The live set is **every overlay clip in every sequence** (not just the master,
   since the preview bakes nested sequences, and not just what the master reaches, since
-  `kuma bake` warms unplaced ones on purpose), plus the preview bake each overlay entry's
+  `kuma bake` warms unplaced ones on purpose; `jobs::every_overlay_clip` is that list for
+  both), plus the preview bake each overlay entry's
   thumbnail is cut from. What a clip bakes as is one function, `jobs::bake_request`, used
   by both the bake loop and the prune. A copy that drifted would have the prune delete the
   frames a render is about to read. A test writes the formula out independently so a
@@ -1852,8 +1853,14 @@ about to be rendered, and it runs behind the user's back.
   an agent or the snapshot route that has not read it yet.
 - *Thumbnails* of ids no longer in the bin.
 
-It never touches work in flight: a bake's `<key>.tmp-…` directory (`is_in_flight`), a
-sample's tempfile, or a thumbnail's `.webp.tmp`. The rest of `.kuma/` is left alone. The
+It never touches work in flight. Every writer into `.kuma/` names its scratch with
+`.tmp-` before renaming it into place: a bake's `<key>.tmp-…` directory, a sample's
+tempfile, a thumbnail's `.webp.tmp-`. One rule, `kuma_overlay::is_in_flight`, rather than
+one per part the prune would have to know. Paths into the cache come from `Config`
+(`bakes_dir`, `samples_dir`, `thumb_path`, `thumb_owner`), so a writer and the prune cannot
+disagree about where things are. A folder is read once per prune however many clips use
+it: `Baker::key` splits into `folder_digest`, the expensive part, and `key_with` for each
+request. The rest of `.kuma/` is left alone. The
 compiled `.mlt` files are what melt and the engine are reading. Generated lumas are a few
 kilobytes and regenerate. Transcription scratch is a tempdir that removes itself.
 

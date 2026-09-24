@@ -13,6 +13,7 @@ use std::sync::{RwLockWriteGuard, TryLockError};
 use std::time::{Duration, SystemTime};
 
 use kuma_core::{BinSource, Project};
+use kuma_overlay::Baker;
 use serde::{Deserialize, Serialize};
 
 use crate::state::{read, AppState};
@@ -28,15 +29,9 @@ pub struct Part {
     pub bytes: u64,
 }
 
-impl Part {
-    fn add(&mut self, bytes: u64) {
-        self.entries += 1;
-        self.bytes += bytes;
-    }
-}
-
-/// The cache by part, and its total size in bytes.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+/// The cache by part, and its total size in bytes. Built only by [`Usage::of`], so the
+/// total cannot disagree with the parts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Usage {
     pub bakes: Part,
     pub samples: Part,
@@ -45,9 +40,8 @@ pub struct Usage {
 }
 
 impl Usage {
-    fn total(mut self) -> Self {
-        self.bytes = self.bakes.bytes + self.samples.bytes + self.thumbs.bytes;
-        self
+    fn of(bakes: Part, samples: Part, thumbs: Part) -> Self {
+        Usage { bakes, samples, thumbs, bytes: bakes.bytes + samples.bytes + thumbs.bytes }
     }
 }
 
@@ -59,41 +53,44 @@ pub struct Pruned {
 }
 
 /// How big the cache is. Reads only.
-pub fn usage(state: &AppState) -> Usage {
-    let dir = state.config.cache_dir();
-    let tally = |sub: &str| {
-        let mut part = Part::default();
-        let _ = sweep(&dir.join(sub), &mut Part::default(), |_, _| false, &mut part);
-        part
-    };
-    Usage { bakes: tally("bakes"), samples: tally("samples"), thumbs: tally("thumbs"), bytes: 0 }.total()
+pub fn usage(state: &AppState) -> std::io::Result<Usage> {
+    let c = &state.config;
+    Ok(Usage::of(tally(&c.bakes_dir())?, tally(&c.samples_dir())?, tally(&c.thumbs_dir())?))
 }
 
 /// The bakes the project still wants: one per overlay clip in **every** sequence — not only
 /// the master, since the preview bakes nested ones, and not only what the master reaches,
 /// since `kuma bake` warms unplaced ones on purpose — plus the preview bake each overlay
 /// entry's thumbnail is cut from. Computed, not remembered: the key is a pure function of
-/// the folder, the vars and the clip, so no rendering is needed to know it.
+/// the folder, the vars and the clip, so no rendering is needed to know it. Each folder is
+/// read once, however many clips use it.
 pub fn live_bakes(state: &AppState, project: &Project) -> HashSet<String> {
-    let mut folders: HashMap<String, Option<crate::overlays::Resolved>> = HashMap::new();
-    let mut live = HashSet::new();
     // A folder that does not resolve cannot bake, so there is nothing of it to keep.
-    let mut resolve = |rel: &str| folders.entry(rel.to_string()).or_insert_with(|| crate::overlays::resolve(state, rel).ok()).clone();
-    for (_, _, clip) in project.all_clips() {
-        let Some(BinSource::Overlay { overlay, vars }) = project.item(clip).map(|i| &i.source) else { continue };
-        let Some(r) = resolve(overlay) else { continue };
-        if let Ok(key) = state.baker.key(&crate::jobs::bake_request(&r, vars, project, clip)) {
-            live.insert(key);
-        }
+    let folders: Folders = project
+        .overlay_folders()
+        .into_iter()
+        .filter_map(|rel| {
+            let r = crate::overlays::resolve(state, rel).ok()?;
+            let digest = state.baker.folder_digest(&r.dir).ok()?;
+            Some((rel, (r, digest)))
+        })
+        .collect();
+    let clips = crate::jobs::every_overlay_clip(project)
+        .filter_map(|clip| overlay(&folders, project.item(clip)?).map(|((r, digest), vars)| (digest, crate::jobs::bake_request(r, vars, project, clip))));
+    let previews = project.bin.values().filter_map(|item| overlay(&folders, item).map(|((r, digest), vars)| (digest, Baker::preview_request(&r.dir, &r.manifest, vars))));
+    clips.chain(previews).filter_map(|(digest, req)| state.baker.key_with(digest, &req).ok()).collect()
+}
+
+/// Each overlay folder the bin uses, resolved, with its [`Baker::folder_digest`].
+type Folders<'p> = HashMap<&'p str, (crate::overlays::Resolved, String)>;
+type Vars = serde_json::Map<String, serde_json::Value>;
+
+/// An overlay entry's folder (as [`Folders`] holds it) and its vars.
+fn overlay<'f, 'i>(folders: &'f Folders, item: &'i kuma_core::BinItem) -> Option<(&'f (crate::overlays::Resolved, String), &'i Vars)> {
+    match &item.source {
+        BinSource::Overlay { overlay, vars } => Some((folders.get(overlay.as_str())?, vars)),
+        _ => None,
     }
-    for item in project.bin.values() {
-        let BinSource::Overlay { overlay, vars } = &item.source else { continue };
-        let Some(r) = resolve(overlay) else { continue };
-        if let Ok(key) = state.baker.preview_key(&r.dir, &r.manifest, vars) {
-            live.insert(key);
-        }
-    }
-    live
 }
 
 /// Delete what nothing wants: bakes whose key is not live, sampled frames older than
@@ -102,23 +99,24 @@ pub fn live_bakes(state: &AppState, project: &Project) -> HashSet<String> {
 /// thumbnails of entries in the bin, because nothing regenerates those until asked.
 ///
 /// Waits until nothing is using the cache — a render holds it for its whole encode — and
-/// never touches a bake or frame still being written.
+/// never touches anything still being written (`kuma_overlay::is_in_flight`).
 pub fn prune(state: &AppState, all: bool, progress: &dyn Fn(u8, &str)) -> anyhow::Result<Pruned> {
-    let _alone = exclusive(state, progress);
-    progress(10, "pruning");
-    let project = read(&state.project).clone();
-    let live = if all { HashSet::new() } else { live_bakes(state, &project) };
-    let dir = state.config.cache_dir();
-    let now = SystemTime::now();
-    let old = |meta: &std::fs::Metadata| meta.modified().ok().and_then(|m| now.duration_since(m).ok()).is_some_and(|age| age >= SAMPLE_GRACE);
-    let (mut freed, mut kept) = (Usage::default(), Usage::default());
-    sweep(&dir.join("bakes"), &mut freed.bakes, |name, _| !kuma_overlay::is_in_flight(name) && !live.contains(name), &mut kept.bakes)?;
-    // `tempfile`'s own names, which a sample writes before its rename.
-    sweep(&dir.join("samples"), &mut freed.samples, |name, meta| !name.starts_with(".tmp") && (all || old(meta)), &mut kept.samples)?;
-    // `<id>.png`, `<id>.webp`, and `<id>.webp.tmp` while one encodes. Ids have no dots.
-    let orphan = |name: &str| !name.ends_with(".tmp") && name.split('.').next().is_none_or(|id| !project.bin.contains_key(id));
-    sweep(&dir.join("thumbs"), &mut freed.thumbs, |name, _| orphan(name), &mut kept.thumbs)?;
-    Ok(Pruned { freed: freed.total(), kept: kept.total() })
+    let freed = {
+        let _alone = exclusive(state, progress);
+        progress(10, "pruning");
+        let project = read(&state.project).clone();
+        let live = if all { HashSet::new() } else { live_bakes(state, &project) };
+        let now = SystemTime::now();
+        let old = |meta: &std::fs::Metadata| meta.modified().ok().and_then(|m| now.duration_since(m).ok()).is_some_and(|age| age >= SAMPLE_GRACE);
+        let c = &state.config;
+        Usage::of(
+            sweep(&c.bakes_dir(), |name, _| !live.contains(name))?,
+            sweep(&c.samples_dir(), |_, meta| all || old(meta))?,
+            sweep(&c.thumbs_dir(), |name, _| !project.bin.contains_key(crate::Config::thumb_owner(name)))?,
+        )
+    };
+    // Measured once the cache is free again: nothing below deletes, so nobody waits on it.
+    Ok(Pruned { freed, kept: usage(state)? })
 }
 
 /// Hold the cache alone. Polled rather than blocked on: a writer waiting on the lock would
@@ -131,7 +129,8 @@ fn exclusive<'a>(state: &'a AppState, progress: &dyn Fn(u8, &str)) -> RwLockWrit
             Ok(guard) => return guard,
             Err(TryLockError::Poisoned(p)) => return p.into_inner(),
             Err(TryLockError::WouldBlock) => {
-                if !std::mem::replace(&mut said, true) {
+                if !said {
+                    said = true;
                     progress(0, "waiting for renders and samples to finish");
                 }
                 std::thread::sleep(Duration::from_millis(100));
@@ -140,32 +139,44 @@ fn exclusive<'a>(state: &'a AppState, progress: &dyn Fn(u8, &str)) -> RwLockWrit
     }
 }
 
-/// Each entry directly under `dir`, sized: into `gone` and deleted when `doomed` says so,
-/// else into `kept`. A directory that is not there is an empty part.
-fn sweep(dir: &Path, gone: &mut Part, doomed: impl Fn(&str, &std::fs::Metadata) -> bool, kept: &mut Part) -> std::io::Result<()> {
-    let entries = match std::fs::read_dir(dir) {
-        Ok(rd) => rd,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+/// Each entry directly under `dir`, with its name, metadata and size in bytes. A directory
+/// that is not there has none.
+fn entries(dir: &Path) -> std::io::Result<impl Iterator<Item = (std::fs::DirEntry, String, std::fs::Metadata, u64)>> {
+    let rd = match std::fs::read_dir(dir) {
+        Ok(rd) => Some(rd),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
         Err(e) => return Err(e),
     };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        let Ok(meta) = std::fs::symlink_metadata(&path) else { continue };
-        let name = entry.file_name().to_string_lossy().into_owned();
-        let bytes = size(&path, &meta);
-        if !doomed(&name, &meta) {
-            kept.add(bytes);
+    Ok(rd.into_iter().flatten().flatten().filter_map(|e| {
+        let meta = e.metadata().ok()?;
+        let bytes = size(&e.path(), &meta);
+        let name = e.file_name().to_string_lossy().into_owned();
+        Some((e, name, meta, bytes))
+    }))
+}
+
+/// What is directly under `dir`.
+fn tally(dir: &Path) -> std::io::Result<Part> {
+    Ok(entries(dir)?.fold(Part::default(), |p, (.., bytes)| Part { entries: p.entries + 1, bytes: p.bytes + bytes }))
+}
+
+/// Delete each finished entry directly under `dir` that `doomed` names, and say what went.
+/// Anything still being written is never offered to it.
+fn sweep(dir: &Path, doomed: impl Fn(&str, &std::fs::Metadata) -> bool) -> std::io::Result<Part> {
+    let mut gone = Part::default();
+    for (entry, name, meta, bytes) in entries(dir)? {
+        if kuma_overlay::is_in_flight(&name) || !doomed(&name, &meta) {
             continue;
         }
-        let removed = if meta.is_dir() { std::fs::remove_dir_all(&path) } else { std::fs::remove_file(&path) };
-        match removed {
-            Ok(()) => gone.add(bytes),
+        let path = entry.path();
+        match if meta.is_dir() { std::fs::remove_dir_all(&path) } else { std::fs::remove_file(&path) } {
+            Ok(()) => gone = Part { entries: gone.entries + 1, bytes: gone.bytes + bytes },
             // Gone already: someone else's cleanup got there first.
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => return Err(e),
         }
     }
-    Ok(())
+    Ok(gone)
 }
 
 /// Bytes under `path`, not following links.
@@ -173,7 +184,5 @@ fn size(path: &Path, meta: &std::fs::Metadata) -> u64 {
     if !meta.is_dir() {
         return meta.len();
     }
-    std::fs::read_dir(path)
-        .map(|rd| rd.flatten().filter_map(|e| std::fs::symlink_metadata(e.path()).ok().map(|m| size(&e.path(), &m))).sum())
-        .unwrap_or(0)
+    std::fs::read_dir(path).map(|rd| rd.flatten().filter_map(|e| Some(size(&e.path(), &e.metadata().ok()?))).sum()).unwrap_or(0)
 }

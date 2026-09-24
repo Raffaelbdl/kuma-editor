@@ -4,7 +4,7 @@
 
 import { api, type RenderTarget } from "../api";
 import { desktop } from "../desktop";
-import { button, capitalize, el, options, row } from "../dom";
+import { button, capitalize, el, options, plural, row } from "../dom";
 import { askForm, openDialog } from "../modal";
 import { store, toast } from "../store";
 import { isFinal, sequenceIds, type CacheUsage, type Job } from "../types";
@@ -92,6 +92,7 @@ export function openRenderDialog(tab: Tab = "render"): void {
     api.pruneCache().catch((e) => { prune.disabled = false; fail(e); });
   }, "Delete overlay bakes the project no longer uses, sampled frames, and thumbnails of removed entries");
   const measure = () => void api.cache().then((u) => { cacheSize.textContent = cacheNote(u); }).catch(() => { cacheSize.textContent = ""; });
+  // Prunes seen running, so each one's result is reported once, when it finishes.
   const pruning = new Set<number>();
   const queuePane = row("queue-pane", list, row("modal-actions", clear, cacheSize, prune, button("Close", close)));
   const rows = new Map<number, JobRow>();
@@ -99,14 +100,16 @@ export function openRenderDialog(tab: Tab = "render"): void {
   const draw = (jobs: Record<number, Job>) => {
     const all = Object.values(jobs).sort((a, b) => b.id - a.id);
     clear.disabled = !all.some(isFinal);
-    for (const j of all.filter((j) => j.kind === "prune")) {
+    const prunes = all.filter((j) => j.kind === "prune");
+    prune.disabled = prunes.some((j) => !isFinal(j));
+    for (const j of prunes) {
       if (!isFinal(j)) { pruning.add(j.id); continue; }
       if (!pruning.delete(j.id)) continue;
-      const freed = (j.result as { freed?: CacheUsage } | null)?.freed;
-      if (freed) toast(`Freed ${bytes(freed.bytes)}`, "ok");
-      measure();
+      const done = j.result as { freed: CacheUsage; kept: CacheUsage } | null;
+      if (!done) continue;
+      toast(`Freed ${bytes(done.freed.bytes)}`, "ok");
+      cacheSize.textContent = cacheNote(done.kept);
     }
-    prune.disabled = pruning.size > 0;
     for (const j of all) {
       if (!rows.has(j.id)) rows.set(j.id, jobRow(j.id));
       rows.get(j.id)!.update(j);
@@ -140,9 +143,8 @@ function bytes(n: number): string {
   return i === 0 ? `${n} B` : `${n < 10 ? n.toFixed(1) : Math.round(n)} ${units[i]}`;
 }
 
-const count = (n: number, one: string) => `${n} ${one}${n === 1 ? "" : "s"}`;
 const cacheNote = (u: CacheUsage) =>
-  `Cache ${bytes(u.bytes)} · ${count(u.bakes.entries, "bake")}, ${count(u.samples.entries, "frame")}`;
+  `Cache ${bytes(u.bytes)} · ${plural(u.bakes.entries, "bake")}, ${plural(u.samples.entries, "frame")}`;
 
 const clashes = (t: RenderTarget) => t.exists || t.pending.length > 0;
 

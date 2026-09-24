@@ -31,6 +31,27 @@ impl Config {
     pub fn cache_dir(&self) -> PathBuf {
         self.project_root().join(".kuma")
     }
+    /// Overlay bakes, a directory per key.
+    pub fn bakes_dir(&self) -> PathBuf {
+        self.cache_dir().join("bakes")
+    }
+    /// Sampled frames, keyed by the compiled document.
+    pub fn samples_dir(&self) -> PathBuf {
+        self.cache_dir().join("samples")
+    }
+    /// Bin entries' generated stills and moving previews.
+    pub fn thumbs_dir(&self) -> PathBuf {
+        self.cache_dir().join("thumbs")
+    }
+    /// Where a bin entry's still (`png`) or moving preview (`webp`) lives.
+    pub fn thumb_path(&self, bin_id: &str, ext: &str) -> PathBuf {
+        self.thumbs_dir().join(format!("{bin_id}.{ext}"))
+    }
+    /// The bin entry a file in [`thumbs_dir`](Self::thumbs_dir) belongs to: ids have no
+    /// dots (`kuma_core::is_valid_id`), so it is the name up to the first.
+    pub fn thumb_owner(file_name: &str) -> &str {
+        file_name.split('.').next().unwrap_or_default()
+    }
     /// Every library's `blueprints/`, lowest precedence first. Never a project's.
     pub fn blueprint_dirs(&self) -> Vec<PathBuf> {
         self.library_dirs.iter().map(|d| d.join("blueprints")).collect()
@@ -213,7 +234,7 @@ impl AppState {
         // The shared `_vendor/` is the highest-precedence library that has one; project
         // overlays use it too.
         let vendor_dir = config.blueprint_dirs().iter().rev().map(|d| d.join("_vendor")).find(|d| d.is_dir()).unwrap_or_else(|| config.user_blueprint_dir().join("_vendor"));
-        let baker = Baker::discover(&config.repo_root, vendor_dir, config.cache_dir().join("bakes")).with_fonts(config.font_dirs());
+        let baker = Baker::discover(&config.repo_root, vendor_dir, config.bakes_dir()).with_fonts(config.font_dirs());
         let transcriber = Transcriber::discover(&config.repo_root, config.library_dirs[0].join("models"));
         let (events, _) = broadcast::channel(256);
         let st = AppState {

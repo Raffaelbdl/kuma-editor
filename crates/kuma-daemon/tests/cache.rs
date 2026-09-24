@@ -82,7 +82,7 @@ fn the_live_set_is_every_clip_in_every_sequence_and_each_entrys_preview() {
     let clip = |duration| BakeRequest { overlay_dir: &folder, manifest: &manifest, vars: &vars, fps: project.fps, width: 320, height: 240, duration, speed: 1.0 };
     let on_master = state.baker.key(&clip(4.0)).unwrap();
     let unplaced = state.baker.key(&clip(2.0)).unwrap();
-    let preview = state.baker.preview_key(&folder, &manifest, &vars).unwrap();
+    let preview = state.baker.key(&kuma_overlay::Baker::preview_request(&folder, &manifest, &vars)).unwrap();
     assert!(live.contains(&on_master), "the master's clip");
     assert!(live.contains(&unplaced), "a clip in a sequence nothing places");
     assert!(live.contains(&preview), "the bake the entry's thumbnail is cut from");
@@ -103,14 +103,14 @@ fn a_prune_deletes_what_nothing_wants_and_nothing_else() {
     let samples = cache.join("samples");
     file(&samples.join("fold_1.png"), 500, Duration::from_secs(600));
     file(&samples.join("fnew_1.png"), 50, Duration::ZERO); // just handed to someone
-    file(&samples.join(".tmpAbC.png"), 5, Duration::from_secs(600)); // being written
+    file(&samples.join(".tmp-AbC.png"), 5, Duration::from_secs(600)); // being written
     let thumbs = cache.join("thumbs");
     file(&thumbs.join("tag.png"), 7, Duration::ZERO);
     file(&thumbs.join("removed.png"), 70, Duration::ZERO);
     file(&thumbs.join("removed.webp"), 700, Duration::ZERO);
-    file(&thumbs.join("tag.webp.tmp"), 1, Duration::ZERO);
+    file(&thumbs.join("tag.webp.tmp-"), 1, Duration::ZERO);
 
-    let before = usage(&state);
+    let before = usage(&state).unwrap();
     assert_eq!(before.bakes.entries, 5);
     let pruned = prune(&state, false, &|_, _| {}).unwrap();
 
@@ -118,14 +118,14 @@ fn a_prune_deletes_what_nothing_wants_and_nothing_else() {
     kept_bakes.push("0123456789abcdef01234567.tmp-42-1f".into());
     kept_bakes.sort();
     assert_eq!(names(&cache.join("bakes")), kept_bakes);
-    assert_eq!(names(&samples), vec![".tmpAbC.png", "fnew_1.png"]);
-    assert_eq!(names(&thumbs), vec!["tag.png", "tag.webp.tmp"]);
+    assert_eq!(names(&samples), vec![".tmp-AbC.png", "fnew_1.png"]);
+    assert_eq!(names(&thumbs), vec!["tag.png", "tag.webp.tmp-"]);
 
     assert_eq!((pruned.freed.bakes.entries, pruned.freed.bakes.bytes), (1, 1000));
     assert_eq!((pruned.freed.samples.entries, pruned.freed.samples.bytes), (1, 500));
     assert_eq!((pruned.freed.thumbs.entries, pruned.freed.thumbs.bytes), (2, 770));
     assert_eq!(pruned.freed.bytes, 2270);
-    assert_eq!(pruned.kept, usage(&state));
+    assert_eq!(pruned.kept, usage(&state).unwrap());
     assert_eq!(pruned.kept.bytes + pruned.freed.bytes, before.bytes);
 }
 

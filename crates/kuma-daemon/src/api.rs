@@ -279,12 +279,8 @@ async fn copy_blueprint(State(st): S, Path(id): Path<String>, body: Option<Json<
 
 #[derive(Deserialize, Default)]
 struct AddBlueprint {
-    #[serde(default)]
-    id: Option<String>,
-    #[serde(default)]
-    name: Option<String>,
-    #[serde(default)]
-    vars: serde_json::Map<String, Value>,
+    #[serde(flatten)]
+    how: crate::overlays::Import,
     #[serde(default = "default_origin")]
     origin: String,
 }
@@ -292,7 +288,7 @@ struct AddBlueprint {
 /// Copy a blueprint into the project and add it to the bin.
 async fn add_blueprint(State(st): S, Path(blueprint): Path<String>, body: Option<Json<AddBlueprint>>) -> ApiResult {
     let req = body.map(|b| b.0).unwrap_or_default();
-    let (overlay, id, rev) = blocking(move || crate::overlays::add_blueprint(&st, &blueprint, req.id, req.name, req.vars, &req.origin)).await?.map_err(edit_or_bad_request)?;
+    let (overlay, id, rev) = blocking(move || crate::overlays::add_blueprint(&st, &blueprint, req.how, &req.origin)).await?.map_err(edit_or_bad_request)?;
     Ok(Json(json!({ "id": id, "overlay": overlay, "revision": rev })))
 }
 
@@ -354,12 +350,8 @@ async fn lint_overlay(State(st): S, Query(q): Query<OverlayPath>) -> ApiResult {
 #[derive(Deserialize)]
 struct ImportOverlay {
     path: String,
-    #[serde(default)]
-    id: Option<String>,
-    #[serde(default)]
-    name: Option<String>,
-    #[serde(default)]
-    vars: serde_json::Map<String, Value>,
+    #[serde(flatten)]
+    how: crate::overlays::Import,
     #[serde(default)]
     base_revision: Option<u64>,
     #[serde(default = "default_origin")]
@@ -368,7 +360,7 @@ struct ImportOverlay {
 
 async fn import_overlay(State(st): S, Json(req): Json<ImportOverlay>) -> ApiResult {
     let (id, rev, warnings) =
-        blocking(move || crate::overlays::import_overlay(&st, &req.path, req.id, req.name, req.vars, req.base_revision, &req.origin)).await?.map_err(edit_or_bad_request)?;
+        blocking(move || crate::overlays::import_overlay(&st, &req.path, req.how, req.base_revision, &req.origin)).await?.map_err(edit_or_bad_request)?;
     Ok(Json(json!({ "id": id, "revision": rev, "warnings": warnings })))
 }
 

@@ -60,6 +60,10 @@ describe("dropping files on the bin", { skip: why ? `skipping: ${why}` : false }
       const r = spawnSync("ffmpeg", ["-v", "error", "-f", "lavfi", "-i", "sine=duration=1", path.join(tmp, `${n}.wav`)]);
       assert.equal(r.status, 0, String(r.stderr));
     }
+    const card = path.join(tmp, "overlays/card");
+    fs.mkdirSync(card, { recursive: true });
+    fs.writeFileSync(path.join(card, "overlay.json"), JSON.stringify({ name: "Card" }));
+    fs.writeFileSync(path.join(card, "index.html"), "<div data-composition-id='main'></div>");
     const projectFile = path.join(tmp, "drop.kuma.json");
     fs.writeFileSync(projectFile, PROJECT);
     daemon = await startDaemon(projectFile);
@@ -95,6 +99,14 @@ describe("dropping files on the bin", { skip: why ? `skipping: ${why}` : false }
     const shown = await dragIn(["three.wav"], "#timeline", FOLDER_ROW);
     assert.equal(shown.row, "Clips");
     await page.until(`${MEDIA}.then(s => s === "one> three>clips two>")`);
+  });
+
+  it("imports a dropped overlay.json as an overlay entry", async () => {
+    await page.eval(`globalThis.kumaApp = { pathForFile: (f) => ${JSON.stringify(tmp + "/")} + (f.name === "overlay.json" ? "overlays/card/" : "") + f.name }; true`);
+    fs.copyFileSync(path.join(tmp, "overlays/card/overlay.json"), path.join(tmp, "overlay.json"));
+    await dragIn(["overlay.json"], "#timeline", FOLDER_ROW);
+    const entry = `fetch("/api/project").then(r => r.json()).then(p => JSON.stringify([p.bin.card?.source, p.bin.card?.parent]))`;
+    await page.until(`${entry}.then(s => s === ${JSON.stringify(JSON.stringify([{ overlay: "overlays/card", vars: {} }, "clips"]))})`);
   });
 
   it("takes a drag with no types, grey, and says so if it lands empty", async () => {

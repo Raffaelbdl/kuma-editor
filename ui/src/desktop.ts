@@ -93,7 +93,8 @@ export async function dropMedia(files: FileList, parent: string | null): Promise
   await addMediaPaths([...files].map((f) => app.pathForFile(f)).filter(Boolean), parent);
 }
 
-/** Add each path to the bin, stopping at the first that fails. */
+/** Add each path to the bin, stopping at the first that fails. An `overlay.json` is
+ *  imported as an overlay; anything else is media. */
 async function addMediaPaths(paths: string[], parent: string | null): Promise<void> {
   if (!paths.length) return;
   // One at a time, against the revision each previous add produced: the daemon refuses a
@@ -103,7 +104,8 @@ async function addMediaPaths(paths: string[], parent: string | null): Promise<vo
     const project = store.state.project;
     if (!project) return;
     try {
-      const r = await api.addMedia(path, project.revision, parent);
+      const add = /(^|[\\/])overlay\.json$/.test(path) ? api.importOverlay : api.addMedia;
+      const r = await add(path, project.revision, parent);
       added.push(r.id);
       await store.refresh();
     } catch (e) {

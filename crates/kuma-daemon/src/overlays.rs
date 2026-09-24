@@ -75,17 +75,25 @@ pub fn copy_blueprint(state: &AppState, blueprint: &str, name: Option<&str>) -> 
     Ok(format!("overlays/{folder}"))
 }
 
-/// Add an overlay folder of this project to the bin. Returns the bin id, minted from the
-/// folder name unless `id` is given.
-pub fn import_overlay(
-    state: &AppState,
-    path: &str,
-    id: Option<String>,
-    name: Option<String>,
-    vars: Map<String, Value>,
-    base_revision: Option<u64>,
-    origin: &str,
-) -> anyhow::Result<(String, u64, Vec<kuma_core::Issue>)> {
+/// How an imported overlay enters the bin; all optional.
+#[derive(Debug, Default, serde::Deserialize)]
+pub struct Import {
+    /// Bin id; minted from the folder name when absent.
+    #[serde(default)]
+    pub id: Option<String>,
+    /// Display name; the manifest's when absent.
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub vars: Map<String, Value>,
+    /// The bin entry (a folder) to list it under.
+    #[serde(default)]
+    pub parent: Option<String>,
+}
+
+/// Add an overlay folder of this project to the bin. Returns the bin id.
+pub fn import_overlay(state: &AppState, path: &str, how: Import, base_revision: Option<u64>, origin: &str) -> anyhow::Result<(String, u64, Vec<kuma_core::Issue>)> {
+    let Import { id, name, vars, parent } = how;
     let r = resolve(state, &folder_in_project(state, path)?)?;
     let problems = r.manifest.check_vars(&vars);
     anyhow::ensure!(problems.is_empty(), "{}", problems.join("; "));
@@ -95,7 +103,7 @@ pub fn import_overlay(
         name: name.filter(|n| !n.is_empty()).unwrap_or(title),
         source: BinSource::Overlay { overlay: r.rel.clone(), vars },
         meta: None,
-        parent: None,
+        parent,
         order: None,
         volume: 1.0,
     };
@@ -117,9 +125,9 @@ pub fn import_overlay(
 }
 
 /// Copy a blueprint into the project and import the copy. Returns the folder too.
-pub fn add_blueprint(state: &AppState, blueprint: &str, id: Option<String>, name: Option<String>, vars: Map<String, Value>, origin: &str) -> anyhow::Result<(String, String, u64)> {
+pub fn add_blueprint(state: &AppState, blueprint: &str, how: Import, origin: &str) -> anyhow::Result<(String, String, u64)> {
     let overlay = copy_blueprint(state, blueprint, None)?;
-    let (id, rev, _) = import_overlay(state, &overlay, id, name, vars, None, origin)?;
+    let (id, rev, _) = import_overlay(state, &overlay, how, None, origin)?;
     Ok((overlay, id, rev))
 }
 

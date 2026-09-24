@@ -277,6 +277,7 @@ button.linkish:hover { text-decoration: underline; }
 .bin-row.drop-before { box-shadow: 0 -2px 0 0 var(--accent); }
 .bin-row.drop-after { box-shadow: 0 2px 0 0 var(--accent); }
 .lib-item.open { outline: 1px solid var(--sel); }
+.lib-item.selected { border-color: var(--sel); }
 .lib-add { display: flex; gap: 6px; margin-top: 6px; }
 /* Frames the bin while a file is dragged over the window. Lets the pointer through, so a
    folder row underneath can still take the drop. */

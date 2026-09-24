@@ -68,6 +68,15 @@ describe("blueprints and overlays", { skip: why ? `skipping: ${why}` : false }, 
     assert.deepEqual(await page.eval(`[...document.querySelectorAll("#library .lib-item .title")].map(t => t.firstChild.textContent)`), ["Card"]);
   });
 
+  it("shows a clicked blueprint's details in the inspector, with a preview button", async () => {
+    await page.eval(`document.querySelector("#library .lib-item .title").click()`);
+    await page.until(`document.querySelector("#inspector h3")?.textContent.startsWith("Blueprint")`);
+    const text = await page.eval(`document.querySelector("#inspector").textContent`);
+    assert.match(text, /Card/);
+    assert.ok(await page.eval(`!!${buttonNamed("#inspector", "Preview")}`));
+    assert.ok(await page.eval(`!!${buttonNamed("#inspector", "Timeline")}`));
+  });
+
   it("places a blueprint by copying it into the project, entry and clip in one edit", async () => {
     const before = (await page.eval(PROJECT_NOW)).revision;
     await page.eval(`${buttonNamed("#library .lib-item", "Timeline")}.click()`);

@@ -410,7 +410,7 @@ types for the inspector. An agent writes one and imports it; entries may share a
 A **blueprint** is the same shape in `~/.local/share/kuma/blueprints/<id>/`. Using one from
 the **Blueprints** tab **copies** it into the project, so a finished video never changes
 because a blueprint did; **Save as blueprint** in the inspector copies an entry back, its
-vars as defaults. **thumbnails** (or `kuma thumbs`) renders a still and a looping animated
+vars as defaults. **Preview** in the inspector (or `kuma thumbs`) renders a still and a looping animated
 WebP of each blueprint and overlay entry. Starter set (`library/blueprints/`, installed by
 `kuma library`, which only adds): `location-tag`, `lower-third`, `callout-arrow`,
 `label-pin`, `section-title`, `countdown`, `watermark` (static), `subtitles` (a `cues` var;

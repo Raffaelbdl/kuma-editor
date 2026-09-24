@@ -12,7 +12,7 @@ import { button, capitalize, checkbox, dragPointer, el, options, plural, row, se
 import { keysFor } from "../shortcuts";
 import { store, toast } from "../store";
 import type { BinItem, Clip, Cue, Ease, Effect, PatchOp, Project, Streams, VarSpec } from "../types";
-import { makeOverlayUnique, manifestOf, moveBinItem, overlayError, placeBinItem, saveAsBlueprint, sharersOf } from "../edits";
+import { blueprintActions, makeOverlayUnique, manifestOf, moveBinItem, overlayError, placeBinItem, previewImg, previewStamp, renderPreview, saveAsBlueprint, sharersOf } from "../edits";
 import type { Animation } from "../keyframes";
 import { animationOf } from "../keyframes";
 import { icon, svgEl } from "../icons";
@@ -352,7 +352,7 @@ export class Inspector {
     // selected clip decides what the panel can edit at all — a keyed value has no "now" to
     // write to from outside it — and that flips rarely. The values themselves follow the
     // playhead without a re-render; see `renderEffects`.
-    store.select((s) => [s.project, s.selection, s.manifests, s.sequence, playheadInClip()], () => this.render());
+    store.select((s) => [s.project, s.selection, s.manifests, s.blueprints, s.sequence, playheadInClip(), previewStamp()], () => this.render());
   }
 
   private render() {
@@ -361,6 +361,7 @@ export class Inspector {
     const sel = store.state.selection;
     this.host.innerHTML = "";
     if (sel?.kind === "bin") return this.renderBinEntry(sel.id);
+    if (sel?.kind === "blueprint") return this.renderBlueprint(sel.id);
     const f = store.findClip(store.selectedClip);
     if (!f) {
       this.host.innerHTML = `<h3>Inspector</h3>
@@ -433,6 +434,26 @@ export class Inspector {
    * panel says so rather than leaving it to be discovered by editing one and watching
    * another change.
    */
+  /** A blueprint in the library: what it is, and the ways into the project. */
+  private renderBlueprint(id: string) {
+    const bp = store.state.blueprints.find((b) => b.id === id);
+    if (!bp) return;
+    const m = bp.manifest;
+    const h = el("h3", "", "Blueprint ");
+    h.appendChild(el("span", "mono muted", id));
+    this.host.appendChild(h);
+    this.host.appendChild(field("Name", el("div", "", m.name || id)));
+    if (m.description) this.host.appendChild(el("p", "muted", m.description));
+    this.host.appendChild(previewImg(`/blueprints/${encodeURIComponent(id)}`));
+    this.host.appendChild(field("Vars", el("div", "mono muted", Object.keys(m.vars).join(" · ") || "none")));
+    this.host.appendChild(field("Length", el("div", "mono muted", `${m.duration_default}s${m.static ? " · still" : ""}`)));
+    if (m.tags.length) this.host.appendChild(field("Tags", el("div", "mono muted", m.tags.join(" · "))));
+    const actions = blueprintActions(id);
+    actions.className = "insp-actions";
+    actions.appendChild(button("Preview", () => void renderPreview({ blueprints: [id] }), "Render its animated preview"));
+    this.host.appendChild(actions);
+  }
+
   private renderBinEntry(id: string) {
     const p = store.state.project!;
     const item = p.bin[id];
@@ -472,6 +493,7 @@ export class Inspector {
       const open = button("Open", () => store.openOverlay(id), "Iterate on it in the overlay workbench");
       (open as HTMLButtonElement).disabled = id === store.state.tab;
       actions.appendChild(open);
+      actions.appendChild(button("Preview", () => void renderPreview({ bins: [id] }), "Render its animated preview with these vars"));
       actions.appendChild(button("Save as blueprint", () => void saveAsBlueprint(id), "Copy this overlay into your library, to reuse in other projects"));
     }
     const remove = button("Remove from bin", () => {
@@ -531,19 +553,8 @@ export class Inspector {
       this.host.appendChild(el("p", "muted", overlayError(source)));
       return;
     }
-    // The row cannot show this and stay one line, but an overlay is the one entry kind
-    // whose look is the point, so it moves here rather than being dropped. Absent until
-    // the `thumbs` job has run, and it removes itself when there is nothing to show.
-    const thumb = el("img", "insp-thumb");
-    // The entry's own moving preview when the `thumbs` job has made one, its still
-    // otherwise, and nothing at all until then.
-    thumb.src = `/api/bin/${encodeURIComponent(id)}/preview.webp`;
-    thumb.alt = "";
-    thumb.onerror = () => {
-      if (thumb.src.endsWith("preview.webp")) thumb.src = `/api/bin/${encodeURIComponent(id)}/thumb.png`;
-      else thumb.remove();
-    };
-    this.host.appendChild(thumb);
+    // Absent until Preview has rendered one.
+    this.host.appendChild(previewImg(`/api/bin/${encodeURIComponent(id)}`));
 
     const vars = source.vars ?? {};
     const setVar = (k: string, v: unknown) => store.patch([{ op: "add", path: `${bp}/source/vars`, value: { ...vars, [k]: v } }], `var ${k}`);

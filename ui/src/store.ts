@@ -12,7 +12,7 @@ export interface Found { seq: string; track: Track; ti: number; clip: Clip; ci: 
  * is about *that* entry. The list is in click order, so its last member is the one a
  * single-clip action means.
  */
-export type Selection = { kind: "clip"; ids: string[] } | { kind: "bin"; id: string } | null;
+export type Selection = { kind: "clip"; ids: string[] } | { kind: "bin"; id: string } | { kind: "blueprint"; id: string } | null;
 
 /** A clip waiting to be pasted, with the track it came off. The *kind* travels rather than
  *  being derived from the entry — a video file on an audio track is an audio clip — and
@@ -219,6 +219,7 @@ class Store {
   private stillThere(project: Project, sel: Selection): Selection {
     if (!sel) return null;
     if (sel.kind === "bin") return sel.id in project.bin ? sel : null;
+    if (sel.kind === "blueprint") return sel;
     const live = new Set(allClips(project).map((c) => c.id));
     const ids = sel.ids.filter((id) => live.has(id));
     return ids.length ? { kind: "clip", ids } : null;

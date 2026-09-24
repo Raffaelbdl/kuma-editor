@@ -4,7 +4,7 @@
 // to place a clip.
 
 import { api } from "./api";
-import { checkbox, el, plural, selectInput } from "./dom";
+import { button, checkbox, el, plural, row, selectInput } from "./dom";
 import { askForm, askText } from "./modal";
 import { startJob, store, toast } from "./store";
 import type { ClipboardEntry, Found } from "./store";
@@ -175,6 +175,36 @@ export async function promptNewSequence() {
 export async function promptNewFolder() {
   const name = await askText({ title: "New folder", label: "Name", placeholder: "Speech" });
   if (name) await addBinItem(name, "folder", { folder: true });
+}
+
+/** A blueprint's two ways into the project: the workbench, or the timeline at the playhead. */
+export function blueprintActions(id: string): HTMLElement {
+  return row("actions",
+    button("Workbench", () => void promptNewOverlay(id), "Copy it into the project and open it in the workbench, unplaced"),
+    button("Timeline", () => void placeBlueprint(id, store.state.playhead), "Copy it into the project and place it at the playhead"),
+  );
+}
+
+/** Render the preview of one blueprint or overlay entry. */
+export const renderPreview = (which: { blueprints?: string[]; bins?: string[] }) => startJob("Preview", () => api.thumbs(which));
+
+/** The id of the last finished preview job: a preview image's cache key, so it reloads
+ *  once a new one is rendered. */
+export const previewStamp = () =>
+  Math.max(0, ...Object.values(store.state.jobs).filter((j) => j.kind === "thumbs" && j.state === "done").map((j) => j.id));
+
+/** An image of a rendered preview under `base`: the animated one, else the still, else
+ *  nothing. */
+export function previewImg(base: string): HTMLImageElement {
+  const img = el("img", "insp-thumb");
+  const v = `?v=${previewStamp()}`;
+  img.src = `${base}/preview.webp${v}`;
+  img.alt = "";
+  img.onerror = () => {
+    if (img.src.includes("preview.webp")) img.src = `${base}/thumb.png${v}`;
+    else img.remove();
+  };
+  return img;
 }
 
 /** Copy a blueprint in as a new entry and open it in the workbench, without placing it. */

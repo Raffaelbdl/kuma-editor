@@ -419,23 +419,29 @@ async fn effect_presets(State(st): S) -> Json<Value> {
 
 #[derive(Deserialize)]
 struct ThumbsReq {
-    /// Blueprints to render; all of them when absent.
+    /// Blueprints to render. With neither list, everything is rendered.
     #[serde(default)]
     blueprints: Option<Vec<String>>,
+    /// Overlay bin entries to render.
+    #[serde(default)]
+    bins: Option<Vec<String>>,
 }
 
-/// Generate `thumb.png` for every blueprint (or the given ids), and a still for every
-/// overlay bin entry, as a background job.
+/// Previews (a still and an animated WebP) for blueprints and overlay bin entries, as a
+/// background job: the ones named, or all of them.
 async fn thumbs(State(st): S, Json(req): Json<ThumbsReq>) -> Json<Value> {
     let s2 = st.clone();
     let id = jobs::spawn(st, "thumbs", move |progress| {
+        let all = req.blueprints.is_none() && req.bins.is_none();
+        let wants = |list: &Option<Vec<String>>, id: &String| all || list.as_ref().is_some_and(|l| l.contains(id));
         let blueprints = read(&s2.blueprints).loaded.clone();
-        let wanted: Vec<_> = blueprints.iter().filter(|(id, _)| req.blueprints.as_ref().map(|t| t.contains(id)).unwrap_or(true)).collect();
+        let wanted: Vec<_> = blueprints.iter().filter(|(id, _)| wants(&req.blueprints, id)).collect();
         // Every overlay bin entry too, rendered with its own vars: two entries of one
         // folder look different in the browser because they *are* different.
         let entries: Vec<(String, String, serde_json::Map<String, Value>)> = read(&s2.project)
             .bin
             .iter()
+            .filter(|(id, _)| wants(&req.bins, id))
             .filter_map(|(id, item)| match &item.source {
                 BinSource::Overlay { overlay, vars } => Some((id.clone(), overlay.clone(), vars.clone())),
                 _ => None,

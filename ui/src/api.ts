@@ -41,7 +41,8 @@ export const api = {
     json<{ dir: string }>("/api/overlays/save-blueprint", { method: "POST", body: JSON.stringify({ bin, id, force }) }),
   presets: () => json<Preset[]>("/api/presets"),
   effectPresets: () => json<EffectPreset[]>("/api/presets/effects"),
-  thumbs: () => json<{ job: number }>("/api/blueprints/thumbs", { method: "POST", body: "{}" }),
+  /** Render previews of the given blueprints and overlay entries. */
+  thumbs: (which: { blueprints?: string[]; bins?: string[] }) => json<{ job: number }>("/api/blueprints/thumbs", { method: "POST", body: JSON.stringify(which) }),
   /** Check an overlay folder against the authoring contract. Reads only. */
   lintOverlay: (path: string) => json<LintReport>(`/api/overlays/lint?${new URLSearchParams({ path })}`),
   addMedia: (path: string, base_revision: number, parent?: string | null) =>

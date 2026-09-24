@@ -12,14 +12,14 @@
 import { api } from "../api";
 import { desktop, dropMedia, pickAndAddMedia } from "../desktop";
 import { button, dragPayload, el, isFileDrag, row, setDragPayload } from "../dom";
-import { startJob, store, toast } from "../store";
-import { moveBinItem, placeBlueprint, promptNewFolder, promptNewOverlay } from "../edits";
+import { store, toast } from "../store";
+import { blueprintActions, moveBinItem, promptNewFolder } from "../edits";
 import type { BinItem, Project } from "../types";
 import { childrenMap, isFolderSource, isOverlaySource, isSequenceSource, itemKind, parentOf } from "../types";
 
 export class Library {
   constructor(private host: HTMLElement) {
-    store.select((s) => [s.project, s.blueprints, s.sequence, s.tab], () => this.render());
+    store.select((s) => [s.project, s.blueprints, s.sequence, s.tab, s.selection], () => this.render());
     this.acceptFiles();
   }
 
@@ -136,9 +136,6 @@ export class Library {
   private renderBlueprints() {
     this.host.appendChild(row("lib-add",
       button("⟳ rescan", async () => { store.set({ blueprints: await api.reloadBlueprints() }); }, "Rescan the blueprint libraries"),
-      // Thumbnails are what this tab is for looking at, so the job that makes them lives
-      // here rather than over the bin, where it had nothing to do with anything on screen.
-      button("thumbnails", () => startJob("Thumbnail", () => api.thumbs()), "Render thumbnails for every blueprint and overlay entry"),
     ));
 
     const blueprints = store.state.blueprints;
@@ -146,13 +143,10 @@ export class Library {
       this.host.appendChild(el("p", "muted", "No blueprints found. Run `kuma library` to install the starter set, point KUMA_LIBRARY at a folder of them, or save an overlay from the bin as one."));
       return;
     }
-    // Name, kind and the two ways in; the description is the tooltip.
+    // Name, kind and the two ways in; clicking shows the details in the inspector.
     for (const t of blueprints) {
-      const card = blueprintCard(t.manifest.name || t.id, t.manifest.description, t.id);
-      card.appendChild(row("actions",
-        button("Workbench", () => void promptNewOverlay(t.id), "Copy it into the project and open it in the workbench, unplaced"),
-        button("Timeline", () => placeBlueprint(t.id, store.state.playhead), "Copy it into the project and place it at the playhead"),
-      ));
+      const card = blueprintCard(t.manifest.name || t.id, t.id);
+      card.appendChild(blueprintActions(t.id));
       this.host.appendChild(card);
     }
   }
@@ -227,10 +221,11 @@ function dropTarget(node: HTMLElement, folder: string | undefined, spot: (e: Dra
 }
 
 /** One draggable blueprint card. The payload is what a drop on the timeline receives. */
-function blueprintCard(title: string, description: string, blueprint: string): HTMLDivElement {
-  const item = el("div", "lib-item");
+function blueprintCard(title: string, blueprint: string): HTMLDivElement {
+  const sel = store.state.selection;
+  const item = el("div", `lib-item${sel?.kind === "blueprint" && sel.id === blueprint ? " selected" : ""}`);
   item.draggable = true;
-  item.title = description;
+  item.onclick = (e) => { if (!(e.target as HTMLElement).closest("button")) store.set({ selection: { kind: "blueprint", id: blueprint } }); };
   const head = el("div", "title", title);
   head.appendChild(el("span", "badge-kind overlay", "overlay"));
   item.appendChild(head);

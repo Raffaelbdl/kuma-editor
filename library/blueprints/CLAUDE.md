@@ -24,7 +24,7 @@ highest-precedence library that has it (`<library>/blueprints/_vendor/`); the ba
 and the daemon serves exactly the same folder. It is not copied into projects.
 
 - `_vendor/kuma.js` — `kumaTemplate(defaults)` applies the vars, returns `{ vars, width,
-  height, duration, text(id, value), timeline() }` and works standalone.
+  height, duration, text(id, value), timeline(), onFrame(fn) }` and works standalone.
 - `_vendor/kuma.css` — the transparent reset and the `--u` unit (`1vh × --var-size`).
 - `_vendor/kuma-motion.js` — entrances and exits by name, for an overlay whose motion is a
   var: `kumaMotion.enter(tl, el, vars.enter, { at, duration, text })` returns when it
@@ -100,7 +100,9 @@ overlays/<name>`) does, optionally with `vars`, once it checks clean.
    `data-start`, `data-duration` (seconds, relative to the root).
 3. Be a **pure function of time**. Animation must be seekable:
    - GSAP: one paused timeline, `const tl = timeline()` from `kumaTemplate` (it registers
-     `window.__timelines["main"]`).
+     `window.__timelines["main"]`). Per-frame JS that GSAP does not tween (a canvas, a
+     computed path) runs from `onFrame(t => …)`, never from `onUpdate`, which `tl.seek(t)`
+     suppresses.
    - **No GSAP timeline at all** (static overlays, pure CSS animation): put `data-no-timeline`
      on the composition root, or the renderer waits 45 s for a timeline and fails the bake.
    - CSS `@keyframes`/transitions and WAAPI are fine — the renderer scrubs them.
@@ -218,39 +220,29 @@ House numbers, for overlays that should sit beside the shipped blueprints:
 
 ## Drawn overlays
 
-For marks that are drawn rather than laid out — a wipe, particles, a hand-drawn underline,
-a generative texture — paint a `<canvas>` with `_vendor/kuma-canvas.js` instead of animating
-DOM. Text and layout stay DOM + GSAP: a canvas cannot be fitted, selected or re-measured.
-`paint-wipe` is the worked example.
+For marks that are drawn rather than laid out (a wipe, particles, a hand-drawn underline, a
+generative texture), paint a `<canvas>` with `_vendor/kuma-canvas.js`. Text and layout stay
+DOM + GSAP. `paint-wipe` is the worked example.
 
 ```js
-const { vars, width, height, duration, timeline } = kumaTemplate({ … });
-const tl = timeline();
-kumaCanvas(tl, "#paint", (g, t) => {
-  const r = g.rough("mark");                     // Rough.js, seeded by the key and the frame
-  r.circle(g.w / 2, g.h / 2, 20 * g.u, { fill: vars.accent, fillStyle: "hachure" });
-}, { width, height, duration, size: vars.size });
+const tpl = kumaTemplate({ … });
+kumaCanvas(tpl, "#paint", (g, t) => {
+  g.rough("mark").circle(g.w / 2, g.h / 2, 20 * g.u, { fill: tpl.vars.accent, fillStyle: "hachure" });
+});
 ```
 
-- `draw(g, t)` paints the whole frame from `t` alone. The canvas is cleared before each
-  call and the context reset; nothing carries over between frames. `g` holds `ctx`, `w`,
-  `h`, `u` (the canvas twin of `--u`), `rand(key)` and `rough(key)`.
-- Randomness only through `g.rand(key)` and `g.rough(key)`. Both hold their value for one
-  *drawing* (12 a second), so hand-drawn wobble "boils" like redrawn animation, and each
-  key is independent, so something moving does not make still things jitter. For a value
-  that never changes, `kumaCanvas.hash(key)`. `Math.random` is a seeded generator while
-  `draw` runs, so libraries that call it stay deterministic — but the lint still refuses it
-  in your own scripts. Rough.js called directly (`rough.canvas(…)`) is an error too.
-- Helpers on `kumaCanvas`, all pure functions of `t`: `seg`, `lerp`, `clamp`, `ease`,
-  `easeIn`, `easeOut`, `backOut`, `kf(t, [[t0, v0], …])` (keyframes, arrays allowed),
-  `spring(t, t0)` and `ring(t, [t0, …])` (a wobble that dies away, for settles and
-  follow-through), `jump(t, t0, t1, h)` and `take(t, t0)` (squash and stretch, returning
-  `{ y, sq }`), `arcPt(p0, p1, h, k)` (a thrown arc), `onTwos(t)` (hold each drawing for
-  two frames), `noise(x, y, z)`.
-- 2D only. A bake has no GPU, so WebGL renders in software, slowly. Cost is what `draw`
-  does, on every frame: hundreds of shapes are fine, thousands are not.
-- Size in `g.u` and fractions of `g.w`/`g.h`, and lay out along the frame's own axes, so it
-  covers 1080×1920 as well as 1920×1080. Check both with `sample_frames` and `frame`.
+- `draw(g, t)` paints the whole frame from `t` alone; the canvas is cleared and the context
+  restored around it. `g` holds `ctx`, `w`, `h`, `u` (the canvas twin of `--u`), and three
+  seeded sources: `rough(key)` (a Rough.js canvas), `rand(key)` and `seed(key)` (for any
+  other seedable library). Each holds for one *drawing*, 12 a second, so wobble "boils"
+  like redrawn animation, and keys are independent, so a moving thing does not make still
+  things jitter. `kumaCanvas.hash(key)` never changes.
+- Helpers on `kumaCanvas`, pure functions of `t`: `kf`, `spring`, `ring`, `jump`, `take`,
+  `arcPt`, `onTwos`, `noise`. Eases are GSAP's: `gsap.parseEase("power3.out")`, so the
+  house numbers above apply unchanged.
+- 2D only: a bake has no GPU. Cost is `draw`, on every frame; hundreds of shapes are fine.
+- Lay out along the frame's axes in `g.u` and fractions of `g.w`/`g.h`, and check 1080×1920
+  with `sample_frames` and `frame`.
 
 ## Checking your work
 

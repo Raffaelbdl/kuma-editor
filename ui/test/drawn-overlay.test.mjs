@@ -1,8 +1,6 @@
-// A drawn overlay (`_vendor/kuma-canvas.js`) in the live preview: it redraws on every seek,
-// whichever way the page is seeked. It first drew through an `onUpdate` callback, which
-// `tl.seek(t)` suppresses, so the preview stayed blank while the bake looked fine.
-//
-// Skips without a browser, a binary or `ui/dist`, as its neighbours do.
+// A drawn overlay redraws on every seek, however the page is seeked (`tl.seek` suppresses
+// `onUpdate`, which once left the preview blank). Skips without a browser, a binary or
+// `ui/dist`, as its neighbours do.
 
 import { strict as assert } from "node:assert";
 import { after, before, describe, it } from "node:test";

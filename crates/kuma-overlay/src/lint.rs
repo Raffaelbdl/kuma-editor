@@ -82,13 +82,21 @@ impl LintReport {
 
 /// Wall-clock and non-determinism: the contract forbids these outright, because the bake
 /// renders frame by frame with no real time passing and the preview scrubs.
-const FORBIDDEN: &[(&str, &str)] = &[
-    ("setTimeout", "`setTimeout` drives state from the wall clock"),
-    ("setInterval", "`setInterval` drives state from the wall clock"),
-    ("requestAnimationFrame", "`requestAnimationFrame` drives state from the wall clock"),
-    ("Date.now", "`Date.now()` reads the wall clock"),
-    ("performance.now", "`performance.now()` reads the wall clock"),
-    ("Math.random", "`Math.random()` is different on every frame and every bake"),
+const WALL_CLOCK: &str = "drive everything from the timeline, which the renderer seeks";
+const ROUGH: &str = "Rough.js used directly draws differently on every frame and every bake";
+const ROUGH_FIX: &str = "draw inside `kumaCanvas` (`_vendor/kuma-canvas.js`) with `g.rough(key)`, which seeds every stroke by its key and the frame";
+
+/// Calls an overlay's own scripts may not make: (needle, code, why, fix).
+const FORBIDDEN: &[(&str, &str, &str, &str)] = &[
+    ("setTimeout", "wall_clock", "`setTimeout` drives state from the wall clock", WALL_CLOCK),
+    ("setInterval", "wall_clock", "`setInterval` drives state from the wall clock", WALL_CLOCK),
+    ("requestAnimationFrame", "wall_clock", "`requestAnimationFrame` drives state from the wall clock", WALL_CLOCK),
+    ("Date.now", "wall_clock", "`Date.now()` reads the wall clock", WALL_CLOCK),
+    ("performance.now", "wall_clock", "`performance.now()` reads the wall clock", WALL_CLOCK),
+    ("Math.random", "wall_clock", "`Math.random()` is different on every frame and every bake", WALL_CLOCK),
+    ("rough.canvas(", "unseeded_rough", ROUGH, ROUGH_FIX),
+    ("rough.svg(", "unseeded_rough", ROUGH, ROUGH_FIX),
+    ("rough.generator(", "unseeded_rough", ROUGH, ROUGH_FIX),
 ];
 
 impl Baker {
@@ -170,17 +178,10 @@ fn contract_findings(html: &str, manifest: &OverlayManifest, dir: &Path) -> Vec<
             "add `data-no-timeline` to the composition root, or register one with `timeline()` from `_vendor/kuma.js`",
         ));
     }
-    for (needle, why) in FORBIDDEN {
+    for (needle, code, why, fix) in FORBIDDEN {
         if scripts.contains(needle) {
-            out.push(Finding::error("wall_clock", format!("{why}; a bake renders frame by frame with no time passing"), "drive everything from the timeline, which the renderer seeks"));
+            out.push(Finding::error(code, format!("{why}; a bake renders frame by frame with no time passing"), fix));
         }
-    }
-    if ["rough.canvas(", "rough.svg(", "rough.generator("].iter().any(|call| scripts.contains(call)) {
-        out.push(Finding::error(
-            "unseeded_rough",
-            "Rough.js is used directly, so its strokes are redrawn differently on every frame and every bake",
-            "draw inside `kumaCanvas` (`_vendor/kuma-canvas.js`) with `g.rough(key)`, which seeds every stroke by its key and the frame",
-        ));
     }
     if html.contains("fonts.googleapis.com") || html.contains("fonts.gstatic.com") {
         out.push(Finding::error("remote_font", "a Google Fonts URL is referenced", "bundle the font in the overlay folder and reference it with a relative `@font-face` src"));
@@ -235,11 +236,11 @@ fn without_injection(html: &str) -> String {
 }
 
 /// True when the scripts register a timeline the renderer can find: on
-/// `window.__timelines` themselves, or through `kumaTemplate`'s `timeline()`, which does
-/// it for them. `gsap.timeline(…)` alone registers nothing.
+/// `window.__timelines` themselves, or through `kumaTemplate`'s `timeline()` — directly, or
+/// by way of `onFrame` or `kumaCanvas`, which call it. `gsap.timeline(…)` alone registers nothing.
 fn registers_timeline(scripts: &str) -> bool {
     let own = scripts.replace("gsap.timeline(", "");
-    own.contains("__timelines") || (own.contains("kumaTemplate(") && own.contains("timeline("))
+    own.contains("__timelines") || (own.contains("kumaTemplate(") && ["timeline(", "onFrame(", "kumaCanvas("].iter().any(|c| own.contains(c)))
 }
 
 /// True when the scripts read the clip's real length: `duration` as a value from

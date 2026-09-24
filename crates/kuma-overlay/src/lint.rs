@@ -175,6 +175,13 @@ fn contract_findings(html: &str, manifest: &OverlayManifest, dir: &Path) -> Vec<
             out.push(Finding::error("wall_clock", format!("{why}; a bake renders frame by frame with no time passing"), "drive everything from the timeline, which the renderer seeks"));
         }
     }
+    if ["rough.canvas(", "rough.svg(", "rough.generator("].iter().any(|call| scripts.contains(call)) {
+        out.push(Finding::error(
+            "unseeded_rough",
+            "Rough.js is used directly, so its strokes are redrawn differently on every frame and every bake",
+            "draw inside `kumaCanvas` (`_vendor/kuma-canvas.js`) with `g.rough(key)`, which seeds every stroke by its key and the frame",
+        ));
+    }
     if html.contains("fonts.googleapis.com") || html.contains("fonts.gstatic.com") {
         out.push(Finding::error("remote_font", "a Google Fonts URL is referenced", "bundle the font in the overlay folder and reference it with a relative `@font-face` src"));
     }
@@ -482,6 +489,9 @@ mod tests {
         let unknown = r#"<div data-composition-id="main" data-no-timeline></div><script>vars.nope</script>"#;
         assert!(codes(unknown, &manifest(&[])).contains(&"unknown_var".to_string()));
         assert!(codes(unknown, &manifest(&["label"])).contains(&"unused_var".to_string()));
+
+        let rough = r#"<div data-composition-id="main" data-no-timeline></div><script>rough.canvas(c).circle(0, 0, 9)</script>"#;
+        assert!(codes(rough, &manifest(&[])).contains(&"unseeded_rough".to_string()));
 
         let missing = r#"<div data-composition-id="main" data-no-timeline></div><img src="logo.png">"#;
         assert!(codes(missing, &manifest(&[])).contains(&"missing_asset".to_string()));

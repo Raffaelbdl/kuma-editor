@@ -1848,6 +1848,30 @@ only, and queues later renders behind it). The preview reload is not a holder: i
 are live by construction. The lock is per process, so `kuma cache prune` goes through a
 running daemon when there is one.
 
+## Drawn overlays: Canvas 2D and Rough.js
+
+**Adopted.** An overlay can paint a `<canvas>` as a pure function of time through
+`_vendor/kuma-canvas.js`, with Rough.js vendored for a hand-drawn look; `paint-wipe` is the
+first blueprint to use it. Prompted by [ClaudeAnimationBase](https://github.com/JohnHeibel/ClaudeAnimationBase)
+(p5.js + p5.brush), whose motion helpers `kuma-canvas.js` adapts (MIT).
+
+- **Not p5.js.** It is mostly sugar over Canvas 2D for 1 MB, LGPL, a draw loop to disable,
+  and a `redraw()` that 2.x appears to make asynchronous. **Not p5.brush**: its watercolour
+  needs WebGL, and a bake has no GPU. Paper.js, Two.js and Konva each bring a loop to fight;
+  Pixi and Three are WebGL.
+- **The clock is a tweened property, not a callback.** The canvas draws when GSAP writes a
+  getter/setter on every render. The first cut drew from `onUpdate`, which `tl.seek(t)`
+  suppresses by default: the bake drew and the live preview stayed blank.
+  `ui/test/drawn-overlay.test.mjs` seeks all three ways.
+- **`Math.random` is seeded while a frame draws.** Rough.js calls it even when given a seed
+  (a fallback, and its `dots` fill), so seeds alone did not make it deterministic. Two
+  bakes into separate caches give identical pixels in every frame (`kuma-overlay`'s
+  `a_drawn_overlay_bakes_the_same_pixels_twice`); the PNG bytes differ, which is the
+  encoder, not the image.
+- **Boil is per key and per drawing** (12 a second), so a still stroke holds between
+  drawings and a moving one does not make its neighbours jitter — the kit's `boilSeed`, by
+  construction instead of by discipline. Rough.js used directly is a lint error.
+
 ## Still open
 
 Nested sequences are done and the editor is an application now, so this list is the whole

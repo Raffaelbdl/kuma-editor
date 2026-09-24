@@ -132,3 +132,41 @@ fn previews_an_overlay_as_an_animated_webp_with_alpha() {
     // Nothing was left behind mid-write.
     assert!(!out.with_extension("webp.tmp").exists());
 }
+
+/// A drawn overlay (`kumaCanvas` + Rough.js) is a pure function of time: two bakes into
+/// separate caches give the same pixels in every frame. The PNG bytes may differ; the
+/// image may not. `paint-wipe` also covers the whole frame at its midpoint, the cut.
+#[test]
+fn a_drawn_overlay_bakes_the_same_pixels_twice() {
+    let root = repo_root();
+    let tmp = tempfile::tempdir().unwrap();
+    let baker = |cache: &str| Baker::discover(&root, root.join("library/blueprints/_vendor"), tmp.path().join(cache));
+    let (a, b) = (baker("a"), baker("b"));
+    if a.available().is_err() || (a.browser.is_none() && std::env::var_os("KUMA_ALLOW_BROWSER_DOWNLOAD").is_none()) {
+        eprintln!("hyperframes or a browser is unavailable; skipping drawn-overlay bake test");
+        return;
+    }
+    let dir = root.join("library/blueprints/paint-wipe");
+    let manifest = OverlayManifest::load(&dir).unwrap();
+    let vars = Map::new();
+    let req = BakeRequest { overlay_dir: &dir, manifest: &manifest, vars: &vars, fps: Fps::new(12, 1), width: 480, height: 270, duration: 1.0, speed: 1.0 };
+    let (ra, rb) = (a.bake(&req).expect("bake a"), b.bake(&req).expect("bake b"));
+    assert_eq!(ra.frames, 12);
+    let pixels = |dir: &std::path::Path, n: i64| {
+        let out = std::process::Command::new("ffmpeg")
+            .args(["-v", "error", "-i"])
+            .arg(dir.join(format!("frames/frame_{n:06}.png")))
+            .args(["-pix_fmt", "rgba", "-f", "rawvideo", "-"])
+            .output()
+            .expect("ffmpeg on PATH");
+        out.stdout
+    };
+    for n in 1..=ra.frames {
+        assert!(pixels(&ra.dir, n) == pixels(&rb.dir, n), "frame {n} differs between two bakes");
+    }
+    let mid = ra.dir.join("frames/frame_000007.png"); // t = 0.5, the midpoint
+    for (x, y) in [(2, 2), (477, 2), (240, 135), (2, 267), (477, 267)] {
+        assert_eq!(rgba_at(&mid, x, y)[3], 255, "the midpoint must cover the frame at ({x}, {y})");
+    }
+    assert_eq!(rgba_at(&ra.dir.join("frames/frame_000001.png"), 240, 135)[3], 0, "nothing is drawn at t = 0");
+}

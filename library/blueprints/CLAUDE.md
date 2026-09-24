@@ -30,6 +30,10 @@ and the daemon serves exactly the same folder. It is not copied into projects.
   var: `kumaMotion.enter(tl, el, vars.enter, { at, duration, text })` returns when it
   settles, `kumaMotion.exit(tl, el, vars.exit, { at, duration, after })`. The names at the
   top of the file are the enum options to list; `title` shows the whole pattern.
+- `_vendor/kuma-canvas.js` — drawn overlays: a `<canvas>` painted as a function of time
+  (see *Drawn overlays* below).
+- `_vendor/rough.min.js` — Rough.js 4.6.6 (MIT), the hand-drawn look; use it through
+  `kuma-canvas.js`.
 - `_vendor/gsap.min.js`.
 
 ## Read the project's design system first
@@ -211,6 +215,42 @@ House numbers, for overlays that should sit beside the shipped blueprints:
 - One thing moves at a time. If two must, stagger them.
 - Blur, large shadows and filters over a whole frame are paid for on every baked frame;
   a 30 s overlay is 900 renders of them. Cheap where it does not show.
+
+## Drawn overlays
+
+For marks that are drawn rather than laid out — a wipe, particles, a hand-drawn underline,
+a generative texture — paint a `<canvas>` with `_vendor/kuma-canvas.js` instead of animating
+DOM. Text and layout stay DOM + GSAP: a canvas cannot be fitted, selected or re-measured.
+`paint-wipe` is the worked example.
+
+```js
+const { vars, width, height, duration, timeline } = kumaTemplate({ … });
+const tl = timeline();
+kumaCanvas(tl, "#paint", (g, t) => {
+  const r = g.rough("mark");                     // Rough.js, seeded by the key and the frame
+  r.circle(g.w / 2, g.h / 2, 20 * g.u, { fill: vars.accent, fillStyle: "hachure" });
+}, { width, height, duration, size: vars.size });
+```
+
+- `draw(g, t)` paints the whole frame from `t` alone. The canvas is cleared before each
+  call and the context reset; nothing carries over between frames. `g` holds `ctx`, `w`,
+  `h`, `u` (the canvas twin of `--u`), `rand(key)` and `rough(key)`.
+- Randomness only through `g.rand(key)` and `g.rough(key)`. Both hold their value for one
+  *drawing* (12 a second), so hand-drawn wobble "boils" like redrawn animation, and each
+  key is independent, so something moving does not make still things jitter. For a value
+  that never changes, `kumaCanvas.hash(key)`. `Math.random` is a seeded generator while
+  `draw` runs, so libraries that call it stay deterministic — but the lint still refuses it
+  in your own scripts. Rough.js called directly (`rough.canvas(…)`) is an error too.
+- Helpers on `kumaCanvas`, all pure functions of `t`: `seg`, `lerp`, `clamp`, `ease`,
+  `easeIn`, `easeOut`, `backOut`, `kf(t, [[t0, v0], …])` (keyframes, arrays allowed),
+  `spring(t, t0)` and `ring(t, [t0, …])` (a wobble that dies away, for settles and
+  follow-through), `jump(t, t0, t1, h)` and `take(t, t0)` (squash and stretch, returning
+  `{ y, sq }`), `arcPt(p0, p1, h, k)` (a thrown arc), `onTwos(t)` (hold each drawing for
+  two frames), `noise(x, y, z)`.
+- 2D only. A bake has no GPU, so WebGL renders in software, slowly. Cost is what `draw`
+  does, on every frame: hundreds of shapes are fine, thousands are not.
+- Size in `g.u` and fractions of `g.w`/`g.h`, and lay out along the frame's own axes, so it
+  covers 1080×1920 as well as 1920×1080. Check both with `sample_frames` and `frame`.
 
 ## Checking your work
 

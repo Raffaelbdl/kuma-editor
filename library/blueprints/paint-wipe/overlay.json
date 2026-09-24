@@ -1,0 +1,15 @@
+{
+  "name": "Paint wipe",
+  "description": "A transition: fat hand-painted strokes sweep across and cover the frame, then drag off. Place it centred on a cut; the frame is fully covered at its midpoint.",
+  "duration_default": 1.2,
+  "tags": ["transition", "wipe", "hand-drawn"],
+  "vars": {
+    "color":     { "type": "color",   "default": "#d97757", "label": "Colour" },
+    "color2":    { "type": "color",   "default": "#a84d33", "label": "Second colour" },
+    "direction": { "type": "enum",    "options": ["right", "left", "up", "down"], "default": "right", "label": "Sweeps towards" },
+    "strokes":   { "type": "number",  "default": 5, "min": 3, "max": 9, "step": 1, "label": "Strokes" },
+    "roughness": { "type": "number",  "default": 1.6, "min": 0, "max": 4, "step": 0.1, "label": "Roughness" },
+    "texture":   { "type": "boolean", "default": true, "label": "Brush texture" },
+    "size":      { "type": "number",  "default": 1, "min": 0.5, "max": 2.5, "step": 0.1, "label": "Texture scale" }
+  }
+}

@@ -20,7 +20,7 @@ crates/kuma-cli       `kuma` binary: serve | mcp | render | bake | sample | lint
 engine/               C++ libmlt++ preview engine (JPEG over stdout, SDL2-paced audio)
 ui/                   Vite + TypeScript editor (no framework)
 app/                  Electron shell: project launcher, windows, daemon lifecycle
-library/blueprints/   starter blueprints (folder = blueprint) + `_vendor/{gsap.min.js,kuma.js,kuma-motion.js,kuma.css}`
+library/blueprints/   starter blueprints (folder = blueprint) + `_vendor/{gsap.min.js,kuma.js,kuma-motion.js,kuma-canvas.js,rough.min.js,kuma.css}`
 library/presets/      starter effect presets (typed params + `$expr` substitution)
 library/design-systems/ design systems (`DESIGN.md` + `tokens.css`) copied into a project; none ship yet
 library/fonts/        starter font families (open licences) that `font` vars name

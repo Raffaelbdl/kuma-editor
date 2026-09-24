@@ -31,15 +31,12 @@ impl Config {
     pub fn cache_dir(&self) -> PathBuf {
         self.project_root().join(".kuma")
     }
-    /// Overlay bakes, a directory per key.
     pub fn bakes_dir(&self) -> PathBuf {
         self.cache_dir().join("bakes")
     }
-    /// Sampled frames, keyed by the compiled document.
     pub fn samples_dir(&self) -> PathBuf {
         self.cache_dir().join("samples")
     }
-    /// Bin entries' generated stills and moving previews.
     pub fn thumbs_dir(&self) -> PathBuf {
         self.cache_dir().join("thumbs")
     }
@@ -47,8 +44,7 @@ impl Config {
     pub fn thumb_path(&self, bin_id: &str, ext: &str) -> PathBuf {
         self.thumbs_dir().join(format!("{bin_id}.{ext}"))
     }
-    /// The bin entry a file in [`thumbs_dir`](Self::thumbs_dir) belongs to: ids have no
-    /// dots (`kuma_core::is_valid_id`), so it is the name up to the first.
+    /// The bin id a thumbnail file belongs to (ids have no dots).
     pub fn thumb_owner(file_name: &str) -> &str {
         file_name.split('.').next().unwrap_or_default()
     }
@@ -196,9 +192,8 @@ pub struct AppState {
     /// it is nobody's edit, it must not bump the revision or land in the undo stack, and a
     /// project reopened tomorrow should start on its master. `None` follows the master.
     open_sequence: Mutex<Option<kuma_core::BinId>>,
-    /// Held shared by whatever reads bakes or samples it did not just write — a render for
-    /// its whole encode, a sample, a bake, a thumbnail — and exclusively by a prune, so a
-    /// prune never deletes something from under them (`cache::prune`).
+    /// Shared by renders, samples, bakes and thumbnails while they read the cache;
+    /// exclusive for a prune.
     pub cache_users: RwLock<()>,
 }
 

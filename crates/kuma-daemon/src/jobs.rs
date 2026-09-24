@@ -521,8 +521,7 @@ pub fn bake_all(state: &AppState, project: &Project, only: Option<&[String]>, pr
     strict(bake_clips(state, project, &ids, progress, None))
 }
 
-/// Every overlay clip in every sequence, placed or not: what `kuma bake` bakes, and so
-/// what a prune keeps the bakes of (`cache::live_bakes`).
+/// Every overlay clip in every sequence: what `kuma bake` bakes and a prune keeps.
 pub(crate) fn every_overlay_clip(project: &Project) -> impl Iterator<Item = &kuma_core::Clip> {
     project.all_clips().map(|(_, _, c)| c).filter(|c| project.item(c).is_some_and(kuma_core::BinItem::is_overlay))
 }
@@ -567,9 +566,7 @@ fn bake_clips(state: &AppState, project: &Project, ids: &[String], progress: &dy
     (out, errs)
 }
 
-/// What an overlay clip bakes as. One place, because the prune works out which bakes are
-/// still wanted by computing these keys itself: a second copy that drifted would have it
-/// delete the bake a render is about to use.
+/// What an overlay clip bakes as — the one definition, since the prune keys it too.
 pub(crate) fn bake_request<'a>(r: &'a crate::overlays::Resolved, vars: &'a serde_json::Map<String, serde_json::Value>, project: &Project, clip: &kuma_core::Clip) -> BakeRequest<'a> {
     BakeRequest { overlay_dir: &r.dir, manifest: &r.manifest, vars, fps: project.fps, width: project.width, height: project.height, duration: clip.duration(), speed: clip.speed }
 }
@@ -677,7 +674,6 @@ pub fn render(state: &AppState, req: &RenderRequest, progress: &dyn Fn(u8, &str)
 }
 
 fn render_now(state: &AppState, req: &RenderRequest, progress: &dyn Fn(u8, &str), cancel: &AtomicBool) -> anyhow::Result<serde_json::Value> {
-    // Until melt has read the last frame: a prune in the meantime waits.
     let _cache = read(&state.cache_users);
     let (sequence, preset, output) = render_target(state, req)?;
     let project = read(&state.project).clone();
@@ -825,7 +821,6 @@ pub fn sample_frames(state: &AppState, req: &SampleRequest, progress: &dyn Fn(u8
         if target.is_file() {
             return Ok(());
         }
-        // Named as scratch (`kuma_overlay::is_in_flight`), so a prune leaves it be.
         let tmp = tempfile::Builder::new().prefix(".tmp-").suffix(".png").tempfile_in(&out_dir)?;
         f(tmp.path())?;
         tmp.persist(target)?;

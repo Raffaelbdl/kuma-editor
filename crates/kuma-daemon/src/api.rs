@@ -607,19 +607,17 @@ async fn sample(State(st): S, Json(req): Json<SampleRequest>) -> ApiResult {
     Ok(Json(json!({ "samples": samples })))
 }
 
-/// How big `.kuma/` is, by part. Reads only.
 async fn cache_usage(State(st): S) -> ApiResult {
     Ok(Json(json!(blocking(move || crate::cache::usage(&st)).await?.map_err(anyhow::Error::from)?)))
 }
 
 #[derive(Deserialize)]
 struct PruneReq {
-    /// Empty bakes and samples outright rather than only what nothing wants.
     #[serde(default)]
     all: bool,
 }
 
-/// Prune the cache, as a job: it waits for renders and samples using the cache to finish.
+/// A job: it waits for renders using the cache.
 async fn cache_prune(State(st): S, Json(req): Json<PruneReq>) -> Json<Value> {
     let s2 = st.clone();
     let id = jobs::spawn(st, "prune", move |progress| Ok(json!(crate::cache::prune(&s2, req.all, progress)?)));

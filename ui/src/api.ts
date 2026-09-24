@@ -78,10 +78,8 @@ export const api = {
   clearJobs: () => json<{ cleared: number[] }>("/api/jobs/clear", { method: "POST", body: "{}" }),
   /** Stop a queued or running render. It reports itself `cancelled` once it has. */
   cancelJob: (id: number) => json<Job>(`/api/jobs/${id}/cancel`, { method: "POST", body: "{}" }),
-  /** How big the project's `.kuma/` cache is. Reads only. */
   cache: () => json<CacheUsage>("/api/cache"),
-  /** Delete bakes nothing uses, sampled frames and orphaned thumbnails, as a job that
-   *  waits for renders reading the cache. */
+  /** A job: delete what `.kuma/` holds that the project no longer uses. */
   pruneCache: () => json<{ job: number }>("/api/cache/prune", { method: "POST", body: "{}" }),
   previewReload: (scale?: number) => json<{ mlt: string; scale: number }>("/api/preview/reload", { method: "POST", body: JSON.stringify(scale === undefined ? {} : { scale }) }),
   /** The live document for an overlay **bin entry**, at the length and in the frame the

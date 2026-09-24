@@ -84,15 +84,14 @@ export function openRenderDialog(tab: Tab = "render"): void {
   const list = el("div", "job-list");
   const empty = el("p", "muted", "No jobs yet.");
   const clear = button("Clear finished", () => void api.clearJobs().catch(fail), "Remove done, failed and cancelled jobs", "push-left");
-  // The cache the renders, previews and samples fill, and the one way to empty it: a
-  // prune is a job like the rest, so it waits in this list for a render to finish.
+  // The cache's size, and a prune: a job like the rest, listed here.
   const cacheSize = el("span", "muted tiny cache-size");
   const prune = button("Prune cache", () => {
     prune.disabled = true;
     api.pruneCache().catch((e) => { prune.disabled = false; fail(e); });
   }, "Delete overlay bakes the project no longer uses, sampled frames, and thumbnails of removed entries");
   const measure = () => void api.cache().then((u) => { cacheSize.textContent = cacheNote(u); }).catch(() => { cacheSize.textContent = ""; });
-  // Prunes seen running, so each one's result is reported once, when it finishes.
+  // Prunes seen running, so each result is reported once.
   const pruning = new Set<number>();
   const queuePane = row("queue-pane", list, row("modal-actions", clear, cacheSize, prune, button("Close", close)));
   const rows = new Map<number, JobRow>();

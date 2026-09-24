@@ -1826,67 +1826,27 @@ the melt render test asserts that progress arrives.
 
 ## Pruning the cache
 
-**Adopted.** `.kuma/` had three parts that only grew: bakes (content-hashed, so trimming a
-clip strands its last bake as surely as editing the markup), sampled frames (keyed by the
-compiled document, so every edit strands the previous ones) and bin thumbnails (keyed by
-entry, so a removed entry leaves its own). One prune, on every surface the way render is:
-`kuma cache prune`, `POST /api/cache/prune` (a job), the MCP `prune_cache` tool, and a line
-in the job queue giving the size with a **Prune cache** button. `kuma cache` and
-`GET /api/cache` show the size. The code is `crates/kuma-daemon/src/cache.rs`.
+**Adopted** (`crates/kuma-daemon/src/cache.rs`). Bakes, sampled frames and bin thumbnails
+only ever accumulated. One prune on every surface: `kuma cache prune`, `POST
+/api/cache/prune` (a job), MCP `prune_cache`, and a button in the job queue beside the
+cache's size. It is asked for; a size or age cap could evict a bake a render is about to read.
 
-**It is asked for.** A size or age cap was turned down: it can evict the bake of a clip
-about to be rendered, and it runs behind the user's back.
+It deletes bakes whose key is not live, sampled frames older than a minute (a caller may
+not have read a younger one) and thumbnails of ids gone from the bin. Live keys are
+recomputed, not recorded: every overlay clip in every sequence (the preview bakes nested
+ones, `kuma bake` warms unplaced ones) plus each entry's thumbnail bake, through
+`jobs::bake_request`, the one definition the bake loop also uses. `Baker::key` splits into
+`folder_digest` and `key_with` so each folder is hashed once. `--all` deletes every bake
+and frame but keeps the bin's thumbnails, which nothing regenerates until asked.
 
-**What it deletes, per part:**
-
-- *Bakes* whose key is not live. Nothing records which keys are live; they are
-  recomputed from the project, because the key is a pure function of folder, vars and
-  clip. The live set is **every overlay clip in every sequence** (not just the master,
-  since the preview bakes nested sequences, and not just what the master reaches, since
-  `kuma bake` warms unplaced ones on purpose; `jobs::every_overlay_clip` is that list for
-  both), plus the preview bake each overlay entry's
-  thumbnail is cut from. What a clip bakes as is one function, `jobs::bake_request`, used
-  by both the bake loop and the prune. A copy that drifted would have the prune delete the
-  frames a render is about to read. A test writes the formula out independently so a
-  drift fails it.
-- *Sampled frames* older than a minute. A younger one's path may just have been handed to
-  an agent or the snapshot route that has not read it yet.
-- *Thumbnails* of ids no longer in the bin.
-
-It never touches work in flight. Every writer into `.kuma/` names its scratch with
-`.tmp-` before renaming it into place: a bake's `<key>.tmp-…` directory, a sample's
-tempfile, a thumbnail's `.webp.tmp-`. One rule, `kuma_overlay::is_in_flight`, rather than
-one per part the prune would have to know. Paths into the cache come from `Config`
-(`bakes_dir`, `samples_dir`, `thumb_path`, `thumb_owner`), so a writer and the prune cannot
-disagree about where things are. A folder is read once per prune however many clips use
-it: `Baker::key` splits into `folder_digest`, the expensive part, and `key_with` for each
-request. The rest of `.kuma/` is left alone. The
-compiled `.mlt` files are what melt and the engine are reading. Generated lumas are a few
-kilobytes and regenerate. Transcription scratch is a tempdir that removes itself.
-
-**`--all`** empties bakes and samples outright, live or fresh, at the cost of a re-bake on
-the next preview. It still keeps the thumbnails of entries that are in the bin: nothing
-regenerates those until someone asks, so deleting them would blank the bin rather than
-cost time.
-
-**Waiting for readers.** `AppState::cache_users` is an `RwLock<()>`. A render holds it
-shared for its whole encode, and so do a sample, a bake job and a thumbnail job. A prune
-takes it exclusively. It **polls `try_write`** rather than blocking on `write`, because
-std's `RwLock` prefers writers: a prune queued behind an hour-long render would stall every
-sample and snapshot for that hour. A waiting prune reports "waiting for renders and
-samples to finish". Two alternatives were rejected:
-
-- *Run the prune in the render lane.* That protects renders only. A sample or a bake job
-  can still lose a bake between baking it and melt reading it, and every render asked for
-  later would queue behind the prune.
-- *Make the preview reload a holder too.* The preview compiles the project as it is now,
-  so its bakes are live by construction. A reload still in flight against an older
-  revision can lose a nested overlay's frames until the next reload, which follows the
-  edit anyway.
-
-The lock is per process. `kuma cache prune` therefore goes through a running daemon for
-this project when there is one, and works on the files directly only when there is not. A
-`kuma render` run in a separate process while a daemon prunes is not protected.
+Work in flight is safe by name and by lock. Every writer names its scratch `….tmp-…`
+(`is_in_flight`) until it renames it. Renders (for the whole encode), samples, bakes and
+thumbnails hold `AppState::cache_users` shared; the prune takes it exclusively by polling
+`try_write`, since std's `RwLock` prefers writers and a blocked prune would stall every
+sample behind an hour-long render. Rejected: pruning in the render lane (protects renders
+only, and queues later renders behind it). The preview reload is not a holder: its bakes
+are live by construction. The lock is per process, so `kuma cache prune` goes through a
+running daemon when there is one.
 
 ## Still open
 

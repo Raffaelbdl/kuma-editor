@@ -137,11 +137,9 @@ Chrome headless shell if hyperframes should not download one.
   overlay entry, in source seconds, edited and baked like any other var. Portrait is not
   one either: it is `width`/`height`, and nothing else in the model may depend on which
   way round they are.
-- `.kuma/` is pruned only when asked (`cache.rs`). The bakes it keeps are recomputed from
-  the project through `jobs::bake_request`, the same function the bake loop uses, so
-  never build a clip's `BakeRequest` anywhere else. Anything that reads bakes or sampled
-  frames it did not just write holds `cache_users` shared while it reads. Anything that
-  writes into `.kuma/` names its scratch `.tmp-…` (`is_in_flight`) until it renames it.
+- `.kuma/` is pruned only when asked (`cache.rs`), keeping the bakes `jobs::bake_request`
+  yields — build a clip's `BakeRequest` nowhere else. Readers of bakes or samples hold
+  `cache_users` shared; writers name scratch `.tmp-…` (`is_in_flight`) until renamed.
 - Alpha intermediates are PNG sequences (straight alpha). Assert `pix_fmt` on any encode.
 - All state lives in the daemon. The UI and MCP are thin clients; every mutation is a
   revision-checked JSON Patch that is validated atomically and undoable.

@@ -1,36 +1,36 @@
-//! The `.kuma/` cache: what it holds, and pruning what nothing wants any more.
-//!
-//! Three parts grow without bound and none of them deletes anything by itself: bakes
-//! (content-hashed, so every edit to an overlay or its clip strands the previous one),
-//! sampled frames (keyed by the compiled document, so every edit strands those too) and
-//! bin thumbnails (keyed by entry, so a removed entry leaves its own behind). A prune is
-//! asked for, never run behind anyone's back: a size or age cap could evict the bake a
-//! render is about to read.
+//! The `.kuma/` cache: its size, and a prune of what the project no longer uses. Pruning is
+//! asked for, never automatic: a cap could evict the bake a render is about to read.
 
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
-use std::sync::{RwLockWriteGuard, TryLockError};
+use std::fs::Metadata;
+use std::path::{Path, PathBuf};
+use std::sync::TryLockError;
 use std::time::{Duration, SystemTime};
 
-use kuma_core::{BinSource, Project};
+use kuma_core::{BinItem, BinSource, Project};
 use kuma_overlay::Baker;
 use serde::{Deserialize, Serialize};
 
+use crate::overlays::Resolved;
 use crate::state::{read, AppState};
 
-/// A sampled frame this recent survives a prune: its path may just have been handed to a
-/// caller — an agent, the snapshot route — that has not read it yet.
+/// A sampled frame younger than this survives a prune: a caller may not have read it yet.
 pub const SAMPLE_GRACE: Duration = Duration::from_secs(60);
 
-/// One part of the cache: how many entries (a bake is one directory) and their bytes.
+/// Entries (a bake is one directory) and their bytes.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Part {
     pub entries: u64,
     pub bytes: u64,
 }
 
-/// The cache by part, and its total size in bytes. Built only by [`Usage::of`], so the
-/// total cannot disagree with the parts.
+impl Part {
+    fn add(self, bytes: u64) -> Self {
+        Part { entries: self.entries + 1, bytes: self.bytes + bytes }
+    }
+}
+
+/// The cache by part. Built by [`Usage::of`], so `bytes` is always their sum.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Usage {
     pub bakes: Part,
@@ -45,27 +45,22 @@ impl Usage {
     }
 }
 
-/// What a prune deleted, and what is left.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct Pruned {
     pub freed: Usage,
     pub kept: Usage,
 }
 
-/// How big the cache is. Reads only.
 pub fn usage(state: &AppState) -> std::io::Result<Usage> {
     let c = &state.config;
     Ok(Usage::of(tally(&c.bakes_dir())?, tally(&c.samples_dir())?, tally(&c.thumbs_dir())?))
 }
 
-/// The bakes the project still wants: one per overlay clip in **every** sequence — not only
-/// the master, since the preview bakes nested ones, and not only what the master reaches,
-/// since `kuma bake` warms unplaced ones on purpose — plus the preview bake each overlay
-/// entry's thumbnail is cut from. Computed, not remembered: the key is a pure function of
-/// the folder, the vars and the clip, so no rendering is needed to know it. Each folder is
-/// read once, however many clips use it.
+/// Keys of the bakes the project still wants: every overlay clip in every sequence (the
+/// preview bakes nested ones, `kuma bake` warms unplaced ones), plus each overlay entry's
+/// thumbnail bake. Recomputed, since a key is a pure function of folder, vars and clip.
 pub fn live_bakes(state: &AppState, project: &Project) -> HashSet<String> {
-    // A folder that does not resolve cannot bake, so there is nothing of it to keep.
+    // Hash each folder once however many clips use it; one that does not resolve cannot bake.
     let folders: Folders = project
         .overlay_folders()
         .into_iter()
@@ -81,25 +76,20 @@ pub fn live_bakes(state: &AppState, project: &Project) -> HashSet<String> {
     clips.chain(previews).filter_map(|(digest, req)| state.baker.key_with(digest, &req).ok()).collect()
 }
 
-/// Each overlay folder the bin uses, resolved, with its [`Baker::folder_digest`].
-type Folders<'p> = HashMap<&'p str, (crate::overlays::Resolved, String)>;
+type Folders<'p> = HashMap<&'p str, (Resolved, String)>;
 type Vars = serde_json::Map<String, serde_json::Value>;
 
-/// An overlay entry's folder (as [`Folders`] holds it) and its vars.
-fn overlay<'f, 'i>(folders: &'f Folders, item: &'i kuma_core::BinItem) -> Option<(&'f (crate::overlays::Resolved, String), &'i Vars)> {
+fn overlay<'f, 'i>(folders: &'f Folders, item: &'i BinItem) -> Option<(&'f (Resolved, String), &'i Vars)> {
     match &item.source {
         BinSource::Overlay { overlay, vars } => Some((folders.get(overlay.as_str())?, vars)),
         _ => None,
     }
 }
 
-/// Delete what nothing wants: bakes whose key is not live, sampled frames older than
-/// [`SAMPLE_GRACE`], and thumbnails of entries no longer in the bin. `all` empties bakes
-/// and samples outright, which costs a re-bake on the next preview; it still keeps the
-/// thumbnails of entries in the bin, because nothing regenerates those until asked.
-///
-/// Waits until nothing is using the cache — a render holds it for its whole encode — and
-/// never touches anything still being written (`kuma_overlay::is_in_flight`).
+/// Delete bakes whose key is not live, sampled frames older than [`SAMPLE_GRACE`] and
+/// thumbnails of entries gone from the bin. `all` deletes every bake and frame too, but
+/// keeps the bin's thumbnails, which nothing regenerates until asked. Waits for whatever
+/// holds `cache_users`, and never touches scratch still being written (`is_in_flight`).
 pub fn prune(state: &AppState, all: bool, progress: &dyn Fn(u8, &str)) -> anyhow::Result<Pruned> {
     let freed = {
         let _alone = exclusive(state, progress);
@@ -107,7 +97,7 @@ pub fn prune(state: &AppState, all: bool, progress: &dyn Fn(u8, &str)) -> anyhow
         let project = read(&state.project).clone();
         let live = if all { HashSet::new() } else { live_bakes(state, &project) };
         let now = SystemTime::now();
-        let old = |meta: &std::fs::Metadata| meta.modified().ok().and_then(|m| now.duration_since(m).ok()).is_some_and(|age| age >= SAMPLE_GRACE);
+        let old = |meta: &Metadata| meta.modified().ok().and_then(|m| now.duration_since(m).ok()).is_some_and(|age| age >= SAMPLE_GRACE);
         let c = &state.config;
         Usage::of(
             sweep(&c.bakes_dir(), |name, _| !live.contains(name))?,
@@ -115,14 +105,12 @@ pub fn prune(state: &AppState, all: bool, progress: &dyn Fn(u8, &str)) -> anyhow
             sweep(&c.thumbs_dir(), |name, _| !project.bin.contains_key(crate::Config::thumb_owner(name)))?,
         )
     };
-    // Measured once the cache is free again: nothing below deletes, so nobody waits on it.
     Ok(Pruned { freed, kept: usage(state)? })
 }
 
-/// Hold the cache alone. Polled rather than blocked on: a writer waiting on the lock would
-/// hold up every sample and snapshot behind a render that may encode for an hour, and
-/// the preview must not freeze because a prune was asked for.
-fn exclusive<'a>(state: &'a AppState, progress: &dyn Fn(u8, &str)) -> RwLockWriteGuard<'a, ()> {
+/// Hold the cache alone. Polled: a writer blocked on the lock would stall every sample
+/// behind a render that may encode for an hour.
+fn exclusive<'a>(state: &'a AppState, progress: &dyn Fn(u8, &str)) -> std::sync::RwLockWriteGuard<'a, ()> {
     let mut said = false;
     loop {
         match state.cache_users.try_write() {
@@ -139,9 +127,8 @@ fn exclusive<'a>(state: &'a AppState, progress: &dyn Fn(u8, &str)) -> RwLockWrit
     }
 }
 
-/// Each entry directly under `dir`, with its name, metadata and size in bytes. A directory
-/// that is not there has none.
-fn entries(dir: &Path) -> std::io::Result<impl Iterator<Item = (std::fs::DirEntry, String, std::fs::Metadata, u64)>> {
+/// Each entry directly under `dir` (none if it is missing): path, name, metadata, bytes.
+fn entries(dir: &Path) -> std::io::Result<impl Iterator<Item = (PathBuf, String, Metadata, u64)>> {
     let rd = match std::fs::read_dir(dir) {
         Ok(rd) => Some(rd),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
@@ -149,29 +136,25 @@ fn entries(dir: &Path) -> std::io::Result<impl Iterator<Item = (std::fs::DirEntr
     };
     Ok(rd.into_iter().flatten().flatten().filter_map(|e| {
         let meta = e.metadata().ok()?;
-        let bytes = size(&e.path(), &meta);
-        let name = e.file_name().to_string_lossy().into_owned();
-        Some((e, name, meta, bytes))
+        let path = e.path();
+        let bytes = size(&path, &meta);
+        Some((path, e.file_name().to_string_lossy().into_owned(), meta, bytes))
     }))
 }
 
-/// What is directly under `dir`.
 fn tally(dir: &Path) -> std::io::Result<Part> {
-    Ok(entries(dir)?.fold(Part::default(), |p, (.., bytes)| Part { entries: p.entries + 1, bytes: p.bytes + bytes }))
+    Ok(entries(dir)?.fold(Part::default(), |p, (.., bytes)| p.add(bytes)))
 }
 
-/// Delete each finished entry directly under `dir` that `doomed` names, and say what went.
-/// Anything still being written is never offered to it.
-fn sweep(dir: &Path, doomed: impl Fn(&str, &std::fs::Metadata) -> bool) -> std::io::Result<Part> {
+/// Delete the finished entries under `dir` that `doomed` names; return what went.
+fn sweep(dir: &Path, doomed: impl Fn(&str, &Metadata) -> bool) -> std::io::Result<Part> {
     let mut gone = Part::default();
-    for (entry, name, meta, bytes) in entries(dir)? {
+    for (path, name, meta, bytes) in entries(dir)? {
         if kuma_overlay::is_in_flight(&name) || !doomed(&name, &meta) {
             continue;
         }
-        let path = entry.path();
         match if meta.is_dir() { std::fs::remove_dir_all(&path) } else { std::fs::remove_file(&path) } {
-            Ok(()) => gone = Part { entries: gone.entries + 1, bytes: gone.bytes + bytes },
-            // Gone already: someone else's cleanup got there first.
+            Ok(()) => gone = gone.add(bytes),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => return Err(e),
         }
@@ -180,7 +163,7 @@ fn sweep(dir: &Path, doomed: impl Fn(&str, &std::fs::Metadata) -> bool) -> std::
 }
 
 /// Bytes under `path`, not following links.
-fn size(path: &Path, meta: &std::fs::Metadata) -> u64 {
+fn size(path: &Path, meta: &Metadata) -> u64 {
     if !meta.is_dir() {
         return meta.len();
     }

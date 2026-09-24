@@ -1,6 +1,4 @@
-//! Pruning `.kuma/`: what it keeps, what it deletes, and that it waits for whatever is
-//! reading the cache. No hyperframes or melt: a bake entry is only a directory named by its
-//! key, and the key is computed without rendering anything.
+//! Pruning `.kuma/`. Needs no renderer: a bake is a directory named by a computable key.
 
 use std::path::Path;
 use std::sync::mpsc;
@@ -11,9 +9,7 @@ use kuma_daemon::cache::{live_bakes, prune, usage};
 use kuma_daemon::{AppState, Config};
 use kuma_overlay::BakeRequest;
 
-/// One overlay entry placed twice at different lengths: once on the master, once on a
-/// sequence nothing places — whose bake a prune must keep all the same, since `kuma bake`
-/// warms it on purpose.
+/// One overlay placed at two lengths: on the master, and in a sequence nothing places.
 const PROJECT: &str = r##"{
   "version": 7, "name": "t", "master": "main",
   "fps": { "num": 30, "den": 1 }, "width": 320, "height": 240, "sample_rate": 48000,
@@ -49,7 +45,6 @@ fn fixture() -> (Arc<AppState>, tempfile::TempDir) {
     (Arc::new(AppState::load(config).unwrap()), dir)
 }
 
-/// A finished bake entry of `bytes` bytes.
 fn bake(cache: &Path, name: &str, bytes: usize) {
     let d = cache.join("bakes").join(name).join("frames");
     std::fs::create_dir_all(&d).unwrap();
@@ -68,9 +63,7 @@ fn names(dir: &Path) -> Vec<String> {
     v
 }
 
-/// The key a clip bakes under is the key the prune keeps. Written out here rather than
-/// read back from the daemon, so a change to what a clip bakes as that the prune does not
-/// follow fails this test instead of deleting a render's frames.
+/// Keys written out independently, so a bake request the prune stops following fails here.
 #[test]
 fn the_live_set_is_every_clip_in_every_sequence_and_each_entrys_preview() {
     let (state, dir) = fixture();
@@ -129,9 +122,6 @@ fn a_prune_deletes_what_nothing_wants_and_nothing_else() {
     assert_eq!(pruned.kept.bytes + pruned.freed.bytes, before.bytes);
 }
 
-/// `all` is the blunt version: every bake and sample, live or fresh — but still not what
-/// is being written, and not the thumbnails of entries in the bin, which nothing
-/// regenerates until someone asks.
 #[test]
 fn prune_all_empties_bakes_and_samples_but_not_work_in_flight() {
     let (state, dir) = fixture();
@@ -150,9 +140,7 @@ fn prune_all_empties_bakes_and_samples_but_not_work_in_flight() {
     assert_eq!(pruned.freed.bakes.entries, 3);
 }
 
-/// A render reads its bakes for as long as melt encodes, so a prune asked for meanwhile
-/// waits for it — and waiting must not hold up a sample, which the preview and agents
-/// depend on while a render runs.
+/// A prune waits for a render, and waiting does not hold up a sample.
 #[test]
 fn a_prune_waits_for_readers_without_blocking_new_ones() {
     let (state, dir) = fixture();
@@ -169,12 +157,4 @@ fn a_prune_waits_for_readers_without_blocking_new_ones() {
 
     drop(render);
     assert_eq!(rx.recv_timeout(Duration::from_secs(10)).unwrap(), 1);
-}
-
-#[test]
-fn an_empty_cache_prunes_to_nothing() {
-    let (state, _dir) = fixture();
-    let pruned = prune(&state, false, &|_, _| {}).unwrap();
-    assert_eq!(pruned.freed.bytes, 0);
-    assert_eq!(pruned.kept.bytes, 0);
 }

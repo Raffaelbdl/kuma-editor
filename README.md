@@ -504,11 +504,9 @@ and the values live with the rest of the project's decisions.
   shows what it looked for: `whisper-cli` on `PATH` (`KUMA_WHISPER_BIN`) and a ggml model in
   `~/.local/share/kuma/models` (`KUMA_WHISPER_MODEL`). `GET /api/health` has the same under
   `whisper`.
-- **`.kuma/` keeps growing** — nothing in it is deleted by itself: every edit to an overlay
-  or its clip leaves the previous bake behind, and every sampled frame stays. `kuma cache`
-  shows the size and `kuma cache prune` removes what the project no longer uses (the job
-  queue has the same as a button, the MCP server as `prune_cache`). It waits for a render
-  in progress. `--all` empties bakes and frames outright; the next preview bakes again.
+- **`.kuma/` keeps growing** — superseded bakes and sampled frames are never deleted on
+  their own. `kuma cache prune` (or the job queue's button, or `prune_cache`) removes what
+  the project no longer uses; `--all` empties bakes and frames.
 - **A blueprint is missing from the Blueprints tab** — `GET /api/health` lists
   `blueprint_dirs` (where kuma looked) and `blueprint_errors` (manifests that failed to load
   and why). No library at all: run `kuma library`.

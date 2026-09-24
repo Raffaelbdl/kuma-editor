@@ -175,9 +175,7 @@ impl Baker {
         self.key_with(&self.folder_digest(req.overlay_dir)?, req)
     }
 
-    /// The part of the key that depends on the folder alone — its files, the vendor
-    /// library it uses, the renderer and browser builds — and costs a read of every file.
-    /// Whoever keys many requests against one folder computes it once.
+    /// The costly, per-folder part of the key: its files, its vendor library, the renderer.
     pub fn folder_digest(&self, overlay_dir: &Path) -> Result<String, BakeError> {
         let mut h = Sha256::new();
         h.update(b"kuma-bake-v5\n");
@@ -195,8 +193,7 @@ impl Baker {
         Ok(hex::encode(h.finalize()))
     }
 
-    /// [`key`](Self::key) with `req.overlay_dir`'s [`folder_digest`](Self::folder_digest)
-    /// already in hand.
+    /// [`key`](Self::key) given the folder's [`folder_digest`](Self::folder_digest).
     pub fn key_with(&self, folder_digest: &str, req: &BakeRequest) -> Result<String, BakeError> {
         let mut h = Sha256::new();
         h.update(folder_digest.as_bytes());
@@ -367,7 +364,7 @@ impl Baker {
     /// The one bake both previews are cut from: 12 fps, 480×270, the first seconds. Enough
     /// to see the entrance and the first beat of the loop; the exit is anchored to a
     /// length this preview does not have, so showing it would be a lie anyway. A still
-    /// overlay renders one frame of it. Public so a prune can key it and keep it.
+    /// overlay renders one frame of it.
     pub fn preview_request<'a>(overlay_dir: &'a Path, manifest: &'a OverlayManifest, vars: &'a Map<String, Value>) -> BakeRequest<'a> {
         BakeRequest {
             overlay_dir,
@@ -427,10 +424,7 @@ fn frame_name(n: i64) -> String {
     format!("frame_{n:06}.png")
 }
 
-/// Whether a name in `.kuma/` is something still being written, which only becomes an
-/// entry by being renamed: a bake's private `<key>.tmp-<pid>-<nanos>`, a preview's
-/// `<name>.webp.tmp-`, a sampled frame's tempfile. Every writer into the cache names its
-/// scratch so, and a prune leaves anything this matches alone.
+/// Scratch still being written into `.kuma/`: every writer names it `….tmp-…` until renamed.
 pub fn is_in_flight(name: &str) -> bool {
     name.contains(".tmp-")
 }

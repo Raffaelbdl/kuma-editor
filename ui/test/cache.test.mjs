@@ -1,8 +1,5 @@
-// The cache line in the job queue: it says how big `.kuma/` is, and its button prunes it as
-// a job like any other, then says what that freed. The daemon's own tests pin what a prune
-// keeps; this pins that a person can reach it and sees it happen.
-//
-// Skips, loudly, without a browser, a binary or `ui/dist`, as its neighbours do.
+// The job queue's cache line: its size, and a button that prunes it and says what it freed.
+// Skips without a browser, a binary or `ui/dist`, as its neighbours do.
 
 import { strict as assert } from "node:assert";
 import { after, before, describe, it } from "node:test";
@@ -27,7 +24,6 @@ describe("pruning the cache from the editor", { skip: why ? `skipping: ${why}` :
     tmp = fs.mkdtempSync(path.join(os.tmpdir(), "kuma-cache-"));
     const projectFile = path.join(tmp, "cache.kuma.json");
     fs.writeFileSync(projectFile, PROJECT);
-    // A bake nothing in this project uses: the prune's to delete.
     const stale = path.join(tmp, ".kuma/bakes/0123456789abcdef01234567/frames");
     fs.mkdirSync(stale, { recursive: true });
     fs.writeFileSync(path.join(stale, "frame_000001.png"), Buffer.alloc(2_500_000));
@@ -48,7 +44,6 @@ describe("pruning the cache from the editor", { skip: why ? `skipping: ${why}` :
     assert.match(note, /^Cache 2\.5 MB · 1 bake, 0 frames$/);
 
     await page.eval(`[...document.querySelectorAll(".queue-pane button")].find(b => b.textContent === "Prune cache").click()`);
-    // The job lands in the list it sits under, and the line catches up once it is done.
     await page.until(`[...document.querySelectorAll(".job .job-title")].some(t => t.textContent.endsWith("· prune"))`);
     await page.until(`document.querySelector(".cache-size").textContent.startsWith("Cache 0 B")`);
     assert.ok(await page.eval(`[...document.querySelectorAll(".toast")].some(t => t.textContent === "Freed 2.5 MB")`));

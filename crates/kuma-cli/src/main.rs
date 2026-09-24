@@ -180,10 +180,9 @@ enum Cmd {
 
 #[derive(Subcommand)]
 enum CacheCmd {
-    /// Delete bakes nothing in the project uses, sampled frames, and thumbnails of entries
-    /// no longer in the bin. Waits for renders and samples that are using the cache.
+    /// Delete what the project no longer uses. Waits for renders using the cache.
     Prune {
-        /// Empty bakes and samples outright; the next preview or render bakes again.
+        /// Delete every bake and sampled frame.
         #[arg(long)]
         all: bool,
     },
@@ -302,37 +301,21 @@ async fn main() -> anyhow::Result<()> {
             println!("{}", serde_json::to_string_pretty(&samples)?);
         }
         Cmd::Cache { action } => {
-            // Through the daemon when one runs: it knows what its renders and samples are
-            // reading, and a prune from outside would not wait for them.
+            // Through a running daemon, so the prune waits for its renders.
             let daemon = running_daemon(&cli).await.map(kuma_mcp::client::Client::new);
-            match action {
-                None => {
-                    let usage = match &daemon {
-                        Some(c) => serde_json::from_value(c.get("/api/cache").await?)?,
-                        None => kuma_daemon::cache::usage(&*open(&cli)?)?,
-                    };
-                    for (name, part) in [("bakes", usage.bakes), ("samples", usage.samples), ("thumbs", usage.thumbs)] {
-                        println!("{name:8} {:>10}  {} entries", human_bytes(part.bytes), part.entries);
-                    }
-                    println!("{:8} {:>10}", "total", human_bytes(usage.bytes));
+            let out = match (action, &daemon) {
+                (None, Some(c)) => c.get("/api/cache").await?,
+                (None, None) => serde_json::to_value(kuma_daemon::cache::usage(&*open(&cli)?)?)?,
+                (Some(CacheCmd::Prune { all }), Some(c)) => {
+                    let v = c.post("/api/cache/prune", &serde_json::json!({ "all": all })).await?;
+                    c.wait_job(v["job"].as_u64().unwrap_or_default(), std::time::Duration::from_secs(24 * 3600)).await?["result"].take()
                 }
-                Some(CacheCmd::Prune { all }) => {
-                    let pruned: kuma_daemon::cache::Pruned = match &daemon {
-                        Some(c) => {
-                            let v = c.post("/api/cache/prune", &serde_json::json!({ "all": all })).await?;
-                            let job = c.wait_job(v["job"].as_u64().unwrap_or_default(), std::time::Duration::from_secs(24 * 3600)).await?;
-                            serde_json::from_value(job["result"].clone())?
-                        }
-                        None => {
-                            let state = open(&cli)?;
-                            let all = *all;
-                            tokio::task::spawn_blocking(move || kuma_daemon::cache::prune(&state, all, &|_, m| eprintln!("{m}"))).await??
-                        }
-                    };
-                    let (f, k) = (pruned.freed, pruned.kept);
-                    println!("freed {} ({} bakes, {} samples, {} thumbnails); {} left", human_bytes(f.bytes), f.bakes.entries, f.samples.entries, f.thumbs.entries, human_bytes(k.bytes));
+                (Some(CacheCmd::Prune { all }), None) => {
+                    let (state, all) = (open(&cli)?, *all);
+                    serde_json::to_value(tokio::task::spawn_blocking(move || kuma_daemon::cache::prune(&state, all, &|_, m| eprintln!("{m}"))).await??)?
                 }
-            }
+            };
+            println!("{}", serde_json::to_string_pretty(&out)?);
         }
         Cmd::Compile { sequence } => {
             let state = open(&cli)?;
@@ -667,16 +650,4 @@ async fn resolve_daemon(cli: &Cli) -> anyhow::Result<(String, Option<String>)> {
 
 fn port_busy(addr: SocketAddr) -> bool {
     std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_millis(500)).is_ok()
-}
-
-/// `1.4 GB`, `312 MB`, `12 kB`: decimal, as file managers show it.
-fn human_bytes(n: u64) -> String {
-    const UNITS: [&str; 5] = ["B", "kB", "MB", "GB", "TB"];
-    let mut v = n as f64;
-    let mut unit = 0;
-    while v >= 1000.0 && unit < UNITS.len() - 1 {
-        v /= 1000.0;
-        unit += 1;
-    }
-    if unit == 0 { format!("{n} B") } else if v < 10.0 { format!("{v:.1} {}", UNITS[unit]) } else { format!("{v:.0} {}", UNITS[unit]) }
 }

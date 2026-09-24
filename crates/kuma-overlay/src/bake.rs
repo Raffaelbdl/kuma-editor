@@ -17,7 +17,7 @@ use sha2::{Digest, Sha256};
 /// content hash as well as the staging: an overlay whose
 /// hash changed when its own preview was generated would invalidate every bake of it, and
 /// the preview is itself a bake.
-pub const GENERATED: &[&str] = &["thumb.png", "preview.webp"];
+const GENERATED: &[&str] = &["thumb.png", "preview.webp"];
 /// The only entry file hyperframes renders.
 const ENTRY: &str = "index.html";
 /// Frame rate of the library previews (`thumb.png` is their frame at t = 1 s).
@@ -415,7 +415,9 @@ fn ignored(name: &std::ffi::OsStr) -> bool {
     n.starts_with('.') || GENERATED.contains(&n.as_ref())
 }
 
-fn copy_dir(src: &Path, dst: &Path) -> std::io::Result<()> {
+/// Copy an overlay folder, leaving out dotfiles and what is generated from it (thumbnails,
+/// previews) at every depth. What the bake stages, and what a blueprint copy carries.
+pub fn copy_dir(src: &Path, dst: &Path) -> std::io::Result<()> {
     std::fs::create_dir_all(dst)?;
     for entry in std::fs::read_dir(src)? {
         let entry = entry?;

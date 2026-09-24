@@ -14,7 +14,7 @@ pub mod media;
 pub mod scaffold;
 pub mod transcribe;
 
-pub use bake::{BakeError, BakeRequest, Baker, BakeResult, GENERATED};
+pub use bake::{copy_dir, BakeError, BakeRequest, Baker, BakeResult};
 pub use lint::{Finding, Level, LintReport};
 pub use inject::Contract;
 pub use media::{probe, Probe};

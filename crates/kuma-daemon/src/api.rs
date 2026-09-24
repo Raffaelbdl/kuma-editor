@@ -251,12 +251,17 @@ async fn reload_blueprints(State(st): S) -> Json<Value> {
     Json(json!(st.blueprint_infos()))
 }
 
+/// What a caller's input got wrong, in full.
+fn bad_request_err(e: anyhow::Error) -> ApiError {
+    ApiError::bad_request(format!("{e:#}"))
+}
+
 /// What a caller's input got wrong, unless it is an edit refusal, which keeps the 409/422
 /// contract of every other edit.
 fn edit_or_bad_request(e: anyhow::Error) -> ApiError {
     match e.downcast::<EditError>() {
         Ok(edit) => ApiError::from(edit),
-        Err(other) => ApiError::bad_request(format!("{other:#}")),
+        Err(other) => bad_request_err(other),
     }
 }
 
@@ -272,7 +277,7 @@ struct CopyBlueprint {
 /// so one drop is one undo step.
 async fn copy_blueprint(State(st): S, Path(id): Path<String>, body: Option<Json<CopyBlueprint>>) -> ApiResult {
     let folder = body.and_then(|b| b.0.folder);
-    let overlay = blocking(move || crate::overlays::copy_blueprint(&st, &id, folder.as_deref())).await?.map_err(|e| ApiError::bad_request(format!("{e:#}")))?;
+    let overlay = blocking(move || crate::overlays::copy_blueprint(&st, &id, folder.as_deref())).await?.map_err(bad_request_err)?;
     Ok(Json(json!({ "overlay": overlay })))
 }
 
@@ -292,18 +297,12 @@ struct AddBlueprint {
 /// Copy a blueprint into the project and add it to the bin: the agent's one call.
 async fn add_blueprint(State(st): S, Path(blueprint): Path<String>, body: Option<Json<AddBlueprint>>) -> ApiResult {
     let req = body.map(|b| b.0).unwrap_or_default();
-    let (overlay, id, rev, warnings) = blocking(move || {
-        let overlay = crate::overlays::copy_blueprint(&st, &blueprint, None)?;
-        let (id, rev, warnings) = crate::overlays::import_overlay(&st, &overlay, req.id, req.name, req.vars, None, &req.origin)?;
-        anyhow::Ok((overlay, id, rev, warnings))
-    })
-    .await?
-    .map_err(edit_or_bad_request)?;
+    let (overlay, id, rev, warnings) = blocking(move || crate::overlays::add_blueprint(&st, &blueprint, req.id, req.name, req.vars, &req.origin)).await?.map_err(edit_or_bad_request)?;
     Ok(Json(json!({ "id": id, "overlay": overlay, "revision": rev, "warnings": warnings })))
 }
 
 async fn lint_blueprint(State(st): S, Path(id): Path<String>) -> ApiResult {
-    let report = blocking(move || crate::overlays::lint_blueprint(&st, &id)).await?.map_err(|e| ApiError::bad_request(format!("{e:#}")))?;
+    let report = blocking(move || crate::overlays::lint_blueprint(&st, &id)).await?.map_err(bad_request_err)?;
     Ok(Json(json!(report)))
 }
 
@@ -311,24 +310,20 @@ async fn lint_blueprint(State(st): S, Path(id): Path<String>) -> ApiResult {
 /// load. Read off disk on every call: an overlay is edited in place, so there is no
 /// scan to go stale — the editor asks again when the project changes or on Reload.
 async fn overlays(State(st): S) -> ApiResult {
-    let folders: std::collections::BTreeSet<String> = read(&st.project)
-        .bin
-        .values()
-        .filter_map(|i| match &i.source {
-            BinSource::Overlay { overlay, .. } => Some(overlay.clone()),
-            _ => None,
-        })
-        .collect();
-    let out: serde_json::Map<String, Value> = folders
-        .into_iter()
-        .map(|rel| {
-            let v = match crate::overlays::resolve(&st, &rel) {
-                Ok(r) => json!({ "overlay": rel, "manifest": r.manifest }),
-                Err(e) => json!({ "overlay": rel, "error": format!("{e:#}") }),
-            };
-            (rel, v)
-        })
-        .collect();
+    let folders: Vec<String> = read(&st.project).overlay_folders().into_iter().map(str::to_string).collect();
+    let out = blocking(move || {
+        folders
+            .into_iter()
+            .map(|rel| {
+                let v = match crate::overlays::resolve(&st, &rel) {
+                    Ok(r) => json!({ "manifest": r.manifest }),
+                    Err(e) => json!({ "error": format!("{e:#}") }),
+                };
+                (rel, v)
+            })
+            .collect::<serde_json::Map<String, Value>>()
+    })
+    .await?;
     Ok(Json(Value::Object(out)))
 }
 
@@ -368,7 +363,7 @@ struct OverlayPath {
 /// Check an overlay folder against the contract before a bake proves it the slow way.
 /// Reads only: nothing is rendered and nothing is written.
 async fn lint_overlay(State(st): S, Query(q): Query<OverlayPath>) -> ApiResult {
-    let report = blocking(move || crate::overlays::lint_overlay(&st, &q.path)).await?.map_err(|e| ApiError::bad_request(format!("{e:#}")))?;
+    let report = blocking(move || crate::overlays::lint_overlay(&st, &q.path)).await?.map_err(bad_request_err)?;
     Ok(Json(json!(report)))
 }
 
@@ -434,7 +429,7 @@ async fn save_blueprint(State(st): S, Json(req): Json<SaveBlueprint>) -> ApiResu
         crate::overlays::save_blueprint(&st, from, &req.id, req.force)
     })
     .await?
-    .map_err(|e| ApiError::bad_request(format!("{e:#}")))?;
+    .map_err(bad_request_err)?;
     Ok(Json(json!({ "dir": dir })))
 }
 
@@ -792,13 +787,19 @@ async fn preview_reload(State(st): S, body: Option<Json<PreviewReload>>) -> ApiR
 /// splits it: a **clip** is a placement and is what decides how long the thing runs, while
 /// the **entry** is what is shown and exists before anything places it — which is what the
 /// overlay workbench iterates on. Both end in the same contract.
+/// The overlay clip `clip` names, and its entry's folder and vars, or why there is none.
+fn clip_overlay<'a>(project: &'a Project, clip: &str) -> Result<(&'a kuma_core::Clip, &'a str, &'a serde_json::Map<String, Value>), ApiError> {
+    let (_, _, c) = project.find_clip(clip).ok_or(ApiError::not_found("no such clip"))?;
+    match project.item(c).map(|i| &i.source) {
+        Some(BinSource::Overlay { overlay, vars }) => Ok((c, overlay, vars)),
+        _ => Err(ApiError::bad_request("not an overlay clip")),
+    }
+}
+
 async fn overlay_preview(State(st): S, Path(clip): Path<String>) -> Result<Response, ApiError> {
     let project = read(&st.project).clone();
-    let (_, _, c) = project.find_clip(&clip).ok_or(ApiError::not_found("no such clip"))?;
     // The bin entry decides the overlay and its vars; the clip decides how long it runs.
-    let Some(BinSource::Overlay { overlay, vars }) = project.item(c).map(|i| &i.source) else {
-        return Err(ApiError::bad_request("not an overlay clip"));
-    };
+    let (c, overlay, vars) = clip_overlay(&project, &clip)?;
     let r = crate::overlays::resolve(&st, overlay).map_err(|e| ApiError::not_found(format!("{e:#}")))?;
     // Clip ids are validated to be URL-safe.
     let base = format!("/overlay-preview/{}/", c.id);
@@ -867,14 +868,15 @@ fn overlay_document(
 }
 
 /// Files referenced by a previewed overlay, resolved against its folder.
+/// Only the folder is needed, not the manifest: every script, font and image the document
+/// loads comes through here.
 async fn overlay_file(State(st): S, Path((clip, rest)): Path<(String, String)>) -> Result<Response, ApiError> {
-    let project = read(&st.project).clone();
-    let (_, _, c) = project.find_clip(&clip).ok_or(ApiError::not_found("no such clip"))?;
-    let Some(BinSource::Overlay { overlay, .. }) = project.item(c).map(|i| &i.source) else {
-        return Err(ApiError::bad_request("not an overlay clip"));
+    let dir = {
+        let project = read(&st.project);
+        let (_, overlay, _) = clip_overlay(&project, &clip)?;
+        crate::overlays::folder(&st, overlay).map_err(ApiError::bad_request)?
     };
-    let r = crate::overlays::resolve(&st, overlay).map_err(|e| ApiError::not_found(format!("{e:#}")))?;
-    serve_overlay_file(&st, &r.dir, &rest)
+    serve_overlay_file(&st, &dir, &rest)
 }
 
 /// Files referenced by a previewed overlay entry, resolved against its folder.
@@ -886,7 +888,7 @@ async fn overlay_entry_file(State(st): S, Path((id, rest)): Path<(String, String
 
 /// Files inside a blueprint: its `thumb.png` and `preview.webp` for the browser.
 async fn blueprint_static(State(st): S, Path((id, rest)): Path<(String, String)>) -> Result<Response, ApiError> {
-    let dir = read(&st.blueprints).loaded.get(&id).map(|(d, _)| d.clone()).ok_or(ApiError::not_found("no such blueprint"))?;
+    let dir = st.blueprint_dir(&id).map_err(ApiError::not_found)?;
     serve_overlay_file(&st, &dir, &rest)
 }
 

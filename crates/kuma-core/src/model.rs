@@ -267,6 +267,17 @@ impl Project {
             .unwrap_or_default()
     }
 
+    /// Every overlay folder the bin uses, once each and in order. Entries may share one.
+    pub fn overlay_folders(&self) -> std::collections::BTreeSet<&str> {
+        self.bin
+            .values()
+            .filter_map(|i| match &i.source {
+                BinSource::Overlay { overlay, .. } => Some(overlay.as_str()),
+                _ => None,
+            })
+            .collect()
+    }
+
     /// Lowest free `<prefix><n>` track or clip id — one namespace, the whole project.
     pub fn free_track_or_clip_id(&self, prefix: &str) -> String {
         let taken: HashSet<&str> = self.sequences().flat_map(|(_, s)| s.tracks.iter().flat_map(|t| std::iter::once(t.id.as_str()).chain(t.clips.iter().map(|c| c.id.as_str())))).collect();

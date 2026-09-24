@@ -234,6 +234,11 @@ impl AppState {
         *write(&self.blueprints) = Blueprints { loaded: all, errors };
     }
 
+    /// The folder of an installed blueprint.
+    pub fn blueprint_dir(&self, id: &str) -> anyhow::Result<PathBuf> {
+        read(&self.blueprints).loaded.get(id).map(|(dir, _)| dir.clone()).ok_or_else(|| anyhow::anyhow!("no blueprint `{id}` in the library; `kuma library` installs the starter set"))
+    }
+
     pub fn blueprint_infos(&self) -> Vec<BlueprintInfo> {
         read(&self.blueprints)
             .loaded
@@ -325,13 +330,14 @@ impl AppState {
     /// Compose a patch *from the project as it is now* and apply it, both under the edit
     /// lock. For work that takes minutes before it knows what to write — a transcription —
     /// where deciding against a snapshot taken at the start would race every edit made
-    /// meanwhile. `build` must stay cheap: it runs with the lock held.
-    pub fn apply_built<T>(&self, origin: &str, build: impl FnOnce(&Project) -> anyhow::Result<(Vec<json_patch::PatchOperation>, T)>) -> anyhow::Result<(T, u64, Vec<Issue>)> {
+    /// meanwhile. `build` must stay cheap: it runs with the lock held. `base`, when given, is
+    /// checked like any patch's, so a stale one is a revision mismatch rather than a message.
+    pub fn apply_built<T>(&self, origin: &str, base: Option<u64>, build: impl FnOnce(&Project) -> anyhow::Result<(Vec<json_patch::PatchOperation>, T)>) -> anyhow::Result<(T, u64, Vec<Issue>)> {
         let mut carried = None;
         let (rev, warnings) = self.edit(origin, |p| {
             let (ops, value) = build(p).map_err(|e| EditError::Patch(format!("{e:#}")))?;
             carried = Some(value);
-            edit::apply_patch(p, None, &ops, &self.validation_context())
+            edit::apply_patch(p, base, &ops, &self.validation_context())
         })?;
         Ok((carried.expect("build ran"), rev, warnings))
     }

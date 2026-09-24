@@ -37,38 +37,37 @@ export async function placeBinItem(binId: string, t: number, ti = -1, duration?:
   await place(clip, kind, ti, []);
 }
 
-/** Copy a blueprint into the project and add the copy to the bin: the daemon copies the
- *  folder, and the entry — plus whatever `more` ops go with it — is one patch, one undo.
- *  Undoing it leaves the copied folder behind, unreferenced; it is never deleted, since
- *  it may by then hold somebody's edits. Returns the new bin id, or null. */
-async function addBlueprint(blueprintId: string, name: string | undefined, more: (binId: string) => PatchOp[] = () => []): Promise<string | null> {
-  const bp = store.state.blueprints.find((x) => x.id === blueprintId);
+/** An installed blueprint's manifest, and the name it goes by. */
+const blueprintOf = (id: string) => store.state.blueprints.find((b) => b.id === id)?.manifest;
+const blueprintName = (id: string) => blueprintOf(id)?.name || id;
+
+/** The bin id an entry named `label` would get. */
+const binIdFor = (label: string, fallback: string) => uniqueId(slug(label) || fallback, Object.keys(store.state.project!.bin));
+
+/** Copy a blueprint into the project and add the copy to the bin as `binId`: the daemon
+ *  copies the folder, and the entry — plus whatever `more` ops go with it — is one patch,
+ *  one undo. Undoing it leaves the copied folder behind, unreferenced; it is never
+ *  deleted, since it may by then hold somebody's edits. */
+async function addBlueprint(blueprintId: string, binId: string, label: string, more: PatchOp[] = []): Promise<boolean> {
   let overlay: string;
   try {
-    ({ overlay } = await api.copyBlueprint(blueprintId, slug(name ?? "") || undefined));
+    ({ overlay } = await api.copyBlueprint(blueprintId, slug(label) || undefined));
   } catch (e) {
     toast((e as Error).message, "err");
-    return null;
+    return false;
   }
-  const label = name?.trim() || bp?.manifest.name || blueprintId;
-  const binId = uniqueId(slug(label) || blueprintId, Object.keys(store.state.project!.bin));
   const item: BinItem = { name: label, source: { overlay, vars: {} } };
-  const ok = await store.patch([{ op: "add", path: binPath(binId), value: item }, ...more(binId)], `add ${blueprintId} ${binId}`);
-  return ok ? binId : null;
+  return store.patch([{ op: "add", path: binPath(binId), value: item }, ...more], `add ${blueprintId} ${binId}`);
 }
 
 /** Drop a blueprint on a timeline: copy it into the project, add it to the bin and place
  *  it, the entry and the clip in one patch. */
 export async function placeBlueprint(blueprintId: string, t: number, ti = -1) {
-  const bp = store.state.blueprints.find((x) => x.id === blueprintId);
-  const d = bp?.manifest.duration_default ?? 4;
-  const clip: Clip = { id: store.newId("o"), start: t, end: t + d, bin: "", in: 0, speed: 1, volume: 1, muted: false, effects: [], label: "" };
-  // The placement's ops ride in the same patch as the entry, once its id is known.
-  const binId = await addBlueprint(blueprintId, undefined, (id) => {
-    clip.bin = id;
-    return placeOps(clip, "overlay", ti);
-  });
-  if (binId) store.selectItem("clip", clip.id);
+  const label = blueprintName(blueprintId);
+  const binId = binIdFor(label, blueprintId);
+  const d = blueprintOf(blueprintId)?.duration_default ?? 4;
+  const clip: Clip = { id: store.newId("o"), start: t, end: t + d, bin: binId, in: 0, speed: 1, volume: 1, muted: false, effects: [], label: "" };
+  if (await addBlueprint(blueprintId, binId, label, placeOps(clip, "overlay", ti))) store.selectItem("clip", clip.id);
 }
 
 function defaultDuration(item: BinItem, p: Project, binId: string): number {
@@ -84,9 +83,8 @@ function defaultDuration(item: BinItem, p: Project, binId: string): number {
 /** The manifest of an overlay entry's folder, when it loads. */
 export const manifestOf = (source: OverlaySource): OverlayManifest | undefined => store.state.manifests[source.overlay]?.manifest;
 
-/** Why an overlay entry's folder does not load, when it does not. */
-export const overlayError = (source: OverlaySource): string | undefined =>
-  store.state.manifests[source.overlay]?.error ?? (store.state.manifests[source.overlay] ? undefined : `${source.overlay} is not loaded yet`);
+/** Why an overlay entry's folder has no manifest to show. */
+export const overlayError = (source: OverlaySource): string => store.state.manifests[source.overlay]?.error ?? `${source.overlay} is not loaded yet`;
 
 /** How many bin entries share `folder`. More than one means editing it changes them all. */
 export const sharersOf = (folder: string): string[] =>
@@ -196,15 +194,14 @@ export async function promptNewOverlay(blueprint?: string) {
     toast("No blueprints found. Run `kuma library`, or point KUMA_LIBRARY at a folder of them.", "err", 8000);
     return;
   }
-  const nameOf = (id: string) => blueprints.find((b) => b.id === id)?.manifest.name || id;
-  const pick = selectInput(blueprints.map((t) => ({ value: t.id, label: t.manifest.name || t.id, title: t.manifest.description })), blueprint ?? blueprints[0].id, () => {
+  const pick = selectInput(blueprints.map((t) => ({ value: t.id, label: blueprintName(t.id), title: t.manifest.description })), blueprint ?? blueprints[0].id, () => {
     // The name follows the blueprint until it has been typed in, so the common case is
     // one click and the rarer one is still a free choice.
-    if (!typed) name.value = nameOf(pick.value);
+    if (!typed) name.value = blueprintName(pick.value);
   });
   const name = el("input");
   name.type = "text";
-  name.value = nameOf(pick.value);
+  name.value = blueprintName(pick.value);
   let typed = false;
   name.oninput = () => { typed = true; };
   const ok = await askForm({
@@ -214,8 +211,9 @@ export async function promptNewOverlay(blueprint?: string) {
     ok: "Create",
   });
   if (!ok) return;
-  const id = await addBlueprint(pick.value, name.value.trim() || nameOf(pick.value));
-  if (id) store.openOverlay(id);
+  const label = name.value.trim() || blueprintName(pick.value);
+  const id = binIdFor(label, pick.value);
+  if (await addBlueprint(pick.value, id, label)) store.openOverlay(id);
 }
 
 /** A second entry on the same folder, vars and all, and open it. Iterating means keeping
@@ -238,7 +236,6 @@ export async function duplicateOverlay(id: string) {
 export async function makeOverlayUnique(id: string) {
   try {
     const { overlay } = await api.makeUnique(id);
-    await store.refresh();
     toast(`${id} now has its own folder: ${overlay}`, "ok");
   } catch (e) {
     toast((e as Error).message, "err");

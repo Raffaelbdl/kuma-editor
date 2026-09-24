@@ -180,7 +180,7 @@ export class Workbench {
     this.title.textContent = item.name || id;
     this.sub.textContent = source ? source.overlay : "";
     const loads = source && manifestOf(source);
-    const lines = loads ? this.notes : [`${(source && overlayError(source)) ?? "Not an overlay"} — fix the folder, then Reload.`];
+    const lines = loads ? this.notes : [`${source ? overlayError(source) : "Not an overlay"} — fix the folder, then Reload.`];
     this.hint.replaceChildren(...lines.map((l) => el("div", "", l)));
 
     const [w, h] = this.size(p!);

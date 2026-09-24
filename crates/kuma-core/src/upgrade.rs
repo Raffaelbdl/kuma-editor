@@ -15,27 +15,17 @@ use crate::model::Project;
 /// Parse a project file, upgrading it to the current format on the way in.
 pub fn parse_project(text: &str) -> serde_json::Result<Project> {
     let mut v: Value = serde_json::from_str(text)?;
-    upgrade(&mut v);
-    // The one older shape that is refused rather than brought forward (6 → 7 below). Said
-    // here, in words, because the struct cannot read it and serde's own complaint would be
-    // that no variant matched.
-    if let Some((id, template)) = template_overlay(&v) {
-        return Err(serde::de::Error::custom(format!(
-            "bin entry `{id}` names the template `{template}`, which an older kuma wrote: overlays now live in the project. \
-             Copy the blueprint into `overlays/{template}/` (renaming `template.json` to `overlay.json` and dropping its `id`), \
-             then set the entry's source to {{ \"overlay\": \"overlays/{template}\" }}, keeping its `vars`, and `version` to {}",
-            crate::PROJECT_VERSION
-        )));
-    }
+    upgrade(&mut v).map_err(serde::de::Error::custom)?;
     serde_json::from_value(v)
 }
 
 /// Bring `v` forward to [`crate::PROJECT_VERSION`], one version at a time. A document
 /// that is already current, or one whose version is unknown (newer than this binary), is
-/// left exactly as it is: the validator is what says so, and it says it in words.
-fn upgrade(v: &mut Value) {
+/// left exactly as it is: the validator is what says so, and it says it in words. A step
+/// that cannot bring a document forward refuses it, in words of its own.
+fn upgrade(v: &mut Value) -> Result<(), String> {
     // A missing version means "the current one" to serde, so it means that here too.
-    let Some(mut version) = v.get("version").and_then(Value::as_u64) else { return };
+    let Some(mut version) = v.get("version").and_then(Value::as_u64) else { return Ok(()) };
     if version == 1 {
         // 1 → 2: keyframes gained `ease`, whose default — `linear` — is exactly what a
         // version 1 keyframe always did. So nothing in the document has to change, and
@@ -64,15 +54,24 @@ fn upgrade(v: &mut Value) {
         // 5 → 6: a bin entry may carry a `volume`, absent meaning 1. A stamp.
         version = 6;
     }
-    if version == 6 && template_overlay(v).is_none() {
+    if version == 6 {
         // 6 → 7: an overlay entry names a folder of the project's own (`overlay`) where it
         // used to name a library template (`template`). Deliberately **not** migrated: a
-        // project with no overlay entries is stamped, and one with them stays at 6, which
-        // the validator refuses in words. Nothing relied on the old shape yet, and bringing
-        // one forward would mean copying folders from a library this parse cannot see.
+        // project with no overlay entries is stamped, and one with them is refused, saying
+        // how to bring it forward. Nothing relied on the old shape yet, and doing it here
+        // would mean copying folders from a library this parse cannot see.
+        if let Some((id, template)) = template_overlay(v) {
+            return Err(format!(
+                "bin entry `{id}` names the template `{template}`, which an older kuma wrote: overlays now live in the project. \
+                 Copy the blueprint into `overlays/{template}/` (renaming `template.json` to `overlay.json` and dropping its `id`), \
+                 then set the entry's source to {{ \"overlay\": \"overlays/{template}\" }}, keeping its `vars`, and `version` to {}",
+                crate::PROJECT_VERSION
+            ));
+        }
         version = 7;
     }
     v["version"] = Value::from(version);
+    Ok(())
 }
 
 /// The first bin entry that is a version 6 overlay — one naming a template rather than a
@@ -119,7 +118,7 @@ mod tests {
             r#""bin": { "tag": { "source": { "template": "location-tag" } },"#,
         );
         let mut v: Value = serde_json::from_str(&text).unwrap();
-        upgrade(&mut v);
+        assert!(upgrade(&mut v).is_err());
         assert_eq!(v["version"], 6, "not stamped");
         let e = parse_project(&text).expect_err("refused").to_string();
         assert!(e.contains("`tag`") && e.contains("overlays/location-tag"), "{e}");

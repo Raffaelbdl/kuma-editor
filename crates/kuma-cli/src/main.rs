@@ -113,7 +113,7 @@ enum Cmd {
         id: Option<String>,
     },
     /// Save a project overlay into the user library as a blueprint: a bin entry (its vars
-    /// become the blueprint's defaults), or a folder as it is (anything with a `/`).
+    /// become the blueprint's defaults), or, when no entry has that id, a folder as it is.
     SaveBlueprint {
         /// A bin id, or an overlay folder such as `overlays/title`.
         from: String,
@@ -123,8 +123,8 @@ enum Cmd {
         #[arg(long)]
         force: bool,
     },
-    /// Check overlays against the contract: blueprint ids or project overlay folders
-    /// (anything with a `/`); with none, every blueprint and every folder the bin uses.
+    /// Check overlays against the contract: project overlay folders (a path holding an
+    /// `overlay.json`) or blueprint ids; with none, every blueprint and every folder the bin uses.
     /// Exit 1 on errors.
     Lint { targets: Vec<String> },
     /// Generate `thumb.png` for blueprints (all, or the given ids).
@@ -334,6 +334,9 @@ async fn main() -> anyhow::Result<()> {
             }
         }
         Cmd::ImportOverlay { path, id } => {
+            // Absolute, as `add-media` sends it: a relative path means the shell's directory
+            // whichever process ends up resolving it.
+            let path = absolute(Path::new(path))?.to_string_lossy().into_owned();
             // Through the daemon when one owns the project, as `add-media` is.
             let (id, rev) = if let Some(url) = running_daemon(&cli).await {
                 let body = serde_json::json!({ "path": path, "id": id, "origin": "cli: import overlay" });
@@ -341,7 +344,7 @@ async fn main() -> anyhow::Result<()> {
                 (v["id"].as_str().unwrap_or_default().to_string(), v["revision"].as_u64().unwrap_or_default())
             } else {
                 let state = open(&cli)?;
-                let (id, rev, _) = kuma_daemon::overlays::import_overlay(&state, path, id.clone(), None, Default::default(), None, "cli")?;
+                let (id, rev, _) = kuma_daemon::overlays::import_overlay(&state, &path, id.clone(), None, Default::default(), None, "cli")?;
                 (id, rev)
             };
             println!("added bin entry `{id}` (revision {rev})");
@@ -353,15 +356,16 @@ async fn main() -> anyhow::Result<()> {
                 (v["id"].as_str().unwrap_or_default().to_string(), v["revision"].as_u64().unwrap_or_default())
             } else {
                 let state = open(&cli)?;
-                let overlay = kuma_daemon::overlays::copy_blueprint(&state, blueprint, None)?;
-                let (id, rev, _) = kuma_daemon::overlays::import_overlay(&state, &overlay, id.clone(), None, Default::default(), None, "cli")?;
+                let (_, id, rev, _) = kuma_daemon::overlays::add_blueprint(&state, blueprint, id.clone(), None, Default::default(), "cli")?;
                 (id, rev)
             };
             println!("added bin entry `{id}` (revision {rev})");
         }
         Cmd::SaveBlueprint { from, id, force } => {
             let state = open(&cli)?;
-            let from = if from.contains('/') { kuma_daemon::overlays::SaveFrom::Folder(from) } else { kuma_daemon::overlays::SaveFrom::Entry(from) };
+            // A bin id when the bin has one by that name, else a folder in the project.
+            let entry = state.project.read().unwrap().bin.contains_key(from);
+            let from = if entry { kuma_daemon::overlays::SaveFrom::Entry(from) } else { kuma_daemon::overlays::SaveFrom::Folder(from) };
             let dir = kuma_daemon::overlays::save_blueprint(&state, from, id, *force)?;
             println!("{}", dir.display());
         }
@@ -371,24 +375,16 @@ async fn main() -> anyhow::Result<()> {
             // blueprint. With none, everything: the library and what the bin uses.
             let targets: Vec<String> = if targets.is_empty() {
                 let blueprints = state.blueprints.read().unwrap().loaded.keys().cloned().collect::<Vec<_>>();
-                let folders: std::collections::BTreeSet<String> = state
-                    .project
-                    .read()
-                    .unwrap()
-                    .bin
-                    .values()
-                    .filter_map(|i| match &i.source {
-                        kuma_core::BinSource::Overlay { overlay, .. } => Some(overlay.clone()),
-                        _ => None,
-                    })
-                    .collect();
+                let folders: Vec<String> = state.project.read().unwrap().overlay_folders().into_iter().map(str::to_string).collect();
                 blueprints.into_iter().chain(folders).collect()
             } else {
                 targets.clone()
             };
             let mut errors = 0;
             for target in targets {
-                let report = if target.contains('/') { kuma_daemon::overlays::lint_overlay(&state, &target)? } else { kuma_daemon::overlays::lint_blueprint(&state, &target)? };
+                // A folder in the project when there is one by that path, else a blueprint id.
+                let folder = state.config.project_root().join(&target).join(kuma_core::manifest::MANIFEST).is_file();
+                let report = if folder { kuma_daemon::overlays::lint_overlay(&state, &target)? } else { kuma_daemon::overlays::lint_blueprint(&state, &target)? };
                 errors += report.errors();
                 let status = if report.ok() { "ok" } else { "FAILED" };
                 println!("{target}: {status} ({} error(s), {} warning(s))", report.errors(), report.warnings());

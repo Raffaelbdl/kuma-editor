@@ -182,9 +182,13 @@ class Store {
       try {
         do {
           this.refreshAgain = false;
-          // Manifests alongside: an edit can point an entry at another folder (make unique,
-          // an import, an undo), and the inspector builds its fields from the manifest.
-          const [project, manifests] = await Promise.all([api.project(), api.overlays().catch(() => this.state.manifests)]);
+          const project = await api.project();
+          // The inspector builds its fields from the manifests, so they follow when an edit
+          // points the bin at other folders (an import, make unique, an undo). A folder
+          // edited on disk is not an edit; the workbench's Reload is what re-reads it.
+          const manifests = sameKeys(overlayFolders(project), this.state.manifests)
+            ? this.state.manifests
+            : await api.overlays().catch(() => this.state.manifests);
           // The open sequence can be deleted out from under us (undo, an agent edit); the
           // daemon falls back to the master and so do we, rather than showing nothing.
           const sequence = sequenceOf(project, this.state.sequence) ? this.state.sequence : project.master;
@@ -208,11 +212,10 @@ class Store {
     return this.refreshing;
   }
 
-  /** Re-read the overlay folders' manifests and the library's blueprints: what Reload does
-   *  after a folder was edited on disk, which is not an edit the daemon announces. */
+  /** Re-read the overlay folders' manifests: what Reload does after a folder was edited
+   *  on disk, which is not an edit the daemon announces. */
   async reloadOverlays() {
-    const [manifests, blueprints] = await Promise.all([api.overlays(), api.reloadBlueprints()]);
-    this.set({ manifests, blueprints });
+    this.set({ manifests: await api.overlays() });
   }
 
   /** A selection survives a refresh only while the things it names still exist — each of
@@ -428,6 +431,16 @@ export const store = new Store();
 
 /** `ids` with `id` in it, appended if it was not — how a tab strip gains one. */
 const withId = (ids: string[], id: string): string[] => (ids.includes(id) ? ids : [...ids, id]);
+
+/** The overlay folders a project's bin uses. */
+const overlayFolders = (p: Project): Set<string> =>
+  new Set(Object.values(p.bin).flatMap((i) => (isOverlaySource(i.source) ? [i.source.overlay] : [])));
+
+/** Whether `folders` are exactly the keys of `manifests`. */
+const sameKeys = (folders: Set<string>, manifests: Record<string, unknown>): boolean => {
+  const keys = Object.keys(manifests);
+  return keys.length === folders.size && keys.every((k) => folders.has(k));
+};
 
 /** An entry the workbench can open: one that exists and is an overlay. */
 export const isOverlayEntry = (p: Project | null, id: string): boolean =>

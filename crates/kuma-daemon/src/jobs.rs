@@ -244,16 +244,16 @@ pub fn add_media(state: &AppState, path: &Path, id: Option<String>, parent: Opti
 /// The blueprint a transcript lands in. Its `cues` var is the transcript; the rest is looks.
 const SUBTITLES_BLUEPRINT: &str = "subtitles";
 
-/// The overlay folder a new transcript entry points at: one the project already has
-/// (`overlays/subtitles`, as the first transcript left it, and still a subtitles overlay),
-/// else a fresh copy of the blueprint. Transcripts share one folder, as any two wordings of
-/// a design do; restyling that folder restyles them all, and "Make unique" splits one off.
-fn subtitles_overlay(state: &AppState) -> anyhow::Result<String> {
-    let existing = format!("overlays/{SUBTITLES_BLUEPRINT}");
-    if crate::overlays::resolve(state, &existing).is_ok_and(|r| r.manifest.vars.get("cues").is_some_and(|v| v.ty == kuma_core::VarType::Cues)) {
-        return Ok(existing);
-    }
-    crate::overlays::copy_blueprint(state, SUBTITLES_BLUEPRINT, None)
+/// The folder a new transcript points at: that of a transcript already in the bin (an
+/// overlay entry whose manifest takes `cues`), so it follows one that was made unique or
+/// moved; else the copy an earlier transcript left in `overlays/subtitles`, since undoing
+/// it leaves the folder behind. New transcripts share it, as any two wordings of a design
+/// do; only when there is neither is the blueprint copied.
+fn subtitles_folder(state: &AppState, p: &Project) -> Option<String> {
+    let takes_cues = |rel: &str| crate::overlays::resolve(state, rel).is_ok_and(|r| r.manifest.vars.values().any(|v| v.ty == kuma_core::VarType::Cues));
+    let left_behind = format!("overlays/{SUBTITLES_BLUEPRINT}");
+    let found = p.overlay_folders().into_iter().chain([left_behind.as_str()]).find(|rel| takes_cues(rel)).map(str::to_string);
+    found
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -311,8 +311,9 @@ pub fn transcribe(state: &AppState, req: &TranscribeRequest, progress: &dyn Fn(u
     if item.meta.as_ref().is_some_and(|m| !m.has_audio) {
         anyhow::bail!("`{bin}` has no audio");
     }
-    if !state.config.project_root().join(format!("overlays/{SUBTITLES_BLUEPRINT}")).is_dir() && !read(&state.blueprints).loaded.contains_key(SUBTITLES_BLUEPRINT) {
-        anyhow::bail!("the `{SUBTITLES_BLUEPRINT}` blueprint is not in any library; run `kuma library`");
+    let existing = subtitles_folder(state, &project);
+    if existing.is_none() {
+        state.blueprint_dir(SUBTITLES_BLUEPRINT)?;
     }
     // A courtesy, not the check that counts: refuse an id that is plainly taken before
     // spending minutes on it. The one that decides runs below, against the live project.
@@ -328,19 +329,13 @@ pub fn transcribe(state: &AppState, req: &TranscribeRequest, progress: &dyn Fn(u
     progress(90, "adding to the bin");
 
     let cues_value = serde_json::to_value(&cues)?;
-    // Settled before the edit lock is taken: copying a folder is filesystem work. A run
-    // that replaces an entry keeps that entry's folder, so it copies nothing — and should
-    // the entry be gone by the time the lock is held, its folder still suits a new one.
-    let replaced = req.id.clone().or_else(|| Some(format!("{bin}-subs"))).filter(|_| req.replace);
-    let replaced = replaced.and_then(|id| match read(&state.project).bin.get(&id).map(|i| &i.source) {
-        Some(BinSource::Overlay { overlay, .. }) => Some(overlay.clone()),
-        _ => None,
-    });
-    let overlay = match replaced {
+    // Settled before the edit lock is taken, since copying a folder is filesystem work — and
+    // only now, so a transcription that fails copies nothing.
+    let overlay = match existing {
         Some(folder) => folder,
-        None => subtitles_overlay(state)?,
+        None => crate::overlays::copy_blueprint(state, SUBTITLES_BLUEPRINT, None)?,
     };
-    let (outcome, rev, warnings) = state.apply_built(&req.origin, |p| {
+    let (outcome, rev, warnings) = state.apply_built(&req.origin, None, |p| {
         // Everything below reads `p`, the project as it is now — never the snapshot above.
         let media_item = p.bin.get(&bin).ok_or_else(|| anyhow::anyhow!("`{bin}` is gone"))?;
         // The clip may have been moved, retrimmed or deleted while the model ran; its
@@ -420,10 +415,20 @@ fn add_op(pointer: &str, value: serde_json::Value) -> anyhow::Result<json_patch:
     Ok(json_patch::PatchOperation::Add(json_patch::AddOperation { path: pointer.parse()?, value }))
 }
 
-/// `add /bin/<id><rest>`, the id escaped as a pointer segment so a bad one is refused by
-/// the validator rather than landing somewhere else.
-fn bin_op(id: &str, rest: &str, value: serde_json::Value) -> anyhow::Result<json_patch::PatchOperation> {
-    add_op(&format!("/bin/{}{rest}", id.replace('~', "~0").replace('/', "~1")), value)
+/// `/bin/<id><rest>`, the id escaped as a pointer segment so a bad one is refused by the
+/// validator rather than landing somewhere else.
+fn bin_pointer(id: &str, rest: &str) -> String {
+    format!("/bin/{}{rest}", id.replace('~', "~0").replace('/', "~1"))
+}
+
+/// `add /bin/<id><rest>`.
+pub(crate) fn bin_op(id: &str, rest: &str, value: serde_json::Value) -> anyhow::Result<json_patch::PatchOperation> {
+    add_op(&bin_pointer(id, rest), value)
+}
+
+/// `replace /bin/<id><rest>`.
+pub(crate) fn bin_replace_op(id: &str, rest: &str, value: serde_json::Value) -> anyhow::Result<json_patch::PatchOperation> {
+    Ok(json_patch::PatchOperation::Replace(json_patch::ReplaceOperation { path: bin_pointer(id, rest).parse()?, value }))
 }
 
 pub type Bakes = HashMap<String, OverlayBake>;

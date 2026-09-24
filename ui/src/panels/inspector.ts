@@ -529,7 +529,7 @@ export class Inspector {
       this.host.appendChild(row("actions", button("Make unique", () => void makeOverlayUnique(id), "Copy the folder so this entry has its own, and edit it alone")));
     }
     if (!manifest) {
-      this.host.appendChild(el("p", "muted", overlayError(source) ?? "The overlay's folder does not load."));
+      this.host.appendChild(el("p", "muted", overlayError(source)));
       return;
     }
     // The row cannot show this and stay one line, but an overlay is the one entry kind

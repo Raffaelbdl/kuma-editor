@@ -165,7 +165,7 @@ export interface OverlayManifest {
 /** A reusable overlay in the user's library. Copied into a project to be used. */
 export interface BlueprintInfo { id: string; manifest: OverlayManifest; has_thumb: boolean; has_preview: boolean }
 /** An overlay folder the bin uses: its manifest, or why it will not load. */
-export interface OverlayInfo { overlay: string; manifest?: OverlayManifest; error?: string }
+export interface OverlayInfo { manifest?: OverlayManifest; error?: string }
 
 /** What `check` says about an overlay: the contract's own rules plus hyperframes'. */
 export interface Finding { level: "error" | "warning"; code: string; message: string; fix?: string }

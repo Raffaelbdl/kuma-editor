@@ -74,6 +74,11 @@ enum Cmd {
         #[arg(long)]
         frame: Option<String>,
     },
+    /// Show how big the project's `.kuma/` cache is, or prune it.
+    Cache {
+        #[command(subcommand)]
+        action: Option<CacheCmd>,
+    },
     /// Write the compiled MLT XML to stdout (overlays skipped unless baked).
     Compile {
         /// Sequence (bin id) to use instead of the project's master.
@@ -170,6 +175,16 @@ enum Cmd {
         /// Print the JSON instead of writing the file.
         #[arg(long)]
         print: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum CacheCmd {
+    /// Delete what the project no longer uses. Waits for renders using the cache.
+    Prune {
+        /// Delete every bake and sampled frame.
+        #[arg(long)]
+        all: bool,
     },
 }
 
@@ -284,6 +299,23 @@ async fn main() -> anyhow::Result<()> {
             };
             let samples = tokio::task::spawn_blocking(move || kuma_daemon::jobs::sample_frames(&state, &req, &|_, _| {})).await??;
             println!("{}", serde_json::to_string_pretty(&samples)?);
+        }
+        Cmd::Cache { action } => {
+            // Through a running daemon, so the prune waits for its renders.
+            let daemon = running_daemon(&cli).await.map(kuma_mcp::client::Client::new);
+            let out = match (action, &daemon) {
+                (None, Some(c)) => c.get("/api/cache").await?,
+                (None, None) => serde_json::to_value(kuma_daemon::cache::usage(&*open(&cli)?)?)?,
+                (Some(CacheCmd::Prune { all }), Some(c)) => {
+                    let v = c.post("/api/cache/prune", &serde_json::json!({ "all": all })).await?;
+                    c.wait_job(v["job"].as_u64().unwrap_or_default(), std::time::Duration::from_secs(24 * 3600)).await?["result"].take()
+                }
+                (Some(CacheCmd::Prune { all }), None) => {
+                    let (state, all) = (open(&cli)?, *all);
+                    serde_json::to_value(tokio::task::spawn_blocking(move || kuma_daemon::cache::prune(&state, all, &|_, m| eprintln!("{m}"))).await??)?
+                }
+            };
+            println!("{}", serde_json::to_string_pretty(&out)?);
         }
         Cmd::Compile { sequence } => {
             let state = open(&cli)?;
@@ -491,7 +523,7 @@ async fn doctor(cli: &Cli) -> anyhow::Result<()> {
     println!("engine        {}", ok(cfg.repo_root.join("engine/build/kuma-preview").is_file(), "engine/build/kuma-preview", "cmake -S engine -B engine/build && cmake --build engine/build -j"));
     println!("melt          {}", ok(kuma_mlt::melt::melt_available(), "ok", "apt install melt"));
     println!("ffprobe       {}", ok(kuma_overlay::media::ffprobe_available(), "ok", "apt install ffmpeg"));
-    let baker = kuma_overlay::Baker::discover(&cfg.repo_root, PathBuf::new(), cfg.cache_dir().join("bakes"));
+    let baker = kuma_overlay::Baker::discover(&cfg.repo_root, PathBuf::new(), cfg.bakes_dir());
     println!("hyperframes   {}", baker.available().map(|v| format!("{v} ({})", baker.hyperframes.display())).unwrap_or_else(|e| format!("MISSING — npm install at the repo root ({e})")));
     let stt = kuma_overlay::Transcriber::discover(&cfg.repo_root, default_library_dirs().remove(0).join("models"));
     println!("whisper       {}", stt.available().map(|m| format!("{} with {}", stt.cli.display(), m.display())).unwrap_or_else(|e| format!("MISSING — {e}")));

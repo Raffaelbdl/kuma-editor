@@ -15,7 +15,7 @@ pub mod media;
 pub mod scaffold;
 pub mod transcribe;
 
-pub use bake::{copy_dir, BakeError, BakeRequest, Baker, BakeResult};
+pub use bake::{copy_dir, is_in_flight, BakeError, BakeRequest, Baker, BakeResult};
 pub use fonts::{Family, FontLibrary, Origin};
 pub use lint::{Finding, Level, LintReport};
 pub use inject::{Contract, FontCss};

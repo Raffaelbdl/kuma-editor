@@ -404,3 +404,19 @@ async fn a_font_is_added_and_an_overlay_draws_with_it() {
     let (_, css) = get_body(&addr, "/api/fonts.css");
     assert!(css.contains("url(\"/fonts/anton/0.ttf\")"), "{css}");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_cache_is_measured_and_pruned_over_http() {
+    let (state, addr, dir) = daemon().await;
+    std::fs::create_dir_all(dir.path().join(".kuma/bakes/stale")).unwrap();
+    let (_, body) = get_body(&addr, "/api/cache");
+    assert_eq!(serde_json::from_str::<serde_json::Value>(&body).unwrap()["bakes"]["entries"], 1, "{body}");
+    let (_, _, body) = request(&addr, "POST", "/api/cache/prune", "{}");
+    let id = serde_json::from_str::<serde_json::Value>(&body).unwrap()["job"].as_u64().unwrap();
+    let start = std::time::Instant::now();
+    while !state.jobs.get(id).unwrap().state.is_final() {
+        assert!(start.elapsed() < std::time::Duration::from_secs(10));
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert_eq!(state.jobs.get(id).unwrap().result["freed"]["bakes"]["entries"], 1);
+}

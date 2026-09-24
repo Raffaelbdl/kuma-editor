@@ -31,6 +31,23 @@ impl Config {
     pub fn cache_dir(&self) -> PathBuf {
         self.project_root().join(".kuma")
     }
+    pub fn bakes_dir(&self) -> PathBuf {
+        self.cache_dir().join("bakes")
+    }
+    pub fn samples_dir(&self) -> PathBuf {
+        self.cache_dir().join("samples")
+    }
+    pub fn thumbs_dir(&self) -> PathBuf {
+        self.cache_dir().join("thumbs")
+    }
+    /// Where a bin entry's still (`png`) or moving preview (`webp`) lives.
+    pub fn thumb_path(&self, bin_id: &str, ext: &str) -> PathBuf {
+        self.thumbs_dir().join(format!("{bin_id}.{ext}"))
+    }
+    /// The bin id a thumbnail file belongs to (ids have no dots).
+    pub fn thumb_owner(file_name: &str) -> &str {
+        file_name.split('.').next().unwrap_or_default()
+    }
     /// Every library's `blueprints/`, lowest precedence first. Never a project's.
     pub fn blueprint_dirs(&self) -> Vec<PathBuf> {
         self.library_dirs.iter().map(|d| d.join("blueprints")).collect()
@@ -175,6 +192,9 @@ pub struct AppState {
     /// it is nobody's edit, it must not bump the revision or land in the undo stack, and a
     /// project reopened tomorrow should start on its master. `None` follows the master.
     open_sequence: Mutex<Option<kuma_core::BinId>>,
+    /// Shared by renders, samples, bakes and thumbnails while they read the cache;
+    /// exclusive for a prune.
+    pub cache_users: RwLock<()>,
 }
 
 #[derive(Debug, Serialize)]
@@ -209,7 +229,7 @@ impl AppState {
         // The shared `_vendor/` is the highest-precedence library that has one; project
         // overlays use it too.
         let vendor_dir = config.blueprint_dirs().iter().rev().map(|d| d.join("_vendor")).find(|d| d.is_dir()).unwrap_or_else(|| config.user_blueprint_dir().join("_vendor"));
-        let baker = Baker::discover(&config.repo_root, vendor_dir, config.cache_dir().join("bakes")).with_fonts(config.font_dirs());
+        let baker = Baker::discover(&config.repo_root, vendor_dir, config.bakes_dir()).with_fonts(config.font_dirs());
         let transcriber = Transcriber::discover(&config.repo_root, config.library_dirs[0].join("models"));
         let (events, _) = broadcast::channel(256);
         let st = AppState {
@@ -223,6 +243,7 @@ impl AppState {
             jobs: crate::jobs::Jobs::default(),
             preview: crate::preview::PreviewHandle::default(),
             open_sequence: Mutex::new(None),
+            cache_users: RwLock::new(()),
             config,
         };
         st.reload_blueprints();

@@ -256,6 +256,13 @@ pub struct Rect {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct PruneCache {
+    /// Delete every bake and sampled frame, not only unused ones. Only when the user asks.
+    #[serde(default)]
+    pub all: bool,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct BakeOverlay {
     /// Clip ids to bake; all overlay clips when omitted.
     #[serde(default)]
@@ -492,6 +499,11 @@ impl KumaServer {
             "output": p.output, "range": p.range, "sequence": p.sequence,
         });
         self.job("/api/render", &body, Duration::from_secs(p.wait_seconds.unwrap_or(900))).await
+    }
+
+    #[tool(description = "Delete what the project's `.kuma/` cache no longer uses: superseded bakes, sampled frames, thumbnails of removed entries. sample_frames leaves PNGs behind, so prune after a long session. Returns what was freed and what is left.")]
+    async fn prune_cache(&self, Parameters(p): Parameters<PruneCache>) -> Result<CallToolResult, McpError> {
+        self.job("/api/cache/prune", &json!({ "all": p.all }), Duration::from_secs(3600)).await
     }
 
     #[tool(description = "Status of a background job (render/bake): state (queued, running, done, failed, cancelled), percent, message, result.")]

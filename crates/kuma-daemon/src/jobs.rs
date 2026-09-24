@@ -513,13 +513,17 @@ pub fn bake_for(
 /// the explicit `bake` command, where "all" means the whole bin rather than what some
 /// timeline reaches — warming the cache for an entry you have not placed yet is the point.
 pub fn bake_all(state: &AppState, project: &Project, only: Option<&[String]>, progress: &dyn Fn(u8, &str)) -> anyhow::Result<Bakes> {
-    let ids: Vec<String> = project
-        .all_clips()
-        .filter(|(_, _, c)| project.item(c).is_some_and(kuma_core::BinItem::is_overlay))
-        .map(|(_, _, c)| c.id.clone())
+    let _cache = read(&state.cache_users);
+    let ids: Vec<String> = every_overlay_clip(project)
+        .map(|c| c.id.clone())
         .filter(|id| only.is_none_or(|o| o.contains(id)))
         .collect();
     strict(bake_clips(state, project, &ids, progress, None))
+}
+
+/// Every overlay clip in every sequence: what `kuma bake` bakes and a prune keeps.
+pub(crate) fn every_overlay_clip(project: &Project) -> impl Iterator<Item = &kuma_core::Clip> {
+    project.all_clips().map(|(_, _, c)| c).filter(|c| project.item(c).is_some_and(kuma_core::BinItem::is_overlay))
 }
 
 /// A bake that must not lose an overlay: the first failure becomes the result.
@@ -551,7 +555,7 @@ fn bake_clips(state: &AppState, project: &Project, ids: &[String], progress: &dy
             }
         };
         progress(((i * 100) / n) as u8, &format!("baking {id} ({overlay})"));
-        let req = BakeRequest { overlay_dir: &r.dir, manifest: &r.manifest, vars, fps: project.fps, width: project.width, height: project.height, duration: clip.duration(), speed: clip.speed };
+        let req = bake_request(r, vars, project, clip);
         match state.baker.bake(&req) {
             Ok(r) => {
                 out.insert(id.clone(), r.overlay_bake());
@@ -560,6 +564,11 @@ fn bake_clips(state: &AppState, project: &Project, ids: &[String], progress: &dy
         }
     }
     (out, errs)
+}
+
+/// What an overlay clip bakes as — the one definition, since the prune keys it too.
+pub(crate) fn bake_request<'a>(r: &'a crate::overlays::Resolved, vars: &'a serde_json::Map<String, serde_json::Value>, project: &Project, clip: &kuma_core::Clip) -> BakeRequest<'a> {
+    BakeRequest { overlay_dir: &r.dir, manifest: &r.manifest, vars, fps: project.fps, width: project.width, height: project.height, duration: clip.duration(), speed: clip.speed }
 }
 
 /// Compile options pointed at this project's directories. Callers set what they need on
@@ -665,6 +674,7 @@ pub fn render(state: &AppState, req: &RenderRequest, progress: &dyn Fn(u8, &str)
 }
 
 fn render_now(state: &AppState, req: &RenderRequest, progress: &dyn Fn(u8, &str), cancel: &AtomicBool) -> anyhow::Result<serde_json::Value> {
+    let _cache = read(&state.cache_users);
     let (sequence, preset, output) = render_target(state, req)?;
     let project = read(&state.project).clone();
     let mut opts = compile_options(state);
@@ -768,6 +778,7 @@ pub struct Sample {
 /// cached per revision, frame and bake set; every cached file is written atomically so
 /// two concurrent samples of the same frame never read a half-written PNG.
 pub fn sample_frames(state: &AppState, req: &SampleRequest, progress: &dyn Fn(u8, &str)) -> anyhow::Result<Vec<Sample>> {
+    let _cache = read(&state.cache_users);
     let doc = read(&state.project).clone();
     // Sampling an entry is sampling a timeline that holds nothing else. Everything below
     // is then the ordinary path — the same bake, the same compiler, the same melt — so
@@ -792,7 +803,7 @@ pub fn sample_frames(state: &AppState, req: &SampleRequest, progress: &dyn Fn(u8
     // Only the overlays this sample can actually show: one frame must not pay for a bake
     // of every overlay on the timeline, nor fail because one somewhere else is broken.
     let bakes = bake_for(state, &project, &sequence, scope, Some((req.t0, t1)), &|p, m| progress(p / 2, m), None)?;
-    let out_dir = state.config.cache_dir().join("samples");
+    let out_dir = state.config.samples_dir();
     std::fs::create_dir_all(&out_dir)?;
     let mut opts = compile_options(state);
     opts.bakes = bakes;
@@ -810,7 +821,7 @@ pub fn sample_frames(state: &AppState, req: &SampleRequest, progress: &dyn Fn(u8
         if target.is_file() {
             return Ok(());
         }
-        let tmp = tempfile::Builder::new().suffix(".png").tempfile_in(&out_dir)?;
+        let tmp = tempfile::Builder::new().prefix(".tmp-").suffix(".png").tempfile_in(&out_dir)?;
         f(tmp.path())?;
         tmp.persist(target)?;
         Ok(())

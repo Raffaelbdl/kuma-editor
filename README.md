@@ -316,7 +316,7 @@ claude mcp add --scope user    kuma -- kuma mcp --project /abs/path.kuma.json  #
 and the agent always share one state. Tools: `get_project`, `get_schema`, `apply_edits`,
 `undo`, `redo`, `validate_project`, `list_presets`, `add_media`, `probe_media`,
 `transcribe`, **`sample_frames`**, `bake_overlay`, `render`, `job_status`, `cancel_job`,
-`health`, and for overlays `overlay_guide`, `new_overlay`, `check_overlay`,
+`prune_cache`, `health`, and for overlays `overlay_guide`, `new_overlay`, `check_overlay`,
 `import_overlay`, `make_overlay_unique`, `list_blueprints`, `add_blueprint`,
 `save_blueprint`. An agent scaffolds an overlay with `new_overlay`, checks it with
 `check_overlay` and adds it with `import_overlay`; `sample_frames` with `overlay` (a bin id)
@@ -329,6 +329,8 @@ kuma render --preset youtube-1080p         # bakes overlays, compiles, renders w
 kuma sample 12.0 14.0 --count 4 --rect 400,300,800,400
 kuma sample 0 3 --count 6 --overlay paris          # one overlay entry on its own, no placement (--backdrop, --duration, --frame 1080x1920)
 kuma bake                                  # bake all overlay clips (cached by content)
+kuma cache                                 # how big .kuma/ is: bakes, sampled frames, thumbnails
+kuma cache prune                           # delete what the project no longer uses (--all: every bake and frame)
 kuma compile > timeline.mlt                # inspect the MLT graph (or open it in Kdenlive)
 kuma render --sequence intro               # render one nested sequence instead of the master
 kuma transcribe --clip c1 --language fr    # whisper.cpp → `subtitles` entry under the media, placed over clip c1
@@ -502,6 +504,9 @@ and the values live with the rest of the project's decisions.
   shows what it looked for: `whisper-cli` on `PATH` (`KUMA_WHISPER_BIN`) and a ggml model in
   `~/.local/share/kuma/models` (`KUMA_WHISPER_MODEL`). `GET /api/health` has the same under
   `whisper`.
+- **`.kuma/` keeps growing** — superseded bakes and sampled frames are never deleted on
+  their own. `kuma cache prune` (or the job queue's button, or `prune_cache`) removes what
+  the project no longer uses; `--all` empties bakes and frames.
 - **A blueprint is missing from the Blueprints tab** — `GET /api/health` lists
   `blueprint_dirs` (where kuma looked) and `blueprint_errors` (manifests that failed to load
   and why). No library at all: run `kuma library`.

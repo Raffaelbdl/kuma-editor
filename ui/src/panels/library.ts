@@ -146,21 +146,12 @@ export class Library {
       this.host.appendChild(el("p", "muted", "No blueprints found. Run `kuma library` to install the starter set, point KUMA_LIBRARY at a folder of them, or save an overlay from the bin as one."));
       return;
     }
+    // Name, kind and the two ways in; the description is the tooltip.
     for (const t of blueprints) {
-      const card = blueprintCard(t.manifest.name || t.id, [
-        ["desc", t.manifest.description],
-        ["desc mono", Object.keys(t.manifest.vars).join(" · ")],
-      ], t.id);
-      // The moving one when the job has made it, the still otherwise: an overlay is an
-      // animation, and the frame a still picks is the least informative moment of it.
-      if (t.has_preview || t.has_thumb) {
-        prependThumb(card, `/blueprints/${encodeURIComponent(t.id)}/${t.has_preview ? "preview.webp" : "thumb.png"}`);
-      }
-      // Two different decisions, so two buttons: one puts it in the video now, the other
-      // opens it in the workbench to be made right first and placed when it is.
+      const card = blueprintCard(t.manifest.name || t.id, t.manifest.description, t.id);
       card.appendChild(row("actions",
-        button("Open in workbench", () => void promptNewOverlay(t.id), "Copy it into the project, add it to the bin and iterate on it — nothing is placed"),
-        button("Place on timeline", () => placeBlueprint(t.id, store.state.playhead), "Copy it into the project, add it to the bin and place a clip of it at the playhead"),
+        button("Workbench", () => void promptNewOverlay(t.id), "Copy it into the project and open it in the workbench, unplaced"),
+        button("Timeline", () => placeBlueprint(t.id, store.state.playhead), "Copy it into the project and place it at the playhead"),
       ));
       this.host.appendChild(card);
     }
@@ -236,22 +227,13 @@ function dropTarget(node: HTMLElement, folder: string | undefined, spot: (e: Dra
 }
 
 /** One draggable blueprint card. The payload is what a drop on the timeline receives. */
-function blueprintCard(title: string, lines: [string, string][], blueprint: string): HTMLDivElement {
+function blueprintCard(title: string, description: string, blueprint: string): HTMLDivElement {
   const item = el("div", "lib-item");
   item.draggable = true;
+  item.title = description;
   const head = el("div", "title", title);
   head.appendChild(el("span", "badge-kind overlay", "overlay"));
   item.appendChild(head);
-  for (const [cls, line] of lines) if (line) item.appendChild(el("div", cls, line));
   item.ondragstart = (e) => setDragPayload(e, { blueprint });
   return item;
-}
-
-/** A thumbnail that removes itself if the file is not there yet. */
-function prependThumb(card: HTMLDivElement, src: string) {
-  const img = el("img");
-  img.src = src;
-  img.alt = "";
-  img.onerror = () => img.remove();
-  card.prepend(img);
 }

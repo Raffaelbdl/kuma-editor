@@ -199,7 +199,7 @@ overlays live on top, driven by the timeline below; the topbar picker opens one 
 it a tab, and clicking between them switches which sequence is being edited (a round trip:
 the daemon holds that choice, so switching recompiles, and the last tab stays put because
 something is always open). Every other tab is one **overlay entry**, open on its own. `+ overlay` (or the
-Blueprints tab's *Open in workbench*, or **New Overlay…** in the Project menu) copies a
+Blueprints tab's *Workbench*, or **New Overlay…** in the Project menu) copies a
 blueprint into the project, adds it to the bin and opens it there **without placing it**
 — double-clicking an overlay in the bin opens it the same way: creating an overlay and
 deciding where it plays are two decisions, and the workbench is for the first one.

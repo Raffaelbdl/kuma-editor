@@ -251,13 +251,11 @@ async fn reload_blueprints(State(st): S) -> Json<Value> {
     Json(json!(st.blueprint_infos()))
 }
 
-/// What a caller's input got wrong, in full.
 fn bad_request_err(e: anyhow::Error) -> ApiError {
     ApiError::bad_request(format!("{e:#}"))
 }
 
-/// What a caller's input got wrong, unless it is an edit refusal, which keeps the 409/422
-/// contract of every other edit.
+/// A bad request, except an edit refusal, which keeps its 409/422.
 fn edit_or_bad_request(e: anyhow::Error) -> ApiError {
     match e.downcast::<EditError>() {
         Ok(edit) => ApiError::from(edit),
@@ -267,14 +265,12 @@ fn edit_or_bad_request(e: anyhow::Error) -> ApiError {
 
 #[derive(Deserialize, Default)]
 struct CopyBlueprint {
-    /// Folder name under the project's `overlays/`; the blueprint's id when absent.
     #[serde(default)]
     folder: Option<String>,
 }
 
-/// Copy a blueprint into the project's `overlays/` and say where it landed. Not an edit:
-/// the caller adds the entry — the editor does it in the same patch as the clip it drops,
-/// so one drop is one undo step.
+/// Copy a blueprint into the project, without an edit: the editor adds the entry in the
+/// same patch as the clip it drops.
 async fn copy_blueprint(State(st): S, Path(id): Path<String>, body: Option<Json<CopyBlueprint>>) -> ApiResult {
     let folder = body.and_then(|b| b.0.folder);
     let overlay = blocking(move || crate::overlays::copy_blueprint(&st, &id, folder.as_deref())).await?.map_err(bad_request_err)?;
@@ -283,7 +279,6 @@ async fn copy_blueprint(State(st): S, Path(id): Path<String>, body: Option<Json<
 
 #[derive(Deserialize, Default)]
 struct AddBlueprint {
-    /// Bin id for the new entry; minted from the folder name when absent.
     #[serde(default)]
     id: Option<String>,
     #[serde(default)]
@@ -294,11 +289,11 @@ struct AddBlueprint {
     origin: String,
 }
 
-/// Copy a blueprint into the project and add it to the bin: the agent's one call.
+/// Copy a blueprint into the project and add it to the bin.
 async fn add_blueprint(State(st): S, Path(blueprint): Path<String>, body: Option<Json<AddBlueprint>>) -> ApiResult {
     let req = body.map(|b| b.0).unwrap_or_default();
-    let (overlay, id, rev, warnings) = blocking(move || crate::overlays::add_blueprint(&st, &blueprint, req.id, req.name, req.vars, &req.origin)).await?.map_err(edit_or_bad_request)?;
-    Ok(Json(json!({ "id": id, "overlay": overlay, "revision": rev, "warnings": warnings })))
+    let (overlay, id, rev) = blocking(move || crate::overlays::add_blueprint(&st, &blueprint, req.id, req.name, req.vars, &req.origin)).await?.map_err(edit_or_bad_request)?;
+    Ok(Json(json!({ "id": id, "overlay": overlay, "revision": rev })))
 }
 
 async fn lint_blueprint(State(st): S, Path(id): Path<String>) -> ApiResult {
@@ -306,9 +301,7 @@ async fn lint_blueprint(State(st): S, Path(id): Path<String>) -> ApiResult {
     Ok(Json(json!(report)))
 }
 
-/// The manifest of every overlay folder the bin uses, keyed by folder, or why it will not
-/// load. Read off disk on every call: an overlay is edited in place, so there is no
-/// scan to go stale — the editor asks again when the project changes or on Reload.
+/// The manifest of every overlay folder the bin uses, or why it does not load.
 async fn overlays(State(st): S) -> ApiResult {
     let folders: Vec<String> = read(&st.project).overlay_folders().into_iter().map(str::to_string).collect();
     let out = blocking(move || {
@@ -329,7 +322,6 @@ async fn overlays(State(st): S) -> ApiResult {
 
 #[derive(Deserialize)]
 struct NewOverlay {
-    /// Folder name under the project's `overlays/`.
     id: String,
     #[serde(default)]
     name: String,
@@ -337,31 +329,23 @@ struct NewOverlay {
     description: String,
 }
 
-/// Scaffold an overlay folder in the project's `overlays/`. Not an edit: the folder is
-/// written and checked, and it reaches the bin only when it is imported — so a half-written
-/// overlay is never an entry.
+/// Scaffold `overlays/<id>/` and lint it. Not an edit: the folder reaches the bin when
+/// imported. A failed lint is reported beside the folder, which exists either way.
 async fn new_overlay(State(st): S, Json(req): Json<NewOverlay>) -> ApiResult {
-    let out = kuma_overlay::new_overlay(&st.config.overlays_dir(), &req.id, &req.name, &req.description).map_err(ApiError::bad_request)?;
+    let dir = kuma_overlay::new_overlay(&st.config.overlays_dir(), &req.id, &req.name, &req.description).map_err(ApiError::bad_request)?;
     let overlay = format!("overlays/{}", req.id);
-    // The scaffold is on disk from here on, so this is a success whatever the check
-    // says: a failed check is reported beside the folder, not instead of it, or a retry
-    // would be refused for a folder the caller was never told exists.
-    let lint = blocking({ let st = st.clone(); let dir = out.clone(); move || crate::overlays::lint(&st, &dir) }).await?;
+    let lint = blocking({ let (st, dir) = (st.clone(), dir.clone()); move || crate::overlays::lint(&st, &dir) }).await?;
     Ok(Json(match lint {
-        Ok(report) => json!({ "overlay": overlay, "dir": out, "lint": report }),
-        Err(e) => json!({ "overlay": overlay, "dir": out, "lint": Value::Null, "lint_error": format!("{e:#}") }),
+        Ok(report) => json!({ "overlay": overlay, "dir": dir, "lint": report }),
+        Err(e) => json!({ "overlay": overlay, "dir": dir, "lint": Value::Null, "lint_error": format!("{e:#}") }),
     }))
 }
 
 #[derive(Deserialize)]
 struct OverlayPath {
-    /// The overlay folder (or its `overlay.json`), relative to the project or absolute
-    /// inside it.
     path: String,
 }
 
-/// Check an overlay folder against the contract before a bake proves it the slow way.
-/// Reads only: nothing is rendered and nothing is written.
 async fn lint_overlay(State(st): S, Query(q): Query<OverlayPath>) -> ApiResult {
     let report = blocking(move || crate::overlays::lint_overlay(&st, &q.path)).await?.map_err(bad_request_err)?;
     Ok(Json(json!(report)))
@@ -382,7 +366,6 @@ struct ImportOverlay {
     origin: String,
 }
 
-/// Add an overlay folder of this project to the bin, as `POST /api/bin` adds a media file.
 async fn import_overlay(State(st): S, Json(req): Json<ImportOverlay>) -> ApiResult {
     let (id, rev, warnings) =
         blocking(move || crate::overlays::import_overlay(&st, &req.path, req.id, req.name, req.vars, req.base_revision, &req.origin)).await?.map_err(edit_or_bad_request)?;
@@ -396,8 +379,6 @@ struct MakeUnique {
     origin: String,
 }
 
-/// Give an overlay entry a copy of the folder it shares, so editing its HTML changes it
-/// alone.
 async fn make_unique(State(st): S, Json(req): Json<MakeUnique>) -> ApiResult {
     let (overlay, rev) = blocking(move || crate::overlays::make_unique(&st, &req.bin, &req.origin)).await?.map_err(edit_or_bad_request)?;
     Ok(Json(json!({ "overlay": overlay, "revision": rev })))
@@ -405,31 +386,14 @@ async fn make_unique(State(st): S, Json(req): Json<MakeUnique>) -> ApiResult {
 
 #[derive(Deserialize)]
 struct SaveBlueprint {
-    /// A bin entry to save: its folder, with its vars as the blueprint's defaults.
-    #[serde(default)]
-    bin: Option<String>,
-    /// Or a project overlay folder, saved as it is.
-    #[serde(default)]
-    path: Option<String>,
-    /// The blueprint's id: its folder name in the user library.
+    bin: String,
     id: String,
-    /// Replace a blueprint of that id.
     #[serde(default)]
     force: bool,
 }
 
-/// Save a project overlay into the user library as a blueprint ("templatify").
 async fn save_blueprint(State(st): S, Json(req): Json<SaveBlueprint>) -> ApiResult {
-    let dir = blocking(move || {
-        let from = match (&req.bin, &req.path) {
-            (Some(bin), None) => crate::overlays::SaveFrom::Entry(bin),
-            (None, Some(path)) => crate::overlays::SaveFrom::Folder(path),
-            _ => anyhow::bail!("pass exactly one of `bin` or `path`"),
-        };
-        crate::overlays::save_blueprint(&st, from, &req.id, req.force)
-    })
-    .await?
-    .map_err(bad_request_err)?;
+    let dir = blocking(move || crate::overlays::save_blueprint(&st, &req.bin, &req.id, req.force)).await?.map_err(bad_request_err)?;
     Ok(Json(json!({ "dir": dir })))
 }
 
@@ -787,7 +751,7 @@ async fn preview_reload(State(st): S, body: Option<Json<PreviewReload>>) -> ApiR
 /// splits it: a **clip** is a placement and is what decides how long the thing runs, while
 /// the **entry** is what is shown and exists before anything places it — which is what the
 /// overlay workbench iterates on. Both end in the same contract.
-/// The overlay clip `clip` names, and its entry's folder and vars, or why there is none.
+/// An overlay clip, with its entry's folder and vars.
 fn clip_overlay<'a>(project: &'a Project, clip: &str) -> Result<(&'a kuma_core::Clip, &'a str, &'a serde_json::Map<String, Value>), ApiError> {
     let (_, _, c) = project.find_clip(clip).ok_or(ApiError::not_found("no such clip"))?;
     match project.item(c).map(|i| &i.source) {
@@ -867,9 +831,7 @@ fn overlay_document(
     Ok(([(header::CONTENT_TYPE, "text/html; charset=utf-8"), (header::CACHE_CONTROL, "no-store")], out).into_response())
 }
 
-/// Files referenced by a previewed overlay, resolved against its folder.
-/// Only the folder is needed, not the manifest: every script, font and image the document
-/// loads comes through here.
+/// Files referenced by a previewed overlay, from its folder (no manifest read).
 async fn overlay_file(State(st): S, Path((clip, rest)): Path<(String, String)>) -> Result<Response, ApiError> {
     let dir = {
         let project = read(&st.project);
@@ -886,7 +848,7 @@ async fn overlay_entry_file(State(st): S, Path((id, rest)): Path<(String, String
     serve_overlay_file(&st, &view.overlay.dir, &rest)
 }
 
-/// Files inside a blueprint: its `thumb.png` and `preview.webp` for the browser.
+/// A blueprint's files: its thumbnails for the browser.
 async fn blueprint_static(State(st): S, Path((id, rest)): Path<(String, String)>) -> Result<Response, ApiError> {
     let dir = st.blueprint_dir(&id).map_err(ApiError::not_found)?;
     serve_overlay_file(&st, &dir, &rest)

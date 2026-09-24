@@ -520,8 +520,7 @@ export class Inspector {
     const source = item.source;
     const manifest = manifestOf(source);
     this.host.appendChild(field("Folder", el("div", "mono muted", source.overlay)));
-    // Entries may share a folder — two wordings of one design. Editing its markup changes
-    // every one of them, so say so, next to the way out.
+    // A shared folder: editing it changes every entry on it.
     const others = sharersOf(source.overlay).filter((x) => x !== id);
     if (others.length) {
       const note = el("p", "muted tiny", `Shares its folder with ${others.join(", ")}: editing the HTML changes ${others.length > 1 ? "them all" : "both"}.`);

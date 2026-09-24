@@ -109,9 +109,7 @@ across projects**, not part of the codebase: they live in a user library at
 `~/.local/share/kuma/{blueprints,presets,design-systems}`
 (`$XDG_DATA_HOME/kuma`), plus any directories in `KUMA_LIBRARY` (a `:`-separated path
 list); presets are also read from a project's own `presets/`. Later entries win on an id
-clash. A project's overlays are not library assets: they live in the project (see
-*Overlays and blueprints*). The repository ships a starter set under `library/`; install
-it once:
+clash. The repository ships a starter set under `library/`; install it once:
 
 ```
 kuma library                                 # copies library/{blueprints,presets,design-systems} → ~/.local/share/kuma (--force to overwrite)
@@ -320,12 +318,9 @@ and the agent always share one state. Tools: `get_project`, `get_schema`, `apply
 `transcribe`, **`sample_frames`**, `bake_overlay`, `render`, `job_status`, `cancel_job`,
 `health`, and for overlays `overlay_guide`, `new_overlay`, `check_overlay`,
 `import_overlay`, `make_overlay_unique`, `list_blueprints`, `add_blueprint`,
-`save_blueprint`. An agent writes an overlay as a folder in the project (`new_overlay`
-scaffolds one that already obeys the contract, `check_overlay` says whether it still does,
-without baking it) and then `import_overlay`s it into the bin; `sample_frames` takes an
-`overlay` (a bin id) to look at one overlay entry on its own, which is how it checks an
-animation it is authoring. `overlay_guide` returns the authoring contract
-(`library/blueprints/CLAUDE.md`).
+`save_blueprint`. An agent scaffolds an overlay with `new_overlay`, checks it with
+`check_overlay` and adds it with `import_overlay`; `sample_frames` with `overlay` (a bin id)
+shows one entry on its own. `overlay_guide` returns `library/blueprints/CLAUDE.md`.
 
 ### CLI
 
@@ -340,8 +335,6 @@ kuma transcribe --clip c1 --language fr    # whisper.cpp → `subtitles` entry u
 kuma transcribe screen --replace           # re-transcribe in place: same entry, styling and placement, new words
 kuma new-overlay my-tag                    # a contract-abiding skeleton in the project's overlays/ (--blueprint for the user library)
 kuma import-overlay overlays/my-tag        # add that folder to the bin (--id)
-kuma add-blueprint location-tag            # copy a blueprint into the project and add it to the bin
-kuma save-blueprint paris paris-tag        # an entry (its vars become the defaults) or a folder (overlays/my-tag) into the user library (--force)
 kuma lint                                  # every blueprint and every folder the bin uses (exit 1 on errors); `kuma lint overlays/my-tag` or `kuma lint location-tag` for one
 kuma validate | thumbs | library | doctor
 ```
@@ -409,27 +402,19 @@ not per sequence. The full schema: `GET /api/schema` or the `get_schema` tool.
 
 ## Overlays and blueprints
 
-An **overlay** is a folder in the project, `overlays/<name>/` with `index.html` +
-`overlay.json`, and an overlay bin entry names it (`"overlay": "overlays/<name>"`) with the
-vars for that entry. The manifest's typed vars become the properties panel, so overlays are
-editable without an agent; the agent can author new ones because they are plain folders,
-and adds one to the bin by importing it. Several entries may share a folder — two
-wordings of one design — and **Make unique** in the inspector gives one its own copy.
+An **overlay** is a project folder, `overlays/<name>/` with `index.html` + `overlay.json`;
+a bin entry names it (`"overlay": "overlays/<name>"`) with its own vars, which the manifest
+types for the inspector. An agent writes one and imports it; entries may share a folder, and
+**Make unique** gives one its own copy.
 
-A **blueprint** is a reusable overlay in the user's library,
-`~/.local/share/kuma/blueprints/<id>/`, the same shape. The **Blueprints** tab lists them;
-using one **copies** it into the project, so a finished video never changes because a
-blueprint did. **Save as blueprint** in the inspector goes the other way: it copies an
-overlay of this project into the library for the next one. The **thumbnails** button in
-the Blueprints tab (or `kuma thumbs`) renders each blueprint and overlay entry twice: a
-still, and a moving preview — an animated WebP with alpha, the first seconds looping —
-which is what the browser and the inspector show. An overlay is an animation, and a still
-can only pick one moment out of it. Starter set (`library/blueprints/`, installed by
-`kuma library`): `location-tag`, `lower-third`, `callout-arrow`, `label-pin`,
-`section-title`, `countdown`, `watermark` (static), `subtitles` (a `cues` var: the
-transcript — a transcription copies it into the project once and every transcript shares
-that copy). Contract: `library/blueprints/CLAUDE.md`. A library installed before a
-blueprint existed picks it up with another `kuma library` (it only adds).
+A **blueprint** is the same shape in `~/.local/share/kuma/blueprints/<id>/`. Using one from
+the **Blueprints** tab **copies** it into the project, so a finished video never changes
+because a blueprint did; **Save as blueprint** in the inspector copies an entry back, its
+vars as defaults. **thumbnails** (or `kuma thumbs`) renders a still and a looping animated
+WebP of each blueprint and overlay entry. Starter set (`library/blueprints/`, installed by
+`kuma library`, which only adds): `location-tag`, `lower-third`, `callout-arrow`,
+`label-pin`, `section-title`, `countdown`, `watermark` (static), `subtitles` (a `cues` var;
+transcripts share one copy of it). Contract: `library/blueprints/CLAUDE.md`.
 
 Effect presets are `<library>/presets/*.json` (Ken Burns, zoom to region, vignette,
 picture-in-picture, dim) and expand to ordinary effects; `$expr` values may use the
@@ -505,10 +490,8 @@ and the values live with the rest of the project's decisions.
 - **A blueprint is missing from the Blueprints tab** — `GET /api/health` lists
   `blueprint_dirs` (where kuma looked) and `blueprint_errors` (manifests that failed to load
   and why). No library at all: run `kuma library`.
-- **A project from before blueprints will not open** ("names the template …") — overlay
-  entries used to name a library template. The message says how to bring one forward: copy
-  the blueprint into `overlays/<id>/`, rename `template.json` to `overlay.json` without its
-  `id`, and point the entry at the folder.
+- **A project from before blueprints will not open** ("names the template …") — the
+  message says how to convert the entry.
 - **Bakes fail with "timelines did not become ready"** — an overlay without a GSAP timeline
   needs `data-no-timeline` on its composition root (see `library/blueprints/CLAUDE.md`).
   `kuma lint overlays/<name>` says so in a second instead of after a 45-second wait, and reports the

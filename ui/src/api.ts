@@ -28,17 +28,15 @@ export const api = {
   blueprints: () => json<BlueprintInfo[]>("/api/blueprints"),
   /** Rescan the libraries for blueprints. */
   reloadBlueprints: () => json<BlueprintInfo[]>("/api/blueprints", { method: "POST", body: "{}" }),
-  /** Copy a blueprint into the project's `overlays/` and say which folder it landed in.
-   *  Not an edit: the caller adds the entry, in the same patch as any clip placing it. */
+  /** Copy a blueprint into `overlays/`; not an edit. Returns the folder. */
   copyBlueprint: (id: string, folder?: string) =>
     json<{ overlay: string }>(`/api/blueprints/${encodeURIComponent(id)}/copy`, { method: "POST", body: JSON.stringify({ folder }) }),
-  /** The manifest of every overlay folder the bin uses, by folder, read off disk now. */
+  /** The manifest of every overlay folder the bin uses, by folder. */
   overlays: () => json<Record<string, OverlayInfo>>("/api/overlays"),
   /** Give an overlay entry its own copy of the folder it shares. One edit. */
   makeUnique: (bin: string) =>
     json<{ overlay: string; revision: number }>("/api/overlays/unique", { method: "POST", body: JSON.stringify({ bin, origin: "ui: make unique" }) }),
-  /** Save an overlay entry into the user's library as a blueprint: its folder, with the
-   *  entry's vars as the blueprint's defaults. */
+  /** Save an overlay entry as a blueprint, its vars as defaults. */
   saveBlueprint: (bin: string, id: string, force = false) =>
     json<{ dir: string }>("/api/overlays/save-blueprint", { method: "POST", body: JSON.stringify({ bin, id, force }) }),
   presets: () => json<Preset[]>("/api/presets"),

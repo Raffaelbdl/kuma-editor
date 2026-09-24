@@ -1,10 +1,7 @@
 //! Overlay manifests (`overlay.json`, beside the overlay's `index.html`).
 //!
-//! One shape, two homes. A project's **overlays** live in its own `overlays/<name>/` and a
-//! bin entry points at the folder; **blueprints** are the same folders kept in the user's
-//! library to be copied into a project. The manifest is what makes agent-free editing
-//! possible: the UI builds a properties panel from `vars`, and an entry's `vars` are
-//! validated against it.
+//! The same shape for a project's overlays and the library's blueprints. The UI builds a
+//! properties panel from `vars`, and an entry's `vars` are validated against it.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -88,8 +85,7 @@ pub struct VarSpec {
 pub const MANIFEST: &str = "overlay.json";
 
 impl OverlayManifest {
-    /// Load `dir/overlay.json`. The folder's name is the overlay's identity; the manifest
-    /// does not repeat it, so copying a folder under a new name needs no rewrite.
+    /// Load `dir/overlay.json`. The folder name is the identity; the manifest has no id.
     pub fn load(dir: &Path) -> Result<Self, ManifestError> {
         let path = dir.join(MANIFEST);
         let err = |reason: String| ManifestError { path: path.clone(), reason };
@@ -124,9 +120,8 @@ impl OverlayManifest {
         None
     }
 
-    /// Load every `<root>/*/overlay.json`, keyed by folder name — how a library's
-    /// blueprints are read. A folder whose manifest fails to load is reported, not
-    /// silently skipped: a typo would otherwise make a blueprint vanish without a word.
+    /// Load every `<root>/*/overlay.json`, keyed by folder name. Failures are reported, not
+    /// skipped, so a typo does not make a blueprint vanish silently.
     pub fn load_all(root: &Path) -> (BTreeMap<String, (PathBuf, OverlayManifest)>, Vec<ManifestError>) {
         let mut out = BTreeMap::new();
         let mut errors = Vec::new();
@@ -232,9 +227,8 @@ impl VarSpec {
     }
 }
 
-/// Where a bin entry's `overlay` folder may be: relative to the project directory and
-/// inside it. An overlay belongs to its project — a folder reached by an absolute path or
-/// through `..` would make the project depend on something it does not carry.
+/// A bin entry's `overlay` folder must be relative and inside the project, so the project
+/// carries everything it renders.
 pub fn check_overlay_path(rel: &str) -> Option<String> {
     let p = Path::new(rel);
     if rel.is_empty() {

@@ -44,10 +44,8 @@ const blueprintName = (id: string) => blueprintOf(id)?.name || id;
 /** The bin id an entry named `label` would get. */
 const binIdFor = (label: string, fallback: string) => uniqueId(slug(label) || fallback, Object.keys(store.state.project!.bin));
 
-/** Copy a blueprint into the project and add the copy to the bin as `binId`: the daemon
- *  copies the folder, and the entry — plus whatever `more` ops go with it — is one patch,
- *  one undo. Undoing it leaves the copied folder behind, unreferenced; it is never
- *  deleted, since it may by then hold somebody's edits. */
+/** Copy a blueprint into the project and add it to the bin as `binId`, with `more` ops in
+ *  the same patch (one undo; undo leaves the copied folder on disk). */
 async function addBlueprint(blueprintId: string, binId: string, label: string, more: PatchOp[] = []): Promise<boolean> {
   let overlay: string;
   try {
@@ -60,8 +58,7 @@ async function addBlueprint(blueprintId: string, binId: string, label: string, m
   return store.patch([{ op: "add", path: binPath(binId), value: item }, ...more], `add ${blueprintId} ${binId}`);
 }
 
-/** Drop a blueprint on a timeline: copy it into the project, add it to the bin and place
- *  it, the entry and the clip in one patch. */
+/** Copy a blueprint in, add it and place it at `t`, in one patch. */
 export async function placeBlueprint(blueprintId: string, t: number, ti = -1) {
   const label = blueprintName(blueprintId);
   const binId = binIdFor(label, blueprintId);
@@ -86,13 +83,11 @@ export const manifestOf = (source: OverlaySource): OverlayManifest | undefined =
 /** Why an overlay entry's folder has no manifest to show. */
 export const overlayError = (source: OverlaySource): string => store.state.manifests[source.overlay]?.error ?? `${source.overlay} is not loaded yet`;
 
-/** How many bin entries share `folder`. More than one means editing it changes them all. */
+/** The bin entries using `folder`. */
 export const sharersOf = (folder: string): string[] =>
   Object.entries(store.state.project?.bin ?? {}).filter(([, i]) => isOverlaySource(i.source) && i.source.overlay === folder).map(([id]) => id);
 
-/** How long an overlay runs when nothing says otherwise: the length it was authored for.
- *  The clip that places it and the workbench that previews it must agree, so they ask
- *  here. */
+/** How long an overlay runs by default: its manifest's length. */
 export const overlayDuration = (item: BinItem | undefined): number =>
   (item && isOverlaySource(item.source) && manifestOf(item.source)?.duration_default) || 4;
 
@@ -182,12 +177,7 @@ export async function promptNewFolder() {
   if (name) await addBinItem(name, "folder", { folder: true });
 }
 
-/**
- * Copy a blueprint into the project as a new overlay entry and open it in the workbench —
- * **without placing it**. Creating an overlay and deciding where it plays are two
- * different decisions, and the second one should not be forced on you while you are
- * still making the first.
- */
+/** Copy a blueprint in as a new entry and open it in the workbench, without placing it. */
 export async function promptNewOverlay(blueprint?: string) {
   const blueprints = store.state.blueprints;
   if (!blueprints.length) {
@@ -216,9 +206,7 @@ export async function promptNewOverlay(blueprint?: string) {
   if (await addBlueprint(pick.value, id, label)) store.openOverlay(id);
 }
 
-/** A second entry on the same folder, vars and all, and open it. Iterating means keeping
- *  the version that works while trying another wording; the markup stays shared — Make
- *  unique is the step that splits that too. */
+/** A second entry on the same folder, vars and all, opened in the workbench. */
 export async function duplicateOverlay(id: string) {
   const p = store.state.project!;
   const item = p.bin[id];
@@ -231,8 +219,7 @@ export async function duplicateOverlay(id: string) {
   if (await store.patch([{ op: "add", path: binPath(copyId), value }], `duplicate ${id}`)) store.openOverlay(copyId);
 }
 
-/** Give an overlay entry its own copy of the folder it shares, so editing the markup
- *  changes it alone. The daemon copies and repoints; the refresh follows the event. */
+/** Give an overlay entry its own copy of the folder it shares. */
 export async function makeOverlayUnique(id: string) {
   try {
     const { overlay } = await api.makeUnique(id);
@@ -242,8 +229,7 @@ export async function makeOverlayUnique(id: string) {
   }
 }
 
-/** Save an overlay entry into the user's library as a blueprint, for other projects: its
- *  folder, with this entry's vars as the defaults. Asks for the blueprint's id, and
+/** Save an overlay entry as a blueprint (its vars as defaults), asking for the id and
  *  before replacing one. */
 export async function saveAsBlueprint(id: string) {
   const item = store.state.project?.bin[id];

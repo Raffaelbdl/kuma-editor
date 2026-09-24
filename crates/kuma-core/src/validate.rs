@@ -37,9 +37,8 @@ impl Issue {
 pub struct ValidationContext {
     /// Project directory; bin paths and overlay folders resolve against it.
     pub root: PathBuf,
-    /// If false, nothing on disk is read: missing media files and overlay folders go
-    /// unchecked, and so do overlay vars, which are checked against the folder's manifest.
-    /// That is the compiler, which judges structure; the daemon passes true.
+    /// If false, nothing on disk is read: media files, overlay folders and overlay vars go
+    /// unchecked (the compiler). The daemon passes true.
     pub check_files: bool,
 }
 
@@ -816,8 +815,7 @@ mod tests {
         assert_eq!(bad(&daemon), 0);
     }
 
-    /// Outside the project is refused whoever validates: the project must carry its
-    /// overlays, and that is a fact about the path, not about the disk.
+    /// A folder outside the project is refused even without disk access.
     #[test]
     fn an_overlay_folder_outside_the_project_is_refused() {
         let p = project(json!({

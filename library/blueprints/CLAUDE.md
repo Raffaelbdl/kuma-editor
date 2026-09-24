@@ -1,42 +1,27 @@
 # Authoring kuma overlays
 
-An **overlay** is a folder of HTML that a bin entry points at. It belongs to one project and
-lives in it: `<project>/overlays/<name>/`, named in the entry as `"overlay": "overlays/<name>"`.
-A **blueprint** is the same kind of folder kept in the user's library, to be reused across
-projects. A project never reads a blueprint through an entry: using one **copies** it into the
-project's `overlays/`, and from then on the copy is the project's to edit — changing the
-blueprint later never re-styles a finished video.
-
-Blueprints are read from every library's `blueprints/`, later wins on an id clash:
-
-1. `$XDG_DATA_HOME/kuma/blueprints` (default `~/.local/share/kuma/blueprints`; `kuma library`
-   installs the starter set there, and **Save as blueprint** writes there),
-2. each directory in `KUMA_LIBRARY` (`:`-separated), as `<dir>/blueprints`.
-
-A project's `overlays/` is never a library. `GET /api/health` (the `health` tool) lists
-`blueprint_dirs` and `blueprint_errors`.
+An **overlay** is a project folder, `overlays/<name>/`, that a bin entry names
+(`"overlay": "overlays/<name>"`). A **blueprint** is the same folder in the user's library
+(`~/.local/share/kuma/blueprints/`, then each `KUMA_LIBRARY` dir's `blueprints/`); using one
+copies it into the project, so the copy is yours to edit. A project's `overlays/` is never a
+library. `health` lists `blueprint_dirs` and `blueprint_errors`.
 
 ```
-overlays/<name>/        (or, in a library, blueprints/<id>/ — the same shape)
+overlays/<name>/        (a blueprint has the same shape)
   overlay.json    manifest: name, description, duration_default, static, vars, tags
   index.html      the composition (always this name)
   fonts/…         any fonts, referenced with relative @font-face paths
-  thumb.png       generated for blueprints (`kuma thumbs`); never part of a bake or a copy
+  thumb.png       generated for blueprints (`kuma thumbs`); never baked or copied
 ```
 
-The folder's name is its identity; the manifest does not repeat it, so a copy under another
-name needs no edit. A folder is only an overlay if it holds an `overlay.json`, and loading
-refuses one without an `index.html` beside it.
-
-Several bin entries may point at one folder with different `vars` — two wordings of one
-design. Editing that folder's markup changes all of them; to change one alone, give it its
-own copy first (`make_overlay_unique`, **Make unique** in the inspector).
+The folder name is the identity (the manifest has no `id`). A folder without both files
+does not load. Entries may share a folder with different `vars`; editing it changes all of
+them, so `make_overlay_unique` first to change one.
 
 `_vendor/` holds shared files, referenced as `_vendor/<file>` from the overlay. An
 overlay's own `_vendor/` wins, then the one next to it, then the shared one from the
 highest-precedence library that has it (`<library>/blueprints/_vendor/`); the bake stages
-and the daemon serves exactly the same folder. It is the runtime an overlay is written
-against, not content, so it is not copied into projects.
+and the daemon serves exactly the same folder. It is not copied into projects.
 
 - `_vendor/kuma.js` — `kumaTemplate(defaults)` applies the vars, returns `{ vars, width,
   height, duration, text(id, value), timeline() }` and works standalone.
@@ -61,9 +46,8 @@ mistake: use the overlay's own defaults and keep them consistent across the vide
 Do not write an overlay from an empty file. `kuma new-overlay <name>` (the `new_overlay`
 tool) writes a working one into the project's `overlays/<name>/`: the root's timing
 attributes, a registered paused timeline, typed vars of three kinds, `--u` sizing that
-survives both orientations, and an exit anchored to the clip's real length. Edit that.
-Or start from a blueprint that is close to what you want: `add_blueprint` copies it into
-the project and adds the entry, and the copy is yours to edit.
+survives both orientations, and an exit anchored to the clip's real length. Edit that —
+or `add_blueprint` one that is close.
 
 `kuma lint overlays/<name>` (the `check_overlay` tool, **Check** in the overlay workbench)
 reads the staged overlay — the injection applied, `_vendor/` in place — and reports what
@@ -73,9 +57,8 @@ markup reads that the manifest does not declare, a missing asset. It runs hyperf
 linter too when it is installed. It renders nothing and writes nothing, so run it after
 every edit; a bake is the slow way to learn the same thing.
 
-Writing a folder does not put it in the bin. When it checks clean, `import_overlay`
-(`kuma import-overlay overlays/<name>`) adds it as an entry — optionally with `vars` — so a
-half-written overlay is never something a clip can play.
+Writing a folder does not put it in the bin: `import_overlay` (`kuma import-overlay
+overlays/<name>`) does, optionally with `vars`, once it checks clean.
 
 ## The contract (what kuma guarantees, what the overlay must do)
 
@@ -246,16 +229,11 @@ check the baked result matches.
 
 ## Adding an overlay as an agent
 
-1. `overlay_guide` returns this file; `sample_frames` on the target range shows what the
-   overlay must sit over. `list_blueprints` shows what the library already has — starting
-   from one with `add_blueprint` is often quicker than a scaffold.
-2. `new_overlay` (or write `overlays/<name>/overlay.json` and `index.html` yourself,
-   following this contract), then edit it until `check_overlay` is clean.
-3. `import_overlay` with `path: "overlays/<name>"` and the `vars` you want: that is the bin
-   entry. A second wording is a second import of the same folder with other vars. Run
-   *Checking your work* above on the entry before you place anything — it needs no clip.
+1. `sample_frames` on the target range shows what the overlay sits over; `list_blueprints`
+   shows what the library has (`add_blueprint` is often quicker than a scaffold).
+2. `new_overlay` (or write the two files yourself), then edit until `check_overlay` is clean.
+3. `import_overlay` with `path: "overlays/<name>"` and your `vars`. A second wording is a
+   second import of the same folder. Run *Checking your work* on the entry — no clip needed.
 4. Place it with `apply_edits`: a clip `{ "id": "…", "start": t, "end": t + d, "bin":
-   "<binId>" }` on an overlay track.
-5. `sample_frames` again on that range to verify.
-6. Only when the user asks for it to be reusable: `save_blueprint` puts the folder in their
-   library. The library is theirs, shared by every project, so do not fill it on your own.
+   "<binId>" }` on an overlay track, then `sample_frames` that range.
+5. `save_blueprint` only when the user asks: the library is theirs.

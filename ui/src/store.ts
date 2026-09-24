@@ -31,8 +31,7 @@ export interface State {
   project: Project | null;
   /** Reusable overlays in the user's library, to copy into the project. */
   blueprints: BlueprintInfo[];
-  /** The manifest of every overlay folder the bin uses, by folder (`overlays/<name>`).
-   *  Refetched with the project, and on the workbench's Reload after a folder is edited. */
+  /** The manifest of every overlay folder the bin uses, by folder. */
   manifests: Record<string, OverlayInfo>;
   /** The sequence open for editing. The daemon owns this (the preview compiles it), so it
    *  is set through the API rather than locally. Empty until the first load. */
@@ -183,9 +182,7 @@ class Store {
         do {
           this.refreshAgain = false;
           const project = await api.project();
-          // The inspector builds its fields from the manifests, so they follow when an edit
-          // points the bin at other folders (an import, make unique, an undo). A folder
-          // edited on disk is not an edit; the workbench's Reload is what re-reads it.
+          // Refetched when the bin's folders change; edits on disk wait for Reload.
           const manifests = sameKeys(overlayFolders(project), this.state.manifests)
             ? this.state.manifests
             : await api.overlays().catch(() => this.state.manifests);
@@ -212,8 +209,7 @@ class Store {
     return this.refreshing;
   }
 
-  /** Re-read the overlay folders' manifests: what Reload does after a folder was edited
-   *  on disk, which is not an edit the daemon announces. */
+  /** Re-read the manifests after a folder was edited on disk. */
   async reloadOverlays() {
     this.set({ manifests: await api.overlays() });
   }

@@ -269,25 +269,17 @@ async fn an_entry_is_made_unique_and_an_overlay_saved_as_a_blueprint() {
     let (status, _) = post(&addr, "/api/overlays/unique", r#"{ "bin": "main" }"#);
     assert!(status.contains("400"), "a sequence has no folder to copy: {status}");
 
-    let (status, saved) = post(&addr, "/api/overlays/save-blueprint", r#"{ "path": "overlays/twin", "id": "twin" }"#);
-    assert!(status.contains("200"), "{status}: {saved}");
-    assert!(dir.path().join("library/blueprints/twin/overlay.json").is_file());
-    assert!(state.blueprint_infos().iter().any(|b| b.id == "twin"), "not listed after saving");
-
-    // Saved from an entry, the entry's vars become the blueprint's defaults: what is saved
-    // is what the bin shows, not the folder before anyone configured it.
+    // Saved from an entry: its vars become the blueprint's defaults, the rest survives.
     std::fs::write(dir.path().join("overlays/twin/overlay.json"), r#"{ "name": "Twin", "vars": { "label": { "type": "string", "default": "Hello" } } }"#).unwrap();
     let edit = serde_json::from_value::<Vec<json_patch::PatchOperation>>(serde_json::json!([{ "op": "add", "path": "/bin/twin/source/vars/label", "value": "Paris" }])).unwrap();
     state.apply_patch(&edit, None, "test").unwrap();
-    let (status, _) = post(&addr, "/api/overlays/save-blueprint", r#"{ "bin": "twin", "id": "twin-paris" }"#);
-    assert!(status.contains("200"), "{status}");
-    let saved = kuma_core::OverlayManifest::load(&dir.path().join("library/blueprints/twin-paris")).unwrap();
-    assert_eq!(saved.vars["label"].default, "Paris");
-    assert_eq!(saved.name, "Twin", "the rest of the manifest survives");
-    let (status, _) = post(&addr, "/api/overlays/save-blueprint", r#"{ "path": "overlays/twin", "id": "twin" }"#);
-    assert!(status.contains("400"), "an existing blueprint was replaced without asking: {status}");
-    let (status, _) = post(&addr, "/api/overlays/save-blueprint", r#"{ "path": "overlays/twin", "id": "twin", "force": true }"#);
-    assert!(status.contains("200"), "{status}");
+    let save = |body: &str| post(&addr, "/api/overlays/save-blueprint", body).0;
+    assert!(save(r#"{ "bin": "twin", "id": "twin" }"#).contains("200"));
+    let saved = kuma_core::OverlayManifest::load(&dir.path().join("library/blueprints/twin")).unwrap();
+    assert_eq!((saved.vars["label"].default.as_str(), saved.name.as_str()), (Some("Paris"), "Twin"));
+    assert!(state.blueprint_infos().iter().any(|b| b.id == "twin"), "not listed after saving");
+    assert!(save(r#"{ "bin": "twin", "id": "twin" }"#).contains("400"), "replaced without asking");
+    assert!(save(r#"{ "bin": "twin", "id": "twin", "force": true }"#).contains("200"));
 }
 
 /// Media added into a folder is one edit; a parent not in the bin is refused.

@@ -521,9 +521,8 @@ a named, thumbnailed row in the browser mean something. The cost is that varying
 placement takes two operations instead of one, which JSON Patch absorbs into a single
 atomic call.
 
-**A two-tier model: reusable templates inline, one-offs in the bin** — rejected. (The
-split it wanted was later made, differently — not between clip and bin, but between the
-project's overlays and the user's blueprints; see *Overlays and blueprints*.)
+**A two-tier model: reusable templates inline, one-offs in the bin** — rejected. (A
+different split was made later; see *Overlays and blueprints*.)
 Considered making the split by intent, so a location tag stayed a template plus vars on
 the clip while a bespoke animation became a bin entry. Dropped because the distinction is
 about expected reuse rather than about the content, and because the argument for it
@@ -612,75 +611,30 @@ first looked unfixed after it was fixed.
 
 ## Overlays and blueprints
 
-**An overlay belongs to its project; a blueprint belongs to the user** — adopted,
-superseding "templates live-referenced by id", format version 7.
+**An overlay belongs to its project; a blueprint belongs to the user** — adopted, format
+version 7. "Template" meant two things: the library's reusable overlays, and every one-off
+an agent wrote into a project's `overlays/`, which the search path loaded as a template too.
+An entry named a template id, so a library edit re-styled finished videos and a project
+rendered differently on another machine.
 
-"Template" had come to mean two things. The library's reusable overlays were templates, and
-so was every folder an agent wrote into a project's `overlays/` for one video — because the
-project's `overlays/` was the last entry on the template search path. So a one-off made for
-one video was *loaded as a template*, listed beside the reusable ones in the Templates tab,
-and reached the bin only through a template id. The bin entry `{ template, vars }` never
-said which of the two it was, and could not: an id resolved against whatever was installed,
-so the same project rendered differently on a machine with a different library, and
-improving a library template silently re-styled every finished video that used it — the
-thing the design-system rule forbids a cascade from doing.
+- An **overlay** is a project folder, `overlays/<name>/` (`overlay.json` + `index.html`);
+  an entry names it, `{ "overlay": "overlays/<name>", "vars" }`, relative and inside the
+  project. The folder is the identity: the manifest has no `id`.
+- A **blueprint** is the same shape in `<library>/blueprints/`, read only from libraries,
+  never through an entry.
+- Every move is a copy (`crates/kuma-daemon/src/overlays.rs`): using a blueprint copies it
+  in; a folder reaches the bin only by `import_overlay`; entries may share a folder and
+  **Make unique** copies it for one; **Save as blueprint** copies an entry back to the
+  library with its vars as defaults. Undo leaves copied folders on disk.
+- `kumaTemplate()` in `_vendor/kuma.js` keeps its name: every blueprint calls it.
+- **No migration**: a v6 project with template entries is refused on open, saying how to
+  convert it; one without is stamped.
 
-Now the two are separate concepts with separate homes:
+**Rejected: import copies from anywhere.** The agent can write the folder in the project;
+an import that copies makes "which copy did I edit?" a question.
 
-- An **overlay** is a folder the project owns, `overlays/<name>/` (`overlay.json` +
-  `index.html`), and an overlay bin entry names it: `{ "overlay": "overlays/<name>",
-  "vars": {…} }`. The path is relative and must stay inside the project (the validator
-  refuses `..` and absolute paths whoever validates, and the daemon checks the folder
-  loads). The project carries everything it renders.
-- A **blueprint** is the same folder shape in the user's library, `<library>/blueprints/`,
-  reusable across projects. Blueprints are read **only** from libraries — the share folder
-  and `KUMA_LIBRARY` — never from a project, and no entry ever points at one.
-
-The moves between them are copies, each in `crates/kuma-daemon/src/overlays.rs`:
-
-- **Using a blueprint copies it** into the project's `overlays/` (suffixed `-2`, `-3`… when
-  the folder is taken — a copy never lands on a folder that may hold someone's edits). The
-  editor copies first and then adds the entry and its clip in one patch, so a drop is still
-  one undo step.
-- **Importing** is how a folder becomes an entry: the agent writes the folder (scaffolded by
-  `new_overlay`, checked by `check_overlay`) and `import_overlay`s it, as `add_media` adds a
-  file. Writing a folder no longer changes what the editor lists, so a half-written overlay
-  is never something a clip can play.
-- **Entries may share a folder** — two wordings of one design, which is what *Overlay vars
-  live on the bin entry* already made them. Duplicate keeps the folder; **Make unique**
-  copies it for one entry and repoints it, and the inspector says when a folder is shared.
-- **Save as blueprint** ("templatify") copies an entry's folder into the user library, with
-  the entry's vars written in as the blueprint's defaults, so the blueprint is what the bin
-  showed rather than the folder before anyone configured it.
-
-Undoing an import or a drop removes the entry and leaves the copied folder behind. Nothing
-deletes a folder: it may hold edits, and an unreferenced one costs nothing.
-
-**The manifest carries no id** — adopted. `template.json` had an `id` that had to equal its
-folder name, which a copy under another name would have had to rewrite. The folder is the
-identity; `overlay.json` is the manifest, in a project and in a library alike.
-
-**Called a blueprint** — adopted, over keeping "template" or "stock overlay". It says what
-the thing is for — a starting point you build from and do not play directly — and leaves
-"template" free for the genus question below. The in-page helper `kumaTemplate()` in
-`_vendor/kuma.js` keeps its name: it is the contract every shipped blueprint calls, and
-renaming it would break every overlay written against it for no change in meaning.
-
-**No migration** — adopted. A version 6 project with overlay entries is refused on open,
-with a message naming the entry and saying how to bring it forward; one without overlays is
-stamped. Nothing important used the old shape yet, and the only faithful upgrade would copy
-folders from a library that `parse_project` — a pure function of the JSON — cannot see.
-
-**Rejected: import copies from anywhere.** Considered letting `import_overlay` take a
-folder outside the project and copy it in. Refused instead, with a message: the agent is
-writing the folder anyway and can write it in the right place, and an import that copies
-makes "which copy did I just edit?" a question.
-
-**Named vaults** — deferred. A series of videos wants a shared set of blueprints that is
-neither every project's nor one project's. The shape discussed is
-`<library>/vaults/<name>/{blueprints,presets}`, with a project choosing the vaults it uses
-and the Blueprints tab grouping by vault; `KUMA_LIBRARY` already gives a crude version of it
-(one directory per series). Presets were left as they are for now.
+**Named vaults** — deferred. A shared set of blueprints for a series of videos, e.g.
+`<library>/vaults/<name>/`, chosen per project. `KUMA_LIBRARY` is a crude version today.
 
 ## Blueprints and presets as user assets
 
@@ -1883,12 +1837,9 @@ because it is the part deliberately left out.
   and nothing is in it, which makes the feature invisible to anyone who has not read the
   guide; see *Design systems* above for what such a set has to demonstrate.
 
-- **Templates and overlays are the same word today and will not be** — for HTML overlays
-  this is now decided (*Overlays and blueprints*: `overlay` in the document, **blueprint**
-  in the library, `overlay.json`, `list_blueprints`, the Blueprints tab), and the paragraphs
-  below describe the names as they were. The genus question they raise — what a reusable,
-  instantiated asset of *another* kind is called — is still open, and "template" is free
-  for it now.
+- **Templates and overlays are the same word today and will not be** — decided for HTML
+  overlays (see *Overlays and blueprints*); the paragraphs below describe the old names.
+  What other reusable kinds are called is still open.
 
   Today "template" means exactly one thing: a folder with `template.json` and `index.html`
   that bakes to an overlay. That meaning is wired in everywhere — `TemplateManifest`,
@@ -2037,8 +1988,7 @@ because it is the part deliberately left out.
   cover every sequence, not only the master, since the preview bakes nested sequences too.
 
 - **A configured overlay cannot be shared between projects** — addressed by **Save as
-  blueprint**, which copies an entry's folder into the library with the entry's vars as its
-  defaults; what follows is the reasoning as it stood. The template travels in the
+  blueprint**; the reasoning as it stood follows. The template travels in the
   library and its manifest defaults with it, but an entry's var overrides live in the
   project file, so a house lower third styled once has to be rebuilt in the next project.
   The fix is small because a saved configuration *is* a bin entry with the project

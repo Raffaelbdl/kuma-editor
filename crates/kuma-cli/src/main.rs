@@ -105,24 +105,6 @@ enum Cmd {
         #[arg(long)]
         id: Option<String>,
     },
-    /// Copy a blueprint into the project and add it to the bin.
-    AddBlueprint {
-        blueprint: String,
-        /// Bin id (minted from the folder name by default).
-        #[arg(long)]
-        id: Option<String>,
-    },
-    /// Save a project overlay into the user library as a blueprint: a bin entry (its vars
-    /// become the blueprint's defaults), or, when no entry has that id, a folder as it is.
-    SaveBlueprint {
-        /// A bin id, or an overlay folder such as `overlays/title`.
-        from: String,
-        /// The blueprint's id: its folder name in the library.
-        id: String,
-        /// Replace a blueprint of that id.
-        #[arg(long)]
-        force: bool,
-    },
     /// Check overlays against the contract: project overlay folders (a path holding an
     /// `overlay.json`) or blueprint ids; with none, every blueprint and every folder the bin uses.
     /// Exit 1 on errors.
@@ -321,7 +303,6 @@ async fn main() -> anyhow::Result<()> {
         }
         Cmd::NewOverlay { id, name, description, blueprint } => {
             let state = open(&cli)?;
-            // The project's own `overlays/` unless it is meant for every project.
             let dir = if *blueprint { state.config.user_blueprint_dir() } else { state.config.overlays_dir() };
             let out = kuma_overlay::new_overlay(&dir, id, name.as_deref().unwrap_or(""), description.as_deref().unwrap_or("")).map_err(anyhow::Error::msg)?;
             println!("{}", out.display());
@@ -334,10 +315,8 @@ async fn main() -> anyhow::Result<()> {
             }
         }
         Cmd::ImportOverlay { path, id } => {
-            // Absolute, as `add-media` sends it: a relative path means the shell's directory
-            // whichever process ends up resolving it.
+            // Absolute and through the daemon when one runs, as `add-media` does.
             let path = absolute(Path::new(path))?.to_string_lossy().into_owned();
-            // Through the daemon when one owns the project, as `add-media` is.
             let (id, rev) = if let Some(url) = running_daemon(&cli).await {
                 let body = serde_json::json!({ "path": path, "id": id, "origin": "cli: import overlay" });
                 let v = kuma_mcp::client::Client::new(&url).post("/api/overlays/import", &body).await?;
@@ -349,30 +328,9 @@ async fn main() -> anyhow::Result<()> {
             };
             println!("added bin entry `{id}` (revision {rev})");
         }
-        Cmd::AddBlueprint { blueprint, id } => {
-            let (id, rev) = if let Some(url) = running_daemon(&cli).await {
-                let body = serde_json::json!({ "id": id, "origin": format!("cli: add {blueprint}") });
-                let v = kuma_mcp::client::Client::new(&url).post(&format!("/api/blueprints/{blueprint}/add"), &body).await?;
-                (v["id"].as_str().unwrap_or_default().to_string(), v["revision"].as_u64().unwrap_or_default())
-            } else {
-                let state = open(&cli)?;
-                let (_, id, rev, _) = kuma_daemon::overlays::add_blueprint(&state, blueprint, id.clone(), None, Default::default(), "cli")?;
-                (id, rev)
-            };
-            println!("added bin entry `{id}` (revision {rev})");
-        }
-        Cmd::SaveBlueprint { from, id, force } => {
-            let state = open(&cli)?;
-            // A bin id when the bin has one by that name, else a folder in the project.
-            let entry = state.project.read().unwrap().bin.contains_key(from);
-            let from = if entry { kuma_daemon::overlays::SaveFrom::Entry(from) } else { kuma_daemon::overlays::SaveFrom::Folder(from) };
-            let dir = kuma_daemon::overlays::save_blueprint(&state, from, id, *force)?;
-            println!("{}", dir.display());
-        }
         Cmd::Lint { targets } => {
             let state = open(&cli)?;
-            // A target with a separator is a folder in the project; anything else names a
-            // blueprint. With none, everything: the library and what the bin uses.
+            // With no targets: every blueprint and every folder the bin uses.
             let targets: Vec<String> = if targets.is_empty() {
                 let blueprints = state.blueprints.read().unwrap().loaded.keys().cloned().collect::<Vec<_>>();
                 let folders: Vec<String> = state.project.read().unwrap().overlay_folders().into_iter().map(str::to_string).collect();
@@ -382,7 +340,6 @@ async fn main() -> anyhow::Result<()> {
             };
             let mut errors = 0;
             for target in targets {
-                // A folder in the project when there is one by that path, else a blueprint id.
                 let folder = state.config.project_root().join(&target).join(kuma_core::manifest::MANIFEST).is_file();
                 let report = if folder { kuma_daemon::overlays::lint_overlay(&state, &target)? } else { kuma_daemon::overlays::lint_blueprint(&state, &target)? };
                 errors += report.errors();

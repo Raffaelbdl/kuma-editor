@@ -2,9 +2,8 @@
 //
 // **Bin** is what this project can place on a track: media files, configured overlays,
 // colours, sequences and folders, one row each, as a tree by `parent`. **Blueprints** is
-// where you shop — reusable overlays in the user's library, shared across projects; adding
-// one copies it into this project and mints a bin entry for the copy, so the blueprint is
-// never what a video plays.
+// where you shop — reusable overlays in the user's library; adding one copies it into
+// this project.
 //
 // They are tabs rather than two stacked lists because they answer different questions
 // ("what is in this video" against "what could be"), and stacked, the second one pushed

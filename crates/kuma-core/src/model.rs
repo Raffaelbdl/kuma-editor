@@ -388,13 +388,11 @@ pub enum BinSource {
         #[serde(default)]
         proxy: Option<String>,
     },
-    /// A configured HTML overlay: a folder of the project's own plus the variables for
-    /// this entry. Two entries may share a folder with different vars — two wordings of
-    /// one design — and are two separate items.
+    /// A configured HTML overlay: a project folder plus this entry's vars. Entries may
+    /// share a folder.
     Overlay {
-        /// The overlay's folder (`overlay.json` + `index.html`), relative to the project
-        /// directory and inside it: `overlays/<name>`. A blueprint added to the bin is
-        /// copied there first, so nothing in the library is ever read through an entry.
+        /// The folder (`overlay.json` + `index.html`), relative and inside the project:
+        /// `overlays/<name>`. Blueprints are copied there, never referenced.
         overlay: String,
         /// Variable overrides, validated against the folder's manifest.
         #[serde(default)]

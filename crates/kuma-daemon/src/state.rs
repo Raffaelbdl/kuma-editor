@@ -19,8 +19,7 @@ pub struct Config {
     /// Repository root: `node_modules/hyperframes`, `ui/dist`, `engine/build`.
     pub repo_root: PathBuf,
     /// Asset libraries (each holds `blueprints/` and `presets/`), lowest precedence first.
-    /// The project's own `presets/` is searched last (and wins); its `overlays/` is not a
-    /// library at all — that is where the bin's overlays live.
+    /// The project's own `presets/` is searched last; its `overlays/` is never a library.
     pub library_dirs: Vec<PathBuf>,
     pub bind: SocketAddr,
 }
@@ -32,19 +31,15 @@ impl Config {
     pub fn cache_dir(&self) -> PathBuf {
         self.project_root().join(".kuma")
     }
-    /// Every library's `blueprints/`, lowest precedence first. Only libraries: a
-    /// blueprint is reusable across projects by definition, so no project holds one.
+    /// Every library's `blueprints/`, lowest precedence first. Never a project's.
     pub fn blueprint_dirs(&self) -> Vec<PathBuf> {
         self.library_dirs.iter().map(|d| d.join("blueprints")).collect()
     }
-    /// Where "Save as blueprint" writes: the user library, the first search path entry and
-    /// the one `kuma library` installs into — not whatever `KUMA_LIBRARY` appended last.
+    /// Where "Save as blueprint" writes: the user library, not a `KUMA_LIBRARY` entry.
     pub fn user_blueprint_dir(&self) -> PathBuf {
         self.library_dirs[0].join("blueprints")
     }
-    /// The project's own overlay folders, where a blueprint is copied and a new overlay
-    /// is scaffolded. A bin entry may name a folder elsewhere in the project; this is only
-    /// where kuma puts the ones it makes.
+    /// Where kuma puts the overlay folders it copies or scaffolds.
     pub fn overlays_dir(&self) -> PathBuf {
         self.project_root().join("overlays")
     }
@@ -188,8 +183,8 @@ impl AppState {
             Project::new_default(Project::name_from_path(&config.project_file), 1920, 1080, kuma_core::Fps::default())
         };
         std::fs::create_dir_all(config.cache_dir())?;
-        // The shared `_vendor/` is the highest-precedence library that has one. A project's
-        // overlays use it too: it is the runtime a folder is written against, not content.
+        // The shared `_vendor/` is the highest-precedence library that has one; project
+        // overlays use it too.
         let vendor_dir = config.blueprint_dirs().iter().rev().map(|d| d.join("_vendor")).find(|d| d.is_dir()).unwrap_or_else(|| config.user_blueprint_dir().join("_vendor"));
         let baker = Baker::discover(&config.repo_root, vendor_dir, config.cache_dir().join("bakes"));
         let transcriber = Transcriber::discover(&config.repo_root, config.library_dirs[0].join("models"));
@@ -226,8 +221,7 @@ impl AppState {
         for e in &errors {
             tracing::warn!("blueprint skipped: {e}");
         }
-        // No blueprints costs nothing already in a project — its overlays are its own —
-        // but it leaves the browser empty and subtitles with nothing to start from.
+        // Projects do not need blueprints, but the browser and subtitles do.
         if all.is_empty() {
             tracing::warn!("no blueprints loaded from {:?}; run `kuma library` to install the starter set", self.config.blueprint_dirs());
         }
@@ -277,8 +271,7 @@ impl AppState {
     }
 
     pub fn validation_context(&self) -> ValidationContext {
-        // Files are checked: an overlay entry whose folder is missing or broken is an
-        // error now rather than something to find out about at render time.
+        // Files are checked, so a missing overlay folder is an error now, not at render.
         ValidationContext { root: self.config.project_root(), check_files: true }
     }
 
@@ -330,8 +323,8 @@ impl AppState {
     /// Compose a patch *from the project as it is now* and apply it, both under the edit
     /// lock. For work that takes minutes before it knows what to write — a transcription —
     /// where deciding against a snapshot taken at the start would race every edit made
-    /// meanwhile. `build` must stay cheap: it runs with the lock held. `base`, when given, is
-    /// checked like any patch's, so a stale one is a revision mismatch rather than a message.
+    /// meanwhile. `build` must stay cheap: it runs with the lock held. `base` is checked
+    /// like any patch's.
     pub fn apply_built<T>(&self, origin: &str, base: Option<u64>, build: impl FnOnce(&Project) -> anyhow::Result<(Vec<json_patch::PatchOperation>, T)>) -> anyhow::Result<(T, u64, Vec<Issue>)> {
         let mut carried = None;
         let (rev, warnings) = self.edit(origin, |p| {

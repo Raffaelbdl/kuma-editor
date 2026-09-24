@@ -244,11 +244,8 @@ pub fn add_media(state: &AppState, path: &Path, id: Option<String>, parent: Opti
 /// The blueprint a transcript lands in. Its `cues` var is the transcript; the rest is looks.
 const SUBTITLES_BLUEPRINT: &str = "subtitles";
 
-/// The folder a new transcript points at: that of a transcript already in the bin (an
-/// overlay entry whose manifest takes `cues`), so it follows one that was made unique or
-/// moved; else the copy an earlier transcript left in `overlays/subtitles`, since undoing
-/// it leaves the folder behind. New transcripts share it, as any two wordings of a design
-/// do; only when there is neither is the blueprint copied.
+/// The folder a new transcript shares: one a transcript in the bin uses (its manifest takes
+/// `cues`), else `overlays/subtitles` if an undone one left it. None means copy the blueprint.
 fn subtitles_folder(state: &AppState, p: &Project) -> Option<String> {
     let takes_cues = |rel: &str| crate::overlays::resolve(state, rel).is_ok_and(|r| r.manifest.vars.values().any(|v| v.ty == kuma_core::VarType::Cues));
     let left_behind = format!("overlays/{SUBTITLES_BLUEPRINT}");
@@ -329,8 +326,7 @@ pub fn transcribe(state: &AppState, req: &TranscribeRequest, progress: &dyn Fn(u
     progress(90, "adding to the bin");
 
     let cues_value = serde_json::to_value(&cues)?;
-    // Settled before the edit lock is taken, since copying a folder is filesystem work — and
-    // only now, so a transcription that fails copies nothing.
+    // Copied outside the edit lock, and only once the words are in.
     let overlay = match existing {
         Some(folder) => folder,
         None => crate::overlays::copy_blueprint(state, SUBTITLES_BLUEPRINT, None)?,
@@ -415,8 +411,7 @@ fn add_op(pointer: &str, value: serde_json::Value) -> anyhow::Result<json_patch:
     Ok(json_patch::PatchOperation::Add(json_patch::AddOperation { path: pointer.parse()?, value }))
 }
 
-/// `/bin/<id><rest>`, the id escaped as a pointer segment so a bad one is refused by the
-/// validator rather than landing somewhere else.
+/// `/bin/<id><rest>`, the id escaped so a bad one is refused rather than misplaced.
 fn bin_pointer(id: &str, rest: &str) -> String {
     format!("/bin/{}{rest}", id.replace('~', "~0").replace('/', "~1"))
 }

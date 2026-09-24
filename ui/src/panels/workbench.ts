@@ -13,9 +13,8 @@
 //     would have to be kept in step with the first.
 //   - **markup**: `Reload` re-reads the entry's folder and rebuilds the document, so an
 //     overlay being written in an editor is one click from being on screen.
-//   - **variants**: `Duplicate` adds a second entry on the same folder, because editing
-//     one's vars changes every clip that plays it — keeping the version that works means
-//     copying it. The markup stays shared; the inspector's Make unique splits that too.
+//   - **variants**: `Duplicate` adds a second entry on the same folder, so a variant
+//     wording costs nothing.
 //
 // The backdrop and the frame picker are the same idea as a design tool's device frames:
 // an overlay is transparent and must survive both orientations (the overlay contract

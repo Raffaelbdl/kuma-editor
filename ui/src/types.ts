@@ -12,8 +12,7 @@ export interface MediaMeta {
 /** A timeline: what a sequence bin entry holds, master included. */
 export interface Sequence { tracks: Track[]; markers?: Marker[] }
 
-/** An overlay entry: a folder of the project's own (`overlays/<name>`, relative to the
- *  project) and the vars for this entry. Entries may share a folder. */
+/** An overlay entry: a project folder (`overlays/<name>`) and its vars. */
 export interface OverlaySource { overlay: string; vars?: Record<string, unknown> }
 
 /** What a bin entry is. Exactly one shape. */

@@ -55,11 +55,9 @@ fn upgrade(v: &mut Value) -> Result<(), String> {
         version = 6;
     }
     if version == 6 {
-        // 6 → 7: an overlay entry names a folder of the project's own (`overlay`) where it
-        // used to name a library template (`template`). Deliberately **not** migrated: a
-        // project with no overlay entries is stamped, and one with them is refused, saying
-        // how to bring it forward. Nothing relied on the old shape yet, and doing it here
-        // would mean copying folders from a library this parse cannot see.
+        // 6 → 7: overlay entries name a project folder (`overlay`), not a library template
+        // (`template`). Not migrated: one with template entries is refused, saying how to
+        // convert it, since this parse cannot see the library to copy from.
         if let Some((id, template)) = template_overlay(v) {
             return Err(format!(
                 "bin entry `{id}` names the template `{template}`, which an older kuma wrote: overlays now live in the project. \

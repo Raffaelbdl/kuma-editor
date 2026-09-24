@@ -256,6 +256,11 @@ export interface Job {
   params?: unknown;
 }
 
+/** One part of the project's `.kuma/` cache: entries (a bake is one) and their bytes. */
+export interface CachePart { entries: number; bytes: number }
+/** How big the cache is, by part. */
+export interface CacheUsage { bakes: CachePart; samples: CachePart; thumbs: CachePart; bytes: number }
+
 export type DaemonEvent =
   | { type: "project_changed"; revision: number; origin: string }
   | ({ type: "job" } & Job)

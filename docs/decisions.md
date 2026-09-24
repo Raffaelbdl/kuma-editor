@@ -1824,6 +1824,63 @@ Found on the way: melt 7.22 takes `-silent` to suppress `-progress` too. A rende
 never reported a frame, so it sat at 50% until done. Renders no longer pass `-silent`, and
 the melt render test asserts that progress arrives.
 
+## Pruning the cache
+
+**Adopted.** `.kuma/` had three parts that only grew: bakes (content-hashed, so trimming a
+clip strands its last bake as surely as editing the markup), sampled frames (keyed by the
+compiled document, so every edit strands the previous ones) and bin thumbnails (keyed by
+entry, so a removed entry leaves its own). One prune, on every surface the way render is:
+`kuma cache prune`, `POST /api/cache/prune` (a job), the MCP `prune_cache` tool, and a line
+in the job queue giving the size with a **Prune cache** button. `kuma cache` and
+`GET /api/cache` show the size. The code is `crates/kuma-daemon/src/cache.rs`.
+
+**It is asked for.** A size or age cap was turned down: it can evict the bake of a clip
+about to be rendered, and it runs behind the user's back.
+
+**What it deletes, per part:**
+
+- *Bakes* whose key is not live. Nothing records which keys are live; they are
+  recomputed from the project, because the key is a pure function of folder, vars and
+  clip. The live set is **every overlay clip in every sequence** (not just the master,
+  since the preview bakes nested sequences, and not just what the master reaches, since
+  `kuma bake` warms unplaced ones on purpose), plus the preview bake each overlay entry's
+  thumbnail is cut from. What a clip bakes as is one function, `jobs::bake_request`, used
+  by both the bake loop and the prune. A copy that drifted would have the prune delete the
+  frames a render is about to read. A test writes the formula out independently so a
+  drift fails it.
+- *Sampled frames* older than a minute. A younger one's path may just have been handed to
+  an agent or the snapshot route that has not read it yet.
+- *Thumbnails* of ids no longer in the bin.
+
+It never touches work in flight: a bake's `<key>.tmp-…` directory (`is_in_flight`), a
+sample's tempfile, or a thumbnail's `.webp.tmp`. The rest of `.kuma/` is left alone. The
+compiled `.mlt` files are what melt and the engine are reading. Generated lumas are a few
+kilobytes and regenerate. Transcription scratch is a tempdir that removes itself.
+
+**`--all`** empties bakes and samples outright, live or fresh, at the cost of a re-bake on
+the next preview. It still keeps the thumbnails of entries that are in the bin: nothing
+regenerates those until someone asks, so deleting them would blank the bin rather than
+cost time.
+
+**Waiting for readers.** `AppState::cache_users` is an `RwLock<()>`. A render holds it
+shared for its whole encode, and so do a sample, a bake job and a thumbnail job. A prune
+takes it exclusively. It **polls `try_write`** rather than blocking on `write`, because
+std's `RwLock` prefers writers: a prune queued behind an hour-long render would stall every
+sample and snapshot for that hour. A waiting prune reports "waiting for renders and
+samples to finish". Two alternatives were rejected:
+
+- *Run the prune in the render lane.* That protects renders only. A sample or a bake job
+  can still lose a bake between baking it and melt reading it, and every render asked for
+  later would queue behind the prune.
+- *Make the preview reload a holder too.* The preview compiles the project as it is now,
+  so its bakes are live by construction. A reload still in flight against an older
+  revision can lose a nested overlay's frames until the next reload, which follows the
+  edit anyway.
+
+The lock is per process. `kuma cache prune` therefore goes through a running daemon for
+this project when there is one, and works on the files directly only when there is not. A
+`kuma render` run in a separate process while a daemon prunes is not protected.
+
 ## Still open
 
 Nested sequences are done and the editor is an application now, so this list is the whole
@@ -2054,40 +2111,7 @@ because it is the part deliberately left out.
   already had. Timed media only (`is_timed_media`): on a picture it is an error. It stacks
   with the clip's volume, as Kdenlive's does. General and keyed entry effects stay open.
 
-- **Nothing in `.kuma/` is ever cleaned up: a way to prune the cache.** Three parts of
-  it grow without bound, and none has a delete path beyond the scratch of one job.
-
-  - **Bakes** (`.kuma/bakes/`). A successful bake only ever adds a directory; the only
-    deletions are the scratch frames inside one bake and the drop guard after a failure,
-    so every superseded entry stays complete and unreachable. Keys are content hashes
-    covering the template folder, the vendor folder, the resolved vars, and the clip's
-    duration and speed, so trimming a clip creates a new entry just as surely as editing
-    markup does. The frames are full-resolution PNG sequences: a few seconds of 1080p
-    overlay costs tens of megabytes per superseded version. One accidental mitigation:
-    reverting a template to an earlier state hits that entry again rather than baking a
-    third copy.
-  - **Sampled frames** (`.kuma/samples/`). Keyed by a hash of the compiled document plus
-    the frame, which is what keeps them honest — and means every edit strands the frames
-    sampled before it. An agent that checks its work with `sample_frames` after each edit
-    leaves a trail of PNGs behind it. They are pure cache: any of them can be regenerated.
-  - **Thumbnails** (`.kuma/thumbs/`). Keyed by bin id and overwritten in place, so they
-    only leak when an entry is removed — small, but orphaned for good.
-
-  The fix is one prune, offered on every surface the way render is: `kuma cache prune`,
-  a daemon route, an MCP tool, and a line in the editor that shows the cache's size and
-  offers to prune it. What it deletes differs per part: bakes whose key is not in the
-  live set, recomputed from the project — no rendering needed, since the key function is
-  pure and can be evaluated for every overlay entry directly; every sampled frame; and
-  thumbnails for ids no longer in the bin. It reports what it freed. A `--all` that
-  empties everything is the blunt version, costing a re-bake on the next preview.
-
-  A size or age cap is the lazier alternative and is worse: it can evict the bake for a
-  clip that is about to be rendered, and it runs behind the user's back where a prune is
-  asked for. Two things to respect whichever is built: a bake or sample in flight writes
-  into a `.tmp-` directory or a tempfile before its rename, and a prune must leave those
-  alone (or run in the jobs lane, after whatever is running); and the live key set must
-  cover every sequence, not only the master, since the preview bakes nested sequences too.
-
+- **Nothing in `.kuma/` is ever cleaned up** — **built**: see *Pruning the cache* above.
 - **A configured overlay cannot be shared between projects** — addressed by **Save as
   blueprint**; the reasoning as it stood follows. The template travels in the
   library and its manifest defaults with it, but an entry's var overrides live in the

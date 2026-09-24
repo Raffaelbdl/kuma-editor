@@ -349,6 +349,12 @@ impl Baker {
         Ok(())
     }
 
+    /// The cache key of the bake `thumbnail` and `preview` are cut from, so a prune can
+    /// tell it is still wanted.
+    pub fn preview_key(&self, overlay_dir: &Path, manifest: &OverlayManifest, vars: &Map<String, Value>) -> Result<String, BakeError> {
+        self.key(&Self::preview_request(overlay_dir, manifest, vars))
+    }
+
     /// The one bake both previews are cut from: 12 fps, 480×270, the first seconds. Enough
     /// to see the entrance and the first beat of the loop; the exit is anchored to a
     /// length this preview does not have, so showing it would be a lie anyway. A still
@@ -410,6 +416,13 @@ impl Baker {
 
 fn frame_name(n: i64) -> String {
     format!("frame_{n:06}.png")
+}
+
+/// Whether a name in the cache directory is a bake still being written: its private
+/// directory, `<key>.tmp-<pid>-<nanos>`, which only becomes an entry by being renamed.
+/// Nothing but the bake that made one may touch it.
+pub fn is_in_flight(name: &str) -> bool {
+    name.contains(".tmp-")
 }
 
 /// A bake's private directory: removed on drop unless it was renamed into the cache.

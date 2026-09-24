@@ -404,3 +404,37 @@ async fn a_font_is_added_and_an_overlay_draws_with_it() {
     let (_, css) = get_body(&addr, "/api/fonts.css");
     assert!(css.contains("url(\"/fonts/anton/0.ttf\")"), "{css}");
 }
+
+/// The cache's size and its prune are one route each; the prune is a job, since it waits
+/// for renders reading the cache, and it keeps the bake the project still uses.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_cache_is_measured_and_pruned_over_http() {
+    let (state, addr, dir) = daemon().await;
+    let bakes = dir.path().join(".kuma/bakes");
+    let project = state.project.read().unwrap().clone();
+    for key in kuma_daemon::cache::live_bakes(&state, &project).into_iter().chain(["stale".to_string()]) {
+        std::fs::create_dir_all(bakes.join(&key)).unwrap();
+        std::fs::write(bakes.join(&key).join("frame_000001.png"), [0u8; 10]).unwrap();
+    }
+    let (status, body) = get_body(&addr, "/api/cache");
+    assert!(status.contains("200"), "{status}");
+    let usage: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(usage["bakes"]["entries"], 3, "{usage}");
+
+    let (status, _, body) = request(&addr, "POST", "/api/cache/prune", "{}");
+    assert!(status.contains("200"), "{status}");
+    let id = serde_json::from_str::<serde_json::Value>(&body).unwrap()["job"].as_u64().unwrap();
+    let start = std::time::Instant::now();
+    let job = loop {
+        let job = state.jobs.get(id).unwrap();
+        if job.state.is_final() {
+            break job;
+        }
+        assert!(start.elapsed() < std::time::Duration::from_secs(10), "{job:?}");
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    };
+    assert_eq!(job.kind, "prune");
+    assert_eq!(job.result["freed"]["bakes"]["entries"], 1, "{job:?}");
+    assert!(!bakes.join("stale").exists());
+    assert_eq!(std::fs::read_dir(&bakes).unwrap().count(), 2);
+}

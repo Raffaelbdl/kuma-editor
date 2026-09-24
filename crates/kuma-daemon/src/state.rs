@@ -175,6 +175,10 @@ pub struct AppState {
     /// it is nobody's edit, it must not bump the revision or land in the undo stack, and a
     /// project reopened tomorrow should start on its master. `None` follows the master.
     open_sequence: Mutex<Option<kuma_core::BinId>>,
+    /// Held shared by whatever reads bakes or samples it did not just write — a render for
+    /// its whole encode, a sample, a bake, a thumbnail — and exclusively by a prune, so a
+    /// prune never deletes something from under them (`cache::prune`).
+    pub cache_users: RwLock<()>,
 }
 
 #[derive(Debug, Serialize)]
@@ -223,6 +227,7 @@ impl AppState {
             jobs: crate::jobs::Jobs::default(),
             preview: crate::preview::PreviewHandle::default(),
             open_sequence: Mutex::new(None),
+            cache_users: RwLock::new(()),
             config,
         };
         st.reload_blueprints();

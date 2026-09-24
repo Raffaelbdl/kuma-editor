@@ -7,7 +7,7 @@ import { desktop } from "../desktop";
 import { button, capitalize, el, options, row } from "../dom";
 import { askForm, openDialog } from "../modal";
 import { store, toast } from "../store";
-import { isFinal, sequenceIds, type Job } from "../types";
+import { isFinal, sequenceIds, type CacheUsage, type Job } from "../types";
 
 type Tab = "render" | "queue";
 
@@ -84,12 +84,29 @@ export function openRenderDialog(tab: Tab = "render"): void {
   const list = el("div", "job-list");
   const empty = el("p", "muted", "No jobs yet.");
   const clear = button("Clear finished", () => void api.clearJobs().catch(fail), "Remove done, failed and cancelled jobs", "push-left");
-  const queuePane = row("queue-pane", list, row("modal-actions", clear, button("Close", close)));
+  // The cache the renders, previews and samples fill, and the one way to empty it: a
+  // prune is a job like the rest, so it waits in this list for a render to finish.
+  const cacheSize = el("span", "muted tiny cache-size");
+  const prune = button("Prune cache", () => {
+    prune.disabled = true;
+    api.pruneCache().catch((e) => { prune.disabled = false; fail(e); });
+  }, "Delete overlay bakes the project no longer uses, sampled frames, and thumbnails of removed entries");
+  const measure = () => void api.cache().then((u) => { cacheSize.textContent = cacheNote(u); }).catch(() => { cacheSize.textContent = ""; });
+  const pruning = new Set<number>();
+  const queuePane = row("queue-pane", list, row("modal-actions", clear, cacheSize, prune, button("Close", close)));
   const rows = new Map<number, JobRow>();
   let order = "";
   const draw = (jobs: Record<number, Job>) => {
     const all = Object.values(jobs).sort((a, b) => b.id - a.id);
     clear.disabled = !all.some(isFinal);
+    for (const j of all.filter((j) => j.kind === "prune")) {
+      if (!isFinal(j)) { pruning.add(j.id); continue; }
+      if (!pruning.delete(j.id)) continue;
+      const freed = (j.result as { freed?: CacheUsage } | null)?.freed;
+      if (freed) toast(`Freed ${bytes(freed.bytes)}`, "ok");
+      measure();
+    }
+    prune.disabled = pruning.size > 0;
     for (const j of all) {
       if (!rows.has(j.id)) rows.set(j.id, jobRow(j.id));
       rows.get(j.id)!.update(j);
@@ -108,11 +125,24 @@ export function openRenderDialog(tab: Tab = "render"): void {
     tabs.render.classList.toggle("on", t === "render");
     tabs.queue.classList.toggle("on", t === "queue");
     if (t === "render") sequence.focus();
+    else measure();
   }
   showing = show;
   unsubscribe = store.select((s) => [s.jobs], (s) => draw(s.jobs));
   show(tab);
 }
+
+/** `1.4 GB`, decimal, as a file manager says it. */
+function bytes(n: number): string {
+  const units = ["B", "kB", "MB", "GB", "TB"];
+  let i = 0;
+  while (n >= 1000 && i < units.length - 1) { n /= 1000; i++; }
+  return i === 0 ? `${n} B` : `${n < 10 ? n.toFixed(1) : Math.round(n)} ${units[i]}`;
+}
+
+const count = (n: number, one: string) => `${n} ${one}${n === 1 ? "" : "s"}`;
+const cacheNote = (u: CacheUsage) =>
+  `Cache ${bytes(u.bytes)} · ${count(u.bakes.entries, "bake")}, ${count(u.samples.entries, "frame")}`;
 
 const clashes = (t: RenderTarget) => t.exists || t.pending.length > 0;
 

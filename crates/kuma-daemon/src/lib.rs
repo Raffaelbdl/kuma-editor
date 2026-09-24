@@ -5,6 +5,7 @@
 //! makes multi-window and agent+human editing trivial: there is nothing to sync.
 
 pub mod api;
+pub mod cache;
 pub mod fonts;
 pub mod jobs;
 pub mod overlays;

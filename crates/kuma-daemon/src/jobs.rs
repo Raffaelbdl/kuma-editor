@@ -513,6 +513,7 @@ pub fn bake_for(
 /// the explicit `bake` command, where "all" means the whole bin rather than what some
 /// timeline reaches — warming the cache for an entry you have not placed yet is the point.
 pub fn bake_all(state: &AppState, project: &Project, only: Option<&[String]>, progress: &dyn Fn(u8, &str)) -> anyhow::Result<Bakes> {
+    let _cache = read(&state.cache_users);
     let ids: Vec<String> = project
         .all_clips()
         .filter(|(_, _, c)| project.item(c).is_some_and(kuma_core::BinItem::is_overlay))
@@ -551,7 +552,7 @@ fn bake_clips(state: &AppState, project: &Project, ids: &[String], progress: &dy
             }
         };
         progress(((i * 100) / n) as u8, &format!("baking {id} ({overlay})"));
-        let req = BakeRequest { overlay_dir: &r.dir, manifest: &r.manifest, vars, fps: project.fps, width: project.width, height: project.height, duration: clip.duration(), speed: clip.speed };
+        let req = bake_request(r, vars, project, clip);
         match state.baker.bake(&req) {
             Ok(r) => {
                 out.insert(id.clone(), r.overlay_bake());
@@ -560,6 +561,13 @@ fn bake_clips(state: &AppState, project: &Project, ids: &[String], progress: &dy
         }
     }
     (out, errs)
+}
+
+/// What an overlay clip bakes as. One place, because the prune works out which bakes are
+/// still wanted by computing these keys itself: a second copy that drifted would have it
+/// delete the bake a render is about to use.
+pub(crate) fn bake_request<'a>(r: &'a crate::overlays::Resolved, vars: &'a serde_json::Map<String, serde_json::Value>, project: &Project, clip: &kuma_core::Clip) -> BakeRequest<'a> {
+    BakeRequest { overlay_dir: &r.dir, manifest: &r.manifest, vars, fps: project.fps, width: project.width, height: project.height, duration: clip.duration(), speed: clip.speed }
 }
 
 /// Compile options pointed at this project's directories. Callers set what they need on
@@ -665,6 +673,8 @@ pub fn render(state: &AppState, req: &RenderRequest, progress: &dyn Fn(u8, &str)
 }
 
 fn render_now(state: &AppState, req: &RenderRequest, progress: &dyn Fn(u8, &str), cancel: &AtomicBool) -> anyhow::Result<serde_json::Value> {
+    // Until melt has read the last frame: a prune in the meantime waits.
+    let _cache = read(&state.cache_users);
     let (sequence, preset, output) = render_target(state, req)?;
     let project = read(&state.project).clone();
     let mut opts = compile_options(state);
@@ -768,6 +778,7 @@ pub struct Sample {
 /// cached per revision, frame and bake set; every cached file is written atomically so
 /// two concurrent samples of the same frame never read a half-written PNG.
 pub fn sample_frames(state: &AppState, req: &SampleRequest, progress: &dyn Fn(u8, &str)) -> anyhow::Result<Vec<Sample>> {
+    let _cache = read(&state.cache_users);
     let doc = read(&state.project).clone();
     // Sampling an entry is sampling a timeline that holds nothing else. Everything below
     // is then the ordinary path — the same bake, the same compiler, the same melt — so

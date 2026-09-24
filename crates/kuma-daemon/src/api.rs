@@ -57,6 +57,8 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/bake", post(bake))
         .route("/api/sample", post(sample))
         .route("/api/snapshot", get(snapshot))
+        .route("/api/cache", get(cache_usage))
+        .route("/api/cache/prune", post(cache_prune))
         .route("/api/jobs", get(job_list))
         .route("/api/jobs/clear", post(job_clear))
         .route("/api/jobs/{id}", get(job_get))
@@ -451,6 +453,7 @@ struct ThumbsReq {
 async fn thumbs(State(st): S, Json(req): Json<ThumbsReq>) -> Json<Value> {
     let s2 = st.clone();
     let id = jobs::spawn(st, "thumbs", move |progress| {
+        let _cache = read(&s2.cache_users);
         let all = req.blueprints.is_none() && req.bins.is_none();
         let wants = |list: &Option<Vec<String>>, id: &String| all || list.as_ref().is_some_and(|l| l.contains(id));
         let blueprints = read(&s2.blueprints).loaded.clone();
@@ -602,6 +605,25 @@ async fn bake(State(st): S, Json(req): Json<BakeReq>) -> Json<Value> {
 async fn sample(State(st): S, Json(req): Json<SampleRequest>) -> ApiResult {
     let samples = blocking(move || jobs::sample_frames(&st, &req, &|_, _| {})).await??;
     Ok(Json(json!({ "samples": samples })))
+}
+
+/// How big `.kuma/` is, by part. Reads only.
+async fn cache_usage(State(st): S) -> ApiResult {
+    Ok(Json(json!(blocking(move || crate::cache::usage(&st)).await?)))
+}
+
+#[derive(Deserialize)]
+struct PruneReq {
+    /// Empty bakes and samples outright rather than only what nothing wants.
+    #[serde(default)]
+    all: bool,
+}
+
+/// Prune the cache, as a job: it waits for renders and samples using the cache to finish.
+async fn cache_prune(State(st): S, Json(req): Json<PruneReq>) -> Json<Value> {
+    let s2 = st.clone();
+    let id = jobs::spawn(st, "prune", move |progress| Ok(json!(crate::cache::prune(&s2, req.all, progress)?)));
+    Json(json!({ "job": id }))
 }
 
 #[derive(Deserialize)]

@@ -1,4 +1,4 @@
-import type { BlueprintInfo, DaemonEvent, EffectPreset, FontFamily, Issue, Job, LintReport, OverlayInfo, PatchOp, Preset, Project, SequenceState } from "./types";
+import type { BlueprintInfo, CacheUsage, DaemonEvent, EffectPreset, FontFamily, Issue, Job, LintReport, OverlayInfo, PatchOp, Preset, Project, SequenceState } from "./types";
 
 async function json<T>(url: string, init?: RequestInit): Promise<T> {
   const r = await fetch(url, { headers: { "content-type": "application/json" }, ...init });
@@ -78,6 +78,11 @@ export const api = {
   clearJobs: () => json<{ cleared: number[] }>("/api/jobs/clear", { method: "POST", body: "{}" }),
   /** Stop a queued or running render. It reports itself `cancelled` once it has. */
   cancelJob: (id: number) => json<Job>(`/api/jobs/${id}/cancel`, { method: "POST", body: "{}" }),
+  /** How big the project's `.kuma/` cache is. Reads only. */
+  cache: () => json<CacheUsage>("/api/cache"),
+  /** Delete bakes nothing uses, sampled frames and orphaned thumbnails, as a job that
+   *  waits for renders reading the cache. */
+  pruneCache: () => json<{ job: number }>("/api/cache/prune", { method: "POST", body: "{}" }),
   previewReload: (scale?: number) => json<{ mlt: string; scale: number }>("/api/preview/reload", { method: "POST", body: JSON.stringify(scale === undefined ? {} : { scale }) }),
   /** The live document for an overlay **bin entry**, at the length and in the frame the
    *  workbench is looking at. No clip: an entry is editable before anything places it.

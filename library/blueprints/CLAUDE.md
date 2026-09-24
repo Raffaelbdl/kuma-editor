@@ -26,6 +26,10 @@ and the daemon serves exactly the same folder. It is not copied into projects.
 - `_vendor/kuma.js` — `kumaTemplate(defaults)` applies the vars, returns `{ vars, width,
   height, duration, text(id, value), timeline() }` and works standalone.
 - `_vendor/kuma.css` — the transparent reset and the `--u` unit (`1vh × --var-size`).
+- `_vendor/kuma-motion.js` — entrances and exits by name, for an overlay whose motion is a
+  var: `kumaMotion.enter(tl, el, vars.enter, { at, duration, text })` returns when it
+  settles, `kumaMotion.exit(tl, el, vars.exit, { at, duration, after })`. The names at the
+  top of the file are the enum options to list; `title` shows the whole pattern.
 - `_vendor/gsap.min.js`.
 
 ## Read the project's design system first
@@ -107,8 +111,11 @@ overlays/<name>`) does, optionally with `vars`, once it checks clean.
 6. Be **responsive**: size in `--u`, `vh`/`vw`/`%`, positions as fractions via `point` vars
    (`left: calc(var(--var-anchor-x) * 100%)`). An overlay must look right at 1920×1080
    and 1080×1920 without edits.
-7. Bundle fonts (`@font-face` with relative `src`) or use a system stack. No Google Fonts
-   links: the bake is headless and must be deterministic.
+7. Take a font as a `font` var and write `font-family: var(--var-<name>), <fallback stack>`:
+   kuma supplies the `@font-face` rules for the family it names and stages the files, in
+   the bake and the live preview alike. `list_fonts` says which families exist. A fixed
+   font can also be bundled in the folder (`@font-face` with a relative `src`), or left to
+   a system stack. No Google Fonts links: the bake is headless and must be deterministic.
 8. **Re-measure rather than measure once.** Prefer CSS that needs no measuring at all; if
    the page must measure itself — fitting a line of text to its box is the usual reason —
    run it again on `resize` (a `ResizeObserver` on the element is the reliable one) and
@@ -128,8 +135,12 @@ Transitions (dissolve/wipe) are refused on overlay clips: bakes carry no handle 
   "description": "…",
   "duration_default": 4.0,
   "static": false,                  // true → bakes a single still frame
+  "create": "Location tag",         // optional: offered in the bin's New menu under this label
   "vars": {
     "label":  { "type": "string", "default": "Paris", "label": "Place" },
+    "font":   { "type": "font",   "default": "Inter", "group": "Text" },
+    "box":    { "type": "boolean", "default": false, "group": "Box" },
+    "box_color": { "type": "color", "default": "#111111", "group": "Box", "when": { "box": true } },
     "accent": { "type": "color",  "default": "#ff4f00" },
     "size":   { "type": "number", "default": 1, "min": 0.5, "max": 2.5, "step": 0.1 },
     "style":  { "type": "enum",   "options": ["pin", "chip"], "default": "pin" },
@@ -144,8 +155,17 @@ Transitions (dissolve/wipe) are refused on overlay clips: bakes carry no handle 
 
 Var types → UI controls: `string` input, `text` textarea, `number` slider (min/max/step),
 `color` picker, `boolean` checkbox, `enum` select, `point` x/y (fraction of frame), `cues`
-one editable row per `{start, end, text}` (seconds; `end` after `start`). A `cues` value
-reaches the overlay only through `window.kuma.vars` — a list has no CSS property. The
+one editable row per `{start, end, text}` (seconds; `end` after `start`), `font` a family
+picker (its `--var-<name>` is the quoted family name). A `cues` value
+reaches the overlay only through `window.kuma.vars` — a list has no CSS property.
+
+The inspector lists vars **in the order the manifest writes them**. `group` puts a var in a
+foldable section of that name (sections in the order their first var appears, ungrouped
+vars first); `when` shows a control only while other vars hold the given value, or one of
+a list of values (`{ "enter": ["fade", "zoom"] }`) — presentation only, the value still
+reaches the overlay. A blueprint with `create` is offered by the bin's **New** menu, which
+is how a person makes a title without opening the Blueprints tab: put it on a blueprint
+that is a starting point, whose every look is a var. The
 manifest is checked on load (defaults fit their specs, enums have options,
 `duration_default` > 0); an entry's `vars` are validated against it and unknown keys are
 rejected. Bakes are always the full frame; a still (`static`) is one PNG.

@@ -340,6 +340,7 @@ function rebuildMenu() {
         { type: "separator" },
         { label: "Add Media…", click: () => sendCommand("add-media") },
         { label: "New Sequence…", click: () => sendCommand("new-sequence") },
+        { label: "New Title", click: () => sendCommand("new-title") },
         { label: "New Overlay…", click: () => sendCommand("new-overlay") },
         { label: "Switch Orientation", click: () => sendCommand("swap-orientation") },
         { type: "separator" },
@@ -481,6 +482,18 @@ function wireIpc() {
     if (!win || !daemon) throw new Error("not an editor window");
     return { win, daemon };
   };
+
+  // Fonts are copied in by the daemon, so where they are does not need to be portable.
+  ipcMain.handle("fonts:pick", async (e) => {
+    const { win, daemon: d } = editorOf(e);
+    const r = await dialog.showOpenDialog(win, {
+      title: "Add fonts",
+      defaultPath: path.dirname(d.projectFile),
+      properties: ["openFile", "multiSelections"],
+      filters: [{ name: "Fonts", extensions: ["ttf", "otf"] }, { name: "All files", extensions: ["*"] }],
+    });
+    return r.canceled ? [] : r.filePaths;
+  });
 
   ipcMain.handle("media:pick", async (e) => {
     const { win, daemon: d } = editorOf(e);

@@ -9,6 +9,7 @@ description = "Project model, schema, validation and time math for kuma-editor"
 serde.workspace = true
 serde_json.workspace = true
 schemars.workspace = true
+indexmap.workspace = true
 json-patch.workspace = true
 thiserror.workspace = true
 

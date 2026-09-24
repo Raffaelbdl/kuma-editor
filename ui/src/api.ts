@@ -1,4 +1,4 @@
-import type { BlueprintInfo, DaemonEvent, EffectPreset, Issue, Job, LintReport, OverlayInfo, PatchOp, Preset, Project, SequenceState } from "./types";
+import type { BlueprintInfo, DaemonEvent, EffectPreset, FontFamily, Issue, Job, LintReport, OverlayInfo, PatchOp, Preset, Project, SequenceState } from "./types";
 
 async function json<T>(url: string, init?: RequestInit): Promise<T> {
   const r = await fetch(url, { headers: { "content-type": "application/json" }, ...init });
@@ -26,6 +26,11 @@ export const api = {
   openSequence: (sequence: string) =>
     json<{ current: string }>("/api/sequence", { method: "POST", body: JSON.stringify({ sequence }) }),
   blueprints: () => json<BlueprintInfo[]>("/api/blueprints"),
+  fonts: () => json<FontFamily[]>("/api/fonts"),
+  /** Copy a font file (relative to the project, or absolute) into the project's `fonts/`,
+   *  or the user library's when `shared`. */
+  addFont: (path: string, shared: boolean) =>
+    json<{ family: string; origin: string; path: string }>("/api/fonts", { method: "POST", body: JSON.stringify({ path, shared }) }),
   /** Rescan the libraries for blueprints. */
   reloadBlueprints: () => json<BlueprintInfo[]>("/api/blueprints", { method: "POST", body: "{}" }),
   /** Copy a blueprint into `overlays/`; not an edit. Returns the folder. */

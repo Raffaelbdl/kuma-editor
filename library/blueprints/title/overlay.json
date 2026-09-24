@@ -1,0 +1,44 @@
+{
+  "name": "Title",
+  "description": "A line of text, styled entirely from the inspector: font, weight, size, colour, outline, shadow, a box behind it, and how it arrives and leaves.",
+  "duration_default": 4.0,
+  "create": "Title",
+  "tags": ["title", "text", "classic"],
+  "vars": {
+    "text":           { "type": "text",    "default": "Your title", "label": "Text", "group": "Text" },
+    "font":           { "type": "font",    "default": "Inter", "label": "Font", "group": "Text" },
+    "weight":         { "type": "number",  "default": 700, "min": 100, "max": 900, "step": 100, "label": "Weight", "group": "Text", "description": "400 is regular, 700 bold. A font draws the weights it has; the rest are the nearest." },
+    "italic":         { "type": "boolean", "default": false, "label": "Italic", "group": "Text" },
+    "font_size":      { "type": "number",  "default": 9, "min": 1, "max": 40, "step": 0.5, "label": "Size", "group": "Text", "description": "Percent of the frame's short side, so a title is the same size in landscape and portrait." },
+    "color":          { "type": "color",   "default": "#ffffff", "label": "Colour", "group": "Text" },
+    "uppercase":      { "type": "boolean", "default": false, "label": "Uppercase", "group": "Text" },
+    "letter_spacing": { "type": "number",  "default": 0, "min": -0.1, "max": 0.5, "step": 0.01, "label": "Letter spacing", "group": "Text", "description": "In em: 0.1 is a tenth of the type size." },
+    "line_height":    { "type": "number",  "default": 1.1, "min": 0.8, "max": 2, "step": 0.05, "label": "Line height", "group": "Text" },
+    "align":          { "type": "enum",    "options": ["left", "center", "right"], "default": "center", "label": "Align", "group": "Text" },
+
+    "position":       { "type": "point",   "default": { "x": 0.5, "y": 0.5 }, "label": "Position", "group": "Layout", "description": "Where the anchor sits, as a fraction of the frame." },
+    "anchor":         { "type": "enum",    "options": ["center", "top-left", "top", "top-right", "left", "right", "bottom-left", "bottom", "bottom-right"], "default": "center", "label": "Anchor", "group": "Layout", "description": "Which point of the title sits at the position." },
+    "max_width":      { "type": "number",  "default": 80, "min": 10, "max": 100, "step": 1, "label": "Max width", "group": "Layout", "description": "Percent of the frame's width; longer text wraps." },
+
+    "outline":        { "type": "boolean", "default": false, "label": "Outline", "group": "Outline" },
+    "outline_color":  { "type": "color",   "default": "#000000", "label": "Colour", "group": "Outline", "when": { "outline": true } },
+    "outline_width":  { "type": "number",  "default": 0.06, "min": 0.01, "max": 0.3, "step": 0.01, "label": "Width", "group": "Outline", "when": { "outline": true }, "description": "In em." },
+
+    "shadow":          { "type": "boolean", "default": false, "label": "Shadow", "group": "Shadow" },
+    "shadow_color":    { "type": "color",   "default": "#000000", "label": "Colour", "group": "Shadow", "when": { "shadow": true } },
+    "shadow_opacity":  { "type": "number",  "default": 0.6, "min": 0, "max": 1, "step": 0.05, "label": "Opacity", "group": "Shadow", "when": { "shadow": true } },
+    "shadow_blur":     { "type": "number",  "default": 0.15, "min": 0, "max": 1, "step": 0.01, "label": "Blur", "group": "Shadow", "when": { "shadow": true }, "description": "In em." },
+    "shadow_distance": { "type": "number",  "default": 0.05, "min": 0, "max": 0.5, "step": 0.01, "label": "Distance", "group": "Shadow", "when": { "shadow": true }, "description": "In em, straight down." },
+
+    "box":            { "type": "boolean", "default": false, "label": "Box", "group": "Box" },
+    "box_color":      { "type": "color",   "default": "#111111", "label": "Colour", "group": "Box", "when": { "box": true } },
+    "box_opacity":    { "type": "number",  "default": 0.85, "min": 0, "max": 1, "step": 0.05, "label": "Opacity", "group": "Box", "when": { "box": true } },
+    "box_padding":    { "type": "number",  "default": 0.35, "min": 0, "max": 2, "step": 0.05, "label": "Padding", "group": "Box", "when": { "box": true }, "description": "In em." },
+    "box_radius":     { "type": "number",  "default": 0.12, "min": 0, "max": 2, "step": 0.01, "label": "Corner radius", "group": "Box", "when": { "box": true }, "description": "In em." },
+
+    "enter":          { "type": "enum",    "options": ["none", "fade", "slide-up", "slide-down", "slide-left", "slide-right", "zoom", "typewriter", "word-by-word"], "default": "slide-up", "label": "In", "group": "Animation" },
+    "enter_duration": { "type": "number",  "default": 0.5, "min": 0.1, "max": 5, "step": 0.05, "label": "In duration", "group": "Animation", "when": { "enter": ["fade", "slide-up", "slide-down", "slide-left", "slide-right", "zoom", "typewriter", "word-by-word"] }, "description": "Seconds. Typewriter and word-by-word spread the text over it." },
+    "exit":           { "type": "enum",    "options": ["none", "fade", "slide-up", "slide-down", "slide-left", "slide-right", "zoom"], "default": "fade", "label": "Out", "group": "Animation" },
+    "exit_duration":  { "type": "number",  "default": 0.4, "min": 0.1, "max": 5, "step": 0.05, "label": "Out duration", "group": "Animation", "when": { "exit": ["fade", "slide-up", "slide-down", "slide-left", "slide-right", "zoom"] }, "description": "Seconds, ending with the clip." }
+  }
+}

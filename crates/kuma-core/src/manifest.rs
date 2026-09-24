@@ -1,9 +1,12 @@
 //! Overlay manifests (`overlay.json`, beside the overlay's `index.html`).
 //!
 //! The same shape for a project's overlays and the library's blueprints. The UI builds a
-//! properties panel from `vars`, and an entry's `vars` are validated against it.
+//! properties panel from `vars`, in the order they are written, and an entry's `vars` are
+//! validated against it.
 
 use std::collections::BTreeMap;
+
+use indexmap::IndexMap;
 use std::path::{Path, PathBuf};
 
 use schemars::JsonSchema;
@@ -23,12 +26,17 @@ pub struct OverlayManifest {
     /// If true the overlay does not animate: it bakes to a single still frame.
     #[serde(default, rename = "static")]
     pub is_static: bool,
-    /// Typed variables exposed in the properties panel.
+    /// Typed variables exposed in the properties panel, in the order the panel shows them.
     #[serde(default)]
-    pub vars: BTreeMap<String, VarSpec>,
+    pub vars: IndexMap<String, VarSpec>,
     /// Free-form tags for the blueprint browser.
     #[serde(default)]
     pub tags: Vec<String>,
+    /// A blueprint offered in the bin's **New** menu, under this label ("Title"). Creating
+    /// one is the same copy as adding the blueprint; this only says it is a starting point
+    /// someone reaches for often enough to want it one click from the bin.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub create: Option<String>,
 }
 
 fn default_duration() -> f64 {
@@ -58,6 +66,9 @@ pub enum VarType {
     /// A list of timed lines, `[{ "start", "end", "text" }, …]` in seconds relative to
     /// the clip start. What a subtitles overlay takes; the inspector edits it as rows.
     Cues,
+    /// A font family by name (`"Inter"`), from the project's `fonts/` or a library's. kuma
+    /// supplies the `@font-face` rules; the overlay writes `font-family: var(--var-<name>)`.
+    Font,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -79,6 +90,15 @@ pub struct VarSpec {
     /// Allowed values for `enum`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub options: Vec<String>,
+    /// The inspector section the var is listed under ("Text", "Box", "Animation"). Sections
+    /// appear in the order their first var does; a var without one is listed first.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
+    /// Show the control only while other vars have these values: `{ "box": true }`, or a
+    /// list of allowed values, `{ "enter": ["rise", "drop"] }`. Presentation only — a hidden
+    /// var still has its value and still reaches the overlay.
+    #[serde(default, skip_serializing_if = "IndexMap::is_empty")]
+    pub when: IndexMap<String, Value>,
 }
 
 /// The manifest's file name inside an overlay folder.
@@ -115,6 +135,20 @@ impl OverlayManifest {
             }
             if let Some(p) = spec.check(&spec.default) {
                 return Some(format!("var `{k}`: default {p}"));
+            }
+            for (other, allowed) in &spec.when {
+                let Some(target) = self.vars.get(other).filter(|_| other != k) else {
+                    return Some(format!("var `{k}`: `when` names `{other}`, which is not another var"));
+                };
+                let values = allowed.as_array().cloned().unwrap_or_else(|| vec![allowed.clone()]);
+                if let Some(p) = values.iter().find_map(|v| target.check(v)) {
+                    return Some(format!("var `{k}`: `when` gives `{other}` a value it cannot take: {p}"));
+                }
+            }
+        }
+        if let Some(label) = &self.create {
+            if label.trim().is_empty() {
+                return Some("`create` must be a label, e.g. \"Title\"".into());
             }
         }
         None
@@ -172,6 +206,11 @@ impl VarSpec {
             VarType::String | VarType::Text => {
                 if !v.is_string() {
                     return Some("expected a string".into());
+                }
+            }
+            VarType::Font => {
+                if !v.as_str().is_some_and(|s| !s.trim().is_empty()) {
+                    return Some("expected a font family name".into());
                 }
             }
             VarType::Color => {
@@ -301,6 +340,43 @@ mod tests {
         assert!(bad(json!({ "vars": { "n": { "type": "number", "default": "big" } } })).contains("default"));
         assert!(bad(json!({ "vars": { "n": { "type": "number", "default": 5, "max": 1 } } })).contains("max"));
         assert!(manifest().check().is_none());
+    }
+
+    #[test]
+    fn vars_keep_the_order_they_are_written_in() {
+        let m: OverlayManifest = serde_json::from_str(r##"{ "vars": {
+            "text": { "type": "string", "default": "a" },
+            "font": { "type": "font", "default": "Inter" },
+            "color": { "type": "color", "default": "#fff" } } }"##).unwrap();
+        assert_eq!(m.vars.keys().collect::<Vec<_>>(), ["text", "font", "color"]);
+        assert_eq!(m.resolve_vars(&Map::new()).keys().collect::<Vec<_>>(), ["text", "font", "color"]);
+        let back = serde_json::to_string(&m).unwrap();
+        assert!(back.find("\"text\"").unwrap() < back.find("\"font\"").unwrap() && back.find("\"font\"").unwrap() < back.find("\"color\"").unwrap(), "{back}");
+    }
+
+    #[test]
+    fn a_font_is_a_family_name() {
+        let spec: VarSpec = serde_json::from_value(json!({ "type": "font", "default": "Inter" })).unwrap();
+        assert!(spec.check(&json!("Playfair Display")).is_none());
+        assert!(spec.check(&json!("")).is_some() && spec.check(&json!(3)).is_some());
+    }
+
+    #[test]
+    fn when_names_another_var_and_values_it_can_take() {
+        let with = |when: serde_json::Value| {
+            serde_json::from_value::<OverlayManifest>(json!({ "vars": {
+                "box": { "type": "boolean", "default": false },
+                "enter": { "type": "enum", "options": ["fade", "rise"], "default": "fade" },
+                "pad": { "type": "number", "default": 1, "when": when } } }))
+            .unwrap()
+            .check()
+        };
+        assert!(with(json!({ "box": true })).is_none());
+        assert!(with(json!({ "enter": ["fade", "rise"], "box": true })).is_none());
+        assert!(with(json!({ "nope": true })).unwrap().contains("not another var"));
+        assert!(with(json!({ "pad": 1 })).unwrap().contains("not another var"));
+        assert!(with(json!({ "enter": ["fly"] })).unwrap().contains("cannot take"));
+        assert!(with(json!({ "box": "yes" })).unwrap().contains("cannot take"));
     }
 
     #[test]

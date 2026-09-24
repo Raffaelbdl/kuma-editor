@@ -20,14 +20,16 @@ crates/kuma-cli       `kuma` binary: serve | mcp | render | bake | sample | lint
 engine/               C++ libmlt++ preview engine (JPEG over stdout, SDL2-paced audio)
 ui/                   Vite + TypeScript editor (no framework)
 app/                  Electron shell: project launcher, windows, daemon lifecycle
-library/blueprints/   starter blueprints (folder = blueprint) + `_vendor/{gsap.min.js,kuma.js,kuma.css}`
+library/blueprints/   starter blueprints (folder = blueprint) + `_vendor/{gsap.min.js,kuma.js,kuma-motion.js,kuma.css}`
 library/presets/      starter effect presets (typed params + `$expr` substitution)
 library/design-systems/ design systems (`DESIGN.md` + `tokens.css`) copied into a project; none ship yet
+library/fonts/        starter font families (open licences) that `font` vars name
 ```
 
-Blueprints and presets are user assets, not code: at runtime kuma reads
+Blueprints, presets and fonts are user assets, not code: at runtime kuma reads
 `$XDG_DATA_HOME/kuma` (default `~/.local/share/kuma`) and every directory in
-`KUMA_LIBRARY`, later wins; presets also come from the project's own `presets/`.
+`KUMA_LIBRARY`, later wins; presets also come from the project's own `presets/`, and
+fonts from the project's own `fonts/`, which wins over every library.
 Blueprints never come from a project. `library/` is only the starter set that
 `kuma library` installs. Tests point `KUMA_LIBRARY` (or the baker) at it.
 
@@ -121,6 +123,14 @@ Chrome headless shell if hyperframes should not download one.
   `kuma new-overlay` writes a skeleton that passes it. A test lints every shipped
   blueprint and the scaffold, so the starter library cannot drift from the contract it
   documents. New contract rule → a rule in `lint.rs`, or nothing enforces it.
+- A `font` var is a family name, never a file: kuma reads family, weight and italic from
+  the font files (`kuma-overlay/src/fonts.rs`), writes the `@font-face` rules into the
+  contract and stages the files; `Baker::fonts` is the one place fonts are resolved, for
+  the bake, the lint and the live preview alike. The bake key hashes the font bytes. An overlay says `font-family:
+  var(--var-<name>), <fallback>` and nothing more. Adding a font is a file, not an edit.
+- The bin's **New** menu is manifests saying `create`, not a list in the UI: a blueprint
+  offers itself there, and creating one is the same copy as adding any blueprint — one
+  folder per entry, so no two titles share markup.
 - Overlay bakes run hyperframes with **one worker**; multi-worker capture was measured
   to be non-deterministic on GSAP-driven transforms.
 - Subtitles are not a model concept: a transcript is the `cues` var of a `subtitles`

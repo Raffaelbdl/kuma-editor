@@ -152,8 +152,11 @@ export class Workbench {
     return this.lengths.get(id) ?? overlayDuration(store.state.project?.bin[id]);
   }
 
+  /** Where the entry was left; the first time, the middle of its length — past any
+   *  entrance and before the exit, so a title just made from the bin is on screen to be
+   *  styled rather than a blank frame at 0 waiting to fade in. */
   private time(): number {
-    return Math.min(this.times.get(store.state.tab) ?? 0, this.length());
+    return Math.min(this.times.get(store.state.tab) ?? this.length() / 2, this.length());
   }
 
   /** The frame this panel is rendering into: the project's, or the one picked. */

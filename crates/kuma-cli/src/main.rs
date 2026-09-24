@@ -119,7 +119,7 @@ enum Cmd {
         #[arg(long)]
         force: bool,
     },
-    /// Install the starter blueprints, presets and design systems into the user library (`~/.local/share/kuma`).
+    /// Install the starter blueprints, presets, design systems and fonts into the user library (`~/.local/share/kuma`). Adds what is missing and new faces of installed fonts, always refreshes `_vendor/`; `--force` replaces the rest too.
     Library {
         /// Overwrite blueprints and presets that already exist in the library.
         #[arg(long)]
@@ -513,14 +513,23 @@ async fn doctor(cli: &Cli) -> anyhow::Result<()> {
 /// unless `force`. Returns the number of entries written.
 fn install_library(src: &Path, dst: &Path, force: bool) -> anyhow::Result<usize> {
     let mut n = 0;
-    for kind in ["blueprints", "presets", "design-systems"] {
+    for kind in ["blueprints", "presets", "design-systems", "fonts"] {
         let Ok(rd) = std::fs::read_dir(src.join(kind)) else { continue };
         for e in rd.flatten() {
             let target = dst.join(kind).join(e.file_name());
-            if target.exists() && !force {
+            let is_dir = e.path().is_dir();
+            // `_vendor/` is kuma's runtime, not an asset of the user's: the blueprints just
+            // installed need the one shipped with them, so it is always replaced.
+            let runtime = kind == "blueprints" && e.file_name() == "_vendor";
+            if target.exists() && !force && !runtime {
+                // A font family already there takes the faces it lacks; anything else there
+                // is left as it is, since it may be someone's edit.
+                if kind == "fonts" && is_dir {
+                    n += usize::from(kuma_daemon::add_missing(&e.path(), &target)? > 0);
+                }
                 continue;
             }
-            if e.path().is_dir() {
+            if is_dir {
                 kuma_daemon::copy_tree(&e.path(), &target)?;
             } else {
                 std::fs::create_dir_all(target.parent().unwrap())?;

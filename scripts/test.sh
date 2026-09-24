@@ -36,7 +36,9 @@ text = open(sys.argv[1], errors="replace").read()
 passed = failed = skipped = 0
 for p, f, i in re.findall(r"test result: \w+\. (\d+) passed; (\d+) failed; (\d+) ignored", text):
     passed += int(p); failed += int(f); skipped += int(i)
-for label, n in re.findall(r"^# (pass|fail|skipped) (\d+)$", text, re.M):
+# node --test: `# pass N` from the TAP reporter, `ℹ pass N` from the spec reporter it
+# uses on a terminal.
+for label, n in re.findall(r"^(?:#|ℹ) (pass|fail|skipped) (\d+)$", text, re.M):
     n = int(n)
     if label == "pass": passed += n
     elif label == "fail": failed += n

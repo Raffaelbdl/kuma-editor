@@ -8,6 +8,7 @@
 //! Output is an RGBA PNG sequence (lossless, straight alpha, read natively by MLT).
 
 pub mod bake;
+pub mod fonts;
 pub mod inject;
 pub mod lint;
 pub mod media;
@@ -15,8 +16,9 @@ pub mod scaffold;
 pub mod transcribe;
 
 pub use bake::{copy_dir, BakeError, BakeRequest, Baker, BakeResult};
+pub use fonts::{Family, FontLibrary, Origin};
 pub use lint::{Finding, Level, LintReport};
-pub use inject::Contract;
+pub use inject::{Contract, FontCss};
 pub use media::{probe, Probe};
 pub use scaffold::new_overlay;
 pub use transcribe::{Cue, TranscribeOptions, Transcriber};

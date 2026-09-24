@@ -39,6 +39,21 @@ impl Config {
     pub fn user_blueprint_dir(&self) -> PathBuf {
         self.library_dirs[0].join("blueprints")
     }
+    /// Where `font` vars look, lowest precedence first: every library's `fonts/`, then the
+    /// project's own, which wins — so a project carrying a font renders it wherever it is
+    /// opened.
+    pub fn font_dirs(&self) -> Vec<(PathBuf, kuma_overlay::Origin)> {
+        use kuma_overlay::Origin;
+        self.library_dirs.iter().map(|d| (d.join("fonts"), Origin::Library)).chain([(self.project_font_dir(), Origin::Project)]).collect()
+    }
+    /// The project's own fonts.
+    pub fn project_font_dir(&self) -> PathBuf {
+        self.project_root().join("fonts")
+    }
+    /// Where a font added "for every project" goes: the user library, as a saved blueprint does.
+    pub fn user_font_dir(&self) -> PathBuf {
+        self.library_dirs[0].join("fonts")
+    }
     /// Where kuma puts the overlay folders it copies or scaffolds.
     pub fn overlays_dir(&self) -> PathBuf {
         self.project_root().join("overlays")
@@ -79,17 +94,28 @@ impl Config {
 /// Copy a folder, recursively. Shared by the library install and the design-system copy;
 /// the baker has its own because it also filters what it stages.
 pub fn copy_tree(src: &Path, dst: &Path) -> std::io::Result<()> {
+    copy_files(src, dst, true).map(drop)
+}
+
+/// Copy only the files of `src` that `dst` lacks, at any depth. Returns how many.
+pub fn add_missing(src: &Path, dst: &Path) -> std::io::Result<usize> {
+    copy_files(src, dst, false)
+}
+
+fn copy_files(src: &Path, dst: &Path, overwrite: bool) -> std::io::Result<usize> {
+    let mut n = 0;
     std::fs::create_dir_all(dst)?;
     for e in std::fs::read_dir(src)? {
         let e = e?;
         let target = dst.join(e.file_name());
         if e.path().is_dir() {
-            copy_tree(&e.path(), &target)?;
-        } else {
+            n += copy_files(&e.path(), &target, overwrite)?;
+        } else if overwrite || !target.exists() {
             std::fs::copy(e.path(), target)?;
+            n += 1;
         }
     }
-    Ok(())
+    Ok(n)
 }
 
 /// The user's asset library: `$XDG_DATA_HOME/kuma` (`~/.local/share/kuma`), holding
@@ -183,7 +209,7 @@ impl AppState {
         // The shared `_vendor/` is the highest-precedence library that has one; project
         // overlays use it too.
         let vendor_dir = config.blueprint_dirs().iter().rev().map(|d| d.join("_vendor")).find(|d| d.is_dir()).unwrap_or_else(|| config.user_blueprint_dir().join("_vendor"));
-        let baker = Baker::discover(&config.repo_root, vendor_dir, config.cache_dir().join("bakes"));
+        let baker = Baker::discover(&config.repo_root, vendor_dir, config.cache_dir().join("bakes")).with_fonts(config.font_dirs());
         let transcriber = Transcriber::discover(&config.repo_root, config.library_dirs[0].join("models"));
         let (events, _) = broadcast::channel(256);
         let st = AppState {

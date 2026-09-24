@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <script src="_vendor/gsap.min.js"></script>
+    <script src="_vendor/kuma.js"></script>
+    <script src="_vendor/kuma-motion.js"></script>
+    <link rel="stylesheet" href="_vendor/kuma.css" />
+    <style>
+      /* The anchor is placed and never animated; the card inside it moves. */
+      .anchor { position: absolute; left: calc(var(--var-position-x) * 100%); top: calc(var(--var-position-y) * 100%);
+                width: max-content; max-width: calc(var(--var-max_width) * 1vw); }
+      .card { display: inline-block; max-width: 100%; }
+      .text { display: block; white-space: pre-wrap; overflow-wrap: break-word;
+              font-family: var(--var-font), system-ui, sans-serif;
+              font-size: calc(var(--var-font_size) * 1vmin); color: var(--var-color);
+              paint-order: stroke fill; }
+      .sub { display: block; white-space: pre-wrap; overflow-wrap: break-word;
+             font-family: var(--var-sub_font), system-ui, sans-serif;
+             font-size: calc(var(--var-sub_size) * 1vmin); color: var(--var-sub_color);
+             margin-top: calc(var(--var-gap) * 1em); paint-order: stroke fill; }
+    </style>
+  </head>
+  <body>
+    <div id="root" data-composition-id="main" data-start="0" data-duration="4" data-width="1920" data-height="1080">
+      <div id="scene" class="clip" data-start="0" data-duration="4" style="position:absolute;inset:0">
+        <div class="anchor" id="anchor">
+          <div class="card" id="card"><div class="text" id="text"></div><div class="sub" id="sub"></div></div>
+        </div>
+      </div>
+    </div>
+    <script>
+      const { vars, duration, text: setText, timeline } = kumaTemplate({
+        text: "Your title", font: "Inter", weight: 700, italic: false, font_size: 9, color: "#ffffff",
+        uppercase: false, letter_spacing: 0, line_height: 1.1, align: "center",
+        subtitle: "A line that says more", sub_font: "Inter", sub_weight: 400, sub_italic: false, sub_size: 3.6,
+        sub_color: "#e6e6e6", sub_uppercase: false, sub_letter_spacing: 0, gap: 0.35,
+        position: { x: 0.5, y: 0.5 }, anchor: "center", max_width: 80,
+        outline: false, outline_color: "#000000", outline_width: 0.06,
+        shadow: false, shadow_color: "#000000", shadow_opacity: 0.6, shadow_blur: 0.15, shadow_distance: 0.05,
+        box: false, box_color: "#111111", box_opacity: 0.85, box_padding: 0.35, box_radius: 0.12,
+        enter: "slide-up", enter_duration: 0.5, exit: "fade", exit_duration: 0.4,
+      });
+
+      /** `#rgb`/`#rrggbb` (any alpha dropped) with `alpha`, as rgba(). */
+      const rgba = (hex, alpha) => {
+        let h = String(hex).replace("#", "");
+        if (h.length <= 4) h = h.split("").map((c) => c + c).join("");
+        const n = (i) => parseInt(h.slice(i, i + 2), 16) || 0;
+        return `rgba(${n(0)}, ${n(2)}, ${n(4)}, ${alpha})`;
+      };
+
+      // Which point of the pair sits at the position: the anchor is moved back by that
+      // fraction of its own size.
+      const [ax, ay] = {
+        "top-left": [0, 0], top: [50, 0], "top-right": [100, 0],
+        left: [0, 50], center: [50, 50], right: [100, 50],
+        "bottom-left": [0, 100], bottom: [50, 100], "bottom-right": [100, 100],
+      }[vars.anchor] || [50, 50];
+      const anchor = document.getElementById("anchor");
+      anchor.style.transform = `translate(${-ax}%, ${-ay}%)`;
+      anchor.style.textAlign = vars.align;
+
+      // Outline and shadow are the pair's, so both lines carry the same ones.
+      const effects = {
+        lineHeight: String(vars.line_height),
+        textAlign: vars.align,
+        webkitTextStroke: vars.outline ? `${vars.outline_width * 2}em ${vars.outline_color}` : "",
+        textShadow: vars.shadow ? `0 ${vars.shadow_distance}em ${vars.shadow_blur}em ${rgba(vars.shadow_color, vars.shadow_opacity)}` : "none",
+      };
+      const text = setText("text", vars.text);
+      Object.assign(text.style, effects, {
+        fontWeight: String(vars.weight),
+        fontStyle: vars.italic ? "italic" : "normal",
+        textTransform: vars.uppercase ? "uppercase" : "none",
+        letterSpacing: `${vars.letter_spacing}em`,
+      });
+      const sub = setText("sub", vars.subtitle);
+      Object.assign(sub.style, effects, {
+        fontWeight: String(vars.sub_weight),
+        fontStyle: vars.sub_italic ? "italic" : "normal",
+        textTransform: vars.sub_uppercase ? "uppercase" : "none",
+        letterSpacing: `${vars.sub_letter_spacing}em`,
+      });
+
+      const card = document.getElementById("card");
+      if (vars.box) {
+        Object.assign(card.style, {
+          background: rgba(vars.box_color, vars.box_opacity),
+          padding: `${vars.box_padding * 0.6}em ${vars.box_padding}em`,
+          borderRadius: `${vars.box_radius}em`,
+          fontSize: `calc(${vars.font_size} * 1vmin)`,
+        });
+        text.style.fontSize = "1em";
+        sub.style.fontSize = `${vars.sub_size / vars.font_size}em`;
+      }
+
+      // The subtitle follows the title in: typed after it, or a beat behind it. A box
+      // arrives whole, with both lines in it, unless the words are being typed into it.
+      const tl = timeline();
+      const typed = vars.enter === "typewriter" || vars.enter === "word-by-word";
+      let settled;
+      if (vars.box && !typed) {
+        settled = kumaMotion.enter(tl, card, vars.enter, { at: 0, duration: vars.enter_duration });
+      } else {
+        if (vars.box) tl.from(card, { opacity: 0, duration: 0.2, ease: "power1.out" }, 0);
+        const split = typed && vars.subtitle ? 0.65 : 1;
+        const first = kumaMotion.enter(tl, text, vars.enter, { at: 0, duration: vars.enter_duration * split, text });
+        const second = vars.subtitle ? kumaMotion.enter(tl, sub, vars.enter, typed
+          ? { at: first, duration: vars.enter_duration * (1 - split), text: sub }
+          : { at: 0.12, duration: vars.enter_duration, text: sub }) : first;
+        settled = Math.max(first, second);
+      }
+      kumaMotion.exit(tl, card, vars.exit, { at: duration - vars.exit_duration, duration: vars.exit_duration, after: settled });
+      // A title with no motion at all still needs a timeline as long as the clip.
+      tl.set({}, {}, duration);
+    </script>
+  </body>
+</html>

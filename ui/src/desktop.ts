@@ -17,6 +17,8 @@ export interface DesktopBridge {
   /** False when the app attached to a daemon it did not start (and so will not stop it). */
   ownsDaemon: boolean;
   pickMedia(): Promise<string[]>;
+  /** Font files to add, absolute paths. */
+  pickFonts(): Promise<string[]>;
   /** Where a dropped file is on disk, or "". */
   pathForFile(file: File): string;
   reveal(relativePath?: string): Promise<string>;
@@ -46,6 +48,7 @@ const MENU: Record<string, string> = {
   "reload-preview": Cmd.reloadPreview,
   "new-sequence": Cmd.newSequence,
   "new-overlay": Cmd.newOverlay,
+  "new-title": Cmd.newTitle,
   "swap-orientation": Cmd.swapOrientation,
   "add-media": Cmd.addMedia,
   "copy-clip": Cmd.copyClip,

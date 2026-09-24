@@ -134,6 +134,12 @@ export async function driver(url) {
     dragFiles(type, x, y, files) {
       return send("Input.dispatchDragEvent", { type, x, y, data: { items: [], files, dragOperationsMask: 1 } });
     },
+    /** A PNG of the viewport, written to `file` — for looking at a page while writing a
+     *  test, not for asserting on. */
+    async screenshot(file) {
+      const r = await send("Page.captureScreenshot", { format: "png" });
+      fs.writeFileSync(file, Buffer.from(r.result.data, "base64"));
+    },
     close() {
       try { ws.close(); } catch { /* already gone */ }
       chrome.kill("SIGTERM");

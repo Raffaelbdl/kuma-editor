@@ -55,7 +55,10 @@ An overlay entry names a folder in the project (`overlays/<name>/`: `index.html`
 `check_overlay`, then `import_overlay` (writing a folder does not add it to the bin). Or copy a
 **blueprint** from the user's library (`list_blueprints`, `add_blueprint`). `make_overlay_unique`
 before editing a shared folder; `save_blueprint` only when the user asks. See `overlay_guide`.
-Overlays are live DOM in the preview and baked to alpha frames at export.
+Overlays are live DOM in the preview and baked to alpha frames at export. For a plain title, the
+`title` and `title-subtitle` blueprints are typography, box, outline, shadow and entrance/exit as
+vars — set those rather than writing markup. A `font` var takes a family name from `list_fonts`;
+`add_font` copies a new one in.
 
 To look at the footage, call `sample_frames` with a time range (and an optional pixel `rect`); it
 returns the composited frames as images plus their PNG paths. To look at an *overlay you are
@@ -324,6 +327,16 @@ pub struct PathArg {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct AddFont {
+    /// A `.ttf` or `.otf` file, relative to the project or absolute.
+    pub path: String,
+    /// Into the user's library for every project, instead of this project's `fonts/`.
+    /// Only when the user asks: the library is theirs.
+    #[serde(default)]
+    pub shared: bool,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct JobArg {
     pub id: u64,
 }
@@ -371,6 +384,16 @@ impl KumaServer {
         let copied = self.client.post(&format!("/api/blueprints/{}/copy", p.blueprint), &json!({})).await.map_err(err)?;
         let body = json!({ "path": copied["overlay"], "id": p.id, "name": p.name, "vars": p.vars.unwrap_or_default(), "origin": format!("claude: add {}", p.blueprint) });
         self.post("/api/overlays/import", &body).await
+    }
+
+    #[tool(description = "List the font families a `font` var can name, each with where it comes from (`project` fonts/ or the `library`) and its faces (weight range, italic). A family not listed renders in the overlay's fallback stack.")]
+    async fn list_fonts(&self) -> Result<CallToolResult, McpError> {
+        self.get("/api/fonts").await
+    }
+
+    #[tool(description = "Copy a font file (.ttf/.otf) into the project's `fonts/` (or, with `shared`, the user's library) so `font` vars can name it. Returns the family name it reads as. Not an edit: nothing to undo. Add a family's weights and italics as separate calls.")]
+    async fn add_font(&self, Parameters(p): Parameters<AddFont>) -> Result<CallToolResult, McpError> {
+        self.post("/api/fonts", &json!({ "path": p.path, "shared": p.shared })).await
     }
 
     #[tool(description = "The overlay authoring contract (root attributes, kuma.js helper, vars, seekable animation rules, manifest format). Read it before writing an overlay.")]

@@ -1,5 +1,5 @@
 import { api, subscribeEvents } from "./api";
-import type { BlueprintInfo, Clip, DaemonEvent, Job, OverlayInfo, PatchOp, Project, Track, TrackKind } from "./types";
+import type { BlueprintInfo, Clip, DaemonEvent, FontFamily, Job, OverlayInfo, PatchOp, Project, Track, TrackKind } from "./types";
 import { allClips, clipPathOf, fpsValue, freeId, isOverlaySource, nearest, seqDuration, seqPath, sequenceIds, sequenceOf } from "./types";
 
 /** A clip found in the project: where it is, as the record every edit of it starts from. */
@@ -33,6 +33,8 @@ export interface State {
   blueprints: BlueprintInfo[];
   /** The manifest of every overlay folder the bin uses, by folder. */
   manifests: Record<string, OverlayInfo>;
+  /** Font families `font` vars can name. */
+  fonts: FontFamily[];
   /** Bumped when a preview render finishes: preview images' cache key. */
   previewStamp: number;
   /** The sequence open for editing. The daemon owns this (the preview compiles it), so it
@@ -68,7 +70,7 @@ export interface State {
 type Listener = (s: State) => void;
 
 class Store {
-  state: State = { project: null, blueprints: [], manifests: {}, previewStamp: 0, sequence: "", selection: null, track: null, clipboard: null, autoKey: false, playhead: 0, playing: false, zoom: 60, tab: SEQUENCE_TAB, sequences: [], overlays: [], connected: false, jobs: {} };
+  state: State = { project: null, blueprints: [], manifests: {}, fonts: [], previewStamp: 0, sequence: "", selection: null, track: null, clipboard: null, autoKey: false, playhead: 0, playing: false, zoom: 60, tab: SEQUENCE_TAB, sequences: [], overlays: [], connected: false, jobs: {} };
   private listeners = new Set<Listener>();
   private refreshing: Promise<void> | null = null;
   private refreshAgain = false;
@@ -105,6 +107,7 @@ class Store {
   async init() {
     const [project, blueprints, manifests, seq] = await Promise.all([api.project(), api.blueprints(), api.overlays(), api.sequence()]);
     this.set({ project, blueprints, manifests, sequence: seq.current, sequences: [seq.current] });
+    void this.reloadFonts();
     subscribeEvents((e) => this.onEvent(e), (connected) => {
       this.set({ connected });
       // Events only say what happens from now on: what is already queued or running (or
@@ -205,6 +208,22 @@ class Store {
       }
     })();
     return this.refreshing;
+  }
+
+  /** Re-read the fonts, and the editor's own `@font-face` for them, which is what lets the
+   *  picker show each family in its face. A font is a file, not an edit, so nothing else
+   *  says when one arrives. */
+  async reloadFonts() {
+    const fonts = await api.fonts().catch(() => this.state.fonts);
+    let link = document.getElementById("kuma-fonts") as HTMLLinkElement | null;
+    if (!link) {
+      link = document.createElement("link");
+      link.id = "kuma-fonts";
+      link.rel = "stylesheet";
+      document.head.appendChild(link);
+    }
+    link.href = `/api/fonts.css?v=${Date.now()}`;
+    this.set({ fonts });
   }
 
   /** Re-read the manifests after a folder was edited on disk. */

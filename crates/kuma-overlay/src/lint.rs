@@ -100,6 +100,15 @@ impl Baker {
         let staged = self.stage(req, &work.path().join("src"))?;
         let html = std::fs::read_to_string(&staged.entry)?;
         let mut findings = contract_findings(&html, req.manifest, &staged.dir);
+        // A family that is not installed renders in the overlay's fallback stack: legal,
+        // and not what anyone picked.
+        for (k, family) in self.fonts(req.manifest, &req.manifest.resolve_vars(req.vars)).missing {
+            findings.push(Finding::warn(
+                "font_missing",
+                format!("`{k}` names the font `{family}`, which is not installed"),
+                "add the font file to the project's `fonts/` (or a library's), or pick one that is installed",
+            ));
+        }
 
         let renderer_skipped = match hyperframes_lint(&self.hyperframes, &staged.dir) {
             Ok(mut fs) => {
@@ -131,10 +140,14 @@ fn contract_findings(html: &str, manifest: &OverlayManifest, dir: &Path) -> Vec<
     // overlay's markup, not that — or every declared var would look read. Its own
     // linked stylesheets are part of what it reads, though: `_vendor/kuma.css` is what
     // turns `size` into `--u`, so an overlay that only sizes in `--u` still uses `size`.
+    // What `_vendor/` reads, though, is kuma's and not the overlay's: it counts toward a var
+    // being used, never toward one being unknown (`kuma.css` reads `size` with a fallback,
+    // and a title that has no `size` has nothing wrong with it).
     let mut own = without_injection(html);
+    let mut vendor = String::new();
     for href in local_refs(html).into_iter().filter(|h| h.ends_with(".css")) {
         if let Ok(css) = std::fs::read_to_string(dir.join(&href)) {
-            own.push_str(&css);
+            if href.starts_with("_vendor/") { vendor.push_str(&css) } else { own.push_str(&css) }
         }
     }
 
@@ -176,8 +189,9 @@ fn contract_findings(html: &str, manifest: &OverlayManifest, dir: &Path) -> Vec<
     for name in used.iter().filter(|n| !manifest.vars.contains_key(*n)) {
         out.push(Finding::error("unknown_var", format!("`{name}` is read but not declared in overlay.json"), "declare it under `vars` with a type and a default, or stop reading it"));
     }
+    let used_by_vendor = used_vars(&vendor);
     for name in manifest.vars.keys() {
-        if !used.contains(name) {
+        if !used.contains(name) && !used_by_vendor.contains(name) {
             out.push(Finding::warn("unused_var", format!("`{name}` is declared in overlay.json but never read"), "read it as `vars.<name>` or `var(--var-<name>)`, or remove it from the manifest"));
         }
     }

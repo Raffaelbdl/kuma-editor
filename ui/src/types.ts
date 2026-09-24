@@ -153,13 +153,26 @@ export interface SequenceState { current: string }
 export interface Cue { start: number; end: number; text: string }
 
 export interface VarSpec {
-  type: "string" | "text" | "number" | "color" | "boolean" | "enum" | "point" | "cues";
+  type: "string" | "text" | "number" | "color" | "boolean" | "enum" | "point" | "cues" | "font";
   label?: string; description?: string; default: unknown; min?: number; max?: number; step?: number; options?: string[];
+  /** The inspector section it is listed under. */
+  group?: string;
+  /** Shown only while each named var has this value (or one of these values). */
+  when?: Record<string, unknown>;
 }
-/** `overlay.json`: the same shape for a project's overlay and a library blueprint. */
+/** `overlay.json`: the same shape for a project's overlay and a library blueprint. Vars
+ *  arrive in the order the manifest writes them, which is the order they are shown in. */
 export interface OverlayManifest {
   name: string; description: string; duration_default: number; static: boolean;
   vars: Record<string, VarSpec>; tags: string[];
+  /** Offered in the bin's New menu under this label. */
+  create?: string;
+}
+/** A font family a `font` var can name, from the project's `fonts/` or a library's. */
+export interface FontFamily {
+  name: string;
+  origin: "project" | "library";
+  faces: { weight: [number, number]; italic: boolean }[];
 }
 /** A reusable overlay in the user's library. Copied into a project to be used. */
 export interface BlueprintInfo { id: string; manifest: OverlayManifest }

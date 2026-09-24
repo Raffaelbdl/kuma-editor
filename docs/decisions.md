@@ -650,6 +650,110 @@ Templates got a library; media did not, so a shared animation or sting folder ha
 first-class home and each project relinks it by hand. Absolute paths already work, so
 this is about browsing and organisation rather than capability.
 
+## Classic titles and fonts
+
+**A title is a blueprint whose every look is a var** — adopted. Kdenlive has a title
+producer and a title editor; kuma already decided that HTML overlays subsume title clips,
+so a "classic" title is `library/blueprints/title` (and `title-subtitle`): typography
+(`font`, weight, italic, size, colour, case, spacing, line height, alignment), layout
+(position, anchor, max width), outline, shadow, a box, and an entrance and exit by name.
+Size is a percent of the frame's short side, so a title reads the same in portrait.
+
+**The bin's New menu is manifests saying `create`** — adopted. *+ New* in the bin (and a
+right-click, which creates inside the folder under the pointer) lists every blueprint with
+a `create` label, then *Overlay from a blueprint…*, *Sequence…* and *Folder…*; the desktop
+menu has *New Title*. Rejected: a list of classic kinds in the UI, which a user's own
+blueprint could never join, and a separate "title" source variant, which the overlay
+already is.
+
+**Created without a dialog, one folder each** — adopted. The entry is named "Title",
+"Title 2"…, opened on the workbench with its vars in the inspector; renaming is the bin's.
+Considered: every title sharing one `overlays/title` folder, since the vars carry
+everything. Rejected by the user: nobody should have to look in `overlays/`, and a shared
+folder makes an edit to one title's markup an edit to all of them. The bin's folders are
+how titles are organised.
+
+**The workbench opens an entry at the middle of its length** — adopted. It opened at 0,
+where every overlay with an entrance is invisible, so a title made from the bin appeared
+as a blank stage. Where it was left still wins after the first look.
+
+**Vars are shown in the order the manifest writes them** — adopted. `vars` is an
+`IndexMap` (with `serde_json`'s `preserve_order`, already on); it was a `BTreeMap`, which
+showed every blueprint's controls alphabetically. The resolved vars are in the bake key, so
+every cached bake misses once.
+
+**`group` and `when` are presentation** — adopted. `group` folds vars into sections of the
+inspector; `when` hides a control while other vars do not hold the given values (an outline
+colour with the outline off). A hidden var keeps its value and still reaches the overlay,
+and the manifest check refuses a `when` naming a var that is not there or a value it
+cannot take. Rejected: a `groups` array at the manifest's top level, which says the same
+thing twice once vars keep their order.
+
+**Entrances and exits are named, in `_vendor/kuma-motion.js`** — adopted. The same nine
+entrances and seven exits for every classic blueprint, so an enum means the same thing in
+each. Shared like `kuma.js`, not copied into projects, which means changing what a name
+does re-animates finished videos: the names are a contract, keep them stable and add
+rather than change.
+
+**A `font` var is a family name, resolved against folders of font files** — adopted.
+The search path is every library's `fonts/`, then the project's `fonts/`, which wins
+whole: a project carrying a family renders that one. The family, weight range (a variable
+font's `wght` axis) and italic are read from the files' own tables (`ttf-parser`), so a
+file dropped in under any name is found under the name a person types. kuma writes the
+`@font-face` rules into the contract; each face has one name in its family,
+`<family>/<i>.<ext>`, which the bake stages under `_kuma/fonts/` and the daemon serves
+under `/fonts/` (to the preview and to the editor's font picker alike), and the bake key
+hashes the font bytes — a digest taken when the file is read, not on every bake. The
+starter set is twelve open-licence families (`library/fonts/`, licence beside each:
+OFL, Apache, and the Ubuntu Font Licence), 9.4 MB. Rejected:
+- **System fonts.** A project would render differently on another machine — the problem
+  copying blueprints exists to avoid.
+- **Fonts inside each overlay folder.** Choosing a family from a list would have to copy
+  files into the folder, so a var edit would have a filesystem side effect.
+- **Google Fonts.** Network in a bake; the lint already refuses it.
+
+`.ttf`/`.otf` only: WOFF and WOFF2 are compressed and would need decoding to read a name.
+Adding a font is a file, not an edit, like an overlay folder: it is copied into the
+project's `fonts/` or, for every project, the user library's.
+
+**Fonts are added by path** — adopted, as media and overlays are. `POST /api/fonts
+{ path, shared }` (the **+** by a font picker, MCP `add_font`): the desktop app's picker
+gives the path, a browser tab types it, and the daemon reads and copies the file. A first
+cut uploaded the bytes instead, which works from a browser that cannot say where a file is
+and from an editor on another machine than the daemon; it was the one upload-shaped route
+in an API that otherwise takes paths, and a CLI or an agent had no way in. **Deferred: the
+byte upload**, for the day the daemon runs apart from the editor. It is a fallback beside
+the path, not a replacement, and it is not only for fonts — adding media and importing an
+overlay from anywhere have the same limit then.
+
+**A library font is not copied into the project** — adopted, for now. A project names a
+family that lives in the library the way it references `_vendor/`, so opened on a machine
+without the family it renders in the overlay's fallback stack, and `check_overlay` warns
+`font_missing`. *Collect fonts into the project* is the obvious follow-up, **deferred**.
+Save as blueprint has the mirror gap: a blueprint saved from an entry that uses a project
+font names a family the library may not have.
+
+**`kuma library` always refreshes `_vendor/`, and adds new faces to installed fonts** —
+adopted. It skipped any folder that existed, so a new or changed file in `_vendor/`
+(`kuma-motion.js`) never reached an existing install without `--force`, which also
+overwrites blueprints someone edited. `_vendor/` is kuma's runtime rather than a user
+asset — the blueprints installed beside it need the one shipped with them — so it is always
+replaced; a font family already installed takes the faces it lacks; everything else there
+is left alone. Considered: merging missing files into every folder, which would also bring
+back a file someone deleted from their own copy of a blueprint.
+
+**What `_vendor/` reads is not the overlay's** — adopted. The lint counts the stylesheets
+an overlay links as part of what it reads, so `kuma.css`'s `var(--var-size, 1)` made every
+overlay linking it read `size`, and the titles, which have none, were told they read an
+undeclared var. A read in a `_vendor/` stylesheet now counts toward a var being used (so
+`size` is not reported unused where `--u` is how it is read), never toward one being
+unknown. Rejected: excusing every read that has a fallback, which would also have hidden a
+typo like `var(--var-colr, red)` in the overlay's own CSS.
+
+**More classic blueprints** — deferred. Shapes, rolling credits and crawls, a quote card,
+a progress bar, a spotlight, a timer, a checklist, a typed code block: the same pattern,
+each with `create` once it exists.
+
 ## Preview
 
 **Engine reload is keyed on non-overlay state** — superseded, by "the daemon decides when

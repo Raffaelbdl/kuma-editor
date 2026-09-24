@@ -5,7 +5,8 @@ use std::process::Command;
 
 use kuma_core::manifest::OverlayManifest;
 
-use crate::inject::Contract;
+use crate::fonts::{FontLibrary, Origin, Resolved};
+use crate::inject::{Contract, FontCss};
 use kuma_core::Fps;
 use kuma_mlt::OverlayBake;
 use serde::{Deserialize, Serialize};
@@ -20,6 +21,10 @@ use sha2::{Digest, Sha256};
 const GENERATED: &[&str] = &["thumb.png", "preview.webp"];
 /// The only entry file hyperframes renders.
 const ENTRY: &str = "index.html";
+/// Where a staged overlay finds the fonts its `font` vars name. kuma writes both the rules
+/// and the files, so nothing an author writes points here; the preview serves the same
+/// files from its own route.
+const STAGED_FONTS: &str = "_kuma/fonts/";
 /// Frame rate of the library previews (`thumb.png` is their frame at t = 1 s).
 const PREVIEW_FPS: i64 = 12;
 
@@ -99,6 +104,8 @@ pub struct Baker {
     pub version: Option<String>,
     /// Shared `_vendor/` library used when an overlay has none of its own.
     pub vendor_dir: PathBuf,
+    /// What `font` vars resolve against. Empty unless the caller sets it.
+    pub fonts: FontLibrary,
 }
 
 impl Baker {
@@ -116,7 +123,7 @@ impl Baker {
             .map(PathBuf::from)
             .or_else(|| std::env::var_os("PUPPETEER_EXECUTABLE_PATH").map(PathBuf::from))
             .or_else(find_playwright_headless_shell);
-        let mut b = Baker { cache_dir, hyperframes, browser, version: None, vendor_dir };
+        let mut b = Baker { cache_dir, hyperframes, browser, version: None, vendor_dir, fonts: FontLibrary::default() };
         b.version = b.available().ok();
         b
     }
@@ -125,6 +132,29 @@ impl Baker {
     /// sibling, else the shared library. The preview route serves exactly this folder.
     pub fn vendor_for(&self, overlay_dir: &Path) -> Option<PathBuf> {
         [overlay_dir.join("_vendor"), overlay_dir.parent()?.join("_vendor"), self.vendor_dir.clone()].into_iter().find(|p| p.is_dir())
+    }
+
+    /// Resolve `font` vars against these folders (lowest precedence first, each labelled).
+    pub fn with_fonts(mut self, dirs: Vec<(PathBuf, Origin)>) -> Self {
+        self.fonts = FontLibrary::new(dirs);
+        self
+    }
+
+    /// What an overlay's `font` vars come to with these (resolved) vars. A family that is
+    /// not installed is left out — the overlay's own fallback stack draws it — and listed
+    /// as missing, which `lint` reports. The one place fonts are resolved: the bake, the
+    /// lint and the live preview all start here.
+    pub fn fonts(&self, manifest: &OverlayManifest, vars: &Map<String, Value>) -> Resolved {
+        let wanted: Vec<(String, String)> = manifest
+            .vars
+            .iter()
+            .filter(|(_, s)| s.ty == kuma_core::VarType::Font)
+            .map(|(k, _)| (k.clone(), vars.get(k).and_then(Value::as_str).unwrap_or_default().to_string()))
+            .collect();
+        if wanted.is_empty() {
+            return Resolved::default();
+        }
+        self.fonts.resolve(wanted)
     }
 
     pub fn available(&self) -> Result<String, BakeError> {
@@ -157,6 +187,14 @@ impl Baker {
         }
         let vars = req.manifest.resolve_vars(req.vars);
         h.update(serde_json::to_vec(&vars).unwrap_or_default());
+        // The fonts drawn, by content: the same family name can be different files on
+        // another machine, or after a font is replaced.
+        for family in self.fonts(req.manifest, &vars).families {
+            h.update(family.name.as_bytes());
+            for face in &family.faces {
+                h.update(format!("\0{:?} {} {}\0", face.weight, face.italic, face.digest).as_bytes());
+            }
+        }
         let (duration, speed) = if req.manifest.is_static { (0.0, 0.0) } else { (req.duration, req.speed) };
         h.update(format!("\n{}/{} {}x{} d={duration:.6} s={speed:.6}", req.fps.num, req.fps.den, req.width, req.height).as_bytes());
         Ok(hex::encode(h.finalize())[..24].to_string())
@@ -212,7 +250,18 @@ impl Baker {
             return Err(BakeError::NoEntry(entry));
         }
         let html = std::fs::read_to_string(&entry)?;
-        let contract = Contract { vars: &vars, fps: req.fps, width: req.width, height: req.height, duration: internal_duration, speed: req.speed, bake: true, clip: None, head_extra: "" };
+        // The fonts go where the rules say.
+        let fonts = self.fonts(req.manifest, &vars);
+        for family in &fonts.families {
+            let dir = src.join(STAGED_FONTS).join(family.slug());
+            std::fs::create_dir_all(&dir)?;
+            for (file, face) in family.files() {
+                std::fs::copy(&face.path, dir.join(file))?;
+            }
+        }
+        let faces = fonts.css(STAGED_FONTS);
+        let fonts = FontCss { faces: &faces, vars: &fonts.vars };
+        let contract = Contract { vars: &vars, fps: req.fps, width: req.width, height: req.height, duration: internal_duration, speed: req.speed, bake: true, clip: None, head_extra: "", fonts };
         std::fs::write(&entry, contract.apply(&html))?;
         Ok(Staged { dir: src.to_path_buf(), entry, is_still, speed })
     }

@@ -10,6 +10,8 @@ import { api } from "../api";
 import { Cmd, run } from "../commands";
 import { button, capitalize, checkbox, dragPointer, el, options, plural, row, selectInput } from "../dom";
 import { keysFor } from "../shortcuts";
+import { desktop } from "../desktop";
+import { askForm } from "../modal";
 import { store, toast } from "../store";
 import type { BinItem, Clip, Cue, Ease, Effect, PatchOp, Project, Streams, VarSpec } from "../types";
 import { blueprintActions, makeOverlayUnique, manifestOf, moveBinItem, overlayError, placeBinItem, previewImg, renderPreview, saveAsBlueprint, sharersOf } from "../edits";
@@ -352,7 +354,7 @@ export class Inspector {
     // selected clip decides what the panel can edit at all — a keyed value has no "now" to
     // write to from outside it — and that flips rarely. The values themselves follow the
     // playhead without a re-render; see `renderEffects`.
-    store.select((s) => [s.project, s.selection, s.manifests, s.blueprints, s.sequence, playheadInClip(), s.previewStamp], () => this.render());
+    store.select((s) => [s.project, s.selection, s.manifests, s.fonts, s.blueprints, s.sequence, playheadInClip(), s.previewStamp], () => this.render());
   }
 
   private render() {
@@ -557,9 +559,18 @@ export class Inspector {
 
     const vars = source.vars ?? {};
     const setVar = (k: string, v: unknown) => store.patch([{ op: "add", path: `${bp}/source/vars`, value: { ...vars, [k]: v } }], `var ${k}`);
-    for (const [k, spec] of Object.entries(manifest.vars)) {
-      const cur = k in vars ? vars[k] : spec.default;
-      this.host.appendChild(field(spec.label ?? k, varInput(spec, cur, (v) => setVar(k, v))));
+    const value = (k: string) => (k in vars ? vars[k] : manifest.vars[k]?.default);
+    // A control whose `when` does not hold is left out: an outline colour means nothing
+    // with the outline off. The value stays, and comes back with the switch.
+    const shown = (spec: VarSpec) => Object.entries(spec.when ?? {}).every(([k, want]) => (Array.isArray(want) ? want.includes(value(k)) : want === value(k)));
+    for (const [group, entries] of varGroups(manifest.vars)) {
+      const host = group ? varSection(this.host, group) : this.host;
+      for (const [k, spec] of entries) {
+        if (!shown(spec)) continue;
+        const f = field(spec.label ?? k, varInput(spec, value(k), (v) => setVar(k, v)));
+        if (spec.description) f.title = spec.description;
+        host.appendChild(f);
+      }
     }
   }
 
@@ -728,8 +739,120 @@ function cuesInput(cues: Cue[], onChange: (v: Cue[]) => void): HTMLElement {
   return wrap;
 }
 
+/** A manifest's vars by `group`, the ungrouped first, then each group where its first var
+ *  is; within a group, in the order written. */
+function varGroups(vars: Record<string, VarSpec>): [string, [string, VarSpec][]][] {
+  const groups = new Map<string, [string, VarSpec][]>([["", []]]);
+  for (const [k, spec] of Object.entries(vars)) {
+    const g = spec.group ?? "";
+    if (!groups.has(g)) groups.set(g, []);
+    groups.get(g)!.push([k, spec]);
+  }
+  return [...groups].filter(([, entries]) => entries.length);
+}
+
+/** Folded var sections, by label: a Box section folded on one title stays folded on the
+ *  next, which is what someone working through a set of them wants. */
+const closedSections = new Set<string>();
+
+/** A foldable section of vars under `host`; returns where its fields go. */
+function varSection(host: HTMLElement, label: string): HTMLElement {
+  const box = el("div", `effect var-group${closedSections.has(label) ? " closed" : ""}`);
+  const head = el("div", "head");
+  const disclose = button(icon("chevron-right", 11), () => {
+    const closing = !closedSections.has(label);
+    if (closing) closedSections.add(label); else closedSections.delete(label);
+    box.classList.toggle("closed", closing);
+    disclose.setAttribute("aria-expanded", String(!closing));
+  }, `Show or hide the ${label.toLowerCase()} settings`, "disclose");
+  disclose.append(label);
+  disclose.setAttribute("aria-expanded", String(!closedSections.has(label)));
+  head.appendChild(disclose);
+  const body = el("div", "effect-body");
+  box.append(head, body);
+  host.appendChild(box);
+  return body;
+}
+
+/**
+ * A font var: the installed families, the project's first, shown in the chosen face; and
+ * a way to add one. A family the entry names that is not installed stays selectable as
+ * itself, marked, rather than silently becoming another.
+ */
+function fontInput(cur: string, onChange: (v: string) => void): HTMLElement {
+  const fonts = store.state.fonts;
+  const s = el("select");
+  const group = (label: string, names: string[]) => {
+    if (!names.length) return;
+    const g = el("optgroup");
+    g.label = label;
+    for (const n of names) {
+      const o = el("option", "", n);
+      o.value = n;
+      o.style.fontFamily = `"${n}", system-ui`;
+      g.appendChild(o);
+    }
+    s.appendChild(g);
+  };
+  if (cur && !fonts.some((f) => f.name === cur)) {
+    const o = el("option", "", `${cur} (not installed)`);
+    o.value = cur;
+    s.appendChild(o);
+  }
+  group("This project", fonts.filter((f) => f.origin === "project").map((f) => f.name));
+  group("Library", fonts.filter((f) => f.origin !== "project").map((f) => f.name));
+  s.value = cur;
+  s.style.fontFamily = `"${cur}", system-ui`;
+  s.onchange = () => onChange(s.value);
+  const add = button("+", () => void addFonts(onChange), "Add font files (.ttf, .otf) to this project or to every project");
+  return row("row", s, add);
+}
+
+/**
+ * Add fonts by path, as media is added: the app's picker, or a typed path in a browser tab,
+ * which cannot say where a file is. Ask where they go, add them, use the first one's family.
+ */
+async function addFonts(use: (family: string) => void): Promise<void> {
+  const app = desktop();
+  const typed = el("input");
+  typed.type = "text";
+  typed.placeholder = "fonts/MyFont-Regular.ttf or /abs/path.otf";
+  let paths: string[] = [];
+  if (app) {
+    paths = await app.pickFonts().catch((e) => { toast(`Cannot open the file picker: ${(e as Error).message}`, "err"); return []; });
+    if (!paths.length) return;
+  }
+  const where = selectInput([
+    { value: "project", label: "This project", title: "Into the project's fonts/: it travels with the project" },
+    { value: "shared", label: "Every project", title: "Into your library's fonts/, beside the starter fonts" },
+  ], "project", () => {});
+  const ok = await askForm({
+    title: paths.length > 1 ? `Add ${paths.length} fonts` : "Add a font",
+    note: "A .ttf or .otf file is copied in. A family's weights and italics are separate files in most fonts: add them together. A font in the project goes wherever the project goes; one in your library is there for every project on this machine.",
+    rows: [...(app ? [] : [{ label: "File", input: typed }]), { label: "For", input: where }],
+    ok: "Add",
+  });
+  if (!ok) return;
+  if (!app) paths = typed.value.trim() ? [typed.value.trim()] : [];
+  let first: string | undefined;
+  for (const p of paths) {
+    try {
+      first ??= (await api.addFont(p, where.value === "shared")).family;
+    } catch (e) {
+      toast(`${p}: ${(e as Error).message}`, "err", 8000);
+    }
+  }
+  await store.reloadFonts();
+  if (first) {
+    toast(`Added ${first}`, "ok");
+    use(first);
+  }
+}
+
 function varInput(spec: VarSpec, cur: unknown, onChange: (v: unknown) => void): HTMLElement {
   switch (spec.type) {
+    case "font":
+      return fontInput(String(cur ?? ""), onChange);
     case "number":
       // A var that named its bounds gets the slider; one that did not is a bare number,
       // rather than a slider over a range nobody declared.

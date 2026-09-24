@@ -8,7 +8,9 @@
 //! * `--var-<name>` CSS custom properties on `:root`;
 //! * the root composition's `data-duration`/`data-width`/`data-height` **rewritten in the
 //!   markup** (hyperframes sizes the render from the attribute as written, before any
-//!   script runs, and mounts children by their own `data-duration`).
+//!   script runs, and mounts children by their own `data-duration`);
+//! * the `@font-face` rules for the families `font` vars name, and those vars' custom
+//!   properties as quoted family names.
 
 use kuma_core::Fps;
 use serde_json::{json, Map, Value};
@@ -27,6 +29,15 @@ pub struct Contract<'a> {
     /// Extra markup inserted at the top of `<head>` (the preview adds `<base>` and the
     /// hyperframes runtime here).
     pub head_extra: &'a str,
+    pub fonts: FontCss<'a>,
+}
+
+/// What the `font` vars bring: their faces' `@font-face` rules, and which vars they are,
+/// so their properties are written as quoted family names.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct FontCss<'a> {
+    pub faces: &'a str,
+    pub vars: &'a [String],
 }
 
 impl Contract<'_> {
@@ -35,6 +46,9 @@ impl Contract<'_> {
         // One custom property per scalar var; a point becomes `--var-<name>-x`/`-y`.
         // Values are user text: keep them from closing the declaration or the block.
         let css = |name: &str, v: &Value| {
+            if let (Some(family), true) = (v.as_str(), self.fonts.vars.iter().any(|f| f == name)) {
+                return format!("--var-{name}: {};", crate::fonts::css_string(family));
+            }
             let s = match v {
                 Value::String(s) => s.clone(),
                 other => other.to_string(),
@@ -67,7 +81,7 @@ impl Contract<'_> {
         let head = format!("{}<script id=\"kuma-inject\">window.kuma = {payload};</script>\n", self.head_extra);
         // The script goes first so the overlay's own scripts see `window.kuma`; the vars
         // go last so they win over any `:root { --var-… }` fallback in the overlay's CSS.
-        let style = format!("<style id=\"kuma-vars\">:root {{ {css_vars} }}</style>\n");
+        let style = format!("<style id=\"kuma-vars\">{}:root {{ {css_vars} }}</style>\n", self.fonts.faces.replace('<', ""));
         // Insert after the opening `<head …>` (else `<html …>`, else the doctype) so the
         // document never drops into quirks mode, and the style before `</head>`.
         let open_end = |name: &str| tags(&html).find(|t| t.name.eq_ignore_ascii_case(name)).map(|t| t.end);
@@ -247,7 +261,7 @@ mod tests {
         let mut vars = Map::new();
         vars.insert("label".into(), json!("hi"));
         vars.insert("at".into(), json!({ "x": 0.5, "y": 0.25 }));
-        let c = Contract { vars: &vars, fps: Fps::new(30, 1), width: 1920, height: 1080, duration: 2.0, speed: 1.0, bake: true, clip: None, head_extra: "<base href=\"/x/\">\n" };
+        let c = Contract { vars: &vars, fps: Fps::new(30, 1), width: 1920, height: 1080, duration: 2.0, speed: 1.0, bake: true, clip: None, head_extra: "<base href=\"/x/\">\n", fonts: FontCss::default() };
         let html = c.apply("<html><head><title>x</title></head><body><div data-composition-id=\"main\" data-duration=\"4\"></div></body></html>");
         assert!(html.find("<base").unwrap() < html.find("kuma-inject").unwrap());
         assert!(html.find("kuma-inject").unwrap() < html.find("<title>").unwrap());
@@ -258,6 +272,20 @@ mod tests {
         assert!(html.contains("--var-label: hi;"));
         assert!(html.contains("--var-at-x: 0.5; --var-at-y: 0.25;"), "{html}");
         assert!(html.contains("data-composition-id=\"main\" data-duration=\"2\""), "{html}");
+    }
+
+    #[test]
+    fn font_vars_are_quoted_families_beside_their_faces() {
+        let mut vars = Map::new();
+        vars.insert("font".into(), json!("Playfair Display"));
+        vars.insert("label".into(), json!("Playfair Display"));
+        let font_vars = vec!["font".to_string()];
+        let faces = "@font-face { font-family: \"Playfair Display\"; src: url(\"_fonts/playfair-display/0.ttf\"); }\n";
+        let c = Contract { vars: &vars, fps: Fps::new(30, 1), width: 1920, height: 1080, duration: 2.0, speed: 1.0, bake: true, clip: None, head_extra: "", fonts: FontCss { faces, vars: &font_vars } };
+        let html = c.apply("<html><head></head><body><div data-composition-id=\"main\"></div></body></html>");
+        assert!(html.contains("--var-font: \"Playfair Display\";"), "{html}");
+        assert!(html.contains("--var-label: Playfair Display;"), "only font vars are quoted: {html}");
+        assert!(html.contains("<style id=\"kuma-vars\">@font-face { font-family: \"Playfair Display\""), "{html}");
     }
 
     #[test]
@@ -276,7 +304,7 @@ mod tests {
 
     #[test]
     fn injection_lands_inside_head_or_after_the_doctype() {
-        let c = Contract { vars: &Map::new(), fps: Fps::new(30, 1), width: 1920, height: 1080, duration: 2.0, speed: 1.0, bake: true, clip: None, head_extra: "" };
+        let c = Contract { vars: &Map::new(), fps: Fps::new(30, 1), width: 1920, height: 1080, duration: 2.0, speed: 1.0, bake: true, clip: None, head_extra: "", fonts: FontCss::default() };
         let a = c.apply("<!DOCTYPE html><html lang=\"en\"><head lang=\"en\"><title>x</title></head><body></body></html>");
         assert!(a.find("<head lang=\"en\">").unwrap() < a.find("kuma-inject").unwrap() && a.find("kuma-inject").unwrap() < a.find("<title>").unwrap(), "{a}");
         let b = c.apply("<!DOCTYPE html><div data-composition-id=\"main\"></div>");
@@ -289,7 +317,7 @@ mod tests {
         let mut vars = Map::new();
         vars.insert("label".into(), json!("</script><script>alert(1)</script>"));
         vars.insert("sub".into(), json!("x; } body { display:none"));
-        let c = Contract { vars: &vars, fps: Fps::new(30, 1), width: 1920, height: 1080, duration: 2.0, speed: 1.0, bake: false, clip: Some("c1"), head_extra: "" };
+        let c = Contract { vars: &vars, fps: Fps::new(30, 1), width: 1920, height: 1080, duration: 2.0, speed: 1.0, bake: false, clip: Some("c1"), head_extra: "", fonts: FontCss::default() };
         let html = c.apply("<html><head></head><body><div data-composition-id=\"main\"></div></body></html>");
         assert!(!html.contains("</script><script>alert"), "{html}");
         assert!(html.contains("<\\/script>"), "{html}");

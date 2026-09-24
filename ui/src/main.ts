@@ -3,7 +3,7 @@
 
 import { Cmd, command } from "./commands";
 import { desktop, initDesktop, pickAndAddMedia } from "./desktop";
-import { addTrack, copySelection, cutSelection, deleteSelectedClips, groupSelection, pasteClipboard, promptNewOverlay, promptNewSequence, splitAtPlayhead, swapOrientation, transcribe, ungroupSelection } from "./edits";
+import { addTrack, copySelection, createFromBlueprint, creatable, cutSelection, deleteSelectedClips, groupSelection, pasteClipboard, promptNewOverlay, promptNewSequence, splitAtPlayhead, swapOrientation, transcribe, ungroupSelection } from "./edits";
 import { Inspector } from "./panels/inspector";
 import { Library } from "./panels/library";
 import { Preview } from "./panels/preview";
@@ -24,6 +24,12 @@ function projectCommands() {
   command(Cmd.redo, "Redo", () => store.redo());
   command(Cmd.newSequence, "New Sequence…", () => promptNewSequence());
   command(Cmd.newOverlay, "New Overlay…", () => promptNewOverlay());
+  // What the New menu offers as "Title", whichever folder it is in.
+  command(Cmd.newTitle, "New Title", () => {
+    const pick = creatable().find((c) => c.label === "Title");
+    if (pick) void createFromBlueprint(pick.id);
+    else toast("No title blueprint installed: run `kuma library` to install the starter set", "err", 8000);
+  });
   command(Cmd.swapOrientation, "Switch Orientation", () => swapOrientation());
   command(Cmd.transcribe, "Transcribe → Subtitles", () => transcribe());
   command(Cmd.addMedia, "Add Media…", () => pickAndAddMedia());

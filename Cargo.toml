@@ -24,7 +24,9 @@ kuma-mcp = { path = "crates/kuma-mcp" }
 
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
-schemars = "1"
+schemars = { version = "1", features = ["indexmap2"] }
+indexmap = { version = "2", features = ["serde"] }
+ttf-parser = "0.25"
 json-patch = "4"
 thiserror = "2"
 anyhow = "1"

@@ -104,15 +104,15 @@ it into `~/.cargo/bin`, tell it where the repository is once:
 export KUMA_REPO=/path/to/kuma-editor        # or pass --repo <path> on each call
 ```
 
-Blueprints (reusable overlays), effect presets and design systems are **assets shared
+Blueprints (reusable overlays), effect presets, design systems and fonts are **assets shared
 across projects**, not part of the codebase: they live in a user library at
-`~/.local/share/kuma/{blueprints,presets,design-systems}`
+`~/.local/share/kuma/{blueprints,presets,design-systems,fonts}`
 (`$XDG_DATA_HOME/kuma`), plus any directories in `KUMA_LIBRARY` (a `:`-separated path
 list); presets are also read from a project's own `presets/`. Later entries win on an id
 clash. The repository ships a starter set under `library/`; install it once:
 
 ```
-kuma library                                 # copies library/{blueprints,presets,design-systems} → ~/.local/share/kuma (--force to overwrite)
+kuma library                                 # copies library/{blueprints,presets,design-systems,fonts} → ~/.local/share/kuma; adds what is missing (--force to overwrite)
 kuma thumbs                                  # a still and a moving preview (animated WebP, alpha) per blueprint
 ```
 
@@ -412,9 +412,24 @@ the **Blueprints** tab **copies** it into the project, so a finished video never
 because a blueprint did; **Save as blueprint** in the inspector copies an entry back, its
 vars as defaults. **Preview** in the inspector (or `kuma thumbs`) renders a still and a looping animated
 WebP of each blueprint and overlay entry. Starter set (`library/blueprints/`, installed by
-`kuma library`, which only adds): `location-tag`, `lower-third`, `callout-arrow`,
+`kuma library`, which only adds): `title` and `title-subtitle` (classic titles, every look a
+var), `location-tag`, `lower-third`, `callout-arrow`,
 `label-pin`, `section-title`, `countdown`, `watermark` (static), `subtitles` (a `cues` var;
 transcripts share one copy of it). Contract: `library/blueprints/CLAUDE.md`.
+
+**Titles** are made from the bin, the way Kdenlive's *Add Title Clip* is: **+ New** (or a
+right-click in the bin, which creates inside the folder under the pointer) lists every
+blueprint whose manifest has a `create` label — *Title*, *Title + subtitle* — and makes a new
+entry of one, opened on the workbench with its vars in the inspector. Each is its own copy.
+The inspector shows a manifest's vars in the order written, in foldable sections (`group`),
+hiding a control while its `when` does not hold.
+
+**Fonts** are what a `font` var names: a family, found in the project's `fonts/` (which wins)
+or a library's `fonts/`. kuma reads the family, weights and italic from the files and writes
+the `@font-face` rules, and the bake stages exactly the files it draws with. The starter set is
+twelve open-licence families (`library/fonts/`, OFL/Apache/UFL licences beside each). The **+** by a
+font picker adds `.ttf`/`.otf` files by path (the app's file picker, or a typed path in a
+browser tab), to this project or to every project; agents use `add_font`.
 
 Effect presets are `<library>/presets/*.json` (Ken Burns, zoom to region, vignette,
 picture-in-picture, dim) and expand to ordinary effects; `$expr` values may use the

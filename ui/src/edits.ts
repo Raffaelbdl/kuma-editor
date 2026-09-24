@@ -8,6 +8,7 @@ import { button, checkbox, el, plural, row, selectInput } from "./dom";
 import { askForm, askText } from "./modal";
 import { startJob, store, toast } from "./store";
 import type { ClipboardEntry, Found } from "./store";
+import type { MenuItem } from "./menu";
 import type { BinItem, BinSource, Clip, OverlayManifest, OverlaySource, PatchOp, Project, Track, TrackKind } from "./types";
 import { binItem, binPath, childrenOf, clipPathOf, hasAudio, isFileSource, isOverlaySource, isTimedMedia, itemKind, orientation, parentOf, seqDuration, shiftEffect, trackFor, trackPathOf, trimEffect, wouldNest, wouldRecurse } from "./types";
 
@@ -46,10 +47,10 @@ const binIdFor = (label: string, fallback: string) => uniqueId(slug(label) || fa
 
 /** Copy a blueprint into the project and add it to the bin as `binId`, with `more` ops in
  *  the same patch (one undo; undo leaves the copied folder on disk). */
-async function addBlueprint(blueprintId: string, binId: string, label: string, more: PatchOp[] = []): Promise<boolean> {
+async function addBlueprint(blueprintId: string, binId: string, label: string, more: PatchOp[] = [], parent: string | null = null): Promise<boolean> {
   try {
     const { overlay } = await api.copyBlueprint(blueprintId, slug(label) || undefined);
-    return !!(await addBinItem(label, blueprintId, { overlay, vars: {} }, binId, more));
+    return !!(await addBinItem(label, blueprintId, { overlay, vars: {} }, { id: binId, more, parent }));
   } catch (e) {
     toast((e as Error).message, "err");
     return false;
@@ -150,8 +151,10 @@ function newTrackOp(kind: TrackKind, tracks: { kind: TrackKind }[] = store.track
 
 /** Mint a bin entry named by the user: a slug of the name (or `fallback`) made unique,
  *  one patch. Returns the id, or null when the patch was refused. */
-async function addBinItem(name: string, fallback: string, source: BinSource, id = binIdFor(name, fallback), more: PatchOp[] = []): Promise<string | null> {
+async function addBinItem(name: string, fallback: string, source: BinSource, o: { id?: string; more?: PatchOp[]; parent?: string | null } = {}): Promise<string | null> {
+  const { id = binIdFor(name, fallback), more = [], parent } = o;
   const value: BinItem = { name, source };
+  if (parent) value.parent = parent;
   return (await store.patch([{ op: "add", path: binPath(id), value }, ...more], `add ${fallback} ${id}`)) ? id : null;
 }
 
@@ -161,17 +164,53 @@ const slug = (name: string) => name.toLowerCase().replace(/[^a-z0-9]+/g, "-").re
 /** Ask for a name, then mint an empty sequence and open it. It starts with the same
  *  three tracks a new project does, because an empty one has nowhere to drop a clip.
  *  `window.prompt` is not an option: Electron does not implement it (see `modal.ts`). */
-export async function promptNewSequence() {
+export async function promptNewSequence(parent: string | null = null) {
   const name = await askText({ title: "New sequence", label: "Name", placeholder: "Intro" });
   if (!name) return;
-  const id = await addBinItem(name, "sequence", { tracks: [newTrack("video", "Video"), newTrack("overlay", "Overlays"), newTrack("audio", "Audio")], markers: [] });
+  const id = await addBinItem(name, "sequence", { tracks: [newTrack("video", "Video"), newTrack("overlay", "Overlays"), newTrack("audio", "Audio")], markers: [] }, { parent });
   if (id) await store.openSequence(id);
 }
 
 /** A folder is a bin entry with nothing but a name and children. */
-export async function promptNewFolder() {
+export async function promptNewFolder(parent: string | null = null) {
   const name = await askText({ title: "New folder", label: "Name", placeholder: "Speech" });
-  if (name) await addBinItem(name, "folder", { folder: true });
+  if (name) await addBinItem(name, "folder", { folder: true }, { parent });
+}
+
+/** The blueprints the bin's New menu offers — those whose manifest says `create` — by label. */
+export const creatable = (): { id: string; label: string; description: string }[] =>
+  store.state.blueprints
+    .filter((b) => b.manifest.create)
+    .map((b) => ({ id: b.id, label: b.manifest.create!, description: b.manifest.description }))
+    .sort((a, b) => a.label.localeCompare(b.label));
+
+/**
+ * New ▸ Title: a blueprint copied in as a new entry of its own, under `parent`, named
+ * "Title", "Title 2"… and opened on the workbench with its vars in the inspector. No
+ * dialog — the name is the least interesting thing about a title, and the bin renames.
+ * The copy is its own folder, as adding any blueprint is, so every title can be restyled
+ * or edited without touching another.
+ */
+export async function createFromBlueprint(blueprintId: string, parent: string | null = null) {
+  const label = blueprintOf(blueprintId)?.create || blueprintName(blueprintId);
+  const names = new Set(Object.values(store.state.project!.bin).map((i) => i.name));
+  let name = label;
+  for (let n = 2; names.has(name); n++) name = `${label} ${n}`;
+  const id = binIdFor(name, blueprintId);
+  if (await addBlueprint(blueprintId, id, name, [], parent)) store.openOverlay(id);
+}
+
+/** What the bin's New menu and right-click offer, creating under `parent`. */
+export function newItems(parent: string | null): MenuItem[] {
+  const made = creatable();
+  const items: MenuItem[] = made.map((c) => ({ label: c.label, title: c.description, run: () => void createFromBlueprint(c.id, parent) }));
+  if (!made.length) items.push({ label: "Title", disabled: true, run: () => {}, title: "No blueprint offers itself here yet: run `kuma library` to install the starter set" });
+  items.push("separator",
+    { label: "Overlay from a blueprint…", run: () => void promptNewOverlay(undefined, parent), title: "Any blueprint in your library, copied in and opened on the workbench" },
+    { label: "Sequence…", run: () => void promptNewSequence(parent) },
+    { label: "Folder…", run: () => void promptNewFolder(parent) },
+  );
+  return items;
 }
 
 /** A blueprint's two ways into the project: the workbench, or the timeline at the playhead. */
@@ -200,7 +239,7 @@ export function previewImg(base: string): HTMLImageElement {
 }
 
 /** Copy a blueprint in as a new entry and open it in the workbench, without placing it. */
-export async function promptNewOverlay(blueprint?: string) {
+export async function promptNewOverlay(blueprint?: string, parent: string | null = null) {
   const blueprints = store.state.blueprints;
   if (!blueprints.length) {
     toast("No blueprints found. Run `kuma library`, or point KUMA_LIBRARY at a folder of them.", "err", 8000);
@@ -225,7 +264,7 @@ export async function promptNewOverlay(blueprint?: string) {
   if (!ok) return;
   const label = name.value.trim() || blueprintName(pick.value);
   const id = binIdFor(label, pick.value);
-  if (await addBlueprint(pick.value, id, label)) store.openOverlay(id);
+  if (await addBlueprint(pick.value, id, label, [], parent)) store.openOverlay(id);
 }
 
 /** A second entry on the same folder, vars and all, opened in the workbench. */

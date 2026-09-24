@@ -32,7 +32,9 @@ fn lint(baker: &Baker, dir: &Path) -> LintReport {
 fn baker(tmp: &tempfile::TempDir) -> (Baker, PathBuf) {
     let root = repo_root();
     let vendor = root.join("library/blueprints/_vendor");
-    (Baker::discover(&root, vendor, tmp.path().join("cache")), root)
+    // The starter fonts, as `kuma library` installs them: the titles name them.
+    let fonts = vec![(root.join("library/fonts"), kuma_overlay::Origin::Library)];
+    (Baker::discover(&root, vendor, tmp.path().join("cache")).with_fonts(fonts), root)
 }
 
 #[test]
@@ -47,6 +49,7 @@ fn every_shipped_blueprint_passes_its_own_contract() {
         }
         let report = lint(&baker, &dir);
         assert!(report.ok(), "{}:\n  {}", dir.display(), report.lines().join("\n  "));
+        assert!(!report.findings.iter().any(|f| f.code == "font_missing"), "{}: names a font the library does not ship:\n  {}", dir.display(), report.lines().join("\n  "));
         checked += 1;
     }
     assert!(checked >= 8, "only {checked} blueprints were checked — did the library move?");

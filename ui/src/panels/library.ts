@@ -13,7 +13,8 @@ import { api } from "../api";
 import { desktop, dropMedia, pickAndAddMedia } from "../desktop";
 import { button, dragPayload, el, isFileDrag, row, setDragPayload } from "../dom";
 import { store, toast } from "../store";
-import { blueprintActions, moveBinItem, promptNewFolder } from "../edits";
+import { blueprintActions, moveBinItem, newItems } from "../edits";
+import { menuBelow, showMenu } from "../menu";
 import type { BinItem, Project } from "../types";
 import { childrenMap, isFolderSource, isOverlaySource, isSequenceSource, itemKind, parentOf } from "../types";
 
@@ -23,6 +24,19 @@ export class Library {
     // Selection moves a class; it does not rebuild the panel.
     store.select((s) => [s.selection], () => this.markSelected());
     this.acceptFiles();
+    this.host.oncontextmenu = (e) => this.newMenu(e);
+  }
+
+  /** Right-click makes something new where the pointer is: inside a folder row, beside any
+   *  other row, at the top level below them. The bin's, so not over the Blueprints tab. */
+  private newMenu(e: MouseEvent) {
+    const p = store.state.project;
+    if (!p || this.tab !== "bin" || (e.target as HTMLElement).closest("input, textarea, select")) return;
+    e.preventDefault();
+    const id = (e.target as HTMLElement).closest<HTMLElement>(".bin-row")?.dataset.sel?.replace(/^bin:/, "");
+    const parent = id ? (isFolderSource(p.bin[id]?.source) ? id : parentOf(p, id)) : null;
+    const where = parent ? p.bin[parent]?.name || parent : null;
+    showMenu([{ heading: where ? `New in ${where}` : "New" }, ...newItems(parent)], e.clientX, e.clientY);
   }
 
   /** Files from the desktop, dropped anywhere in the window, join the bin at the top level
@@ -92,7 +106,7 @@ export class Library {
   }
 
   private renderBin(p: Project) {
-    if (!Object.keys(p.bin).length) this.host.appendChild(el("p", "muted", "Empty. Add media below, or an overlay from the Blueprints tab."));
+    if (!Object.keys(p.bin).length) this.host.appendChild(el("p", "muted", "Empty. Add media below, or a title from + New."));
     const list = el("div", "bin-list");
     // One grouping pass, then a walk: an entry's children (a transcript under its media,
     // a folder's contents) sit under it, indented, behind a caret. Cycle-safe because
@@ -116,7 +130,8 @@ export class Library {
     // Dropping a row on the list's empty space lists it last at the top level.
     dropTarget(list, undefined, () => ({ parent: null, before: null }));
     this.host.appendChild(list);
-    this.host.appendChild(row("lib-add", button("+ folder", () => void promptNewFolder(), "Add a folder; drag entries onto it")));
+    const create = button("+ New", () => menuBelow(create, newItems(null)), "Create a title, an overlay from a blueprint, a sequence or a folder (or right-click in the bin)");
+    this.host.appendChild(row("lib-add", create));
 
     const input = el("input");
     input.placeholder = "media/clip.mp4";

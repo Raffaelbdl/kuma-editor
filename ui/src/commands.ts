@@ -52,6 +52,7 @@ export const Cmd = {
   render: "project.render",
   newSequence: "project.new-sequence",
   newOverlay: "project.new-overlay",
+  newTitle: "project.new-title",
   swapOrientation: "project.swap-orientation",
   transcribe: "project.transcribe",
   addMedia: "project.add-media",

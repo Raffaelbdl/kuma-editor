@@ -43,6 +43,9 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/overlays/import", post(import_overlay))
         .route("/api/overlays/unique", post(make_unique))
         .route("/api/overlays/save-blueprint", post(save_blueprint))
+        .route("/api/fonts", get(fonts).post(add_font))
+        .route("/api/fonts.css", get(fonts_css))
+        .route("/fonts/{slug}/{file}", get(font_file))
         .route("/api/presets/effects", get(effect_presets))
         .route("/api/media/probe", get(probe_media))
         .route("/api/bin", post(add_media))
@@ -371,6 +374,46 @@ struct SaveBlueprint {
 async fn save_blueprint(State(st): S, Json(req): Json<SaveBlueprint>) -> ApiResult {
     let dir = blocking(move || crate::overlays::save_blueprint(&st, &req.bin, &req.id, req.force)).await?.map_err(bad_request_err)?;
     Ok(Json(json!({ "dir": dir })))
+}
+
+// ---------- fonts ----------
+
+/// Every family a `font` var can name, with where it comes from and the faces it has.
+async fn fonts(State(st): S) -> ApiResult {
+    let families = blocking(move || st.baker.fonts.families()).await?;
+    Ok(Json(json!(families.into_values().collect::<Vec<_>>())))
+}
+
+#[derive(Deserialize)]
+struct AddFont {
+    /// A `.ttf`/`.otf` file, relative to the project or absolute.
+    path: PathBuf,
+    /// Into the user library for every project, rather than this project's `fonts/`.
+    #[serde(default)]
+    shared: bool,
+}
+
+/// Copy a font file in. Not an edit — a font is a file beside the project, the way an
+/// overlay folder is — so nothing is undone and the bin is untouched.
+async fn add_font(State(st): S, Json(req): Json<AddFont>) -> ApiResult {
+    let out = blocking(move || crate::fonts::add_font(&st, &req.path, req.shared)).await?.map_err(bad_request_err)?;
+    Ok(Json(out))
+}
+
+/// Where fonts are served, `<route><slug>/<file>`: to the editor's font picker and to
+/// every overlay the preview renders.
+const FONT_ROUTE: &str = "/fonts/";
+
+/// `@font-face` for every family, for the editor's own page: the picker shows each name
+/// in its face.
+async fn fonts_css(State(st): S) -> Result<Response, ApiError> {
+    let css: String = blocking(move || st.baker.fonts.families().values().map(|f| f.css(FONT_ROUTE)).collect()).await?;
+    Ok(([(header::CONTENT_TYPE, "text/css")], css).into_response())
+}
+
+async fn font_file(State(st): S, Path((slug, file)): Path<(String, String)>) -> Result<Response, ApiError> {
+    let path = blocking(move || st.baker.fonts.file(&slug, &file)).await?;
+    file_response(&path.ok_or(ApiError::not_found("no such font"))?)
 }
 
 async fn presets() -> Json<Value> {
@@ -749,7 +792,8 @@ async fn overlay_preview(State(st): S, Path(clip): Path<String>) -> Result<Respo
     let r = crate::overlays::resolve(&st, overlay).map_err(|e| ApiError::not_found(format!("{e:#}")))?;
     // Clip ids are validated to be URL-safe.
     let base = format!("/overlay-preview/{}/", c.id);
-    overlay_document(&project, &r, vars, c.duration() * c.speed.abs(), c.speed, Some(&c.id), &base, None)
+    let (vars, duration, speed, id) = (vars.clone(), c.duration() * c.speed.abs(), c.speed, c.id.clone());
+    blocking(move || overlay_document(&st, &project, &r, &vars, duration, speed, Some(&id), &base, None)).await?
 }
 
 #[derive(Deserialize)]
@@ -775,14 +819,17 @@ async fn overlay_entry(State(st): S, Path(id): Path<String>, Query(q): Query<Ent
     let view = jobs::entry_view(&st, &project, &id, q.duration, q.width, q.height)?;
     // Bin ids are validated to be URL-safe.
     let base = format!("/overlay-entry/{id}/");
-    overlay_document(&project, &view.overlay, &view.vars, view.duration, 1.0, None, &base, Some((view.width, view.height)))
+    blocking(move || overlay_document(&st, &project, &view.overlay, &view.vars, view.duration, 1.0, None, &base, Some((view.width, view.height)))).await?
 }
 
 
 
 /// The overlay's markup with kuma's contract injected — the one place the live preview's
-/// document is built, whichever of the two routes above asked for it.
+/// document is built, whichever of the two routes above asked for it. Blocking: it reads
+/// the overlay and resolves fonts.
+#[allow(clippy::too_many_arguments)]
 fn overlay_document(
+    st: &AppState,
     project: &Project,
     overlay: &crate::overlays::Resolved,
     vars: &serde_json::Map<String, Value>,
@@ -797,8 +844,12 @@ fn overlay_document(
     let html = std::fs::read_to_string(dir.join("index.html")).map_err(|e| anyhow::anyhow!(e))?;
     let head_extra = format!("<base href=\"{base}\">\n<script src=\"/vendor/hyperframe.runtime.iife.js\"></script>\n");
     let (width, height) = frame.unwrap_or((project.width, project.height));
+    let vars = manifest.resolve_vars(vars);
+    // The files the bake stages, from the route the picker uses.
+    let fonts = st.baker.fonts(manifest, &vars);
+    let faces = fonts.css(FONT_ROUTE);
     let out = kuma_overlay::Contract {
-        vars: &manifest.resolve_vars(vars),
+        vars: &vars,
         fps: project.fps,
         width,
         height,
@@ -807,6 +858,7 @@ fn overlay_document(
         bake: false,
         clip,
         head_extra: &head_extra,
+        fonts: kuma_overlay::FontCss { faces: &faces, vars: &fonts.vars },
     }
     .apply(&html);
     Ok(([(header::CONTENT_TYPE, "text/html; charset=utf-8"), (header::CACHE_CONTROL, "no-store")], out).into_response())
@@ -871,6 +923,7 @@ fn file_response(path: &std::path::Path) -> Result<Response, ApiError> {
         "woff2" => "font/woff2",
         "woff" => "font/woff",
         "ttf" => "font/ttf",
+        "otf" => "font/otf",
         _ => "application/octet-stream",
     };
     let mut resp = bytes.into_response();

@@ -344,3 +344,63 @@ async fn a_render_target_says_what_it_would_overwrite() {
     let (status, _) = get_body(&addr, "/api/render/target?preset=nope");
     assert!(status.contains("400"), "{status}");
 }
+
+/// A font is added by path, is copied into the project's `fonts/` (or,
+/// shared, the library's) and is then what a `font` var draws with: the preview document
+/// carries its `@font-face` and serves the file from the path the rule names, the one a
+/// bake stages it at.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_font_is_added_and_an_overlay_draws_with_it() {
+    let (state, addr, dir) = daemon().await;
+    let (_, body) = get_body(&addr, "/api/fonts");
+    assert_eq!(body, "[]", "no fonts in the fixture library");
+
+    let anton = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../library/fonts/Anton/Anton-Regular.ttf").canonicalize().unwrap();
+    let add = |path: &std::path::Path, shared: bool| post(&addr, "/api/fonts", &serde_json::json!({ "path": path, "shared": shared }).to_string());
+    let (status, added) = add(&anton, false);
+    assert!(status.contains("200"), "{status}: {added}");
+    assert_eq!(added["family"], "Anton");
+    let file = state.config.project_root().join("fonts/Anton/Anton-Regular.ttf");
+    assert!(file.is_file(), "{added}");
+    // The same bytes again are the same file, not a second copy.
+    let (_, again) = add(&anton, false);
+    assert_eq!(again["path"], added["path"]);
+    // Relative to the project, as media is; refused when it is not a font, or not there.
+    let (_, relative) = add(std::path::Path::new("fonts/Anton/Anton-Regular.ttf"), false);
+    assert_eq!(relative["path"], added["path"], "{relative}");
+    std::fs::write(dir.path().join("notes.ttf"), b"not a font").unwrap();
+    let (status, _) = add(&dir.path().join("notes.ttf"), false);
+    assert!(status.contains("400"), "{status}");
+    std::fs::copy(&anton, dir.path().join("Anton.woff2")).unwrap();
+    let (status, _) = add(&dir.path().join("Anton.woff2"), false);
+    assert!(status.contains("400"), "{status}");
+    let (status, _) = add(&dir.path().join("nope.ttf"), false);
+    assert!(status.contains("400"), "{status}");
+    // Shared goes to the user library; the project's copy still wins.
+    let (_, shared) = add(&anton, true);
+    assert!(dir.path().join("library/fonts/Anton/Anton-Regular.ttf").is_file(), "{shared}");
+    let (_, body) = get_body(&addr, "/api/fonts");
+    let list: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(list[0]["name"], "Anton");
+    assert_eq!(list[0]["origin"], "project", "{list}");
+
+    // An overlay with a font var, imported; its preview names and serves the face.
+    let typed = state.config.project_root().join("overlays/typed");
+    std::fs::create_dir_all(&typed).unwrap();
+    std::fs::write(typed.join("overlay.json"), r#"{ "name": "Typed", "vars": { "font": { "type": "font", "default": "Anton" } } }"#).unwrap();
+    std::fs::write(typed.join("index.html"), "<html><head></head><body data-composition-id=\"root\"></body></html>").unwrap();
+    let (status, imported) = post(&addr, "/api/overlays/import", r#"{ "path": "overlays/typed" }"#);
+    assert!(status.contains("200"), "{status}: {imported}");
+    let (_, doc) = get_body(&addr, "/overlay-entry/typed");
+    assert!(doc.contains("--var-font: \"Anton\";"), "{doc}");
+    assert!(doc.contains("url(\"/fonts/anton/0.ttf\")"), "{doc}");
+    let (status, headers) = get(&addr, "/fonts/anton/0.ttf");
+    assert!(status.contains("200"), "{status}");
+    assert_eq!(headers.get("content-type").map(String::as_str), Some("font/ttf"));
+    let (status, _) = get(&addr, "/fonts/anton/7.ttf");
+    assert!(status.contains("404"), "{status}");
+
+    // The editor's own page gets every family, from the same route, for the picker.
+    let (_, css) = get_body(&addr, "/api/fonts.css");
+    assert!(css.contains("url(\"/fonts/anton/0.ttf\")"), "{css}");
+}

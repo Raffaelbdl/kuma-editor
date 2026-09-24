@@ -12,7 +12,7 @@ import { button, capitalize, checkbox, dragPointer, el, options, plural, row, se
 import { keysFor } from "../shortcuts";
 import { store, toast } from "../store";
 import type { BinItem, Clip, Cue, Ease, Effect, PatchOp, Project, Streams, VarSpec } from "../types";
-import { blueprintActions, makeOverlayUnique, manifestOf, moveBinItem, overlayError, placeBinItem, previewImg, previewStamp, renderPreview, saveAsBlueprint, sharersOf } from "../edits";
+import { blueprintActions, makeOverlayUnique, manifestOf, moveBinItem, overlayError, placeBinItem, previewImg, renderPreview, saveAsBlueprint, sharersOf } from "../edits";
 import type { Animation } from "../keyframes";
 import { animationOf } from "../keyframes";
 import { icon, svgEl } from "../icons";
@@ -352,7 +352,7 @@ export class Inspector {
     // selected clip decides what the panel can edit at all — a keyed value has no "now" to
     // write to from outside it — and that flips rarely. The values themselves follow the
     // playhead without a re-render; see `renderEffects`.
-    store.select((s) => [s.project, s.selection, s.manifests, s.blueprints, s.sequence, playheadInClip(), previewStamp()], () => this.render());
+    store.select((s) => [s.project, s.selection, s.manifests, s.blueprints, s.sequence, playheadInClip(), s.previewStamp], () => this.render());
   }
 
   private render() {
@@ -429,11 +429,6 @@ export class Inspector {
     this.host.appendChild(actions);
   }
 
-  /**
-   * A bin entry: what it *is*. Every clip that places it follows these, which is why the
-   * panel says so rather than leaving it to be discovered by editing one and watching
-   * another change.
-   */
   /** A blueprint in the library: what it is, and the ways into the project. */
   private renderBlueprint(id: string) {
     const bp = store.state.blueprints.find((b) => b.id === id);
@@ -448,12 +443,16 @@ export class Inspector {
     this.host.appendChild(field("Vars", el("div", "mono muted", Object.keys(m.vars).join(" · ") || "none")));
     this.host.appendChild(field("Length", el("div", "mono muted", `${m.duration_default}s${m.static ? " · still" : ""}`)));
     if (m.tags.length) this.host.appendChild(field("Tags", el("div", "mono muted", m.tags.join(" · "))));
-    const actions = blueprintActions(id);
-    actions.className = "insp-actions";
+    const actions = blueprintActions(id, "insp-actions");
     actions.appendChild(button("Preview", () => void renderPreview({ blueprints: [id] }), "Render its animated preview"));
     this.host.appendChild(actions);
   }
 
+  /**
+   * A bin entry: what it *is*. Every clip that places it follows these, which is why the
+   * panel says so rather than leaving it to be discovered by editing one and watching
+   * another change.
+   */
   private renderBinEntry(id: string) {
     const p = store.state.project!;
     const item = p.bin[id];

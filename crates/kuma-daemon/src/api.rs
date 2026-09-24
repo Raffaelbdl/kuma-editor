@@ -36,7 +36,6 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/blueprints", get(blueprints).post(reload_blueprints))
         .route("/api/blueprints/thumbs", post(thumbs))
         .route("/api/blueprints/{id}/copy", post(copy_blueprint))
-        .route("/api/blueprints/{id}/add", post(add_blueprint))
         .route("/api/blueprints/{id}/lint", get(lint_blueprint))
         .route("/api/overlays", get(overlays))
         .route("/api/overlays/new", post(new_overlay))
@@ -275,21 +274,6 @@ async fn copy_blueprint(State(st): S, Path(id): Path<String>, body: Option<Json<
     let folder = body.and_then(|b| b.0.folder);
     let overlay = blocking(move || crate::overlays::copy_blueprint(&st, &id, folder.as_deref())).await?.map_err(bad_request_err)?;
     Ok(Json(json!({ "overlay": overlay })))
-}
-
-#[derive(Deserialize, Default)]
-struct AddBlueprint {
-    #[serde(flatten)]
-    how: crate::overlays::Import,
-    #[serde(default = "default_origin")]
-    origin: String,
-}
-
-/// Copy a blueprint into the project and add it to the bin.
-async fn add_blueprint(State(st): S, Path(blueprint): Path<String>, body: Option<Json<AddBlueprint>>) -> ApiResult {
-    let req = body.map(|b| b.0).unwrap_or_default();
-    let (overlay, id, rev) = blocking(move || crate::overlays::add_blueprint(&st, &blueprint, req.how, &req.origin)).await?.map_err(edit_or_bad_request)?;
-    Ok(Json(json!({ "id": id, "overlay": overlay, "revision": rev })))
 }
 
 async fn lint_blueprint(State(st): S, Path(id): Path<String>) -> ApiResult {
@@ -742,13 +726,6 @@ async fn preview_reload(State(st): S, body: Option<Json<PreviewReload>>) -> ApiR
 
 // ---------- overlay preview (live DOM) ----------
 
-/// Serve an overlay with kuma's contract injected and the hyperframes runtime preloaded,
-/// so the UI can drive it with `seek(t)`.
-///
-/// There are two ways in because an overlay is addressable twice over, exactly as the bin
-/// splits it: a **clip** is a placement and is what decides how long the thing runs, while
-/// the **entry** is what is shown and exists before anything places it — which is what the
-/// overlay workbench iterates on. Both end in the same contract.
 /// An overlay clip, with its entry's folder and vars.
 fn clip_overlay<'a>(project: &'a Project, clip: &str) -> Result<(&'a kuma_core::Clip, &'a str, &'a serde_json::Map<String, Value>), ApiError> {
     let (_, _, c) = project.find_clip(clip).ok_or(ApiError::not_found("no such clip"))?;
@@ -758,6 +735,13 @@ fn clip_overlay<'a>(project: &'a Project, clip: &str) -> Result<(&'a kuma_core::
     }
 }
 
+/// Serve an overlay with kuma's contract injected and the hyperframes runtime preloaded,
+/// so the UI can drive it with `seek(t)`.
+///
+/// There are two ways in because an overlay is addressable twice over, exactly as the bin
+/// splits it: a **clip** is a placement and is what decides how long the thing runs, while
+/// the **entry** is what is shown and exists before anything places it — which is what the
+/// overlay workbench iterates on. Both end in the same contract.
 async fn overlay_preview(State(st): S, Path(clip): Path<String>) -> Result<Response, ApiError> {
     let project = read(&st.project).clone();
     // The bin entry decides the overlay and its vars; the clip decides how long it runs.
@@ -798,7 +782,6 @@ async fn overlay_entry(State(st): S, Path(id): Path<String>, Query(q): Query<Ent
 
 /// The overlay's markup with kuma's contract injected — the one place the live preview's
 /// document is built, whichever of the two routes above asked for it.
-#[allow(clippy::too_many_arguments)]
 fn overlay_document(
     project: &Project,
     overlay: &crate::overlays::Resolved,

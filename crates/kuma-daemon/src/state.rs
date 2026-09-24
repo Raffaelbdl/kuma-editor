@@ -155,9 +155,6 @@ pub struct AppState {
 pub struct BlueprintInfo {
     pub id: String,
     pub manifest: OverlayManifest,
-    pub has_thumb: bool,
-    /// An animated WebP of it beside the still, from the same job.
-    pub has_preview: bool,
 }
 
 /// Locks guard data that is only ever swapped whole, so a panic while holding one leaves
@@ -237,12 +234,7 @@ impl AppState {
         read(&self.blueprints)
             .loaded
             .iter()
-            .map(|(id, (dir, m))| BlueprintInfo {
-                id: id.clone(),
-                manifest: m.clone(),
-                has_thumb: dir.join("thumb.png").is_file(),
-                has_preview: dir.join("preview.webp").is_file(),
-            })
+            .map(|(id, (_, m))| BlueprintInfo { id: id.clone(), manifest: m.clone() })
             .collect()
     }
 

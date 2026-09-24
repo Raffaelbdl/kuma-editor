@@ -47,15 +47,13 @@ const binIdFor = (label: string, fallback: string) => uniqueId(slug(label) || fa
 /** Copy a blueprint into the project and add it to the bin as `binId`, with `more` ops in
  *  the same patch (one undo; undo leaves the copied folder on disk). */
 async function addBlueprint(blueprintId: string, binId: string, label: string, more: PatchOp[] = []): Promise<boolean> {
-  let overlay: string;
   try {
-    ({ overlay } = await api.copyBlueprint(blueprintId, slug(label) || undefined));
+    const { overlay } = await api.copyBlueprint(blueprintId, slug(label) || undefined);
+    return !!(await addBinItem(label, blueprintId, { overlay, vars: {} }, binId, more));
   } catch (e) {
     toast((e as Error).message, "err");
     return false;
   }
-  const item: BinItem = { name: label, source: { overlay, vars: {} } };
-  return store.patch([{ op: "add", path: binPath(binId), value: item }, ...more], `add ${blueprintId} ${binId}`);
 }
 
 /** Copy a blueprint in, add it and place it at `t`, in one patch. */
@@ -152,10 +150,9 @@ function newTrackOp(kind: TrackKind, tracks: { kind: TrackKind }[] = store.track
 
 /** Mint a bin entry named by the user: a slug of the name (or `fallback`) made unique,
  *  one patch. Returns the id, or null when the patch was refused. */
-async function addBinItem(name: string, fallback: string, source: BinSource): Promise<string | null> {
-  const id = uniqueId(slug(name) || fallback, Object.keys(store.state.project!.bin));
+async function addBinItem(name: string, fallback: string, source: BinSource, id = binIdFor(name, fallback), more: PatchOp[] = []): Promise<string | null> {
   const value: BinItem = { name, source };
-  return (await store.patch([{ op: "add", path: binPath(id), value }], `add ${fallback} ${id}`)) ? id : null;
+  return (await store.patch([{ op: "add", path: binPath(id), value }, ...more], `add ${fallback} ${id}`)) ? id : null;
 }
 
 /** Bin ids must match [A-Za-z_][A-Za-z0-9_-]*, so a leading digit takes an `s`. */
@@ -178,8 +175,8 @@ export async function promptNewFolder() {
 }
 
 /** A blueprint's two ways into the project: the workbench, or the timeline at the playhead. */
-export function blueprintActions(id: string): HTMLElement {
-  return row("actions",
+export function blueprintActions(id: string, cls = "actions"): HTMLElement {
+  return row(cls,
     button("Workbench", () => void promptNewOverlay(id), "Copy it into the project and open it in the workbench, unplaced"),
     button("Timeline", () => void placeBlueprint(id, store.state.playhead), "Copy it into the project and place it at the playhead"),
   );
@@ -188,16 +185,11 @@ export function blueprintActions(id: string): HTMLElement {
 /** Render the preview of one blueprint or overlay entry. */
 export const renderPreview = (which: { blueprints?: string[]; bins?: string[] }) => startJob("Preview", () => api.thumbs(which));
 
-/** The id of the last finished preview job: a preview image's cache key, so it reloads
- *  once a new one is rendered. */
-export const previewStamp = () =>
-  Math.max(0, ...Object.values(store.state.jobs).filter((j) => j.kind === "thumbs" && j.state === "done").map((j) => j.id));
-
 /** An image of a rendered preview under `base`: the animated one, else the still, else
  *  nothing. */
 export function previewImg(base: string): HTMLImageElement {
   const img = el("img", "insp-thumb");
-  const v = `?v=${previewStamp()}`;
+  const v = `?v=${store.state.previewStamp}`;
   img.src = `${base}/preview.webp${v}`;
   img.alt = "";
   img.onerror = () => {
@@ -242,7 +234,7 @@ export async function duplicateOverlay(id: string) {
   const item = p.bin[id];
   if (!item || !isOverlaySource(item.source)) return;
   const name = `${item.name || id} copy`;
-  const copyId = uniqueId(slug(name) || "overlay", Object.keys(p.bin));
+  const copyId = binIdFor(name, "overlay");
   const value: BinItem = { name, source: { overlay: item.source.overlay, vars: { ...(item.source.vars ?? {}) } } };
   // Listed where the original is, so a variant does not turn up at the other end of the bin.
   if (item.parent) value.parent = item.parent;

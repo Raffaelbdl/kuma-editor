@@ -45,9 +45,7 @@ export const api = {
   thumbs: (which: { blueprints?: string[]; bins?: string[] }) => json<{ job: number }>("/api/blueprints/thumbs", { method: "POST", body: JSON.stringify(which) }),
   /** Check an overlay folder against the authoring contract. Reads only. */
   lintOverlay: (path: string) => json<LintReport>(`/api/overlays/lint?${new URLSearchParams({ path })}`),
-  /** Add an overlay folder of the project (or its `overlay.json`) to the bin. */
-  importOverlay: (path: string, base_revision: number, parent?: string | null) =>
-    json<{ id: string; revision: number }>("/api/overlays/import", { method: "POST", body: JSON.stringify({ path, base_revision, parent: parent ?? undefined, origin: "ui: import overlay" }) }),
+  /** Add a media file, or an overlay folder of the project (or its `overlay.json`). */
   addMedia: (path: string, base_revision: number, parent?: string | null) =>
     json<{ id: string; revision: number }>("/api/bin", { method: "POST", body: JSON.stringify({ path, base_revision, parent: parent ?? undefined, origin: "ui: add media" }) }),
   /** Speech to text. From a `bin` entry the result is added unplaced; from a `clip` it is

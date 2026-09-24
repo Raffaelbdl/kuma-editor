@@ -33,6 +33,8 @@ export interface State {
   blueprints: BlueprintInfo[];
   /** The manifest of every overlay folder the bin uses, by folder. */
   manifests: Record<string, OverlayInfo>;
+  /** Bumped when a preview render finishes: preview images' cache key. */
+  previewStamp: number;
   /** The sequence open for editing. The daemon owns this (the preview compiles it), so it
    *  is set through the API rather than locally. Empty until the first load. */
   sequence: string;
@@ -66,7 +68,7 @@ export interface State {
 type Listener = (s: State) => void;
 
 class Store {
-  state: State = { project: null, blueprints: [], manifests: {}, sequence: "", selection: null, track: null, clipboard: null, autoKey: false, playhead: 0, playing: false, zoom: 60, tab: SEQUENCE_TAB, sequences: [], overlays: [], connected: false, jobs: {} };
+  state: State = { project: null, blueprints: [], manifests: {}, previewStamp: 0, sequence: "", selection: null, track: null, clipboard: null, autoKey: false, playhead: 0, playing: false, zoom: 60, tab: SEQUENCE_TAB, sequences: [], overlays: [], connected: false, jobs: {} };
   private listeners = new Set<Listener>();
   private refreshing: Promise<void> | null = null;
   private refreshAgain = false;
@@ -161,7 +163,7 @@ class Store {
       this.set({ jobs });
     } else if (e.type === "job") {
       const { type: _, ...job } = e;
-      this.set({ jobs: { ...this.state.jobs, [e.id]: job } });
+      this.set({ jobs: { ...this.state.jobs, [e.id]: job }, ...(e.kind === "thumbs" && e.state === "done" ? { previewStamp: e.id } : {}) });
       if (e.state === "failed") toast(`${e.kind} failed: ${e.message}`, "err", 12000);
       else if (e.state === "done" || e.state === "cancelled") toast(`${e.kind} ${e.state}`, "ok", 4000);
     }
@@ -181,11 +183,7 @@ class Store {
       try {
         do {
           this.refreshAgain = false;
-          const project = await api.project();
-          // Refetched when the bin's folders change; edits on disk wait for Reload.
-          const manifests = sameKeys(overlayFolders(project), this.state.manifests)
-            ? this.state.manifests
-            : await api.overlays().catch(() => this.state.manifests);
+          const [project, manifests] = await Promise.all([api.project(), api.overlays().catch(() => this.state.manifests)]);
           // The open sequence can be deleted out from under us (undo, an agent edit); the
           // daemon falls back to the master and so do we, rather than showing nothing.
           const sequence = sequenceOf(project, this.state.sequence) ? this.state.sequence : project.master;
@@ -219,7 +217,7 @@ class Store {
   private stillThere(project: Project, sel: Selection): Selection {
     if (!sel) return null;
     if (sel.kind === "bin") return sel.id in project.bin ? sel : null;
-    if (sel.kind === "blueprint") return sel;
+    if (sel.kind === "blueprint") return this.state.blueprints.some((b) => b.id === sel.id) ? sel : null;
     const live = new Set(allClips(project).map((c) => c.id));
     const ids = sel.ids.filter((id) => live.has(id));
     return ids.length ? { kind: "clip", ids } : null;
@@ -248,10 +246,10 @@ class Store {
     this.set({ overlays, tab });
   }
 
-  /** Point the inspector at a clip or a bin entry, and at nothing else. (`select` above is
-   *  the subscription helper; these are deliberately not the same word.) */
-  selectItem(kind: "clip" | "bin", id: string) {
-    this.set({ selection: kind === "clip" ? { kind: "clip", ids: [id] } : { kind: "bin", id } });
+  /** Point the inspector at a clip, a bin entry or a blueprint, and at nothing else.
+   *  (`select` above is the subscription helper; these are deliberately not the same word.) */
+  selectItem(kind: "clip" | "bin" | "blueprint", id: string) {
+    this.set({ selection: kind === "clip" ? { kind: "clip", ids: [id] } : { kind, id } });
   }
 
   /** Point the inspector at several clips, and aim the next paste at a track in the same
@@ -429,15 +427,6 @@ export const store = new Store();
 /** `ids` with `id` in it, appended if it was not — how a tab strip gains one. */
 const withId = (ids: string[], id: string): string[] => (ids.includes(id) ? ids : [...ids, id]);
 
-/** The overlay folders a project's bin uses. */
-const overlayFolders = (p: Project): Set<string> =>
-  new Set(Object.values(p.bin).flatMap((i) => (isOverlaySource(i.source) ? [i.source.overlay] : [])));
-
-/** Whether `folders` are exactly the keys of `manifests`. */
-const sameKeys = (folders: Set<string>, manifests: Record<string, unknown>): boolean => {
-  const keys = Object.keys(manifests);
-  return keys.length === folders.size && keys.every((k) => folders.has(k));
-};
 
 /** An entry the workbench can open: one that exists and is an overlay. */
 export const isOverlayEntry = (p: Project | null, id: string): boolean =>

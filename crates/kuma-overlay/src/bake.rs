@@ -496,6 +496,21 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_copied_folder_leaves_its_generated_previews_behind() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("src");
+        std::fs::create_dir_all(src.join("fonts")).unwrap();
+        for f in ["overlay.json", "index.html", "thumb.png", "preview.webp", "fonts/a.woff2", ".DS_Store"] {
+            std::fs::write(src.join(f), b"x").unwrap();
+        }
+        let dst = tmp.path().join("dst");
+        copy_dir(&src, &dst).unwrap();
+        assert!(dst.join("overlay.json").is_file() && dst.join("index.html").is_file() && dst.join("fonts/a.woff2").is_file());
+        assert!(!dst.join("thumb.png").exists() && !dst.join("preview.webp").exists() && !dst.join(".DS_Store").exists());
+    }
+
+
+    #[test]
     fn effective_fps_implements_speed() {
         assert_eq!(effective_fps(Fps::new(30, 1), 1.0).unwrap(), "30");
         assert_eq!(effective_fps(Fps::new(30, 1), 0.5).unwrap(), "60");

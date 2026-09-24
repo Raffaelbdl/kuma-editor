@@ -59,12 +59,7 @@ fn upgrade(v: &mut Value) -> Result<(), String> {
         // (`template`). Not migrated: one with template entries is refused, saying how to
         // convert it, since this parse cannot see the library to copy from.
         if let Some((id, template)) = template_overlay(v) {
-            return Err(format!(
-                "bin entry `{id}` names the template `{template}`, which an older kuma wrote: overlays now live in the project. \
-                 Copy the blueprint into `overlays/{template}/` (renaming `template.json` to `overlay.json` and dropping its `id`), \
-                 then set the entry's source to {{ \"overlay\": \"overlays/{template}\" }}, keeping its `vars`, and `version` to {}",
-                crate::PROJECT_VERSION
-            ));
+            return Err(format!("bin entry `{id}` names template `{template}` (before v7): copy the blueprint to `overlays/{template}/` and set its source to {{ \"overlay\": \"overlays/{template}\" }}"));
         }
         version = 7;
     }

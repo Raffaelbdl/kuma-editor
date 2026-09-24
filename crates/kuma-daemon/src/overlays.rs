@@ -15,8 +15,6 @@ use crate::state::{read, AppState};
 /// An overlay folder with its manifest loaded.
 #[derive(Debug, Clone)]
 pub struct Resolved {
-    /// As an entry names it: project-relative, `/`-separated.
-    pub rel: String,
     pub dir: PathBuf,
     pub manifest: OverlayManifest,
 }
@@ -32,7 +30,7 @@ pub fn folder(state: &AppState, rel: &str) -> anyhow::Result<PathBuf> {
 pub fn resolve(state: &AppState, rel: &str) -> anyhow::Result<Resolved> {
     let dir = folder(state, rel)?;
     let manifest = OverlayManifest::load(&dir).map_err(|e| anyhow::anyhow!("overlay `{rel}`: {}", e.reason))?;
-    Ok(Resolved { rel: rel.to_string(), dir, manifest })
+    Ok(Resolved { dir, manifest })
 }
 
 /// A folder (or its `overlay.json`), relative or absolute, as the path an entry stores.
@@ -94,14 +92,15 @@ pub struct Import {
 /// Add an overlay folder of this project to the bin. Returns the bin id.
 pub fn import_overlay(state: &AppState, path: &str, how: Import, base_revision: Option<u64>, origin: &str) -> anyhow::Result<(String, u64, Vec<kuma_core::Issue>)> {
     let Import { id, name, vars, parent } = how;
-    let r = resolve(state, &folder_in_project(state, path)?)?;
+    let rel = folder_in_project(state, path)?;
+    let r = resolve(state, &rel)?;
     let problems = r.manifest.check_vars(&vars);
     anyhow::ensure!(problems.is_empty(), "{}", problems.join("; "));
     let folder_name = r.dir.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
     let title = if r.manifest.name.is_empty() { folder_name.clone() } else { r.manifest.name.clone() };
     let item = BinItem {
         name: name.filter(|n| !n.is_empty()).unwrap_or(title),
-        source: BinSource::Overlay { overlay: r.rel.clone(), vars },
+        source: BinSource::Overlay { overlay: rel, vars },
         meta: None,
         parent,
         order: None,
@@ -122,13 +121,6 @@ pub fn import_overlay(state: &AppState, path: &str, how: Import, base_revision: 
         Ok((vec![bin_op(&id, "", serde_json::to_value(&item)?)?], id))
     })?;
     Ok((id, rev, warnings))
-}
-
-/// Copy a blueprint into the project and import the copy. Returns the folder too.
-pub fn add_blueprint(state: &AppState, blueprint: &str, how: Import, origin: &str) -> anyhow::Result<(String, String, u64)> {
-    let overlay = copy_blueprint(state, blueprint, None)?;
-    let (id, rev, _) = import_overlay(state, &overlay, how, None, origin)?;
-    Ok((overlay, id, rev))
 }
 
 /// Give an entry its own copy of the folder it shares, beside the original and named
@@ -204,19 +196,5 @@ mod tests {
         std::fs::create_dir_all(tmp.path().join("title")).unwrap();
         std::fs::create_dir_all(tmp.path().join("title-2")).unwrap();
         assert_eq!(free_folder(tmp.path(), "title"), "title-3");
-    }
-
-    #[test]
-    fn a_copied_folder_leaves_its_generated_previews_behind() {
-        let tmp = tempfile::tempdir().unwrap();
-        let src = tmp.path().join("src");
-        std::fs::create_dir_all(src.join("fonts")).unwrap();
-        for f in ["overlay.json", "index.html", "thumb.png", "preview.webp", "fonts/a.woff2", ".DS_Store"] {
-            std::fs::write(src.join(f), b"x").unwrap();
-        }
-        let dst = tmp.path().join("dst");
-        copy_dir(&src, &dst).unwrap();
-        assert!(dst.join("overlay.json").is_file() && dst.join("index.html").is_file() && dst.join("fonts/a.woff2").is_file());
-        assert!(!dst.join("thumb.png").exists() && !dst.join("preview.webp").exists() && !dst.join(".DS_Store").exists());
     }
 }

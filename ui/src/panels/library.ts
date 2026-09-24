@@ -19,7 +19,9 @@ import { childrenMap, isFolderSource, isOverlaySource, isSequenceSource, itemKin
 
 export class Library {
   constructor(private host: HTMLElement) {
-    store.select((s) => [s.project, s.blueprints, s.sequence, s.tab, s.selection], () => this.render());
+    store.select((s) => [s.project, s.blueprints, s.sequence, s.tab], () => this.render());
+    // Selection moves a class; it does not rebuild the panel.
+    store.select((s) => [s.selection], () => this.markSelected());
     this.acceptFiles();
   }
 
@@ -80,6 +82,13 @@ export class Library {
     this.host.appendChild(tabs);
     if (this.tab === "bin") this.renderBin(p);
     else this.renderBlueprints();
+    this.markSelected();
+  }
+
+  private markSelected() {
+    const sel = store.state.selection;
+    const key = sel && sel.kind !== "clip" ? `${sel.kind}:${sel.id}` : "";
+    for (const n of this.host.querySelectorAll<HTMLElement>("[data-sel]")) n.classList.toggle("selected", n.dataset.sel === key);
   }
 
   private renderBin(p: Project) {
@@ -161,7 +170,8 @@ export class Library {
  */
 function binRow(p: Project, id: string, item: BinItem, caret: HTMLElement | undefined, siblings: [string, BinItem][]): HTMLDivElement {
   const kind = itemKind(item);
-  const entry = el("div", `bin-row${store.state.selection?.kind === "bin" && store.state.selection.id === id ? " selected" : ""}`);
+  const entry = el("div", "bin-row");
+  entry.dataset.sel = `bin:${id}`;
   // The row of whatever the centre is showing, timeline or workbench, is marked open.
   if (id === store.state.sequence || id === store.state.tab) entry.classList.add("open");
   entry.draggable = true;
@@ -222,10 +232,10 @@ function dropTarget(node: HTMLElement, folder: string | undefined, spot: (e: Dra
 
 /** One draggable blueprint card. The payload is what a drop on the timeline receives. */
 function blueprintCard(title: string, blueprint: string): HTMLDivElement {
-  const sel = store.state.selection;
-  const item = el("div", `lib-item${sel?.kind === "blueprint" && sel.id === blueprint ? " selected" : ""}`);
+  const item = el("div", "lib-item");
+  item.dataset.sel = `blueprint:${blueprint}`;
   item.draggable = true;
-  item.onclick = (e) => { if (!(e.target as HTMLElement).closest("button")) store.set({ selection: { kind: "blueprint", id: blueprint } }); };
+  item.onclick = (e) => { if (!(e.target as HTMLElement).closest("button")) store.selectItem("blueprint", blueprint); };
   const head = el("div", "title", title);
   head.appendChild(el("span", "badge-kind overlay", "overlay"));
   item.appendChild(head);

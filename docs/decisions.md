@@ -636,13 +636,9 @@ an import that copies makes "which copy did I edit?" a question.
 **Named vaults** — deferred. A shared set of blueprints for a series of videos, e.g.
 `<library>/vaults/<name>/`, chosen per project. `KUMA_LIBRARY` is a crude version today.
 
-## Blueprints and presets as user assets
-
-**Blueprints and presets live outside the codebase** — adopted.
-They are assets shared across projects, not source. kuma reads `$XDG_DATA_HOME/kuma`
-(default `~/.local/share/kuma`), then every directory in `KUMA_LIBRARY`; later wins on an
-id clash. Presets are also read from the project's own `presets/`; blueprints are not (see
-above). A preset is expanded into effects when applied, so it was already a copy.
+**Blueprints and presets live outside the codebase** — adopted. kuma reads
+`$XDG_DATA_HOME/kuma`, then every `KUMA_LIBRARY` directory, later winning; presets also
+come from the project's `presets/`, blueprints never do.
 
 **`library/` in the repo is a starter set, not a runtime path** — adopted.
 `kuma library` installs it into the user library. Tests point `KUMA_LIBRARY` or the baker

@@ -162,7 +162,7 @@ export interface OverlayManifest {
   vars: Record<string, VarSpec>; tags: string[];
 }
 /** A reusable overlay in the user's library. Copied into a project to be used. */
-export interface BlueprintInfo { id: string; manifest: OverlayManifest; has_thumb: boolean; has_preview: boolean }
+export interface BlueprintInfo { id: string; manifest: OverlayManifest }
 /** An overlay folder the bin uses: its manifest, or why it will not load. */
 export interface OverlayInfo { manifest?: OverlayManifest; error?: string }
 

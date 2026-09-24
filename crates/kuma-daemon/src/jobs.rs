@@ -218,6 +218,11 @@ where
 /// `parent` lists it under that entry, in the same edit.
 pub fn add_media(state: &AppState, path: &Path, id: Option<String>, parent: Option<String>, base_revision: Option<u64>, origin: &str) -> anyhow::Result<(String, u64, Vec<kuma_core::Issue>)> {
     let abs = resolve_path(state, path);
+    // An overlay folder, or its manifest, is imported rather than probed.
+    if abs.join(kuma_core::manifest::MANIFEST).is_file() || abs.file_name().is_some_and(|f| f == kuma_core::manifest::MANIFEST) {
+        let how = crate::overlays::Import { id, parent, ..Default::default() };
+        return crate::overlays::import_overlay(state, &abs.to_string_lossy(), how, base_revision, origin);
+    }
     if !abs.is_file() {
         anyhow::bail!("file not found: {}", abs.display());
     }
@@ -250,7 +255,7 @@ fn subtitles_folder(state: &AppState, p: &Project) -> Option<String> {
     let takes_cues = |rel: &str| crate::overlays::resolve(state, rel).is_ok_and(|r| r.manifest.vars.values().any(|v| v.ty == kuma_core::VarType::Cues));
     let left_behind = format!("overlays/{SUBTITLES_BLUEPRINT}");
     let found = p.overlay_folders().into_iter().chain([left_behind.as_str()]).find(|rel| takes_cues(rel)).map(str::to_string);
-    found
+    found // bound first: the iterator borrows `left_behind`
 }
 
 #[derive(Debug, Clone, Deserialize)]

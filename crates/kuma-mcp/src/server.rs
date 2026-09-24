@@ -366,10 +366,11 @@ impl KumaServer {
         self.post("/api/blueprints", &json!({})).await
     }
 
-    #[tool(description = "Copy a blueprint into the project's `overlays/` and add it to the bin. Returns the bin id and folder; the copy is the project's to edit.")]
+    #[tool(description = "Copy a blueprint into the project's `overlays/` and add it to the bin. Returns the bin id; the copy is the project's to edit.")]
     async fn add_blueprint(&self, Parameters(p): Parameters<AddBlueprint>) -> Result<CallToolResult, McpError> {
-        let body = json!({ "id": p.id, "name": p.name, "vars": p.vars.unwrap_or_default(), "origin": format!("claude: add {}", p.blueprint) });
-        self.post(&format!("/api/blueprints/{}/add", p.blueprint), &body).await
+        let copied = self.client.post(&format!("/api/blueprints/{}/copy", p.blueprint), &json!({})).await.map_err(err)?;
+        let body = json!({ "path": copied["overlay"], "id": p.id, "name": p.name, "vars": p.vars.unwrap_or_default(), "origin": format!("claude: add {}", p.blueprint) });
+        self.post("/api/overlays/import", &body).await
     }
 
     #[tool(description = "The overlay authoring contract (root attributes, kuma.js helper, vars, seekable animation rules, manifest format). Read it before writing an overlay.")]
@@ -387,7 +388,7 @@ impl KumaServer {
         Ok(ok_json(&self.client.get_query("/api/media/probe", &[("path", &p.path)]).await.map_err(err)?))
     }
 
-    #[tool(description = "Probe a media file and add it to the project bin. Returns the bin id to reference from a clip.")]
+    #[tool(description = "Probe a media file and add it to the project bin (an overlay folder of the project is imported instead). Returns the bin id to reference from a clip.")]
     async fn add_media(&self, Parameters(p): Parameters<AddMedia>) -> Result<CallToolResult, McpError> {
         self.post("/api/bin", &json!({ "path": p.path, "id": p.id, "parent": p.parent, "base_revision": p.base_revision, "origin": "claude: add media" })).await
     }

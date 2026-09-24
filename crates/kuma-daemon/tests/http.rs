@@ -226,26 +226,24 @@ async fn an_overlay_is_scaffolded_checked_and_imported_over_http() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_blueprint_is_copied_into_the_project_not_referenced() {
     let (state, addr, dir) = daemon().await;
-    let (status, added) = post(&addr, "/api/blueprints/probe/add", "{}");
+    // Copying is not an edit, and never lands on a folder the project has.
+    let before = state.project.read().unwrap().revision;
+    let (status, copied) = post(&addr, "/api/blueprints/probe/copy", "{}");
+    assert!(status.contains("200"), "{status}: {copied}");
+    assert_eq!(copied["overlay"], "overlays/probe-2");
+    assert_eq!(state.project.read().unwrap().revision, before);
+    let (status, _) = post(&addr, "/api/blueprints/nope/copy", "{}");
+    assert!(status.contains("400"), "{status}");
+
+    // Adding the folder by path, as a drop does, imports it.
+    let (status, added) = post(&addr, "/api/bin", r#"{ "path": "overlays/probe-2" }"#);
     assert!(status.contains("200"), "{status}: {added}");
-    // `overlays/probe` is the project's own, so the copy goes beside it.
-    assert_eq!(added["overlay"], "overlays/probe-2");
     let id = added["id"].as_str().unwrap().to_string();
     assert!(matches!(&state.project.read().unwrap().bin[&id].source, kuma_core::BinSource::Overlay { overlay, .. } if overlay == "overlays/probe-2"));
-    assert!(dir.path().join("overlays/probe-2/overlay.json").is_file());
 
     // The blueprint changing afterwards does not reach the project.
     std::fs::write(dir.path().join("library/blueprints/probe/index.html"), "changed").unwrap();
     assert_ne!(std::fs::read_to_string(dir.path().join("overlays/probe-2/index.html")).unwrap(), "changed");
-
-    // The editor's copy route: a folder, and no edit.
-    let before = state.project.read().unwrap().revision;
-    let (status, copied) = post(&addr, "/api/blueprints/probe/copy", r#"{ "folder": "title" }"#);
-    assert!(status.contains("200"), "{status}: {copied}");
-    assert_eq!(copied["overlay"], "overlays/title");
-    assert_eq!(state.project.read().unwrap().revision, before);
-    let (status, _) = post(&addr, "/api/blueprints/nope/copy", "{}");
-    assert!(status.contains("400"), "{status}");
 }
 
 /// Two entries of one folder share its HTML until one is made unique; then editing the

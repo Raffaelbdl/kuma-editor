@@ -19,7 +19,18 @@
     for (let i = 0; i < s.length; i++) h = Math.imul(h ^ s.charCodeAt(i), 16777619);
     return h >>> 0;
   }
-  /** A stable value in [0, 1) for a key: the same on every frame and every bake. */
+  /** Murmur3's finaliser: every input bit moves every output bit. */
+  function mix32(h) {
+    h = Math.imul(h ^ (h >>> 16), 0x85ebca6b);
+    h = Math.imul(h ^ (h >>> 13), 0xc2b2ae35);
+    return (h ^ (h >>> 16)) >>> 0;
+  }
+  /** A stable value in [0, 1) for a key: the same on every frame and every bake, and
+   *  unrelated to any other key's, however alike the keys are (`s1`, `s2`, …). */
+  const rand = (key) => mix32(hash32(key)) / 4294967296;
+  /** The first `rand`, unmixed: keys that differ only at the end give related values, so a
+   *  star field placed with it falls into lines. Kept because `_vendor/` is shared by
+   *  every project, and changing it would re-draw overlays that already use it. */
   const hash = (key) => hash32(key) / 4294967296;
   /** A seeded generator of values in [0, 1). */
   function prng(seed) {
@@ -92,7 +103,9 @@
         ctx, w, h, u,
         /** A seed for `key` that holds until the next drawing, for any seedable library. */
         seed,
-        /** A value in [0, 1) for `key` that holds until the next drawing. */
+        /** A value in [0, 1) for `key` that holds until the next drawing: wobble. */
+        jitter: (key) => mix32(seed(key)) / 4294967296,
+        /** The first `jitter`, unmixed, kept for the overlays that use it (see `hash`). */
         rand: (key) => seed(key) / 4294967296,
         /** A Rough.js canvas whose every stroke is seeded by `key` and the drawing. */
         rough: (key) => window.rough.canvas(el, { options: { seed: seed(key) } }),
@@ -111,6 +124,6 @@
     });
   }
 
-  Object.assign(kumaCanvas, { hash, noise, kf, spring, ring, onTwos, arcPt, jump, take });
+  Object.assign(kumaCanvas, { rand, hash, noise, kf, spring, ring, onTwos, arcPt, jump, take });
   window.kumaCanvas = kumaCanvas;
 })();

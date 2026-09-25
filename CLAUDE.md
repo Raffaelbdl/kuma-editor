@@ -123,6 +123,10 @@ Chrome headless shell if hyperframes should not download one.
   `kuma new-overlay` writes a skeleton that passes it. A test lints every shipped
   blueprint and the scaffold, so the starter library cannot drift from the contract it
   documents. New contract rule → a rule in `lint.rs`, or nothing enforces it.
+- `_vendor/` is **append-only in behaviour**. Every project's overlays read it from the
+  user's library, and it is hashed into every bake key, so a helper that starts returning
+  something else re-draws finished videos the next time they bake. Add a new helper and
+  keep the old one (`kumaCanvas.rand` beside `hash`); pin what helpers return in a test.
 - A `font` var is a family name, never a file: kuma reads family, weight and italic from
   the font files (`kuma-overlay/src/fonts.rs`), writes the `@font-face` rules into the
   contract and stages the files; `Baker::fonts` is the one place fonts are resolved, for

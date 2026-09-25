@@ -254,7 +254,6 @@
       <property name="mlt_service">qtblend</property>
       <property name="a_track">0</property>
       <property name="b_track">2</property>
-      <property name="compositing">0</property>
     </transition>
     <transition id="comp_v2_1" in="120" out="269">
       <property name="mlt_service">qtblend</property>
@@ -266,7 +265,6 @@
       <property name="mlt_service">qtblend</property>
       <property name="a_track">0</property>
       <property name="b_track">2</property>
-      <property name="compositing">0</property>
     </transition>
     <transition id="mix_v3">
       <property name="mlt_service">mix</property>

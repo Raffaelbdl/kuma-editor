@@ -1895,16 +1895,16 @@ with `overlay` was fast enough to draw with.
    `in`/`out` and no `always_active` (which would make every one of them act on every
    frame). The spans tile the timeline, so each frame is composited exactly once, and
    adjacent spans of the same mode merge. `a_blend_mode_changes_the_pixels` renders a
-   screen blend for one second of three and reads the pixel back on both sides of each
-   cut; it fails against the old compiler, and is the test that catches an MLT upgrade
+   screen blend for one second of three, then for a whole track, and reads the pixel back
+   on both sides of each cut; it fails against the old compiler, and is the test that catches an MLT upgrade
    changing this again.
 2. **The MCP instructions were truncated** — **fixed**. They were ~5.4 K characters and
    Claude Code keeps the first 2048, which cut them off after the nested-sequence
    paragraph, losing exactly the rules a user asks agents to respect. Worse, the daemon's
    `note` ("tell the user at the start: …") was appended *after* them, so it had never
-   reached an agent at all. Now the instructions are the invariants and a pointer (~1.3 K,
-   `instructions_fit_the_client_limit` holds them under 1700 to leave the note room), the
-   note goes first, and the full text is `timeline_guide` (`kuma-mcp/src/timeline_guide.md`),
+   reached an agent at all. Now the instructions are the invariants and a pointer (~1.3 K;
+   `instructions_fit_the_client_limit` holds them plus the longest note the CLI writes
+   under 2048), the note goes first, and the full text is `timeline_guide` (`kuma-mcp/src/timeline_guide.md`),
    a tool like `overlay_guide`, which a client never truncates.
 3. **Looking at a sequence costs full bakes, synchronously** — the largest wall-clock cost
    of the session. `sample_frames` on a sequence bakes every changed overlay clip for its

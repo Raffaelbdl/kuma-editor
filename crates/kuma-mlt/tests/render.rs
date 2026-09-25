@@ -16,6 +16,17 @@ fn ffmpeg(args: &[&str]) {
     assert!(st.success(), "ffmpeg {args:?}");
 }
 
+/// The RGB of one pixel of a PNG.
+fn pixel(png: &Path, x: u32, y: u32) -> Vec<u8> {
+    Command::new("ffmpeg")
+        .args(["-v", "error", "-i"])
+        .arg(png)
+        .args(["-vf", &format!("crop=1:1:{x}:{y}"), "-pix_fmt", "rgb24", "-f", "rawvideo", "-"])
+        .output()
+        .unwrap()
+        .stdout
+}
+
 fn make_media(root: &Path) {
     std::fs::create_dir_all(root.join("media")).unwrap();
     let m = |n: &str| root.join("media").join(n).to_string_lossy().into_owned();
@@ -73,15 +84,6 @@ fn renders_reference_project_with_melt() {
     // A frame at t=3.5 s must contain the semi-transparent blue overlay box over the test
     // pattern: the same frame compiled without the bake must differ inside the box and
     // match outside it, which proves the overlay is composited (with alpha) where it belongs.
-    let pixel = |png: &Path, x: u32, y: u32| -> Vec<u8> {
-        Command::new("ffmpeg")
-            .args(["-v", "error", "-i"])
-            .arg(png)
-            .args(["-vf", &format!("crop=1:1:{x}:{y}"), "-pix_fmt", "rgb24", "-f", "rawvideo", "-"])
-            .output()
-            .unwrap()
-            .stdout
-    };
     let with = root.join("f105.png");
     snapshot(&mlt_file, 105, &with).expect("snapshot");
     let bare_mlt = root.join("bare.mlt");
@@ -242,7 +244,7 @@ fn a_baked_overlay_plays_at_the_project_rate() {
 /// A blend mode has to reach the pixels, not just the XML: qtblend reads `compositing` as
 /// a plain integer, and when it was written as discrete keyframes (`0|=14`) every mode
 /// rendered as normal while the compiler test on the string passed. Two opaque colours,
-/// the top one screened for its middle second only: screen inside, the top colour outside.
+/// the top one screened: screen inside a blended span, the top colour outside it.
 #[test]
 fn a_blend_mode_changes_the_pixels() {
     if !have("ffmpeg") || !have("melt") {
@@ -251,40 +253,40 @@ fn a_blend_mode_changes_the_pixels() {
     }
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path();
-    let p = kuma_core::parse_project(&serde_json::json!({
-        "version": 7, "name": "blend", "master": "main",
-        "fps": { "num": 30, "den": 1 }, "width": 64, "height": 36, "sample_rate": 48000,
-        "bin": {
-            "grey": { "name": "Grey", "source": { "color": "#a0a0a0" } },
-            "blue": { "name": "Blue", "source": { "color": "#4060c0" } },
-            "main": { "name": "Main", "source": { "tracks": [
-                { "id": "v1", "kind": "video", "clips": [ { "id": "a", "start": 0, "end": 3, "bin": "grey" } ] },
-                { "id": "v2", "kind": "video", "clips": [
-                    { "id": "b", "start": 0, "end": 1, "bin": "blue" },
-                    { "id": "c", "start": 1, "end": 2, "bin": "blue", "effects": [ { "type": "blend", "mode": "screen" } ] },
-                    { "id": "d", "start": 2, "end": 3, "bin": "blue" }
-                ] }
-            ], "markers": [] } }
-        }
-    }).to_string()).unwrap();
-    let mlt = root.join("blend.mlt");
-    std::fs::write(&mlt, compile(&p, &CompileOptions::new(root)).unwrap()).unwrap();
-
-    let pixel = |frame: i64| -> Vec<u8> {
-        let png = root.join(format!("f{frame}.png"));
-        snapshot(&mlt, frame, &png).expect("snapshot");
-        let out = Command::new("ffmpeg")
-            .args(["-v", "error", "-i"])
-            .arg(&png)
-            .args(["-vf", "crop=1:1:32:18", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"])
-            .output()
-            .unwrap();
-        out.stdout
-    };
+    let screen = serde_json::json!([ { "type": "blend", "mode": "screen" } ]);
     // screen(a, b) = 255 − (255 − a)(255 − b)/255: (160, 160, 160) under (64, 96, 192) → (184, 196, 232).
+    let (top, screened) = ([64, 96, 192], [184, 196, 232]);
+    // Screened for one second of three (a transition per span), then for the whole track
+    // (one transition throughout): the compiler writes the two differently.
+    let layouts = [
+        (serde_json::json!([
+            { "id": "b", "start": 0, "end": 1, "bin": "blue" },
+            { "id": "c", "start": 1, "end": 2, "bin": "blue", "effects": screen },
+            { "id": "d", "start": 2, "end": 3, "bin": "blue" }
+        ]), [top, screened, top]),
+        (serde_json::json!([ { "id": "c", "start": 0, "end": 3, "bin": "blue", "effects": screen } ]), [screened; 3]),
+    ];
     let near = |got: &[u8], want: [u8; 3]| got.iter().zip(want).all(|(g, w)| (*g as i32 - w as i32).abs() <= 3);
-    for (frame, want) in [(15, [64, 96, 192]), (45, [184, 196, 232]), (75, [64, 96, 192])] {
-        let got = pixel(frame);
-        assert!(near(&got, want), "frame {frame}: {got:?}, expected ≈{want:?}");
+    for (n, (clips, wants)) in layouts.into_iter().enumerate() {
+        let p = kuma_core::parse_project(&serde_json::json!({
+            "version": 7, "name": "blend", "master": "main",
+            "fps": { "num": 30, "den": 1 }, "width": 64, "height": 36, "sample_rate": 48000,
+            "bin": {
+                "grey": { "name": "Grey", "source": { "color": "#a0a0a0" } },
+                "blue": { "name": "Blue", "source": { "color": "#4060c0" } },
+                "main": { "name": "Main", "source": { "tracks": [
+                    { "id": "v1", "kind": "video", "clips": [ { "id": "a", "start": 0, "end": 3, "bin": "grey" } ] },
+                    { "id": "v2", "kind": "video", "clips": clips }
+                ], "markers": [] } }
+            }
+        }).to_string()).unwrap();
+        let mlt = root.join(format!("blend{n}.mlt"));
+        std::fs::write(&mlt, compile(&p, &CompileOptions::new(root)).unwrap()).unwrap();
+        for (frame, want) in [15, 45, 75].into_iter().zip(wants) {
+            let png = root.join(format!("blend{n}-{frame}.png"));
+            snapshot(&mlt, frame, &png).expect("snapshot");
+            let got = pixel(&png, 32, 18);
+            assert!(near(&got, want), "layout {n}, frame {frame}: {got:?}, expected ≈{want:?}");
+        }
     }
 }

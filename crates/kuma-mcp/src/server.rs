@@ -16,7 +16,8 @@ use crate::client::Client;
 
 /// What every agent sees. Clients truncate server instructions (Claude Code at 2048
 /// characters, which once cut these off mid-rule), so this is the invariants and a pointer;
-/// the rest is `timeline_guide`, which a client never truncates.
+/// the rest is `timeline_guide`, which a client never truncates. The guide restates these
+/// rules in full, so change a rule in both.
 const INSTRUCTIONS: &str = r#"kuma-editor: a hybrid video editor. **Call `timeline_guide` before your first edit** and
 `overlay_guide` before writing an overlay; these instructions are only what must never be missed.
 
@@ -505,12 +506,17 @@ impl ServerHandler for KumaServer {
 mod tests {
     use super::*;
 
-    /// Claude Code keeps the first 2048 characters of a server's instructions; leave room
-    /// for the daemon note, which goes first.
+    /// Claude Code keeps the first 2048 characters of a server's instructions. Measured on
+    /// what the client receives, with a note as long as the longest the CLI writes (the
+    /// private-daemon one, which names the project twice).
     #[test]
     fn instructions_fit_the_client_limit() {
-        let n = INSTRUCTIONS.chars().count();
-        assert!(n <= 1700, "instructions are {n} characters; move detail into timeline_guide.md");
+        const CLIENT_LIMIT: usize = 2048;
+        let path = "/home/someone/videos/a-project-with-a-long-name/a-project-with-a-long-name.kuma.json";
+        let note = format!("This MCP server is connected to a PRIVATE daemon for {path} because the daemon at http://127.0.0.1:7455 (the one behind the browser UI) serves a different project, {path}. Edits here will not show in that UI. To unify: run `kuma mcp-config --project {path}` and reconnect, or restart `kuma serve -p {path}`. Its own UI is at http://127.0.0.1:41234.");
+        let s = KumaServer::new(Client::new("http://127.0.0.1:1"), Some(note));
+        let n = s.get_info().instructions.unwrap().chars().count();
+        assert!(n <= CLIENT_LIMIT, "instructions and note are {n} characters; move detail into timeline_guide.md");
     }
 
     #[test]

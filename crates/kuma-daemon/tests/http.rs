@@ -420,3 +420,39 @@ async fn the_cache_is_measured_and_pruned_over_http() {
     }
     assert_eq!(state.jobs.get(id).unwrap().result["freed"]["bakes"]["entries"], 1);
 }
+
+/// A sample as a job: what an agent asks for when the bakes it needs may outlast its
+/// tool call. It answers with a job at once; the job ends with the frames `/api/sample`
+/// would have returned, or with the reason it could not, word for word.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_sample_job_ends_with_the_frames_or_the_reason() {
+    let (_state, addr, _dir) = daemon().await;
+    let finished = |body: &str| -> serde_json::Value {
+        let (status, _, body) = request(&addr, "POST", "/api/sample/job", body);
+        assert!(status.contains("200"), "{status} {body}");
+        let id = serde_json::from_str::<serde_json::Value>(&body).unwrap()["job"].as_u64().expect("a job id");
+        for _ in 0..600 {
+            let job: serde_json::Value = serde_json::from_str(&get_body(&addr, &format!("/api/jobs/{id}")).1).unwrap();
+            if matches!(job["state"].as_str(), Some("done" | "failed" | "cancelled")) {
+                assert_eq!(job["kind"], "sample");
+                return job;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        panic!("sample job {id} never finished");
+    };
+
+    let job = finished(r#"{"t0": 1, "overlay": "nope"}"#);
+    assert_eq!(job["state"], "failed");
+    assert!(job["message"].as_str().unwrap().contains("no bin entry `nope`"), "{job}");
+
+    if std::process::Command::new("melt").arg("-version").output().is_err() {
+        eprintln!("melt not available; skipping the rendered half");
+        return;
+    }
+    let job = finished(r#"{"t0": 0.5, "overlays": false}"#);
+    assert_eq!(job["state"], "done", "{job}");
+    let samples = job["result"]["samples"].as_array().unwrap();
+    assert_eq!(samples.len(), 1);
+    assert!(std::path::Path::new(samples[0]["path"].as_str().unwrap()).is_file(), "{job}");
+}

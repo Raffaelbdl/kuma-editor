@@ -1,7 +1,9 @@
 //! The bake driver: overlay folder + vars → hyperframes → RGBA PNG frames (cached).
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::{Arc, Condvar, Mutex, PoisonError};
 
 use kuma_core::manifest::OverlayManifest;
 
@@ -106,6 +108,9 @@ pub struct Baker {
     pub vendor_dir: PathBuf,
     /// What `font` vars resolve against. Empty unless the caller sets it.
     pub fonts: FontLibrary,
+    /// Keys being baked by this process right now. A second bake of one waits for the
+    /// first and reads its result, rather than rendering the same frames alongside it.
+    inflight: Arc<(Mutex<HashSet<String>>, Condvar)>,
 }
 
 impl Baker {
@@ -123,7 +128,7 @@ impl Baker {
             .map(PathBuf::from)
             .or_else(|| std::env::var_os("PUPPETEER_EXECUTABLE_PATH").map(PathBuf::from))
             .or_else(find_playwright_headless_shell);
-        let mut b = Baker { cache_dir, hyperframes, browser, version: None, vendor_dir, fonts: FontLibrary::default() };
+        let mut b = Baker { cache_dir, hyperframes, browser, version: None, vendor_dir, fonts: FontLibrary::default(), inflight: Arc::default() };
         b.version = b.available().ok();
         b
     }
@@ -225,6 +230,11 @@ impl Baker {
         if let Some(r) = read_done(&dir) {
             return Ok(r);
         }
+        let _claim = self.claim(&key);
+        // Whoever held the key may have finished it while this one waited.
+        if let Some(r) = read_done(&dir) {
+            return Ok(r);
+        }
         let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
         let work = WorkDir(self.cache_dir.join(format!("{key}.tmp-{}-{nanos:x}", std::process::id())));
         std::fs::create_dir_all(&work.0)?;
@@ -237,6 +247,17 @@ impl Baker {
         }
         std::mem::forget(work);
         Ok(result)
+    }
+
+    /// Hold `key` until the returned claim drops, waiting while another bake holds it.
+    fn claim(&self, key: &str) -> Claim<'_> {
+        let (keys, freed) = &*self.inflight;
+        let mut held = keys.lock().unwrap_or_else(PoisonError::into_inner);
+        while held.contains(key) {
+            held = freed.wait(held).unwrap_or_else(PoisonError::into_inner);
+        }
+        held.insert(key.to_string());
+        Claim(&self.inflight, key.to_string())
     }
 
     /// Stage an overlay into `src`: its own files, the shared `_vendor/` when it has none
@@ -440,6 +461,17 @@ impl Drop for WorkDir {
 
 /// A finished cache entry, if `dir` holds one. Paths are rebuilt from `dir`, so a moved
 /// or copied project keeps a valid cache.
+/// A key this process is baking; dropping it, however the bake ended, wakes the waiters.
+struct Claim<'a>(&'a (Mutex<HashSet<String>>, Condvar), String);
+
+impl Drop for Claim<'_> {
+    fn drop(&mut self) {
+        let (keys, freed) = self.0;
+        keys.lock().unwrap_or_else(PoisonError::into_inner).remove(&self.1);
+        freed.notify_all();
+    }
+}
+
 fn read_done(dir: &Path) -> Option<BakeResult> {
     let mut r: BakeResult = serde_json::from_slice(&std::fs::read(dir.join("done.json")).ok()?).ok()?;
     r.resource = dir.join("frames").join(r.resource.file_name()?);

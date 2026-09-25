@@ -1875,8 +1875,8 @@ An agent built a 10 s seamless loop (a drawn 1986 Tokyo Bay dusk: ten `kuma-canv
 scene layers in a nested sequence placed twice, five titles from one blueprint copy, CRT
 and grain textures, a synthesised city-pop track) through MCP alone, and wrote up what
 cost it time. Each claim below was checked against the code before it was recorded, and
-the blend-mode bug against melt 7.22. Items 1 and 2 are fixed; the rest is not built. What
-the session praised is worth keeping as well: `base_revision` plus atomic patches with a `note` never lost an edit, nested sequences made a bloom pass
+the blend-mode bug against melt 7.22. Items 1 and 2 are fixed and 3 half fixed; the rest is
+not built. What the session praised is worth keeping as well: `base_revision` plus atomic patches with a `note` never lost an edit, nested sequences made a bloom pass
 trivial, one overlay folder behind five entries worked as intended, and `sample_frames`
 with `overlay` was fast enough to draw with.
 
@@ -1906,15 +1906,39 @@ with `overlay` was fast enough to draw with.
    `instructions_fit_the_client_limit` holds them plus the longest note the CLI writes
    under 2048), the note goes first, and the full text is `timeline_guide` (`kuma-mcp/src/timeline_guide.md`),
    a tool like `overlay_guide`, which a client never truncates.
-3. **Looking at a sequence costs full bakes, synchronously** — the largest wall-clock cost
-   of the session. `sample_frames` on a sequence bakes every changed overlay clip for its
-   whole length (300 frames, ~30–60 s each) before returning one frame, and after most
+3. **Looking at a sequence cost full bakes, synchronously** — **half fixed**: the waiting
+   is gone, the bake is not smaller. It was the largest wall-clock cost of the session:
+   `sample_frames` on a sequence bakes every changed overlay clip for its whole length
+   (300 frames, ~0.1 s each at 1080p, measured) before returning one frame, and after most
    edits it passed the MCP call limit with no progress shown. *Melt always* (under *Still
-   open*) stands — no second compositor for sampling — so the fix is in what gets baked,
-   not in how frames are composed: bake the requested frames first (or only), and turn a
-   sample that must wait into a job with a percentage rather than a blocked call. Open
-   question before building: whether hyperframes can capture a frame range cheaply, and
-   how a partial bake is keyed so a later full bake reuses it rather than duplicating it.
+   open*) stands, so the fix could only be in what gets baked or in how the wait is
+   handled.
+
+   *Baking only the requested frames was investigated and not built.* hyperframes 0.8.37's
+   `render` has no frame-range option. Its `snapshot --at t` does capture chosen instants
+   as RGBA at full size, but not the pixels `render` writes: on `location-tag` at 1 s,
+   ~12 000 pixels differed from the bake's frame, by up to 57 in alpha, around the text. A
+   sample built from it would not be what renders. Rendering a *window* of the clip
+   through `render` (the contract telling hyperframes a short composition while the
+   overlay keeps its real `duration`) was considered and set aside: hyperframes mounts
+   children by its own clock from `data-start`/`data-duration`, so shifting the GSAP
+   timeline alone would desynchronise them, and shifting both means depending on
+   hyperframes internals. Revisit if hyperframes gains a frame range.
+
+   What was built is the other half. `POST /api/sample/job` is the same sample as a job,
+   its progress naming the overlay baking; MCP `sample_frames` runs on it, waits
+   `wait_seconds` (90 by default) and then returns the job id and progress instead of
+   blocking, and `job: <id>` picks it up again. `/api/sample` stays synchronous for the
+   CLI and the snapshot route. And `Baker::bake` claims its key while it renders: a second
+   bake of the same key in the same process waits and reads the first's result, so a
+   retry, or a preview reload overlapping a sample, never renders the same frames twice
+   (`concurrent_bakes_of_one_key_render_once`). The timeline guide now says what a sample
+   costs and to sample an entry on its own while drawing it.
+
+   Still open here: baking different overlays of one sample in parallel (each its own
+   one-worker hyperframes process, so the one-worker determinism rule in `CLAUDE.md`
+   should hold, but it has not been measured), and the bake
+   size in *Recorded, not scheduled*.
 4. **`kumaCanvas.hash` has no final mix.** It is bare FNV-1a (`_vendor/kuma-canvas.js`), so
    keys differing in their last character (`s1`, `s2`, …) land close together in the high
    bits that `/ 2^32` keeps; the agent's first star field came out in diagonal lines and

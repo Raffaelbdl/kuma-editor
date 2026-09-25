@@ -56,6 +56,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/render/target", get(render_target))
         .route("/api/bake", post(bake))
         .route("/api/sample", post(sample))
+        .route("/api/sample/job", post(sample_job))
         .route("/api/snapshot", get(snapshot))
         .route("/api/cache", get(cache_usage))
         .route("/api/cache/prune", post(cache_prune))
@@ -605,6 +606,14 @@ async fn bake(State(st): S, Json(req): Json<BakeReq>) -> Json<Value> {
 async fn sample(State(st): S, Json(req): Json<SampleRequest>) -> ApiResult {
     let samples = blocking(move || jobs::sample_frames(&st, &req, &|_, _| {})).await??;
     Ok(Json(json!({ "samples": samples })))
+}
+
+/// The same sample as a job, for a caller that must not block on the bakes it needs:
+/// progress names the overlay baking, and the result is what `/api/sample` answers.
+async fn sample_job(State(st): S, Json(req): Json<SampleRequest>) -> Json<Value> {
+    let s2 = st.clone();
+    let id = jobs::spawn(st, "sample", move |progress| Ok(json!({ "samples": jobs::sample_frames(&s2, &req, progress)? })));
+    Json(json!({ "job": id }))
 }
 
 async fn cache_usage(State(st): S) -> ApiResult {

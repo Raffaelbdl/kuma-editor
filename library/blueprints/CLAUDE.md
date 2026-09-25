@@ -114,6 +114,9 @@ overlays/<name>`) does, optionally with `vars`, once it checks clean.
    with the manifest defaults repeated so the page works standalone; then apply `vars`
    to the DOM (`text("id", vars.label)` hides the element when the value is empty).
 5. Anchor the out-animation to the end: `tl.to(el, {...}, Math.max(minIn, duration - 0.45))`.
+   An overlay whose times are its own on purpose — a texture that runs for as long as its
+   clip, a countdown that takes as long as it counts — says so with `data-fixed-timing` on
+   the root, and the check stops asking. A `static` overlay need not say anything.
 6. Be **responsive**: size in `--u`, `vh`/`vw`/`%`, positions as fractions via `point` vars
    (`left: calc(var(--var-anchor-x) * 100%)`). An overlay must look right at 1920×1080
    and 1080×1920 without edits.

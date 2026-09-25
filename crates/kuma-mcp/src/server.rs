@@ -162,6 +162,7 @@ pub struct SaveBlueprint {
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct SampleFrames {
     /// Start time, seconds.
+    #[serde(default)]
     pub t0: f64,
     /// End time, seconds. Defaults to t0 (single frame).
     #[serde(default)]
@@ -199,6 +200,14 @@ pub struct SampleFrames {
     /// the other way round without editing the project.
     #[serde(default)]
     pub frame: Option<(u32, u32)>,
+    /// How long to wait for the frames, seconds (default 90). A sample that is still
+    /// baking the overlays it shows then returns its job id and progress instead.
+    #[serde(default)]
+    pub wait_seconds: Option<u64>,
+    /// The job id of an earlier sample that was still baking: wait for it again and return
+    /// its frames. Every other field is ignored.
+    #[serde(default)]
+    pub job: Option<u64>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -415,20 +424,41 @@ impl KumaServer {
         self.post("/api/overlays/save-blueprint", &json!({ "bin": p.bin, "id": p.id, "force": p.force.unwrap_or(false) })).await
     }
 
-    #[tool(description = "Render exact composited frames (through the real MLT graph, overlays included) and return them as images. Use a rect to zoom into a region. Pass `sequence` to look at a nested sequence instead of the master, or `overlay` to look at one overlay bin entry on its own — no placement needed, times counted from the start of the overlay, which is how to check an animation you are authoring before it is in the cut. Frames are also written as PNGs whose paths are returned.")]
+    #[tool(description = "Render exact composited frames (through the real MLT graph, overlays included) and return them as images. Use a rect to zoom into a region. Pass `sequence` to look at a nested sequence instead of the master, or `overlay` to look at one overlay bin entry on its own — no placement needed, times counted from the start of the overlay, which is how to check an animation you are authoring before it is in the cut. Frames are also written as PNGs whose paths are returned. An overlay changed since it was last baked is baked for its whole clip first, which can take a minute or more per overlay: after `wait_seconds` a sample still baking returns its job id and progress, and calling again with `job` set to that id picks it up.")]
     async fn sample_frames(&self, Parameters(p): Parameters<SampleFrames>) -> Result<CallToolResult, McpError> {
-        let body = json!({
-            "t0": p.t0, "t1": p.t1, "count": p.count.unwrap_or(1),
-            "rect": p.rect.as_ref().map(|r| json!({ "x": r.x, "y": r.y, "w": r.w, "h": r.h })),
-            "width": p.width.or(if p.rect.is_some() { None } else { Some(960) }),
-            "overlays": p.overlays.unwrap_or(true),
-            "sequence": p.sequence,
-            "overlay": p.overlay, "duration": p.duration, "backdrop": p.backdrop,
-            "frame_width": p.frame.map(|f| f.0), "frame_height": p.frame.map(|f| f.1),
-        });
-        let v = self.client.post("/api/sample", &body).await.map_err(err)?;
+        let id = match p.job {
+            Some(id) => id,
+            None => {
+                let body = json!({
+                    "t0": p.t0, "t1": p.t1, "count": p.count.unwrap_or(1),
+                    "rect": p.rect.as_ref().map(|r| json!({ "x": r.x, "y": r.y, "w": r.w, "h": r.h })),
+                    "width": p.width.or(if p.rect.is_some() { None } else { Some(960) }),
+                    "overlays": p.overlays.unwrap_or(true),
+                    "sequence": p.sequence,
+                    "overlay": p.overlay, "duration": p.duration, "backdrop": p.backdrop,
+                    "frame_width": p.frame.map(|f| f.0), "frame_height": p.frame.map(|f| f.1),
+                });
+                let v = self.client.post("/api/sample/job", &body).await.map_err(err)?;
+                v["job"].as_u64().ok_or_else(|| err(anyhow::anyhow!("daemon did not return a job id: {v}")))?
+            }
+        };
+        let j = self.client.wait_job(id, Duration::from_secs(p.wait_seconds.unwrap_or(90))).await.map_err(err)?;
+        if j["kind"] != "sample" {
+            return Err(McpError::invalid_params(format!("job {id} is a {} job, not a sample", j["kind"]), None));
+        }
+        match j["state"].as_str() {
+            Some("done") => {}
+            Some("cancelled") => return Err(McpError::internal_error(format!("sample job {id} was cancelled"), None)),
+            _ => {
+                let status = json!({
+                    "job": id, "state": j["state"], "percent": j["percent"], "message": j["message"],
+                    "next": format!("still baking: call sample_frames with job: {id} to keep waiting. Bakes are cached as each one finishes."),
+                });
+                return Ok(ok_json(&status));
+            }
+        }
         let mut content = Vec::new();
-        let samples = v["samples"].as_array().cloned().unwrap_or_default();
+        let samples = j["result"]["samples"].as_array().cloned().unwrap_or_default();
         let listing: Vec<Value> = samples.iter().map(|s| json!({ "t": s["t"], "frame": s["frame"], "path": s["path"] })).collect();
         content.push(ContentBlock::text(serde_json::to_string_pretty(&json!({ "samples": listing })).unwrap()));
         for s in &samples {

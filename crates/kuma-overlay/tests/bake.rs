@@ -173,3 +173,41 @@ fn a_drawn_overlay_bakes_the_same_pixels_twice() {
     }
     assert_eq!(alpha(&frames[0], w / 2, h / 2), 0, "nothing is drawn at t = 0");
 }
+
+/// Two bakes of one key at once — an agent retrying a sample while the first is still
+/// baking — render once: the second waits and reads the first's result. A stand-in
+/// renderer counts its runs, so this needs no hyperframes and no browser.
+#[test]
+fn concurrent_bakes_of_one_key_render_once() {
+    let tmp = tempfile::tempdir().unwrap();
+    let runs = tmp.path().join("runs");
+    let fake = tmp.path().join("hyperframes");
+    // `render <src> --format png-sequence -o <dir> …`, so the output is `$6`: slow enough for the two to overlap.
+    std::fs::write(
+        &fake,
+        format!("#!/bin/sh\necho run >> '{}'\nsleep 1\nmkdir -p \"$6\"\nfor i in 1 2 3 4 5 6; do : > \"$6/f$i.png\"; done\n", runs.display()),
+    )
+    .unwrap();
+    std::fs::set_permissions(&fake, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+
+    let overlay = tmp.path().join("probe");
+    std::fs::create_dir_all(&overlay).unwrap();
+    std::fs::write(overlay.join("overlay.json"), r#"{ "name": "Probe" }"#).unwrap();
+    std::fs::write(overlay.join("index.html"), "<html><body data-composition-id=\"root\"></body></html>").unwrap();
+    let manifest = OverlayManifest::load(&overlay).unwrap();
+    let mut baker = Baker::discover(tmp.path(), tmp.path().join("vendor"), tmp.path().join("cache"));
+    baker.hyperframes = fake;
+    baker.version = Some("stand-in".into());
+    baker.browser = None;
+
+    let vars = Map::new();
+    let req = BakeRequest { overlay_dir: &overlay, manifest: &manifest, vars: &vars, fps: Fps::new(6, 1), width: 64, height: 36, duration: 1.0, speed: 1.0 };
+    let (a, b) = std::thread::scope(|s| {
+        let a = s.spawn(|| baker.bake(&req).expect("first bake"));
+        let b = s.spawn(|| baker.bake(&req).expect("second bake"));
+        (a.join().unwrap(), b.join().unwrap())
+    });
+    assert_eq!(std::fs::read_to_string(&runs).unwrap().lines().count(), 1, "the renderer ran for each bake");
+    assert_eq!(a.key, b.key);
+    assert!(a.cached != b.cached, "one bake renders, the other reads it");
+}

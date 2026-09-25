@@ -55,6 +55,14 @@ frame with `frame: [1080, 1920]`, and over `backdrop` white and black to see whe
 legible over footage you have not seen. It is the same view the editor's overlay workbench gives a
 person, and `overlay_guide` ends with the checklist to run through.
 
+A sample is exact, so every overlay it shows is baked first, for its whole clip: a changed
+overlay costs about 0.1 s per frame at 1080p before the first frame comes back, while an
+unchanged one is cached. While you are drawing, sample the overlay entry on its own (seconds),
+and sample the sequence once it looks right. A sample still baking after `wait_seconds` returns
+its job id and what it is baking; call `sample_frames` with `job` set to that id to keep waiting.
+Asking again with the same arguments costs nothing extra either: an overlay already baking is
+waited for, not baked twice.
+
 Subtitles: `transcribe` runs a local speech-to-text model (whisper.cpp) and adds a `subtitles`
 overlay entry whose `cues` var is `[{start, end, text}, …]` in source seconds, one cue per word (the
 overlay groups them by its `words_per_line` var and can stress the word being said), listed under the media

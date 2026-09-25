@@ -501,7 +501,7 @@ pub fn bake_for(
         OverlayScope::Nested => true,
         OverlayScope::All => false,
     };
-    let (out, errs) = bake_clips(state, project, &overlay_clips(project, root, nested_only, within), progress, cancel, true);
+    let (out, errs) = bake_clips(state, project, &overlay_clips(project, root, nested_only, within), progress, cancel, &|r| state.baker.bake(r).map(Some));
     if !nested_only {
         return strict((out, errs));
     }
@@ -518,7 +518,7 @@ pub fn bake_all(state: &AppState, project: &Project, only: Option<&[String]>, pr
         .map(|c| c.id.clone())
         .filter(|id| only.is_none_or(|o| o.contains(id)))
         .collect();
-    strict(bake_clips(state, project, &ids, progress, None, true))
+    strict(bake_clips(state, project, &ids, progress, None, &|r| state.baker.bake(r).map(Some)))
 }
 
 /// The bakes the cache already holds for every overlay `root` shows, nested ones included,
@@ -526,7 +526,7 @@ pub fn bake_all(state: &AppState, project: &Project, only: Option<&[String]>, pr
 /// keyed). What `kuma compile` includes without waiting on hyperframes.
 pub fn cached_bakes(state: &AppState, project: &Project, root: &str) -> (Bakes, Vec<String>) {
     let ids = overlay_clips(project, root, false, None);
-    let (out, _) = bake_clips(state, project, &ids, &|_, _| {}, None, false);
+    let (out, _) = bake_clips(state, project, &ids, &|_, _| {}, None, &|r| state.baker.cached(r));
     let missing = ids.into_iter().filter(|id| !out.contains_key(id)).collect();
     (out, missing)
 }
@@ -541,11 +541,14 @@ fn strict((out, errs): (Bakes, Vec<anyhow::Error>)) -> anyhow::Result<Bakes> {
     errs.into_iter().next().map_or(Ok(out), Err)
 }
 
+/// How `bake_clips` gets a clip's bake: `Baker::bake`, or `Baker::cached` to render none.
+type Fetch<'a> = &'a dyn Fn(&BakeRequest) -> Result<Option<kuma_overlay::BakeResult>, kuma_overlay::BakeError>;
+
 /// Bake the named overlay clips (cached), returning what succeeded and what did not.
 /// Whether a failure is fatal is the caller's to decide — the loop does not care. A set
 /// `cancel` stops it between two bakes, which the cache makes free to pick up again.
-/// Without `render`, only what the cache holds is returned and a missing bake is no error.
-fn bake_clips(state: &AppState, project: &Project, ids: &[String], progress: &dyn Fn(u8, &str), cancel: Option<&AtomicBool>, render: bool) -> (Bakes, Vec<anyhow::Error>) {
+/// `fetch` bakes a clip or only looks it up; `None` from it leaves the clip out, no error.
+fn bake_clips(state: &AppState, project: &Project, ids: &[String], progress: &dyn Fn(u8, &str), cancel: Option<&AtomicBool>, fetch: Fetch) -> (Bakes, Vec<anyhow::Error>) {
     // Clips of one entry, and entries of one folder, share a manifest: read each once.
     let mut folders: std::collections::HashMap<String, Result<crate::overlays::Resolved, String>> = Default::default();
     let (mut out, mut errs) = (Bakes::new(), Vec::new());
@@ -567,8 +570,7 @@ fn bake_clips(state: &AppState, project: &Project, ids: &[String], progress: &dy
         };
         progress(((i * 100) / n) as u8, &format!("baking {id} ({overlay})"));
         let req = bake_request(r, vars, project, clip);
-        let baked = if render { state.baker.bake(&req).map(Some) } else { state.baker.cached(&req) };
-        match baked {
+        match fetch(&req) {
             Ok(Some(r)) => {
                 out.insert(id.clone(), r.overlay_bake());
             }

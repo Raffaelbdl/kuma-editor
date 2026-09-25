@@ -24,19 +24,18 @@ pub fn add_font(state: &AppState, path: &Path, shared: bool) -> anyhow::Result<V
     let src = crate::jobs::resolve_path(state, path);
     let file = src.file_name().and_then(|s| s.to_str()).unwrap_or_default().to_string();
     let ext = src.extension().and_then(|e| e.to_str()).unwrap_or_default().to_ascii_lowercase();
-    let collection = COLLECTIONS.contains(&ext.as_str());
     anyhow::ensure!(
-        collection || EXTENSIONS.contains(&ext.as_str()),
+        COLLECTIONS.contains(&ext.as_str()) || EXTENSIONS.contains(&ext.as_str()),
         "`{file}` is not a .ttf, .otf, .ttc or .otc file (a .woff/.woff2 needs converting first)"
     );
     let bytes = std::fs::read(&src).map_err(|e| anyhow::anyhow!("cannot read {}: {e}", src.display()))?;
     let (stem, _) = file.rsplit_once('.').unwrap_or((&file, ""));
-    let faces: Vec<(Vec<u8>, String)> = if collection {
-        let faces = split_collection(&bytes).filter(|f| !f.is_empty()).ok_or_else(|| anyhow::anyhow!("`{file}` is not a font collection kuma can read"))?;
-        faces.into_iter().enumerate().map(|(i, (b, e))| (b, format!("{stem}-{i}.{e}"))).collect()
-    } else {
-        vec![(bytes, file.clone())]
+    // Whether it is a collection is the file's to say, not its extension's.
+    let faces: Vec<(Vec<u8>, String)> = match split_collection(&bytes) {
+        Some(faces) => faces.into_iter().enumerate().map(|(i, (b, e))| (b, format!("{stem}-{i}.{e}"))).collect(),
+        None => vec![(bytes, file.clone())],
     };
+    anyhow::ensure!(!faces.is_empty(), "`{file}` is a collection with no faces kuma can read");
     let root = if shared { state.config.user_font_dir() } else { state.config.project_font_dir() };
     let mut added = Vec::new();
     for (bytes, name) in faces {

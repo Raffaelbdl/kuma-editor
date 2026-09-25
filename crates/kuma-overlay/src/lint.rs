@@ -116,12 +116,16 @@ impl Baker {
         let mut findings = contract_findings(&html, req.manifest, &staged.dir);
         // A family that is not installed renders in the overlay's fallback stack: legal,
         // and not what anyone picked.
-        for (k, family) in self.fonts(req.manifest, &req.manifest.resolve_vars(req.vars)).missing {
-            findings.push(Finding::warn(
-                "font_missing",
-                format!("`{k}` names the font `{family}`, which is not installed"),
-                "add the font file to the project's `fonts/` (or a library's), or pick one that is installed",
-            ));
+        let missing = self.fonts(req.manifest, &req.manifest.resolve_vars(req.vars)).missing;
+        // A collection in a font folder is not read; saying so is the difference between
+        // "not installed" and "installed the wrong way".
+        let collections = if missing.is_empty() { Vec::new() } else { self.fonts.collections() };
+        for (k, family) in missing {
+            let mut fix = String::from("add the font file to the project's `fonts/` (or a library's), or pick one that is installed");
+            if let Some(c) = collections.first() {
+                fix.push_str(&format!("; `{}` is a collection, which is only read once `add_font` has split it into its faces", c.display()));
+            }
+            findings.push(Finding { level: Level::Warning, code: "font_missing".into(), message: format!("`{k}` names the font `{family}`, which is not installed"), fix: Some(fix) });
         }
 
         let renderer_skipped = match hyperframes_lint(&self.hyperframes, &staged.dir) {

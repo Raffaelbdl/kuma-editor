@@ -37,6 +37,17 @@
     let s = seed >>> 0 || 1;
     return () => { s = (s + 0x6d2b79f5) >>> 0; let x = Math.imul(s ^ (s >>> 15), 1 | s); x ^= x + Math.imul(x ^ (x >>> 7), 61 | x); return ((x ^ (x >>> 14)) >>> 0) / 4294967296; };
   }
+  /** `fn()` with Math.random seeded: libraries that call it (Rough.js does, even when
+   *  seeded) then draw the same on every frame and every bake. */
+  function withRandom(seed, fn) {
+    const real = Math.random;
+    Math.random = prng(seed);
+    try {
+      return fn();
+    } finally {
+      Math.random = real;
+    }
+  }
   /** A lattice point's value in [0, 1), from integers alone: no strings, no allocation. */
   function lattice(x, y, z) {
     let h = Math.imul(x, 0x27d4eb2d) ^ Math.imul(y, 0x165667b1) ^ Math.imul(z, 0x9e3779b1);
@@ -74,14 +85,11 @@
     const n = (i) => parseInt(h.slice(i, i + 2), 16);
     return [n(0), n(2), n(4), h.length >= 8 ? n(6) / 255 : 1];
   }
+  const css = ([r, g, b, a]) => `rgba(${Math.round(r)}, ${Math.round(g)}, ${Math.round(b)}, ${+a.toFixed(4)})`;
   /** A hex colour at opacity `a` (times its own), as a CSS `rgba(…)`. */
-  const rgba = (hex, a = 1) => { const [r, g, b, a0] = parseHex(hex); return `rgba(${r}, ${g}, ${b}, ${+(a0 * a).toFixed(4)})`; };
+  const rgba = (hex, a = 1) => { const c = parseHex(hex); c[3] *= a; return css(c); };
   /** The colour `k` of the way from hex `a` to hex `b` (0 is `a`), as a CSS `rgba(…)`. */
-  const mix = (a, b, k) => {
-    const [p, q] = [parseHex(a), parseHex(b)];
-    const c = p.map((v, i) => lerp(v, q[i], clamp(k)));
-    return `rgba(${Math.round(c[0])}, ${Math.round(c[1])}, ${Math.round(c[2])}, ${+c[3].toFixed(4)})`;
-  };
+  const mix = (a, b, k) => { const q = parseHex(b); return css(parseHex(a).map((v, i) => lerp(v, q[i], clamp(k)))); };
 
   // ---------- motion, as pure functions of t (eases: gsap.parseEase("power3.out") etc.) ----------
   /** Keyframes: kf(t, [[t0, v0], [t1, v1], …], ease). Values may be arrays of numbers. */
@@ -127,6 +135,7 @@
     const u = (h / 100) * (tpl.vars.size || 1);
     // Stills outlive the frame that painted them, so they are seeded by their key alone:
     // which frame asks first (the bake starts at 0, the preview anywhere) must not matter.
+    // Each is a frame-sized canvas kept for the page's life, so keys are constants.
     const stills = new Map();
     const still = (key, paint) => {
       if (!stills.has(key)) {
@@ -134,13 +143,7 @@
         c.width = w;
         c.height = h;
         const seed = mix32(hash32(`still|${key}`)) || 1;
-        const real = Math.random;
-        Math.random = prng(seed);
-        try {
-          paint({ ctx: c.getContext("2d"), w, h, u, rough: () => window.rough.canvas(c, { options: { seed } }) });
-        } finally {
-          Math.random = real;
-        }
+        withRandom(seed, () => paint({ ctx: c.getContext("2d"), w, h, u, rough: () => window.rough.canvas(c, { options: { seed } }) }));
         stills.set(key, c);
       }
       return stills.get(key);
@@ -159,19 +162,16 @@
         /** A Rough.js canvas whose every stroke is seeded by `key` and the drawing. */
         rough: (key) => window.rough.canvas(el, { options: { seed: seed(key) } }),
         /** A frame-sized canvas painted once by `paint({ ctx, w, h, u, rough })` and kept:
-         *  the part of a picture that never moves, drawn with `ctx.drawImage(…, 0, 0)`. */
+         *  the part of a picture that never moves, drawn with `ctx.drawImage(…, 0, 0)`.
+         *  One per key for the life of the page, so a key is a name, never a time. */
         still,
       };
-      // Libraries that call Math.random (Rough.js does, even when seeded) stay deterministic.
-      const real = Math.random;
-      Math.random = prng(seed("frame"));
       ctx.save();
       try {
         ctx.clearRect(0, 0, w, h);
-        draw(g, t);
+        withRandom(seed("frame"), () => draw(g, t));
       } finally {
         ctx.restore();
-        Math.random = real;
       }
     });
   }

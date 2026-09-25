@@ -250,8 +250,9 @@ kumaCanvas(tpl, "#paint", (g, t) => {
 - `g.still(key, paint)` is the part of a picture that never moves, painted once into a
   frame-sized canvas and kept: `g.ctx.drawImage(g.still("hills", ({ ctx, w, h, u, rough }) => …), 0, 0)`.
   It is seeded by its key alone, so it is the same whichever frame is rendered first;
-  draw into the `ctx` it is given, and take hand-drawn strokes from its `rough()`. A value
-  kept on `g` itself is gone by the next frame, since `g` is rebuilt for each.
+  draw into the `ctx` it is given, and take hand-drawn strokes from its `rough()`. Each key
+  keeps a frame-sized canvas for the life of the page, so a key names a layer and never a
+  time. A value kept on `g` itself is gone by the next frame, since `g` is rebuilt for each.
 - Colours: `kumaCanvas.rgba(hex, a)` and `kumaCanvas.mix(hexA, hexB, k)` give CSS colours
   from a `color` var, with its own alpha kept.
 - 2D only: a bake has no GPU. Cost is `draw`, on every frame; hundreds of shapes are fine.

@@ -2009,7 +2009,19 @@ a bloom pass trivial, one overlay folder behind five entries worked as intended,
      face drew 夕焼け, and Inter drew NO GLYPH boxes.
    - That check found a second fault: a family was read under whichever name record
      decoded first, which for that font was "文泉驛正黑". The US-English record now wins
-     when there is one, since that is the name a person types.
+     when there is one, since that is the name a person types. The other names stay as
+     aliases: `resolve` finds the family by any of them and `Family::css` declares its
+     faces under each, so a `font` var written when the localized name won still draws
+     the same font rather than falling back — a renamed family would re-style a finished
+     video at its next bake.
+   - Splitting copies the shared tables into every face: `wqy-zenhei.ttc` (16.8 MB, three
+     faces) becomes 39 MB. Accepted, because `@font-face` takes one face per file; reading
+     collections in place would mean a face index on every `Face` and an extraction on
+     every stage and every served font. A `.ttc` dropped straight into a `fonts/` folder
+     is still not read, and the lint's `font_missing` fix now names it and says to add it
+     with `add_font`. Not built: splitting inside `FontLibrary` into a derived cache, so
+     that dropping one in works too; and a lint that names the characters of a text var
+     no resolved family can set, which is what `scripts` only lets an agent check.
    - Every face and family reports `scripts` (latin, greek, cyrillic, arabic, hebrew,
      devanagari, thai, han, kana, hangul), each by one character it cannot set without;
      `list_fonts` says what it means and the editor's font picker shows it on hover.

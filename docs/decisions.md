@@ -1869,6 +1869,108 @@ first blueprint to use it. Prompted by [ClaudeAnimationBase](https://github.com/
   (`a_drawn_overlay_bakes_the_same_pixels_twice`; the PNG bytes differ, the image does not).
   Rough.js used directly is a lint error.
 
+## Field report: a seamless loop
+
+An agent built a 10 s seamless loop (a drawn 1986 Tokyo Bay dusk: ten `kuma-canvas.js`
+scene layers in a nested sequence placed twice, five titles from one blueprint copy, CRT
+and grain textures, a synthesised city-pop track) through MCP alone, and wrote up what
+cost it time. Each claim below was checked against the code before it was recorded; where
+it could not be (no melt on the machine this was written on) the entry says so. Nothing
+here is built yet. What the session praised is worth keeping as well: `base_revision` plus
+atomic patches with a `note` never lost an edit, nested sequences made a bloom pass
+trivial, one overlay folder behind five entries worked as intended, and `sample_frames`
+with `overlay` was fast enough to draw with.
+
+**Order of work**, cheapest correctness first:
+
+1. **Blend modes are a silent no-op — a bug, fix first.** `blend_anim` writes qtblend's
+   `compositing` as discrete keyframes (`0|=0;60|=14;240|=0`), and the MLT 7.22 the
+   report ran on reads `compositing` as a plain integer, so the string parses as `0`,
+   SourceOver, for every mode on every track. Reported repro with melt alone: two opaque
+   colour tracks, `compositing=14` gives the screen result, `compositing=0|=14` gives the
+   top colour unchanged. `blend_keyframes_are_discrete` passes because it asserts the
+   string, which is the *Not verified by rendering here* caveat under *Keyframes you can
+   point at* coming true for a different property. The fix belongs in `compile.rs`: a
+   track with one mode emits a plain integer; a track whose mode changes along the
+   timeline gets one qtblend transition per span (a transition's own `in`/`out` is the
+   discrete switch MLT does honour) rather than one animated transition. Plus a pixel test,
+   skipped without melt like the other render tests, that renders one frame of a screen
+   blend and reads it back — the check that would have caught this, and will catch an MLT
+   upgrade that changes it again. Worth confirming first whether any MLT release animates
+   `compositing`; if none does, the "discrete switches" reasoning above was never true.
+2. **The MCP instructions are truncated in the agent's context.** They are ~7 KB
+   (`INSTRUCTIONS` in `kuma-mcp/src/server.rs`), and the client cut them off after the
+   effects paragraph — losing exactly the invariants a user asks agents to respect
+   (sequences cannot be sped up, ids are project-wide, how to sample a sequence,
+   subtitles). Direction: instructions short enough to survive (the tool list's shape and
+   the handful of invariants that cause refusals), the rest behind a `timeline_guide` tool
+   the way `overlay_guide` already is, fetched on demand and never truncated.
+3. **Looking at a sequence costs full bakes, synchronously** — the largest wall-clock cost
+   of the session. `sample_frames` on a sequence bakes every changed overlay clip for its
+   whole length (300 frames, ~30–60 s each) before returning one frame, and after most
+   edits it passed the MCP call limit with no progress shown. *Melt always* (under *Still
+   open*) stands — no second compositor for sampling — so the fix is in what gets baked,
+   not in how frames are composed: bake the requested frames first (or only), and turn a
+   sample that must wait into a job with a percentage rather than a blocked call. Open
+   question before building: whether hyperframes can capture a frame range cheaply, and
+   how a partial bake is keyed so a later full bake reuses it rather than duplicating it.
+4. **`kumaCanvas.hash` has no final mix.** It is bare FNV-1a (`_vendor/kuma-canvas.js`), so
+   keys differing in their last character (`s1`, `s2`, …) land close together in the high
+   bits that `/ 2^32` keeps; the agent's first star field came out in diagonal lines and
+   every overlay then carried its own murmur finaliser. **Add a mixed `rand(key)` rather
+   than changing `hash`**: `_vendor/` is read from the library and hashed into the bake
+   key, so changing `hash` would re-bake and re-style every drawn overlay, `paint-wipe`
+   included, the next time anything re-bakes — the thing copying blueprints into projects
+   exists to prevent. That is also a standing hazard for any `_vendor/` change, and
+   worth its own entry: vendor files are append-only in behaviour.
+5. **Lint false positives.** `duration_not_read` fires on overlays that have a timeline
+   but nothing to end — a `static` overlay, an endless texture — where anchoring an exit to
+   `duration` means nothing; it should skip `static` overlays and stay silent when there
+   is no out-animation to anchor. `studio_missing_editable_id` is hyperframes' own rule,
+   and the shipped `paint-wipe` trips it (`<div class="clip">` with no id): fix the
+   blueprint, since the guide sends authors to it as the worked example, and find out why
+   the test that lints every blueprint let it through (a warning rather than an error, or
+   skipped where hyperframes is absent).
+6. **Loops as an idea** — cheap pieces, no model change:
+   - `kumaCanvas.cycles(duration, period)`, `phase(t, duration, cycles)` and a
+     time-periodic `loopNoise`: every drawn layer re-implemented them.
+   - A section in `library/blueprints/CLAUDE.md` on scene and ambient layers. Its motion
+     table ("Loops: a pointer's pulse and nothing else") is written for UI over footage and
+     read as a prohibition where the motion *is* the content.
+   - `kumaCanvas` memo for "paint the static part once and blit it" (6 of 10 layers
+     needed it, and `g` being rebuilt per frame makes caching on it silently useless), and
+     the `rgba(hex, a)`/colour-mix helpers every file repeated.
+   - Model-side, and a `PROJECT_VERSION` bump: a `repeat` on keyframe lists (a 1 Hz blink
+     was 20 hand-written `hold` keys) and a defined tangent at the ends of a `smooth`
+     list, so a closed loop is smooth at the seam. Agreed in direction, not shaped.
+7. **Smaller, each an afternoon**: `sample_frames` with `t1` and no `count` returns one
+   frame (default to several, or refuse the ambiguity); `add_font` refuses `.ttc`, which
+   is how CJK families ship (`fonts.rs` `EXTENSIONS`); a Latin title showing kanji falls
+   back to whatever the baking machine has, so `list_fonts` should say which families
+   lack CJK coverage; `add_blueprint` names the copy (`title-2`) with no way to choose;
+   `kuma compile` omits overlays, so the whole graph cannot be inspected while debugging
+   a compile bug like 1.
+
+**Recorded, not scheduled** — each is a feature with its own design question:
+
+- **Bake size.** Full-frame RGBA PNGs for a four-letter label (~40 MB per 10 s) and ~250 MB
+  for grain; the cache reached ~2.9 GB in an hour of tweaks. Already on the list below as
+  *no per-overlay bake region*; this adds a second shape, a short `bake_period` for
+  textures that tile in time. Automatic pruning stays rejected (*Pruning the cache*): a
+  cap can evict a bake a render is about to read.
+- **Adjustment layers or effects on a track.** The bloom was a second placement of the
+  scene, so any camera move would have had to be keyed twice, identically.
+- **A `glow` effect.** The bloom needed the `mlt` escape hatch and ffmpeg's `lumakey`.
+- **`transform` offsets in pixels** do not carry between 1080p, 4K and 9:16, where the
+  overlay contract is resolution-independent everywhere. Fractions of frame would be a
+  format bump.
+- **Audio has no counterpart to `sample_frames`.** Loudness and peak from `probe_media`,
+  and a waveform or spectrogram image, would let an agent check what it cannot hear.
+- **A `history` or diff-since-revision tool**, so an agent that sees the revision move can
+  learn what moved instead of re-reading the project.
+- **Checking a loop's seam**: comparing the last frame with the first was done by hand in
+  ffmpeg. Only worth a tool if loops become a declared property of a project.
+
 ## Still open
 
 Nested sequences are done and the editor is an application now, so this list is the whole
@@ -2067,6 +2169,8 @@ because it is the part deliberately left out.
   animation is already proven on `qtblend`; `fade` is internally an animation already and
   overlaps the transform's opacity, so leave it; `blend` is a discrete mode, not
   interpolatable, and is already emitted as discrete switches with a test to that effect.
+  *That test pins a string MLT does not read*: see *Field report: a seamless loop* below —
+  every blend mode renders as Normal.
 
 - **Bin-level effects** — agreed, lower priority than the keyframe work above. Effects
   that live on the entry and apply to every placement, the way Kdenlive's clip effects do.

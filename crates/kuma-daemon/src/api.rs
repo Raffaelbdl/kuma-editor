@@ -389,7 +389,7 @@ async fn fonts(State(st): S) -> ApiResult {
 
 #[derive(Deserialize)]
 struct AddFont {
-    /// A `.ttf`/`.otf` file, relative to the project or absolute.
+    /// A `.ttf`/`.otf` file, or a `.ttc`/`.otc` collection, relative to the project or absolute.
     path: PathBuf,
     /// Into the user library for every project, rather than this project's `fonts/`.
     #[serde(default)]

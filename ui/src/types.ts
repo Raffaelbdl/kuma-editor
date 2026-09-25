@@ -172,7 +172,9 @@ export interface OverlayManifest {
 export interface FontFamily {
   name: string;
   origin: "project" | "library";
-  faces: { weight: [number, number]; italic: boolean }[];
+  /** Writing systems it can set: text in any other falls back to the machine's fonts. */
+  scripts: string[];
+  faces: { weight: [number, number]; italic: boolean; scripts: string[] }[];
 }
 /** A reusable overlay in the user's library. Copied into a project to be used. */
 export interface BlueprintInfo { id: string; manifest: OverlayManifest }

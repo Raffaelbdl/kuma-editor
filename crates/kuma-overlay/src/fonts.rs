@@ -20,8 +20,29 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 /// Extensions read as fonts. WOFF/WOFF2 are compressed and would need decoding to read
-/// their names; a font that ships only as one is rare enough to convert.
+/// their names; a font that ships only as one is rare enough to convert. A collection
+/// (`.ttc`/`.otc`) is split into these when it is added (`split_collection`).
 pub const EXTENSIONS: &[&str] = &["ttf", "otf"];
+
+/// Font collections: several faces sharing tables in one file, which is how CJK families
+/// usually ship. `@font-face` wants one face per file.
+pub const COLLECTIONS: &[&str] = &["ttc", "otc"];
+
+/// Writing systems a face is asked about, each by one character it cannot set without:
+/// what `list_fonts` reports, so text in a script a family lacks is not left to whatever
+/// fallback the baking machine happens to have.
+const SCRIPTS: &[(&str, char)] = &[
+    ("latin", 'A'),
+    ("greek", 'Ω'),
+    ("cyrillic", 'Ж'),
+    ("arabic", 'ع'),
+    ("hebrew", 'א'),
+    ("devanagari", 'क'),
+    ("thai", 'ก'),
+    ("han", '永'),
+    ("kana", 'あ'),
+    ("hangul", '한'),
+];
 
 /// Where a font folder is: what the picker groups families by.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -43,6 +64,12 @@ pub struct Face {
     /// bake is found without reading the font again.
     #[serde(skip)]
     pub digest: String,
+    /// The writing systems it can set (`SCRIPTS`), in that order.
+    pub scripts: Vec<&'static str>,
+    /// The family's other names in the file, localized ones included: a `font` var
+    /// written with one of them still finds the family (`FontLibrary::resolve`).
+    #[serde(skip)]
+    pub aliases: Vec<String>,
 }
 
 impl Face {
@@ -56,6 +83,12 @@ impl Face {
 pub struct Family {
     pub name: String,
     pub origin: Origin,
+    /// Writing systems any of its faces can set: text in another one is drawn by the
+    /// overlay's fallback stack, which is the baking machine's, not the project's.
+    pub scripts: Vec<&'static str>,
+    /// Other names its faces carry (`Face::aliases`); `css` declares the faces under
+    /// these too, since a `font` var's value is written into the CSS as it is.
+    pub aliases: Vec<String>,
     pub faces: Vec<Face>,
 }
 
@@ -70,20 +103,22 @@ impl Family {
         self.faces.iter().enumerate().map(|(i, f)| (format!("{i}.{}", f.ext()), f))
     }
 
-    /// `@font-face` rules for every face, with sources at `<prefix><slug>/<file>`.
+    /// `@font-face` rules for every face, under the family's name and each alias, with
+    /// sources at `<prefix><slug>/<file>`.
     pub fn css(&self, prefix: &str) -> String {
         let slug = self.slug();
-        let family = css_string(&self.name);
-        self.files()
-            .map(|(file, f)| {
+        let mut css = String::new();
+        for family in std::iter::once(&self.name).chain(&self.aliases).map(|n| css_string(n)) {
+            for (file, f) in self.files() {
                 let weight = if f.weight[0] == f.weight[1] { f.weight[0].to_string() } else { format!("{} {}", f.weight[0], f.weight[1]) };
                 let format = if f.ext() == "otf" { "opentype" } else { "truetype" };
-                format!(
+                css.push_str(&format!(
                     "@font-face {{ font-family: {family}; src: url(\"{prefix}{slug}/{file}\") format(\"{format}\"); font-weight: {weight}; font-style: {}; font-display: block; }}\n",
                     if f.italic { "italic" } else { "normal" }
-                )
-            })
-            .collect()
+                ));
+            }
+        }
+        css
     }
 
     /// The file behind a name `files` gave.
@@ -130,19 +165,44 @@ pub fn css_string(s: &str) -> String {
 /// What a font file says about itself, or `None` when it is not one kuma can read.
 pub fn read_face(path: &Path) -> Option<(String, Face)> {
     let data = std::fs::read(path).ok()?;
-    let (family, weight, italic) = parse_face(&data)?;
+    let info = parse_face(&data)?;
     let digest = hex::encode(Sha256::digest(&data));
-    Some((family, Face { path: path.to_path_buf(), weight, italic, digest }))
+    Some((info.family, Face { path: path.to_path_buf(), weight: info.weight, italic: info.italic, digest, scripts: info.scripts, aliases: info.aliases }))
 }
 
-/// Family, weight range and slant from a font's bytes.
-pub fn parse_face(data: &[u8]) -> Option<(String, [u16; 2], bool)> {
+/// What a font's bytes say about it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FaceInfo {
+    pub family: String,
+    pub weight: [u16; 2],
+    pub italic: bool,
+    pub scripts: Vec<&'static str>,
+    pub aliases: Vec<String>,
+}
+
+/// Family, weight range, slant and scripts from a font's bytes.
+pub fn parse_face(data: &[u8]) -> Option<FaceInfo> {
     use ttf_parser::{name_id, Face as Ttf, Tag};
     let face = Ttf::parse(data, 0).ok()?;
-    let name = |id: u16| face.names().into_iter().filter(|n| n.name_id == id).find_map(|n| n.to_string()).filter(|s| !s.trim().is_empty());
+    // Every name for an id, English first: a CJK font often lists its localized names
+    // first, and "WenQuanYi Zen Hei" is what a person types, not "文泉驛正黑". The rest
+    // stay aliases, so a var written when the first record won still resolves.
+    let names = |id: u16| {
+        let records: Vec<_> = face.names().into_iter().filter(|n| n.name_id == id).collect();
+        let english = records.iter().filter(|n| n.language() == ttf_parser::Language::English_UnitedStates);
+        let mut out: Vec<String> = Vec::new();
+        for s in english.chain(records.iter()).filter_map(|n| n.to_string()).map(|s| s.trim().to_string()) {
+            if !s.is_empty() && !out.contains(&s) {
+                out.push(s);
+            }
+        }
+        out
+    };
     // The typographic family groups "Oswald Light" and "Oswald Bold" under "Oswald"; older
     // fonts only have the legacy family, which is the whole name for a static weight.
-    let family = name(name_id::TYPOGRAPHIC_FAMILY).or_else(|| name(name_id::FAMILY))?.trim().to_string();
+    let mut family = Some(names(name_id::TYPOGRAPHIC_FAMILY)).filter(|n| !n.is_empty()).unwrap_or_else(|| names(name_id::FAMILY));
+    let aliases = family.split_off(1.min(family.len()));
+    let family = family.pop()?;
     let fixed = face.weight().to_number();
     let weight = face
         .variation_axes()
@@ -150,12 +210,48 @@ pub fn parse_face(data: &[u8]) -> Option<(String, [u16; 2], bool)> {
         .find(|a| a.tag == Tag::from_bytes(b"wght"))
         .map(|a| [a.min_value.round() as u16, a.max_value.round() as u16])
         .unwrap_or([fixed, fixed]);
-    Some((family, weight, face.is_italic() || face.is_oblique()))
+    let scripts = SCRIPTS.iter().filter(|(_, c)| face.glyph_index(*c).is_some()).map(|(s, _)| *s).collect();
+    Some(FaceInfo { family, weight, italic: face.is_italic() || face.is_oblique(), scripts, aliases })
 }
 
-/// Every font file under `dir`, at any depth, sorted.
-fn font_files(dir: &Path) -> Vec<PathBuf> {
-    fn walk(dir: &Path, out: &mut Vec<PathBuf>) {
+/// The faces of a font collection as standalone fonts, each with the extension its
+/// outlines call for (`otf` for CFF, else `ttf`); `None` when `data` is not a collection.
+/// A face is its own table directory pointing into the shared tables, so it is rewritten
+/// with its tables copied after it; nothing inside a table changes. Shared tables are
+/// copied into every face, which is the price of `@font-face` taking one face per file.
+pub fn split_collection(data: &[u8]) -> Option<Vec<(Vec<u8>, &'static str)>> {
+    use ttf_parser::{fonts_in_collection, RawFace, Tag};
+    (0..fonts_in_collection(data)?)
+        .map(|i| {
+            let records: Vec<_> = RawFace::parse(data, i).ok()?.table_records.into_iter().collect();
+            let cff = records.iter().any(|r| r.tag == Tag::from_bytes(b"CFF ") || r.tag == Tag::from_bytes(b"CFF2"));
+            // The offset table: version, then numTables and the binary-search fields
+            // derived from it.
+            let n = records.len();
+            let log = n.checked_ilog2()? as usize;
+            let mut out = if cff { b"OTTO".to_vec() } else { vec![0, 1, 0, 0] };
+            for v in [n, 16 << log, log, n * 16 - (16 << log)] {
+                out.extend_from_slice(&(v as u16).to_be_bytes());
+            }
+            let head = out.len() + 16 * n;
+            let mut body = Vec::new();
+            for r in &records {
+                out.extend_from_slice(&r.tag.to_bytes());
+                out.extend_from_slice(&r.check_sum.to_be_bytes());
+                out.extend_from_slice(&((head + body.len()) as u32).to_be_bytes());
+                out.extend_from_slice(&r.length.to_be_bytes());
+                body.extend_from_slice(data.get(r.offset as usize..)?.get(..r.length as usize)?);
+                body.resize(body.len().next_multiple_of(4), 0);
+            }
+            out.extend(body);
+            Some((out, if cff { "otf" } else { "ttf" }))
+        })
+        .collect()
+}
+
+/// Every file under `dir` with one of `exts`, at any depth, sorted.
+fn font_files(dir: &Path, exts: &[&str]) -> Vec<PathBuf> {
+    fn walk(dir: &Path, exts: &[&str], out: &mut Vec<PathBuf>) {
         let Ok(rd) = std::fs::read_dir(dir) else { return };
         for e in rd.flatten() {
             let p = e.path();
@@ -163,14 +259,14 @@ fn font_files(dir: &Path) -> Vec<PathBuf> {
                 continue;
             }
             if p.is_dir() {
-                walk(&p, out);
-            } else if p.extension().and_then(|e| e.to_str()).is_some_and(|e| EXTENSIONS.contains(&e.to_ascii_lowercase().as_str())) {
+                walk(&p, exts, out);
+            } else if p.extension().and_then(|e| e.to_str()).is_some_and(|e| exts.contains(&e.to_ascii_lowercase().as_str())) {
                 out.push(p);
             }
         }
     }
     let mut files = Vec::new();
-    walk(dir, &mut files);
+    walk(dir, exts, &mut files);
     files.sort();
     files
 }
@@ -215,15 +311,25 @@ impl FontLibrary {
         let mut out = BTreeMap::new();
         for (dir, origin) in &self.dirs {
             let mut found: BTreeMap<String, Vec<Face>> = BTreeMap::new();
-            for (family, face) in font_files(dir).iter().filter_map(|p| self.face(p)) {
+            for (family, face) in font_files(dir, EXTENSIONS).iter().filter_map(|p| self.face(p)) {
                 found.entry(family).or_default().push(face);
             }
             for (name, mut faces) in found {
                 faces.sort_by(|a, b| (a.italic, a.weight, &a.path).cmp(&(b.italic, b.weight, &b.path)));
-                out.insert(name.clone(), Family { name, origin: *origin, faces });
+                let scripts = SCRIPTS.iter().map(|(s, _)| *s).filter(|s| faces.iter().any(|f| f.scripts.contains(s))).collect();
+                let mut aliases: Vec<String> = faces.iter().flat_map(|f| f.aliases.iter().cloned()).collect();
+                aliases.sort();
+                aliases.dedup();
+                out.insert(name.clone(), Family { name, origin: *origin, scripts, aliases, faces });
             }
         }
         out
+    }
+
+    /// Collections left in a font folder as they are: not read, since a face has to be its
+    /// own file (`add_font` splits one). Named where a missing family is reported.
+    pub fn collections(&self) -> Vec<PathBuf> {
+        self.dirs.iter().flat_map(|(dir, _)| font_files(dir, COLLECTIONS)).collect()
     }
 
     /// The file a font path names: `<slug>/<file>` as `Family::css` wrote it.
@@ -237,7 +343,7 @@ impl FontLibrary {
         let all = self.families();
         let mut out = Resolved::default();
         for (var, name) in wanted {
-            match all.get(&name) {
+            match all.get(&name).or_else(|| all.values().find(|f| f.aliases.contains(&name))) {
                 Some(f) if !out.families.iter().any(|o| o.name == f.name) => out.families.push(f.clone()),
                 Some(_) => {}
                 None => out.missing.push((var.clone(), name)),
@@ -287,6 +393,73 @@ mod tests {
         let upright: Vec<u16> = ubuntu.faces.iter().filter(|f| !f.italic).map(|f| f.weight[0]).collect();
         assert_eq!(upright, [300, 400, 500, 700], "{ubuntu:?}");
         assert_eq!(ubuntu.faces.iter().filter(|f| f.italic).count(), 4);
+    }
+
+    /// A collection built from standalone fonts: each appended whole, its table offsets
+    /// moved by where it landed, and the header pointing at its table directory.
+    fn collection(fonts: &[Vec<u8>]) -> Vec<u8> {
+        let mut out = b"ttcf\0\x01\0\0".to_vec();
+        out.extend_from_slice(&(fonts.len() as u32).to_be_bytes());
+        out.resize(out.len() + 4 * fonts.len(), 0);
+        for (i, f) in fonts.iter().enumerate() {
+            let base = out.len();
+            out[12 + 4 * i..16 + 4 * i].copy_from_slice(&(base as u32).to_be_bytes());
+            out.extend_from_slice(f);
+            for t in 0..u16::from_be_bytes([f[4], f[5]]) as usize {
+                let at = base + 12 + 16 * t + 8;
+                let offset = u32::from_be_bytes(out[at..at + 4].try_into().unwrap()) + base as u32;
+                out[at..at + 4].copy_from_slice(&offset.to_be_bytes());
+            }
+            out.resize(out.len().next_multiple_of(4), 0);
+        }
+        out
+    }
+
+    /// Each face of a collection comes out a font of its own that reads as the face it was.
+    #[test]
+    fn a_collection_splits_into_the_fonts_it_holds() {
+        let read = |p: &str| std::fs::read(repo_fonts().join(p)).unwrap();
+        let fonts = [read("Anton/Anton-Regular.ttf"), read("Inter/Inter-Italic[opsz,wght].ttf")];
+        let faces = split_collection(&collection(&fonts)).expect("a collection");
+        assert_eq!(faces.len(), 2);
+        for ((bytes, ext), original) in faces.iter().zip(&fonts) {
+            assert_eq!(*ext, "ttf");
+            assert_eq!(parse_face(bytes), parse_face(original), "a face reads as it did before it was collected");
+        }
+        assert_eq!(parse_face(&faces[1].0).unwrap().family, "Inter");
+        assert!(split_collection(&fonts[0]).is_none(), "a single font is not a collection");
+        assert!(split_collection(&collection(&fonts)[..40]).is_none(), "a truncated file is refused, not read past");
+    }
+
+    /// A family read under its English name still answers to the localized one a var may
+    /// have been written with, and declares its faces under both, since a var's value goes
+    /// into the CSS as it is. Needs a font with localized names; the starter set has none.
+    #[test]
+    fn a_family_answers_to_its_localized_names() {
+        let Ok(ttc) = std::fs::read("/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc") else {
+            eprintln!("no wqy-zenhei.ttc here; skipping");
+            return;
+        };
+        let tmp = tempfile::tempdir().unwrap();
+        let (face, ext) = split_collection(&ttc).unwrap().remove(0);
+        std::fs::write(tmp.path().join(format!("zenhei.{ext}")), face).unwrap();
+        let lib = FontLibrary::new(vec![(tmp.path().to_path_buf(), Origin::Project)]);
+        let family = &lib.families()["WenQuanYi Zen Hei"];
+        assert!(family.aliases.contains(&"文泉驛正黑".to_string()), "{:?}", family.aliases);
+        let r = lib.resolve(vec![("font".into(), "文泉驛正黑".into())]);
+        assert!(r.missing.is_empty() && r.families[0].name == "WenQuanYi Zen Hei");
+        let css = family.css("_fonts/");
+        assert!(css.contains("font-family: \"WenQuanYi Zen Hei\"") && css.contains("font-family: \"文泉驛正黑\""), "{css}");
+    }
+
+    /// Which writing systems a font sets is read from the font, not from its name.
+    #[test]
+    fn a_face_says_which_scripts_it_sets() {
+        let inter = parse_face(&std::fs::read(repo_fonts().join("Inter/Inter[opsz,wght].ttf")).unwrap()).unwrap();
+        assert!(inter.scripts.contains(&"latin") && inter.scripts.contains(&"cyrillic"), "{:?}", inter.scripts);
+        assert!(!inter.scripts.contains(&"han") && !inter.scripts.contains(&"kana"), "{:?}", inter.scripts);
+        let lib = FontLibrary::new(vec![(repo_fonts(), Origin::Library)]);
+        assert!(lib.families()["Inter"].scripts.contains(&"latin"));
     }
 
     #[test]

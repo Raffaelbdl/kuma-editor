@@ -501,7 +501,7 @@ pub fn bake_for(
         OverlayScope::Nested => true,
         OverlayScope::All => false,
     };
-    let (out, errs) = bake_clips(state, project, &overlay_clips(project, root, nested_only, within), progress, cancel);
+    let (out, errs) = bake_clips(state, project, &overlay_clips(project, root, nested_only, within), progress, cancel, &|r| state.baker.bake(r).map(Some));
     if !nested_only {
         return strict((out, errs));
     }
@@ -518,7 +518,17 @@ pub fn bake_all(state: &AppState, project: &Project, only: Option<&[String]>, pr
         .map(|c| c.id.clone())
         .filter(|id| only.is_none_or(|o| o.contains(id)))
         .collect();
-    strict(bake_clips(state, project, &ids, progress, None))
+    strict(bake_clips(state, project, &ids, progress, None, &|r| state.baker.bake(r).map(Some)))
+}
+
+/// The bakes the cache already holds for every overlay `root` shows, nested ones included,
+/// rendering none; and the clips left out because theirs is not there (or cannot be
+/// keyed). What `kuma compile` includes without waiting on hyperframes.
+pub fn cached_bakes(state: &AppState, project: &Project, root: &str) -> (Bakes, Vec<String>) {
+    let ids = overlay_clips(project, root, false, None);
+    let (out, _) = bake_clips(state, project, &ids, &|_, _| {}, None, &|r| state.baker.cached(r));
+    let missing = ids.into_iter().filter(|id| !out.contains_key(id)).collect();
+    (out, missing)
 }
 
 /// Every overlay clip in every sequence: what `kuma bake` bakes and a prune keeps.
@@ -531,10 +541,14 @@ fn strict((out, errs): (Bakes, Vec<anyhow::Error>)) -> anyhow::Result<Bakes> {
     errs.into_iter().next().map_or(Ok(out), Err)
 }
 
+/// How `bake_clips` gets a clip's bake: `Baker::bake`, or `Baker::cached` to render none.
+type Fetch<'a> = &'a dyn Fn(&BakeRequest) -> Result<Option<kuma_overlay::BakeResult>, kuma_overlay::BakeError>;
+
 /// Bake the named overlay clips (cached), returning what succeeded and what did not.
 /// Whether a failure is fatal is the caller's to decide — the loop does not care. A set
 /// `cancel` stops it between two bakes, which the cache makes free to pick up again.
-fn bake_clips(state: &AppState, project: &Project, ids: &[String], progress: &dyn Fn(u8, &str), cancel: Option<&AtomicBool>) -> (Bakes, Vec<anyhow::Error>) {
+/// `fetch` bakes a clip or only looks it up; `None` from it leaves the clip out, no error.
+fn bake_clips(state: &AppState, project: &Project, ids: &[String], progress: &dyn Fn(u8, &str), cancel: Option<&AtomicBool>, fetch: Fetch) -> (Bakes, Vec<anyhow::Error>) {
     // Clips of one entry, and entries of one folder, share a manifest: read each once.
     let mut folders: std::collections::HashMap<String, Result<crate::overlays::Resolved, String>> = Default::default();
     let (mut out, mut errs) = (Bakes::new(), Vec::new());
@@ -556,10 +570,11 @@ fn bake_clips(state: &AppState, project: &Project, ids: &[String], progress: &dy
         };
         progress(((i * 100) / n) as u8, &format!("baking {id} ({overlay})"));
         let req = bake_request(r, vars, project, clip);
-        match state.baker.bake(&req) {
-            Ok(r) => {
+        match fetch(&req) {
+            Ok(Some(r)) => {
                 out.insert(id.clone(), r.overlay_bake());
             }
+            Ok(None) => {}
             Err(e) => errs.push(anyhow::anyhow!("bake `{id}`: {e}")),
         }
     }
@@ -704,8 +719,10 @@ pub struct SampleRequest {
     pub t0: f64,
     #[serde(default)]
     pub t1: Option<f64>,
-    #[serde(default = "one_usize")]
-    pub count: usize,
+    /// Frames evenly spaced over `[t0, t1]`. One without a range; across a range, enough
+    /// to see it move (`RANGE_COUNT`) — a range asked for one frame shows none of it.
+    #[serde(default)]
+    pub count: Option<usize>,
     /// Crop rectangle in composition pixels.
     #[serde(default)]
     pub rect: Option<Region>,
@@ -742,9 +759,8 @@ pub struct SampleRequest {
     #[serde(default)]
     pub frame_height: Option<u32>,
 }
-fn one_usize() -> usize {
-    1
-}
+/// How many frames a range is sampled at when no count is given.
+pub const RANGE_COUNT: usize = 5;
 
 /// One frame of the master at t=0, overlays included. Callers name what they change;
 /// adding a field here no longer means visiting every construction.
@@ -753,7 +769,7 @@ impl Default for SampleRequest {
         SampleRequest {
             t0: 0.0,
             t1: None,
-            count: 1,
+            count: None,
             rect: None,
             width: None,
             overlays: OverlayScope::default(),
@@ -799,7 +815,7 @@ pub fn sample_frames(state: &AppState, req: &SampleRequest, progress: &dyn Fn(u8
         }
     };
     let t1 = req.t1.unwrap_or(req.t0);
-    let count = req.count.clamp(1, 32);
+    let count = req.count.unwrap_or(if t1 > req.t0 { RANGE_COUNT } else { 1 }).clamp(1, 32);
     // Only the overlays this sample can actually show: one frame must not pay for a bake
     // of every overlay on the timeline, nor fail because one somewhere else is broken.
     let bakes = bake_for(state, &project, &sequence, scope, Some((req.t0, t1)), &|p, m| progress(p / 2, m), None)?;

@@ -217,6 +217,11 @@ impl Baker {
         Ok(hex::encode(h.finalize())[..24].to_string())
     }
 
+    /// The bake already in the cache for `req`, rendering nothing: `None` when there is none.
+    pub fn cached(&self, req: &BakeRequest) -> Result<Option<BakeResult>, BakeError> {
+        Ok(read_done(&self.cache_dir.join(self.key(req)?)))
+    }
+
     /// Bake (or fetch from cache). Work happens in a private directory that is renamed
     /// into place at the end, so concurrent bakes of the same key never see each other's
     /// partial output and a crash leaves no half-written cache entry.

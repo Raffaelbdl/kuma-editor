@@ -39,12 +39,15 @@ whether this project has one.
 An overlay entry names a folder in the project (`overlays/<name>/`: `index.html` +
 `overlay.json`) plus its `vars`; entries may share a folder. To make one: `new_overlay`, edit,
 `check_overlay`, then `import_overlay` (writing a folder does not add it to the bin). Or copy a
-**blueprint** from the user's library (`list_blueprints`, `add_blueprint`). `make_overlay_unique`
+**blueprint** from the user's library (`list_blueprints`, `add_blueprint`, with a `folder` name that
+says what the copy is for). `make_overlay_unique`
 before editing a shared folder; `save_blueprint` only when the user asks. See `overlay_guide`.
 Overlays are live DOM in the preview and baked to alpha frames at export. For a plain title, the
 `title` and `title-subtitle` blueprints are typography, box, outline, shadow and entrance/exit as
 vars — set those rather than writing markup. A `font` var takes a family name from `list_fonts`;
-`add_font` copies a new one in.
+`add_font` copies a new one in (a `.ttc` collection is split into its faces). Each family lists the
+`scripts` it can set: text in any other (kanji in a Latin font, say) is drawn by the baking machine's
+fonts, not the project's, so pick or add a family that covers the text.
 
 To look at the footage, call `sample_frames` with a time range (and an optional pixel `rect`); it
 returns the composited frames as images plus their PNG paths. To look at an *overlay you are

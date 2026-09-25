@@ -132,6 +132,11 @@ pub struct ImportOverlay {
 pub struct AddBlueprint {
     /// Blueprint id, from `list_blueprints`.
     pub blueprint: String,
+    /// Folder name for the copy under `overlays/` ([A-Za-z_][A-Za-z0-9_-]*), so it says
+    /// what it holds (`kanji-title`, not `title-2`). The blueprint's id when omitted; a
+    /// taken name gets a numeric suffix either way.
+    #[serde(default)]
+    pub folder: Option<String>,
     /// Bin id; minted from the folder name when omitted.
     #[serde(default)]
     pub id: Option<String>,
@@ -167,7 +172,8 @@ pub struct SampleFrames {
     /// End time, seconds. Defaults to t0 (single frame).
     #[serde(default)]
     pub t1: Option<f64>,
-    /// Number of evenly spaced frames in [t0, t1]. 1..32, default 1.
+    /// Number of evenly spaced frames in [t0, t1], 1..32. Default 1 for a single time and
+    /// 5 across a range.
     #[serde(default)]
     pub count: Option<usize>,
     /// Crop rectangle in composition pixels `{x, y, w, h}`.
@@ -298,7 +304,7 @@ pub struct PathArg {
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct AddFont {
-    /// A `.ttf` or `.otf` file, relative to the project or absolute.
+    /// A `.ttf` or `.otf` file, or a `.ttc`/`.otc` collection, relative to the project or absolute.
     pub path: String,
     /// Into the user's library for every project, instead of this project's `fonts/`.
     /// Only when the user asks: the library is theirs.
@@ -351,17 +357,17 @@ impl KumaServer {
 
     #[tool(description = "Copy a blueprint into the project's `overlays/` and add it to the bin. Returns the bin id; the copy is the project's to edit.")]
     async fn add_blueprint(&self, Parameters(p): Parameters<AddBlueprint>) -> Result<CallToolResult, McpError> {
-        let copied = self.client.post(&format!("/api/blueprints/{}/copy", p.blueprint), &json!({})).await.map_err(err)?;
+        let copied = self.client.post(&format!("/api/blueprints/{}/copy", p.blueprint), &json!({ "folder": p.folder })).await.map_err(err)?;
         let body = json!({ "path": copied["overlay"], "id": p.id, "name": p.name, "vars": p.vars.unwrap_or_default(), "origin": format!("claude: add {}", p.blueprint) });
         self.post("/api/overlays/import", &body).await
     }
 
-    #[tool(description = "List the font families a `font` var can name, each with where it comes from (`project` fonts/ or the `library`) and its faces (weight range, italic). A family not listed renders in the overlay's fallback stack.")]
+    #[tool(description = "List the font families a `font` var can name, each with where it comes from (`project` fonts/ or the `library`), the writing systems it can set (`scripts`: latin, han, kana, hangul, …) and its faces (weight range, italic). A family not listed renders in the overlay's fallback stack, and so does text in a script the family lacks: that fallback is whatever the baking machine has, so pick (or add) a family that covers the text.")]
     async fn list_fonts(&self) -> Result<CallToolResult, McpError> {
         self.get("/api/fonts").await
     }
 
-    #[tool(description = "Copy a font file (.ttf/.otf) into the project's `fonts/` (or, with `shared`, the user's library) so `font` vars can name it. Returns the family name it reads as. Not an edit: nothing to undo. Add a family's weights and italics as separate calls.")]
+    #[tool(description = "Copy a font file (.ttf/.otf) into the project's `fonts/` (or, with `shared`, the user's library) so `font` vars can name it. A collection (.ttc/.otc, how most CJK fonts ship) is split into one file per face. Returns the family it reads as, and every face with its family and scripts. Not an edit: nothing to undo. Add a family's weights and italics as separate calls.")]
     async fn add_font(&self, Parameters(p): Parameters<AddFont>) -> Result<CallToolResult, McpError> {
         self.post("/api/fonts", &json!({ "path": p.path, "shared": p.shared })).await
     }
@@ -430,7 +436,7 @@ impl KumaServer {
             Some(id) => id,
             None => {
                 let body = json!({
-                    "t0": p.t0, "t1": p.t1, "count": p.count.unwrap_or(1),
+                    "t0": p.t0, "t1": p.t1, "count": p.count,
                     "rect": p.rect.as_ref().map(|r| json!({ "x": r.x, "y": r.y, "w": r.w, "h": r.h })),
                     "width": p.width.or(if p.rect.is_some() { None } else { Some(960) }),
                     "overlays": p.overlays.unwrap_or(true),

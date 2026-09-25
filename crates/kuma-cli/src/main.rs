@@ -49,8 +49,9 @@ enum Cmd {
     Sample {
         t0: f64,
         t1: Option<f64>,
-        #[arg(short, long, default_value_t = 1)]
-        count: usize,
+        /// Frames over [t0, t1]: 1 without t1, 5 across a range.
+        #[arg(short, long)]
+        count: Option<usize>,
         /// Crop rect `x,y,w,h` in composition pixels.
         #[arg(long)]
         rect: Option<String>,
@@ -79,11 +80,14 @@ enum Cmd {
         #[command(subcommand)]
         action: Option<CacheCmd>,
     },
-    /// Write the compiled MLT XML to stdout (overlays skipped unless baked).
+    /// Write the compiled MLT XML to stdout, with every overlay the cache has baked (`--bake` bakes the rest).
     Compile {
         /// Sequence (bin id) to use instead of the project's master.
         #[arg(long)]
         sequence: Option<String>,
+        /// Bake the overlays that are not baked yet, rather than leaving them out.
+        #[arg(long)]
+        bake: bool,
     },
     /// Validate the project and print issues (exit 1 on errors).
     Validate,
@@ -317,12 +321,25 @@ async fn main() -> anyhow::Result<()> {
             };
             println!("{}", serde_json::to_string_pretty(&out)?);
         }
-        Cmd::Compile { sequence } => {
+        Cmd::Compile { sequence, bake } => {
+            use kuma_daemon::jobs::{self, OverlayScope};
             let state = open(&cli)?;
             let project = state.project.read().unwrap().clone();
-            let mut opts = kuma_daemon::jobs::compile_options(&state);
+            let mut opts = jobs::compile_options(&state);
             opts.sequence = sequence.clone();
-            print!("{}", kuma_daemon::jobs::compile_xml(&project, &opts)?);
+            let root = opts.sequence.as_deref().unwrap_or(&project.master);
+            // Overlays as the render would have them: every bake the cache holds, and with
+            // `--bake` the rest, so the graph printed is the one that would render.
+            opts.bakes = if *bake {
+                jobs::bake_for(&state, &project, root, OverlayScope::All, None, &|_, m| eprintln!("kuma: {m}"), None)?
+            } else {
+                let (bakes, missing) = jobs::cached_bakes(&state, &project, root);
+                if !missing.is_empty() {
+                    eprintln!("kuma: left out {} overlay clip(s) not baked yet ({}); `--bake` bakes them", missing.len(), missing.join(", "));
+                }
+                bakes
+            };
+            print!("{}", jobs::compile_xml(&project, &opts)?);
         }
         Cmd::Validate => {
             let state = open(&cli)?;

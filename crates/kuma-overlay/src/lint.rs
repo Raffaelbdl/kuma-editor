@@ -86,6 +86,12 @@ const WALL_CLOCK: &str = "drive everything from the timeline, which the renderer
 const ROUGH: &str = "Rough.js used directly draws differently on every frame and every bake";
 const ROUGH_FIX: &str = "draw inside `kumaCanvas` (`_vendor/kuma-canvas.js`) with `g.rough(key)`, which seeds every stroke by its key and the frame";
 
+/// Calls that still work but that newer helpers replace: (needle, code, why, fix).
+const SUPERSEDED: &[(&str, &str, &str, &str)] = &[
+    ("kumaCanvas.hash(", "correlated_random", "`kumaCanvas.hash` gives related values for keys that differ only at the end, so things placed with it fall into lines", "use `kumaCanvas.rand(key)`, which draws the same on every frame and bake"),
+    ("g.rand(", "correlated_random", "`g.rand` gives related values for keys that differ only at the end, so wobble moves in step", "use `g.jitter(key)`, which holds for one drawing the same way"),
+];
+
 /// Calls an overlay's own scripts may not make: (needle, code, why, fix).
 const FORBIDDEN: &[(&str, &str, &str, &str)] = &[
     ("setTimeout", "wall_clock", "`setTimeout` drives state from the wall clock", WALL_CLOCK),
@@ -181,6 +187,11 @@ fn contract_findings(html: &str, manifest: &OverlayManifest, dir: &Path) -> Vec<
     for (needle, code, why, fix) in FORBIDDEN {
         if scripts.contains(needle) {
             out.push(Finding::error(code, format!("{why}; a bake renders frame by frame with no time passing"), fix));
+        }
+    }
+    for (needle, code, why, fix) in SUPERSEDED {
+        if scripts.contains(needle) {
+            out.push(Finding::warn(code, *why, fix));
         }
     }
     if html.contains("fonts.googleapis.com") || html.contains("fonts.gstatic.com") {
@@ -493,6 +504,12 @@ mod tests {
 
         let rough = r#"<div data-composition-id="main" data-no-timeline></div><script>rough.canvas(c).circle(0, 0, 9)</script>"#;
         assert!(codes(rough, &manifest(&[])).contains(&"unseeded_rough".to_string()));
+
+        // The unmixed helpers still render, so a warning; their replacements pass.
+        let related = |js: &str| codes(&format!(r#"<div data-composition-id="main" data-no-timeline></div><script>{js}</script>"#), &manifest(&[])).contains(&"correlated_random".to_string());
+        assert!(related("kumaCanvas.hash(`star${i}`)"));
+        assert!(related("kumaCanvas(tpl, c, (g) => g.rand(`k${i}`))"));
+        assert!(!related("kumaCanvas.rand(`star${i}`); kumaCanvas(tpl, c, (g) => g.jitter(`k${i}`))"));
 
         let missing = r#"<div data-composition-id="main" data-no-timeline></div><img src="logo.png">"#;
         assert!(codes(missing, &manifest(&[])).contains(&"missing_asset".to_string()));

@@ -1875,8 +1875,8 @@ An agent built a 10 s seamless loop (a drawn 1986 Tokyo Bay dusk: ten `kuma-canv
 scene layers in a nested sequence placed twice, five titles from one blueprint copy, CRT
 and grain textures, a synthesised city-pop track) through MCP alone, and wrote up what
 cost it time. Each claim below was checked against the code before it was recorded, and
-the blend-mode bug against melt 7.22. Items 1 and 2 are fixed and 3 half fixed; the rest is
-not built. What the session praised is worth keeping as well: `base_revision` plus atomic patches with a `note` never lost an edit, nested sequences made a bloom pass
+the blend-mode bug against melt 7.22. Items 1, 2 and 4 are fixed and 3 half fixed; the rest
+is not built. What the session praised is worth keeping as well: `base_revision` plus atomic patches with a `note` never lost an edit, nested sequences made a bloom pass
 trivial, one overlay folder behind five entries worked as intended, and `sample_frames`
 with `overlay` was fast enough to draw with.
 
@@ -1939,15 +1939,25 @@ with `overlay` was fast enough to draw with.
    one-worker hyperframes process, so the one-worker determinism rule in `CLAUDE.md`
    should hold, but it has not been measured), and the bake
    size in *Recorded, not scheduled*.
-4. **`kumaCanvas.hash` has no final mix.** It is bare FNV-1a (`_vendor/kuma-canvas.js`), so
-   keys differing in their last character (`s1`, `s2`, …) land close together in the high
-   bits that `/ 2^32` keeps; the agent's first star field came out in diagonal lines and
-   every overlay then carried its own murmur finaliser. **Add a mixed `rand(key)` rather
-   than changing `hash`**: `_vendor/` is read from the library and hashed into the bake
-   key, so changing `hash` would re-bake and re-style every drawn overlay, `paint-wipe`
-   included, the next time anything re-bakes — the thing copying blueprints into projects
-   exists to prevent. That is also a standing hazard for any `_vendor/` change, and
-   worth its own entry: vendor files are append-only in behaviour.
+4. **`kumaCanvas.hash` had no final mix** — **fixed, by addition**. It is bare FNV-1a
+   (`_vendor/kuma-canvas.js`), so keys differing in their last character (`s1`, `s2`, …)
+   land close together in the high bits that `/ 2^32` keeps. Measured: 400 stars placed at
+   `(hash(sx_i), hash(sy_i))` fill 32 cells of a 10×10 grid, and neighbouring keys correlate
+   at 0.84; the agent's first star field came out in diagonal lines and every overlay then
+   carried its own murmur finaliser. `g.rand`, the per-drawing value, was the same FNV
+   unmixed.
+
+   Built: `kumaCanvas.rand(key)` and `g.jitter(key)`, the same two with murmur3's
+   finaliser on top (all 100 cells, correlation 0.03). `hash` and `g.rand` are **kept
+   unchanged** and documented as the first versions: `_vendor/` is read from the user's
+   library and hashed into every bake key, so changing them would re-bake and re-draw
+   every drawn overlay that uses them the next time anything re-bakes — exactly what
+   copying blueprints into projects exists to prevent. A lint warning
+   (`correlated_random`, not an error: they still render deterministically) points at the
+   replacements, `paint-wipe` moved to them (projects keep their own copy, so no finished
+   video changes), and `ui/test/kuma-canvas.test.mjs` pins the values of all four. That
+   rule is general and now in `CLAUDE.md`: a `_vendor/` helper may be added, never changed
+   in what it returns.
 5. **Lint false positives.** `duration_not_read` fires on overlays that have a timeline
    but nothing to end — a `static` overlay, an endless texture — where anchoring an exit to
    `duration` means nothing; it should skip `static` overlays and stay silent when there

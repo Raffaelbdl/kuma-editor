@@ -233,10 +233,14 @@ kumaCanvas(tpl, "#paint", (g, t) => {
 
 - `draw(g, t)` paints the whole frame from `t` alone; the canvas is cleared and the context
   restored around it. `g` holds `ctx`, `w`, `h`, `u` (the canvas twin of `--u`), and three
-  seeded sources: `rough(key)` (a Rough.js canvas), `rand(key)` and `seed(key)` (for any
-  other seedable library). Each holds for one *drawing*, 12 a second, so wobble "boils"
-  like redrawn animation, and keys are independent, so a moving thing does not make still
-  things jitter. `kumaCanvas.hash(key)` never changes.
+  seeded sources: `rough(key)` (a Rough.js canvas), `jitter(key)` (a value in [0, 1)) and
+  `seed(key)` (for any other seedable library). Each holds for one *drawing*, 12 a second,
+  so wobble "boils" like redrawn animation, and keys are independent, so a moving thing
+  does not make still things jitter. `kumaCanvas.rand(key)` is a value in [0, 1) that never
+  changes: positions, sizes, delays. Keys as alike as `star1`, `star2` give unrelated
+  values, so build them from an index freely. (`kumaCanvas.hash` and `g.rand` are the
+  first versions of these two, whose values for alike keys are related; the lint warns
+  on them, and they are kept only so overlays that use them keep drawing what they drew.)
 - Helpers on `kumaCanvas`, pure functions of `t`: `kf`, `spring`, `ring`, `jump`, `take`,
   `arcPt`, `onTwos`, `noise`. Eases are GSAP's: `gsap.parseEase("power3.out")`, so the
   house numbers above apply unchanged.

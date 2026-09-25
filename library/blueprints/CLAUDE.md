@@ -24,12 +24,16 @@ highest-precedence library that has it (`<library>/blueprints/_vendor/`); the ba
 and the daemon serves exactly the same folder. It is not copied into projects.
 
 - `_vendor/kuma.js` — `kumaTemplate(defaults)` applies the vars, returns `{ vars, width,
-  height, duration, text(id, value), timeline() }` and works standalone.
+  height, duration, text(id, value), timeline(), onFrame(fn) }` and works standalone.
 - `_vendor/kuma.css` — the transparent reset and the `--u` unit (`1vh × --var-size`).
 - `_vendor/kuma-motion.js` — entrances and exits by name, for an overlay whose motion is a
   var: `kumaMotion.enter(tl, el, vars.enter, { at, duration, text })` returns when it
   settles, `kumaMotion.exit(tl, el, vars.exit, { at, duration, after })`. The names at the
   top of the file are the enum options to list; `title` shows the whole pattern.
+- `_vendor/kuma-canvas.js` — drawn overlays: a `<canvas>` painted as a function of time
+  (see *Drawn overlays* below).
+- `_vendor/rough.min.js` — Rough.js 4.6.6 (MIT), the hand-drawn look; use it through
+  `kuma-canvas.js`.
 - `_vendor/gsap.min.js`.
 
 ## Read the project's design system first
@@ -96,7 +100,9 @@ overlays/<name>`) does, optionally with `vars`, once it checks clean.
    `data-start`, `data-duration` (seconds, relative to the root).
 3. Be a **pure function of time**. Animation must be seekable:
    - GSAP: one paused timeline, `const tl = timeline()` from `kumaTemplate` (it registers
-     `window.__timelines["main"]`).
+     `window.__timelines["main"]`). Per-frame JS that GSAP does not tween (a canvas, a
+     computed path) runs from `onFrame(t => …)`, never from `onUpdate`, which `tl.seek(t)`
+     suppresses.
    - **No GSAP timeline at all** (static overlays, pure CSS animation): put `data-no-timeline`
      on the composition root, or the renderer waits 45 s for a timeline and fails the bake.
    - CSS `@keyframes`/transitions and WAAPI are fine — the renderer scrubs them.
@@ -211,6 +217,32 @@ House numbers, for overlays that should sit beside the shipped blueprints:
 - One thing moves at a time. If two must, stagger them.
 - Blur, large shadows and filters over a whole frame are paid for on every baked frame;
   a 30 s overlay is 900 renders of them. Cheap where it does not show.
+
+## Drawn overlays
+
+For marks that are drawn rather than laid out (a wipe, particles, a hand-drawn underline, a
+generative texture), paint a `<canvas>` with `_vendor/kuma-canvas.js`. Text and layout stay
+DOM + GSAP. `paint-wipe` is the worked example.
+
+```js
+const tpl = kumaTemplate({ … });
+kumaCanvas(tpl, "#paint", (g, t) => {
+  g.rough("mark").circle(g.w / 2, g.h / 2, 20 * g.u, { fill: tpl.vars.accent, fillStyle: "hachure" });
+});
+```
+
+- `draw(g, t)` paints the whole frame from `t` alone; the canvas is cleared and the context
+  restored around it. `g` holds `ctx`, `w`, `h`, `u` (the canvas twin of `--u`), and three
+  seeded sources: `rough(key)` (a Rough.js canvas), `rand(key)` and `seed(key)` (for any
+  other seedable library). Each holds for one *drawing*, 12 a second, so wobble "boils"
+  like redrawn animation, and keys are independent, so a moving thing does not make still
+  things jitter. `kumaCanvas.hash(key)` never changes.
+- Helpers on `kumaCanvas`, pure functions of `t`: `kf`, `spring`, `ring`, `jump`, `take`,
+  `arcPt`, `onTwos`, `noise`. Eases are GSAP's: `gsap.parseEase("power3.out")`, so the
+  house numbers above apply unchanged.
+- 2D only: a bake has no GPU. Cost is `draw`, on every frame; hundreds of shapes are fine.
+- Lay out along the frame's axes in `g.u` and fractions of `g.w`/`g.h`, and check 1080×1920
+  with `sample_frames` and `frame`.
 
 ## Checking your work
 

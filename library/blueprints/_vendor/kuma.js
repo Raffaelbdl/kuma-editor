@@ -17,7 +17,8 @@
       }
     }
     const comp = document.querySelector("[data-composition-id]");
-    return {
+    let tl = null;
+    const api = {
       vars,
       width: k.width || 1920,
       height: k.height || 1080,
@@ -32,10 +33,20 @@
       },
       /** The one paused GSAP timeline that the renderer and the preview seek. */
       timeline() {
-        const tl = gsap.timeline({ paused: true });
+        tl = tl || gsap.timeline({ paused: true });
         (window.__timelines = window.__timelines || {}).main = tl;
         return tl;
       },
+      /** Call `fn(t)` whenever the timeline renders time `t`, however it is seeked: for
+       *  per-frame JS that GSAP does not tween (a canvas, a computed path). Never draw from
+       *  `onUpdate` — `tl.seek(t)` suppresses callbacks, and the preview stays stale. */
+      onFrame(fn) {
+        const length = api.duration;
+        const clock = { at: (v) => (v === undefined ? 0 : fn(v)) };
+        // A tweened getter/setter is written on every render; `fromTo` draws t = 0 at once.
+        api.timeline().fromTo(clock, { at: 0 }, { at: length, duration: length, ease: "none" }, 0);
+      },
     };
+    return api;
   };
 })();

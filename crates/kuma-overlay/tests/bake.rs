@@ -12,14 +12,20 @@ fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..").canonicalize().unwrap()
 }
 
+/// A PNG decoded to RGBA bytes, through `vf` when given.
+fn rgba(png: &std::path::Path, vf: Option<&str>) -> Vec<u8> {
+    let mut cmd = std::process::Command::new("ffmpeg");
+    cmd.args(["-v", "error", "-i"]).arg(png);
+    if let Some(vf) = vf {
+        cmd.args(["-vf", vf]);
+    }
+    let out = cmd.args(["-pix_fmt", "rgba", "-f", "rawvideo", "-"]).output().expect("ffmpeg on PATH");
+    assert!(!out.stdout.is_empty(), "ffmpeg decoded nothing from {}: {}", png.display(), String::from_utf8_lossy(&out.stderr));
+    out.stdout
+}
+
 fn rgba_at(png: &std::path::Path, x: u32, y: u32) -> [u8; 4] {
-    let out = std::process::Command::new("ffmpeg")
-        .args(["-v", "error", "-i"])
-        .arg(png)
-        .args(["-vf", &format!("crop=1:1:{x}:{y}"), "-pix_fmt", "rgba", "-f", "rawvideo", "-"])
-        .output()
-        .expect("ffmpeg on PATH");
-    <[u8; 4]>::try_from(out.stdout.as_slice()).unwrap_or_else(|_| panic!("ffmpeg gave {} bytes for {}: {}", out.stdout.len(), png.display(), String::from_utf8_lossy(&out.stderr)))
+    <[u8; 4]>::try_from(rgba(png, Some(&format!("crop=1:1:{x}:{y}"))).as_slice()).unwrap()
 }
 
 #[test]
@@ -131,4 +137,39 @@ fn previews_an_overlay_as_an_animated_webp_with_alpha() {
     assert!(count(b"ALPH") > 10, "frames carry no alpha: the preview would be a black rectangle");
     // Nothing was left behind mid-write.
     assert!(!out.with_extension("webp.tmp").exists());
+}
+
+/// A drawn overlay (`kumaCanvas` + Rough.js) is a pure function of time: two bakes into
+/// separate caches give the same pixels in every frame (the PNG bytes may differ). `paint-wipe`
+/// also covers the whole frame at its midpoint, the cut.
+#[test]
+fn a_drawn_overlay_bakes_the_same_pixels_twice() {
+    let root = repo_root();
+    let tmp = tempfile::tempdir().unwrap();
+    let baker = |cache: &str| Baker::discover(&root, root.join("library/blueprints/_vendor"), tmp.path().join(cache));
+    let (a, b) = (baker("a"), baker("b"));
+    if a.available().is_err() || (a.browser.is_none() && std::env::var_os("KUMA_ALLOW_BROWSER_DOWNLOAD").is_none()) {
+        eprintln!("hyperframes or a browser is unavailable; skipping drawn-overlay bake test");
+        return;
+    }
+    let dir = root.join("library/blueprints/paint-wipe");
+    let manifest = OverlayManifest::load(&dir).unwrap();
+    let vars = Map::new();
+    let (w, h) = (480, 270);
+    let req = BakeRequest { overlay_dir: &dir, manifest: &manifest, vars: &vars, fps: Fps::new(12, 1), width: w, height: h, duration: 1.0, speed: 1.0 };
+    let (ra, rb) = std::thread::scope(|s| {
+        let (ja, jb) = (s.spawn(|| a.bake(&req).expect("bake a")), s.spawn(|| b.bake(&req).expect("bake b")));
+        (ja.join().unwrap(), jb.join().unwrap())
+    });
+    assert_eq!(ra.frames, 12);
+    let frame = |r: &kuma_overlay::BakeResult, n: i64| rgba(&r.dir.join(format!("frames/frame_{n:06}.png")), None);
+    let frames: Vec<Vec<u8>> = (1..=ra.frames).map(|n| frame(&ra, n)).collect();
+    for (i, pixels) in frames.iter().enumerate() {
+        assert!(*pixels == frame(&rb, i as i64 + 1), "frame {} differs between two bakes", i + 1);
+    }
+    let alpha = |pixels: &[u8], x: u32, y: u32| pixels[((y * w + x) * 4 + 3) as usize];
+    for (x, y) in [(2, 2), (w - 3, 2), (w / 2, h / 2), (2, h - 3), (w - 3, h - 3)] {
+        assert_eq!(alpha(&frames[6], x, y), 255, "the midpoint (t = 0.5) must cover the frame at ({x}, {y})");
+    }
+    assert_eq!(alpha(&frames[0], w / 2, h / 2), 0, "nothing is drawn at t = 0");
 }

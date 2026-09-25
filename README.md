@@ -415,7 +415,8 @@ because a blueprint did; **Save as blueprint** in the inspector copies an entry 
 vars as defaults. **Preview** in the inspector (or `kuma thumbs`) renders a still and a looping animated
 WebP of each blueprint and overlay entry. Starter set (`library/blueprints/`, installed by
 `kuma library`, which only adds): `title` and `title-subtitle` (classic titles, every look a
-var), `location-tag`, `lower-third`, `callout-arrow`,
+var), `location-tag`, `lower-third`, `callout-arrow`, `paint-wipe` (a hand-drawn transition,
+drawn on a canvas with `_vendor/kuma-canvas.js` and Rough.js),
 `label-pin`, `section-title`, `countdown`, `watermark` (static), `subtitles` (a `cues` var;
 transcripts share one copy of it). Contract: `library/blueprints/CLAUDE.md`.
 

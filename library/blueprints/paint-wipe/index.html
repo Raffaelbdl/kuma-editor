@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <script src="_vendor/gsap.min.js"></script>
+    <script src="_vendor/kuma.js"></script>
+    <script src="_vendor/rough.min.js"></script>
+    <script src="_vendor/kuma-canvas.js"></script>
+    <link rel="stylesheet" href="_vendor/kuma.css" />
+    <style>
+      canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+    </style>
+  </head>
+  <body>
+    <div id="root" data-composition-id="main" data-start="0" data-duration="1.2" data-width="1920" data-height="1080">
+      <div class="clip" data-start="0" data-duration="1.2" style="position:absolute;inset:0">
+        <canvas id="paint"></canvas>
+      </div>
+    </div>
+    <script>
+      const tpl = kumaTemplate({
+        color: "#d97757", color2: "#a84d33", direction: "right", strokes: 5, roughness: 1.6, texture: true, size: 1,
+      });
+      const { vars, duration } = tpl;
+      const [cover, uncover] = [gsap.parseEase("power3.out"), gsap.parseEase("power2.inOut")];
+      const ANGLE = { right: 0, left: Math.PI, up: -Math.PI / 2, down: Math.PI / 2 };
+      const n = Math.round(vars.strokes);
+      const delays = Array.from({ length: n }, (_, i) => 0.3 * kumaCanvas.hash(`delay${i}`));
+      const lerp = (a, b, k) => a + (b - a) * k;
+      const clamp = (x) => Math.max(0, Math.min(1, x));
+
+      // Strokes cover the frame by the midpoint (p 0 → .5), then drag off (.5 → 1). The
+      // frame is measured along the sweep and across it, so portrait is covered too.
+      kumaCanvas(tpl, "#paint", (g, t) => {
+        const p = t / duration;
+        if (p <= 0 || p >= 1) return;
+        const { ctx, w, h, u } = g, a = ANGLE[vars.direction] - 0.1;
+        const along = Math.abs(w * Math.cos(a)) + Math.abs(h * Math.sin(a));
+        const across = Math.abs(w * Math.sin(a)) + Math.abs(h * Math.cos(a));
+        const half = along / 2, edge = 0.06 * along, band = across / n + 0.04 * across;
+        ctx.translate(w / 2, h / 2);
+        ctx.rotate(a);
+        const style = { stroke: "transparent", roughness: vars.roughness };
+        for (let i = 0; i < n; i++) {
+          const y0 = -across / 2 - 0.02 * across + (i * across) / n, d = delays[i];
+          let x0 = -half - edge, x1 = half + edge;
+          if (p < 0.5) x1 = lerp(x0, x1, cover(clamp((p * 2 - d) / (1 - d))));
+          else x0 = lerp(x0, x1, uncover(clamp(((p - 0.5) * 2 - d) / (1 - d))));
+          if (x1 - x0 < edge / 2) continue;
+          // A wavy long edge, and a ragged end (the leading one, and the trailing one while
+          // it drags off); each list runs in the polygon's order.
+          const side = (y, ph, dir) => Array.from({ length: 9 }, (_, k) => (dir > 0 ? k : 8 - k)).map((k) => [lerp(x0, x1, k / 8), y + Math.sin(k * 0.9 + ph) * 0.012 * across]);
+          const rag = (x, sign, key, dir) => Array.from({ length: 8 }, (_, k) => (dir > 0 ? k + 1 : 8 - k)).map((k) => [x + sign * edge * (g.rand(`${key}${i}-${k}`) - 0.5), y0 + (band * k) / 9]);
+          const pts = [...side(y0, i, 1), ...rag(x1, 1, "lead", 1), ...side(y0 + band, i * 2, -1), ...(p >= 0.5 ? rag(x0, -1, "trail", -1) : [])];
+          const [fill, hatch] = i % 2 ? [vars.color2, vars.color] : [vars.color, vars.color2];
+          const r = g.rough(`stroke${i}`);
+          r.polygon(pts, { ...style, fill, fillStyle: "solid" });
+          if (vars.texture) r.polygon(pts, { ...style, fill: hatch, fillStyle: "hachure", hachureAngle: -41, hachureGap: 1.6 * u, fillWeight: 0.25 * u });
+        }
+      });
+    </script>
+  </body>
+</html>

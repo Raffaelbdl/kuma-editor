@@ -1848,6 +1848,27 @@ only, and queues later renders behind it). The preview reload is not a holder: i
 are live by construction. The lock is per process, so `kuma cache prune` goes through a
 running daemon when there is one.
 
+## Drawn overlays: Canvas 2D and Rough.js
+
+**Adopted.** An overlay can paint a `<canvas>` as a pure function of time through
+`_vendor/kuma-canvas.js`, with Rough.js vendored for a hand-drawn look; `paint-wipe` is the
+first blueprint to use it. Prompted by [ClaudeAnimationBase](https://github.com/JohnHeibel/ClaudeAnimationBase)
+(p5.js + p5.brush), whose motion helpers `kuma-canvas.js` adapts (MIT).
+
+- **Not p5.js**: mostly sugar over Canvas 2D, for 1 MB, LGPL, a draw loop to disable and a
+  `redraw()` 2.x appears to make asynchronous. **Not p5.brush**: its watercolour needs
+  WebGL, and a bake has no GPU.
+- **Per-frame JS runs from `onFrame` in `kuma.js`, not `onUpdate`.** It tweens a
+  getter/setter, which GSAP writes on every render however the timeline is seeked;
+  `tl.seek(t)` suppresses callbacks, and the first cut drew in the bake and stayed blank in
+  the preview (`ui/test/drawn-overlay.test.mjs`). It lives in `kuma.js` because any
+  non-GSAP drawing has the same trap.
+- **`Math.random` is seeded while a frame draws.** Rough.js calls it even when given a seed,
+  so seeds alone were not deterministic; they still keep keys independent, through
+  Rough.js's own default options. Two bakes give identical pixels in every frame
+  (`a_drawn_overlay_bakes_the_same_pixels_twice`; the PNG bytes differ, the image does not).
+  Rough.js used directly is a lint error.
+
 ## Still open
 
 Nested sequences are done and the editor is an application now, so this list is the whole

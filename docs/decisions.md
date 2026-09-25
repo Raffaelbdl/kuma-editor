@@ -1875,8 +1875,8 @@ An agent built a 10 s seamless loop (a drawn 1986 Tokyo Bay dusk: ten `kuma-canv
 scene layers in a nested sequence placed twice, five titles from one blueprint copy, CRT
 and grain textures, a synthesised city-pop track) through MCP alone, and wrote up what
 cost it time. Each claim below was checked against the code before it was recorded, and
-the blend-mode bug against melt 7.22. Items 1, 2 and 4 are fixed and 3 half fixed; the rest
-is not built. What the session praised is worth keeping as well: `base_revision` plus atomic patches with a `note` never lost an edit, nested sequences made a bloom pass
+the blend-mode bug against melt 7.22. Items 1, 2, 4 and 5 are fixed and 3 half fixed; the
+rest is not built. What the session praised is worth keeping as well: `base_revision` plus atomic patches with a `note` never lost an edit, nested sequences made a bloom pass
 trivial, one overlay folder behind five entries worked as intended, and `sample_frames`
 with `overlay` was fast enough to draw with.
 
@@ -1958,14 +1958,24 @@ with `overlay` was fast enough to draw with.
    video changes), and `ui/test/kuma-canvas.test.mjs` pins the values of all four. That
    rule is general and now in `CLAUDE.md`: a `_vendor/` helper may be added, never changed
    in what it returns.
-5. **Lint false positives.** `duration_not_read` fires on overlays that have a timeline
-   but nothing to end — a `static` overlay, an endless texture — where anchoring an exit to
-   `duration` means nothing; it should skip `static` overlays and stay silent when there
-   is no out-animation to anchor. `studio_missing_editable_id` is hyperframes' own rule,
-   and the shipped `paint-wipe` trips it (`<div class="clip">` with no id): fix the
-   blueprint, since the guide sends authors to it as the worked example, and find out why
-   the test that lints every blueprint let it through (a warning rather than an error, or
-   skipped where hyperframes is absent).
+5. **Lint false positives** — **fixed**.
+   - `duration_not_read` fired on overlays that have a timeline but no length to anchor
+     to. It now skips a `static` overlay (one frame), and an overlay whose times are its
+     own on purpose says so with **`data-fixed-timing`** on its root: a texture that runs
+     for as long as its clip, a countdown that takes as long as it counts. That is a
+     declaration rather than a guess because a forgotten exit and a deliberate absence of
+     one look the same in the markup; it is the same shape as `data-no-timeline`, and
+     the warning's fix now names it. `countdown` carries it, and it was the one shipped
+     blueprint that warned.
+   - hyperframes' `studio_missing_editable_id` (and every `studio_*` rule) is about edit
+     targets in hyperframes' Studio, which kuma never opens, and `gsap_infinite_repeat`
+     asks for a finite root `data-duration` that the contract always stamps. Both are
+     dropped in `not_kumas`, beside the existing filter for its timeline-registry miss.
+     `paint-wipe` and `callout-arrow` carried them.
+   - The test let all three blueprints through because it asserted no *errors*. It now
+     asserts no findings at all, as the scaffold's test does: a blueprint is read as an
+     example of the contract, so a warning in one teaches the wrong thing, or is a rule
+     that is wrong. Without hyperframes installed it still checks kuma's own rules.
 6. **Loops as an idea** — cheap pieces, no model change:
    - `kumaCanvas.cycles(duration, period)`, `phase(t, duration, cycles)` and a
      time-periodic `loopNoise`: every drawn layer re-implemented them.

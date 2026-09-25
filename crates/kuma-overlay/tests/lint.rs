@@ -47,9 +47,11 @@ fn every_shipped_blueprint_passes_its_own_contract() {
         if !dir.join(kuma_core::manifest::MANIFEST).is_file() {
             continue; // `_vendor/` and anything else that is not a blueprint
         }
+        // Clean, not merely error-free: a blueprint is read as an example of the contract,
+        // like the scaffold, so a warning in it teaches the wrong thing — or is a rule
+        // that is wrong, which is worth finding here rather than in someone's project.
         let report = lint(&baker, &dir);
-        assert!(report.ok(), "{}:\n  {}", dir.display(), report.lines().join("\n  "));
-        assert!(!report.findings.iter().any(|f| f.code == "font_missing"), "{}: names a font the library does not ship:\n  {}", dir.display(), report.lines().join("\n  "));
+        assert!(report.findings.is_empty(), "{}:\n  {}", dir.display(), report.lines().join("\n  "));
         checked += 1;
     }
     assert!(checked >= 8, "only {checked} blueprints were checked — did the library move?");

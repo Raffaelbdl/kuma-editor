@@ -133,7 +133,7 @@ impl Baker {
                 let registered = !findings.iter().any(|f| f.code == "no_timeline");
                 // The same fault reported twice in different words reads as two faults.
                 let wall_clock = findings.iter().any(|f| f.code == "wall_clock");
-                fs.retain(|f| !(registered && f.code == "missing_timeline_registry") && !(wall_clock && f.code == "non_deterministic_code"));
+                fs.retain(|f| !(registered && f.code == "missing_timeline_registry") && !(wall_clock && f.code == "non_deterministic_code") && !not_kumas(&f.code));
                 findings.append(&mut fs);
                 None
             }
@@ -143,6 +143,14 @@ impl Baker {
         let overlay = req.overlay_dir.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
         Ok(LintReport { overlay, findings, renderer_skipped })
     }
+}
+
+/// hyperframes rules that do not apply to an overlay kuma stages. `studio_*` are about
+/// edit targets in hyperframes' Studio, which kuma never opens (its edit targets are vars).
+/// `gsap_infinite_repeat` asks for a finite root `data-duration` to be kept, and the
+/// contract always stamps one: the clip's length.
+fn not_kumas(code: &str) -> bool {
+    code.starts_with("studio_") || code == "gsap_infinite_repeat"
 }
 
 /// kuma's own contract, read off the staged document.
@@ -214,11 +222,14 @@ fn contract_findings(html: &str, manifest: &OverlayManifest, dir: &Path) -> Vec<
             out.push(Finding::warn("unused_var", format!("`{name}` is declared in overlay.json but never read"), "read it as `vars.<name>` or `var(--var-<name>)`, or remove it from the manifest"));
         }
     }
-    if has_timeline && !reads_duration(&scripts) {
+    // A static overlay is one frame, so it has no length to anchor to; one whose times are
+    // its own on purpose (a texture that runs as long as its clip, a countdown that takes
+    // as long as it counts) says so, since that cannot be told from a forgotten exit.
+    if has_timeline && !manifest.is_static && !html.contains("data-fixed-timing") && !reads_duration(&scripts) {
         out.push(Finding::warn(
             "duration_not_read",
             "the animation never reads `duration`",
-            "anchor the out-animation to the clip's real length (`duration` from `kumaTemplate`), or it plays at the overlay's default length whatever the clip is",
+            "anchor the out-animation to the clip's real length (`duration` from `kumaTemplate`), or it plays at the overlay's default length whatever the clip is; if its times are its own on purpose, put `data-fixed-timing` on the composition root",
         ));
     }
 
@@ -532,6 +543,20 @@ mod tests {
         let reads = r##"<div data-composition-id="main"></div><script>const { duration, timeline } = kumaTemplate({}); const tl = timeline(); tl.to("#x", { opacity: 0, duration: 0.3 }, duration - 0.3);</script>"##;
         let codes: Vec<String> = contract_findings(reads, &manifest(&[]), dir.path()).into_iter().map(|f| f.code).collect();
         assert!(!codes.contains(&"duration_not_read".to_string()), "{codes:?}");
+    }
+
+    /// Not reading `duration` is right for an overlay that is one frame, and for one whose
+    /// times are its own on purpose — a texture drawn for as long as its clip, a countdown.
+    #[test]
+    fn a_still_or_fixed_timing_overlay_need_not_read_duration() {
+        let dir = tempfile::tempdir().unwrap();
+        let texture = |root: &str| format!(r##"<div data-composition-id="main"{root}></div><script>const tpl = kumaTemplate({{}}); kumaCanvas(tpl, "#c", (g, t) => g.ctx.fillRect(0, 0, t, t));</script>"##);
+        let warned = |html: &str, m: &OverlayManifest| contract_findings(html, m, dir.path()).into_iter().any(|f| f.code == "duration_not_read");
+        assert!(warned(&texture(""), &manifest(&[])), "the rule itself went quiet");
+        assert!(!warned(&texture(" data-fixed-timing"), &manifest(&[])));
+        let mut still = manifest(&[]);
+        still.is_static = true;
+        assert!(!warned(&texture(""), &still));
     }
 
     /// The staged document declares every var in `:root`; that is kuma's doing, not the

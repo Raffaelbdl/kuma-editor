@@ -313,14 +313,16 @@ claude mcp add --scope user    kuma -- kuma mcp --project /abs/path.kuma.json  #
 ```
 
 `kuma mcp` starts the daemon in-process if none is running on the port, so the browser UI
-and the agent always share one state. Tools: `get_project`, `get_schema`, `apply_edits`,
+and the agent always share one state. Tools: `timeline_guide`, `get_project`, `get_schema`, `apply_edits`,
 `undo`, `redo`, `validate_project`, `list_presets`, `add_media`, `probe_media`,
 `transcribe`, **`sample_frames`**, `bake_overlay`, `render`, `job_status`, `cancel_job`,
 `prune_cache`, `health`, and for overlays `overlay_guide`, `new_overlay`, `check_overlay`,
 `import_overlay`, `make_overlay_unique`, `list_blueprints`, `add_blueprint`,
 `save_blueprint`. An agent scaffolds an overlay with `new_overlay`, checks it with
 `check_overlay` and adds it with `import_overlay`; `sample_frames` with `overlay` (a bin id)
-shows one entry on its own. `overlay_guide` returns `library/blueprints/CLAUDE.md`.
+shows one entry on its own. `overlay_guide` returns `library/blueprints/CLAUDE.md`, and
+`timeline_guide` returns `crates/kuma-mcp/src/timeline_guide.md`: the server's own
+instructions are kept under the 2048 characters a client shows and point at both.
 
 ### CLI
 

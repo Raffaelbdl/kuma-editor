@@ -217,11 +217,26 @@ fn emit_sequence(ctx: &Ctx, seq_id: &str, seq: &Sequence, is_root: bool, w: &mut
             w.close("transition");
         }
         if ct.has_video {
-            against_background(w, "comp", "qtblend");
-            if !ct.blends.is_empty() {
-                w.property("compositing", blend_anim(&ct.blends, total));
+            let spans = blend_spans(&ct.blends, total);
+            if let [(_, _, mode)] = spans[..] {
+                against_background(w, "comp", "qtblend");
+                if mode != 0 {
+                    w.property("compositing", mode.to_string());
+                }
+                w.close("transition");
+            } else {
+                // qtblend reads `compositing` as a plain integer, so a mode that changes
+                // is one transition per span, each active only over its own frames. They
+                // tile the timeline, so every frame is composited exactly once.
+                for (n, (from, to, mode)) in spans.into_iter().enumerate() {
+                    w.open("transition", &[("id", format!("comp_{}_{n}", ct.id)), ("in", from.to_string()), ("out", to.to_string())]);
+                    w.property("mlt_service", "qtblend");
+                    w.property("a_track", "0");
+                    w.property("b_track", (i + 1).to_string());
+                    w.property("compositing", mode.to_string());
+                    w.close("transition");
+                }
             }
-            w.close("transition");
         }
     }
     w.close("tractor");
@@ -713,9 +728,11 @@ fn rect_str(ctx: &Ctx, x: f64, y: f64, scale: f64, opacity: f64) -> String {
     format!("{} {} {} {} {}", num(rx), num(ry), num(w), num(h), num(opacity.clamp(0.0, 1.0)))
 }
 
-/// Discrete keyframes (`|=`) for the compositing mode so it never interpolates. A clip's
-/// mode is reset to normal after it ends unless another blended clip covers that frame.
-fn blend_anim(blends: &[(i64, i64, BlendMode)], total: i64) -> String {
+/// The compositing mode over `0..total` as inclusive spans of one Qt mode each, tiling the
+/// timeline. A clip's mode is reset to normal after it ends unless another blended clip
+/// covers that frame. Not an animation string: qtblend reads `compositing` as an integer,
+/// and `0|=14` parses as 0, which rendered every blend mode as normal.
+fn blend_spans(blends: &[(i64, i64, BlendMode)], total: i64) -> Vec<(i64, i64, i32)> {
     let mut kf: BTreeMap<i64, i32> = BTreeMap::new();
     kf.insert(0, 0);
     for (_, out, _) in blends {
@@ -727,7 +744,16 @@ fn blend_anim(blends: &[(i64, i64, BlendMode)], total: i64) -> String {
     for (in_, _, mode) in blends {
         kf.insert(*in_, qt_mode(*mode));
     }
-    kf.iter().map(|(k, v)| format!("{k}|={v}")).collect::<Vec<_>>().join(";")
+    let mut spans: Vec<(i64, i64, i32)> = Vec::new();
+    let keys: Vec<(i64, i32)> = kf.into_iter().filter(|(k, _)| *k < total).collect();
+    for (n, &(from, mode)) in keys.iter().enumerate() {
+        let to = keys.get(n + 1).map_or(total - 1, |(k, _)| k - 1);
+        match spans.last_mut() {
+            Some(last) if last.2 == mode => last.1 = to,
+            _ => spans.push((from, to, mode)),
+        }
+    }
+    spans
 }
 
 /// Qt `QPainter::CompositionMode` numbers used by qtblend.
@@ -794,12 +820,16 @@ mod tests {
     }
 
     #[test]
-    fn blend_keyframes_are_discrete() {
-        let s = blend_anim(&[(60, 239, BlendMode::Screen)], 450);
-        assert_eq!(s, "0|=0;60|=14;240|=0");
-        // A dissolve overlaps two blended clips: no reset inside the second one.
-        let s = blend_anim(&[(0, 164, BlendMode::Screen), (135, 239, BlendMode::Screen)], 450);
-        assert_eq!(s, "0|=14;135|=14;240|=0");
+    fn blend_spans_tile_the_timeline() {
+        assert_eq!(blend_spans(&[], 450), [(0, 449, 0)]);
+        assert_eq!(blend_spans(&[(0, 449, BlendMode::Screen)], 450), [(0, 449, 14)]);
+        assert_eq!(blend_spans(&[(60, 239, BlendMode::Screen)], 450), [(0, 59, 0), (60, 239, 14), (240, 449, 0)]);
+        // A dissolve overlaps two blended clips: no reset inside the second one, and one
+        // span for both when the mode is the same.
+        let s = blend_spans(&[(0, 164, BlendMode::Screen), (135, 239, BlendMode::Screen)], 450);
+        assert_eq!(s, [(0, 239, 14), (240, 449, 0)]);
+        let s = blend_spans(&[(0, 164, BlendMode::Screen), (135, 239, BlendMode::SoftLight)], 450);
+        assert_eq!(s, [(0, 134, 14), (135, 239, 21), (240, 449, 0)]);
     }
 
     /// A project from `{bin, tracks}`, with `tracks` folded into the master sequence.

@@ -250,12 +250,23 @@
       <property name="b_track">1</property>
       <property name="always_active">1</property>
     </transition>
-    <transition id="comp_v2">
+    <transition id="comp_v2_0" in="0" out="119">
       <property name="mlt_service">qtblend</property>
       <property name="a_track">0</property>
       <property name="b_track">2</property>
-      <property name="always_active">1</property>
-      <property name="compositing">0|=0;120|=14;270|=0</property>
+      <property name="compositing">0</property>
+    </transition>
+    <transition id="comp_v2_1" in="120" out="269">
+      <property name="mlt_service">qtblend</property>
+      <property name="a_track">0</property>
+      <property name="b_track">2</property>
+      <property name="compositing">14</property>
+    </transition>
+    <transition id="comp_v2_2" in="270" out="449">
+      <property name="mlt_service">qtblend</property>
+      <property name="a_track">0</property>
+      <property name="b_track">2</property>
+      <property name="compositing">0</property>
     </transition>
     <transition id="mix_v3">
       <property name="mlt_service">mix</property>

@@ -1874,37 +1874,38 @@ first blueprint to use it. Prompted by [ClaudeAnimationBase](https://github.com/
 An agent built a 10 s seamless loop (a drawn 1986 Tokyo Bay dusk: ten `kuma-canvas.js`
 scene layers in a nested sequence placed twice, five titles from one blueprint copy, CRT
 and grain textures, a synthesised city-pop track) through MCP alone, and wrote up what
-cost it time. Each claim below was checked against the code before it was recorded; where
-it could not be (no melt on the machine this was written on) the entry says so. Nothing
-here is built yet. What the session praised is worth keeping as well: `base_revision` plus
-atomic patches with a `note` never lost an edit, nested sequences made a bloom pass
+cost it time. Each claim below was checked against the code before it was recorded, and
+the blend-mode bug against melt 7.22. Items 1 and 2 are fixed; the rest is not built. What
+the session praised is worth keeping as well: `base_revision` plus atomic patches with a `note` never lost an edit, nested sequences made a bloom pass
 trivial, one overlay folder behind five entries worked as intended, and `sample_frames`
 with `overlay` was fast enough to draw with.
 
 **Order of work**, cheapest correctness first:
 
-1. **Blend modes are a silent no-op — a bug, fix first.** `blend_anim` writes qtblend's
-   `compositing` as discrete keyframes (`0|=0;60|=14;240|=0`), and the MLT 7.22 the
-   report ran on reads `compositing` as a plain integer, so the string parses as `0`,
-   SourceOver, for every mode on every track. Reported repro with melt alone: two opaque
-   colour tracks, `compositing=14` gives the screen result, `compositing=0|=14` gives the
-   top colour unchanged. `blend_keyframes_are_discrete` passes because it asserts the
-   string, which is the *Not verified by rendering here* caveat under *Keyframes you can
-   point at* coming true for a different property. The fix belongs in `compile.rs`: a
-   track with one mode emits a plain integer; a track whose mode changes along the
-   timeline gets one qtblend transition per span (a transition's own `in`/`out` is the
-   discrete switch MLT does honour) rather than one animated transition. Plus a pixel test,
-   skipped without melt like the other render tests, that renders one frame of a screen
-   blend and reads it back — the check that would have caught this, and will catch an MLT
-   upgrade that changes it again. Worth confirming first whether any MLT release animates
-   `compositing`; if none does, the "discrete switches" reasoning above was never true.
-2. **The MCP instructions are truncated in the agent's context.** They are ~7 KB
-   (`INSTRUCTIONS` in `kuma-mcp/src/server.rs`), and the client cut them off after the
-   effects paragraph — losing exactly the invariants a user asks agents to respect
-   (sequences cannot be sped up, ids are project-wide, how to sample a sequence,
-   subtitles). Direction: instructions short enough to survive (the tool list's shape and
-   the handful of invariants that cause refusals), the rest behind a `timeline_guide` tool
-   the way `overlay_guide` already is, fetched on demand and never truncated.
+1. **Blend modes were a silent no-op** — **fixed**. `blend_anim` wrote qtblend's
+   `compositing` as discrete keyframes (`0|=0;60|=14;240|=0`), and MLT 7.22 reads
+   `compositing` as a plain integer, so the string parsed as `0`, SourceOver, for every mode
+   on every track. Reproduced with melt alone: two opaque colour tracks, `compositing=14`
+   gives the screen result, `compositing=0|=14` the top colour unchanged. The test
+   (`blend_keyframes_are_discrete`) passed because it asserted the string — the *Not
+   verified by rendering here* caveat under *Keyframes you can point at*, coming true for a
+   different property. Now `blend_spans` cuts the timeline into spans of one mode: a track
+   with one mode throughout keeps its single `always_active` transition with a plain
+   integer, and a track whose mode changes gets one qtblend per span, each with its own
+   `in`/`out` and no `always_active` (which would make every one of them act on every
+   frame). The spans tile the timeline, so each frame is composited exactly once, and
+   adjacent spans of the same mode merge. `a_blend_mode_changes_the_pixels` renders a
+   screen blend for one second of three and reads the pixel back on both sides of each
+   cut; it fails against the old compiler, and is the test that catches an MLT upgrade
+   changing this again.
+2. **The MCP instructions were truncated** — **fixed**. They were ~5.4 K characters and
+   Claude Code keeps the first 2048, which cut them off after the nested-sequence
+   paragraph, losing exactly the rules a user asks agents to respect. Worse, the daemon's
+   `note` ("tell the user at the start: …") was appended *after* them, so it had never
+   reached an agent at all. Now the instructions are the invariants and a pointer (~1.3 K,
+   `instructions_fit_the_client_limit` holds them under 1700 to leave the note room), the
+   note goes first, and the full text is `timeline_guide` (`kuma-mcp/src/timeline_guide.md`),
+   a tool like `overlay_guide`, which a client never truncates.
 3. **Looking at a sequence costs full bakes, synchronously** — the largest wall-clock cost
    of the session. `sample_frames` on a sequence bakes every changed overlay clip for its
    whole length (300 frames, ~30–60 s each) before returning one frame, and after most
@@ -2169,8 +2170,8 @@ because it is the part deliberately left out.
   animation is already proven on `qtblend`; `fade` is internally an animation already and
   overlaps the transform's opacity, so leave it; `blend` is a discrete mode, not
   interpolatable, and is already emitted as discrete switches with a test to that effect.
-  *That test pins a string MLT does not read*: see *Field report: a seamless loop* below —
-  every blend mode renders as Normal.
+  *That test pinned a string MLT does not read*, and every blend mode rendered as Normal;
+  blends are now one transition per span — see *Field report: a seamless loop* below.
 
 - **Bin-level effects** — agreed, lower priority than the keyframe work above. Effects
   that live on the entry and apply to every placement, the way Kdenlive's clip effects do.

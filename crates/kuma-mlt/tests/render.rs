@@ -238,3 +238,53 @@ fn a_baked_overlay_plays_at_the_project_rate() {
         assert!((grey - 4 * frame).abs() <= 3, "timeline frame {frame} shows bake frame ≈{}", grey / 4);
     }
 }
+
+/// A blend mode has to reach the pixels, not just the XML: qtblend reads `compositing` as
+/// a plain integer, and when it was written as discrete keyframes (`0|=14`) every mode
+/// rendered as normal while the compiler test on the string passed. Two opaque colours,
+/// the top one screened for its middle second only: screen inside, the top colour outside.
+#[test]
+fn a_blend_mode_changes_the_pixels() {
+    if !have("ffmpeg") || !have("melt") {
+        eprintln!("ffmpeg/melt not available; skipping");
+        return;
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    let p = kuma_core::parse_project(&serde_json::json!({
+        "version": 7, "name": "blend", "master": "main",
+        "fps": { "num": 30, "den": 1 }, "width": 64, "height": 36, "sample_rate": 48000,
+        "bin": {
+            "grey": { "name": "Grey", "source": { "color": "#a0a0a0" } },
+            "blue": { "name": "Blue", "source": { "color": "#4060c0" } },
+            "main": { "name": "Main", "source": { "tracks": [
+                { "id": "v1", "kind": "video", "clips": [ { "id": "a", "start": 0, "end": 3, "bin": "grey" } ] },
+                { "id": "v2", "kind": "video", "clips": [
+                    { "id": "b", "start": 0, "end": 1, "bin": "blue" },
+                    { "id": "c", "start": 1, "end": 2, "bin": "blue", "effects": [ { "type": "blend", "mode": "screen" } ] },
+                    { "id": "d", "start": 2, "end": 3, "bin": "blue" }
+                ] }
+            ], "markers": [] } }
+        }
+    }).to_string()).unwrap();
+    let mlt = root.join("blend.mlt");
+    std::fs::write(&mlt, compile(&p, &CompileOptions::new(root)).unwrap()).unwrap();
+
+    let pixel = |frame: i64| -> Vec<u8> {
+        let png = root.join(format!("f{frame}.png"));
+        snapshot(&mlt, frame, &png).expect("snapshot");
+        let out = Command::new("ffmpeg")
+            .args(["-v", "error", "-i"])
+            .arg(&png)
+            .args(["-vf", "crop=1:1:32:18", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"])
+            .output()
+            .unwrap();
+        out.stdout
+    };
+    // screen(a, b) = 255 − (255 − a)(255 − b)/255: (160, 160, 160) under (64, 96, 192) → (184, 196, 232).
+    let near = |got: &[u8], want: [u8; 3]| got.iter().zip(want).all(|(g, w)| (*g as i32 - w as i32).abs() <= 3);
+    for (frame, want) in [(15, [64, 96, 192]), (45, [184, 196, 232]), (75, [64, 96, 192])] {
+        let got = pixel(frame);
+        assert!(near(&got, want), "frame {frame}: {got:?}, expected ≈{want:?}");
+    }
+}

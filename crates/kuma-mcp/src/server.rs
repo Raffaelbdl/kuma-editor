@@ -14,74 +14,27 @@ use serde_json::{json, Value};
 
 use crate::client::Client;
 
-const INSTRUCTIONS: &str = r#"kuma-editor: a hybrid video editor. The timeline is a JSON project (get it with `get_project`, its
-JSON Schema with `get_schema`). Times are seconds (f64); clip `end` is exclusive; `fps` is rational.
-Tracks composite bottom-up. Edit with `apply_edits` (RFC 6902 JSON Patch) and pass the `base_revision`
-you read, so you never overwrite a human edit made meanwhile. Every edit is validated atomically and
-undoable; label your edits with `note`.
+/// What every agent sees. Clients truncate server instructions (Claude Code at 2048
+/// characters, which once cut these off mid-rule), so this is the invariants and a pointer;
+/// the rest is `timeline_guide`, which a client never truncates.
+const INSTRUCTIONS: &str = r#"kuma-editor: a hybrid video editor. **Call `timeline_guide` before your first edit** and
+`overlay_guide` before writing an overlay; these instructions are only what must never be missed.
 
-Everything placeable lives in `bin`, keyed by a short id: media files (`{"source": {"path": …}}`),
-configured overlays (`{"source": {"overlay": "overlays/<name>", "vars": {…}}}`), colours, and *sequences*
-(`{"source": {"tracks": [...], "markers": [...]}}`). A clip is a *placement* of one entry: it carries
-`bin`, `start`, `end`, `in`, `speed` and `effects`, never a source of its own. So changing an
-overlay's text edits its bin entry and every placement follows; to vary the text, add a second entry.
-Add media with `add_media` rather than by hand.
-
-An effect acts on the picture or the sound (`mlt` on either): `transform`, `crop`, `blur`, `color`,
-`blend` and `fade` on what a clip shows, `volume` and `audio_fade` on what it sounds. A colour, a
-still and an overlay never sound; nothing on an audio track shows. Put only what can act on the clip:
-anything else renders as nothing and comes back as a warning. Every effect with a quantity to move
-(`transform`, `crop`, `blur`, `color`, `volume`) has static values and optional `keyframes`,
-`[{t, <param>: value, ease?}]` with `t` from the clip's start; a parameter a key leaves out is
-the static value.
-
-**There is no project-level `tracks`.** A timeline is a sequence entry in the bin, and `master` names
-the one that gets rendered — so a clip lives at `/bin/<sequence>/source/tracks/<i>/clips/<j>`. A
-sequence placed on another sequence is a nested sequence: edit a part separately, then place it in
-the final cut. `in` offsets into it and trimming works as on any clip; two placements of one sequence
-share its content and keep their own effects. A sequence cannot contain itself (refused), cannot be
-sped up (MLT cannot time-warp a timeline: render it out and place the result as media), and must not
-be empty when placed. Track and clip ids are unique across the *whole project*, not per sequence.
-`sample_frames` and `render` take an optional `sequence` and default to the master.
-
-If the project directory holds a `design-system/` folder, read `design-system/DESIGN.md` before
-authoring or restyling an overlay and take its colours, type, geometry and motion from there;
-`tokens.css` beside it is the same values as a `:root` block to copy into an overlay. Nothing is
-injected at runtime — a design system is a document, and applying it is your edit. `health` says
-whether this project has one.
-
-An overlay entry names a folder in the project (`overlays/<name>/`: `index.html` +
-`overlay.json`) plus its `vars`; entries may share a folder. To make one: `new_overlay`, edit,
-`check_overlay`, then `import_overlay` (writing a folder does not add it to the bin). Or copy a
-**blueprint** from the user's library (`list_blueprints`, `add_blueprint`). `make_overlay_unique`
-before editing a shared folder; `save_blueprint` only when the user asks. See `overlay_guide`.
-Overlays are live DOM in the preview and baked to alpha frames at export. For a plain title, the
-`title` and `title-subtitle` blueprints are typography, box, outline, shadow and entrance/exit as
-vars — set those rather than writing markup. A `font` var takes a family name from `list_fonts`;
-`add_font` copies a new one in.
-
-To look at the footage, call `sample_frames` with a time range (and an optional pixel `rect`); it
-returns the composited frames as images plus their PNG paths. To look at an *overlay you are
-authoring*, call it with `overlay` set to the bin entry's id instead: that renders the entry on its
-own over a backdrop, with no placement anywhere, and `t0`/`t1` count from the start of the overlay —
-so an animation can be checked frame by frame before anything is placed in the cut — in another
-frame with `frame: [1080, 1920]`, and over `backdrop` white and black to see whether it stays
-legible over footage you have not seen. It is the same view the editor's overlay workbench gives a
-person, and `overlay_guide` ends with the checklist to run through.
-
-Subtitles: `transcribe` runs a local speech-to-text model (whisper.cpp) and adds a `subtitles`
-overlay entry whose `cues` var is `[{start, end, text}, …]` in source seconds, one cue per word (the
-overlay groups them by its `words_per_line` var and can stress the word being said), listed under the media
-(`parent`). Given a `clip`, it also places the subtitles over that clip, aligned; given a `bin`, the
-entry is yours to place (set its `offset` var to a trimmed clip's `in`). Fix a misheard word by
-patching the cue's `text`; re-transcribe with `replace` to overwrite the words in place and keep the
-entry's styling and placement, and with `language` (an ISO 639-1 code) to force the language rather
-than detect it. `parent` on a bin entry is organisation only: the entry it is listed under
-in the browser, which can be any entry or a folder (`{"source": {"folder": true}}`, never placeable);
-`order` sorts siblings there (ordered ones first, the rest by id).
-Vertical (9:16) is only
-`width`/`height`: patch them to 1080×1920 (or swap them) and every preset renders portrait.
+- The project is JSON (`get_project`, schema from `get_schema`). Edit with `apply_edits` (JSON Patch),
+  passing the `base_revision` you read and a `note`. Every edit is validated atomically and undoable.
+- Times are seconds (f64); a clip's `end` is exclusive; `fps` is rational.
+- Everything placeable is a `bin` entry (media, overlays, colours, sequences). A clip is a placement:
+  `bin`, `start`, `end`, `in`, `speed`, `effects`, never a source. What is shown lives on the entry.
+- There is no project-level `tracks`: a timeline is a sequence entry and `master` names the one that
+  renders, so a clip lives at `/bin/<sequence>/source/tracks/<i>/clips/<j>`. Track and clip ids are
+  unique across the whole project. A sequence cannot contain itself and cannot be sped up.
+- `sample_frames` shows you composited frames; `render` exports. Both default to the master; pass
+  `sequence` for another, or `overlay` to `sample_frames` to look at one overlay entry on its own.
+- Add media with `add_media`. An overlay reaches the bin through `import_overlay` or `add_blueprint`:
+  writing a folder does not add it.
 "#;
+
+const TIMELINE_GUIDE: &str = include_str!("timeline_guide.md");
 
 #[derive(Clone)]
 pub struct KumaServer {
@@ -403,6 +356,11 @@ impl KumaServer {
         self.post("/api/fonts", &json!({ "path": p.path, "shared": p.shared })).await
     }
 
+    #[tool(description = "How the timeline works: the bin and placements, effects and keyframes, nested sequences, sampling, overlays, subtitles, portrait. Read it before your first edit.")]
+    async fn timeline_guide(&self) -> Result<CallToolResult, McpError> {
+        Ok(CallToolResult::success(vec![ContentBlock::text(TIMELINE_GUIDE)]))
+    }
+
     #[tool(description = "The overlay authoring contract (root attributes, kuma.js helper, vars, seekable animation rules, manifest format). Read it before writing an overlay.")]
     async fn overlay_guide(&self) -> Result<CallToolResult, McpError> {
         Ok(CallToolResult::success(vec![ContentBlock::text(include_str!("../../../library/blueprints/CLAUDE.md"))]))
@@ -535,9 +493,30 @@ impl KumaServer {
 impl ServerHandler for KumaServer {
     fn get_info(&self) -> ServerInfo {
         let instructions = match &self.note {
-            Some(n) => format!("{INSTRUCTIONS}\nIMPORTANT — tell the user at the start: {n}\n"),
+            // First: a client keeps only the start of long instructions.
+            Some(n) => format!("IMPORTANT — tell the user at the start: {n}\n\n{INSTRUCTIONS}"),
             None => INSTRUCTIONS.to_string(),
         };
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build()).with_instructions(instructions)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Claude Code keeps the first 2048 characters of a server's instructions; leave room
+    /// for the daemon note, which goes first.
+    #[test]
+    fn instructions_fit_the_client_limit() {
+        let n = INSTRUCTIONS.chars().count();
+        assert!(n <= 1700, "instructions are {n} characters; move detail into timeline_guide.md");
+    }
+
+    #[test]
+    fn the_note_comes_before_the_instructions() {
+        let s = KumaServer::new(Client::new("http://127.0.0.1:1"), Some("attached".into()));
+        let text = s.get_info().instructions.unwrap();
+        assert!(text.starts_with("IMPORTANT"), "{text}");
     }
 }

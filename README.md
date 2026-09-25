@@ -333,7 +333,7 @@ kuma sample 0 3 --count 6 --overlay paris          # one overlay entry on its ow
 kuma bake                                  # bake all overlay clips (cached by content)
 kuma cache                                 # how big .kuma/ is: bakes, sampled frames, thumbnails
 kuma cache prune                           # delete what the project no longer uses (--all: every bake and frame)
-kuma compile > timeline.mlt                # inspect the MLT graph (or open it in Kdenlive)
+kuma compile > timeline.mlt                # inspect the MLT graph (or open it in Kdenlive); baked overlays included, --bake bakes the rest
 kuma render --sequence intro               # render one nested sequence instead of the master
 kuma transcribe --clip c1 --language fr    # whisper.cpp → `subtitles` entry under the media, placed over clip c1
 kuma transcribe screen --replace           # re-transcribe in place: same entry, styling and placement, new words
@@ -434,7 +434,10 @@ or a library's `fonts/`. kuma reads the family, weights and italic from the file
 the `@font-face` rules, and the bake stages exactly the files it draws with. The starter set is
 twelve open-licence families (`library/fonts/`, OFL/Apache/UFL licences beside each). The **+** by a
 font picker adds `.ttf`/`.otf` files by path (the app's file picker, or a typed path in a
-browser tab), to this project or to every project; agents use `add_font`.
+browser tab), to this project or to every project; agents use `add_font`. A `.ttc`/`.otc`
+collection, which is how most CJK fonts ship, is split into one file per face as it is added.
+Each family reports the writing systems it sets (`scripts`: latin, han, kana, hangul, …): text
+in any other is drawn by whatever fonts the baking machine has.
 
 Effect presets are `<library>/presets/*.json` (Ken Burns, zoom to region, vignette,
 picture-in-picture, dim) and expand to ordinary effects; `$expr` values may use the

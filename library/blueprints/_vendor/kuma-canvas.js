@@ -54,6 +54,35 @@
     return lerp(plane(0), plane(1), fz);
   }
 
+  // ---------- loops: motion that ends where it began, at any clip length ----------
+  /** How many whole cycles of about `period` seconds fit in `duration`: at least one. */
+  const cycles = (duration, period) => Math.max(1, Math.round(duration / period));
+  /** Where `t` is in its cycle, in [0, 1), when `n` cycles span `duration`. */
+  const phase = (t, duration, n = 1) => { const p = (t / duration) * n; return p - Math.floor(p); };
+  /** Smooth noise in [0, 1] at (x, y) that returns to where it began after `duration`,
+   *  `n` times over: it walks a circle through the noise field instead of a line. */
+  function loopNoise(x, y, t, duration, n = 1, radius = 0.5) {
+    const a = 2 * Math.PI * phase(t, duration, n);
+    return noise(x, y + radius * Math.cos(a), radius * Math.sin(a));
+  }
+
+  // ---------- colour ----------
+  /** `#rgb`, `#rgba`, `#rrggbb` or `#rrggbbaa` as [r, g, b, a], a in [0, 1]. */
+  function parseHex(hex) {
+    let h = String(hex).replace("#", "");
+    if (h.length <= 4) h = h.split("").map((c) => c + c).join("");
+    const n = (i) => parseInt(h.slice(i, i + 2), 16);
+    return [n(0), n(2), n(4), h.length >= 8 ? n(6) / 255 : 1];
+  }
+  /** A hex colour at opacity `a` (times its own), as a CSS `rgba(…)`. */
+  const rgba = (hex, a = 1) => { const [r, g, b, a0] = parseHex(hex); return `rgba(${r}, ${g}, ${b}, ${+(a0 * a).toFixed(4)})`; };
+  /** The colour `k` of the way from hex `a` to hex `b` (0 is `a`), as a CSS `rgba(…)`. */
+  const mix = (a, b, k) => {
+    const [p, q] = [parseHex(a), parseHex(b)];
+    const c = p.map((v, i) => lerp(v, q[i], clamp(k)));
+    return `rgba(${Math.round(c[0])}, ${Math.round(c[1])}, ${Math.round(c[2])}, ${+c[3].toFixed(4)})`;
+  };
+
   // ---------- motion, as pure functions of t (eases: gsap.parseEase("power3.out") etc.) ----------
   /** Keyframes: kf(t, [[t0, v0], [t1, v1], …], ease). Values may be arrays of numbers. */
   function kf(t, keys, ease = smooth) {
@@ -96,6 +125,26 @@
     const w = (el.width = tpl.width), h = (el.height = tpl.height);
     const ctx = el.getContext("2d");
     const u = (h / 100) * (tpl.vars.size || 1);
+    // Stills outlive the frame that painted them, so they are seeded by their key alone:
+    // which frame asks first (the bake starts at 0, the preview anywhere) must not matter.
+    const stills = new Map();
+    const still = (key, paint) => {
+      if (!stills.has(key)) {
+        const c = document.createElement("canvas");
+        c.width = w;
+        c.height = h;
+        const seed = mix32(hash32(`still|${key}`)) || 1;
+        const real = Math.random;
+        Math.random = prng(seed);
+        try {
+          paint({ ctx: c.getContext("2d"), w, h, u, rough: () => window.rough.canvas(c, { options: { seed } }) });
+        } finally {
+          Math.random = real;
+        }
+        stills.set(key, c);
+      }
+      return stills.get(key);
+    };
     tpl.onFrame((t) => {
       const drawing = Math.floor(t * BOIL + 1e-6);
       const seed = (key) => hash32(`${key}|${drawing}`) || 1;
@@ -109,6 +158,9 @@
         rand: (key) => seed(key) / 4294967296,
         /** A Rough.js canvas whose every stroke is seeded by `key` and the drawing. */
         rough: (key) => window.rough.canvas(el, { options: { seed: seed(key) } }),
+        /** A frame-sized canvas painted once by `paint({ ctx, w, h, u, rough })` and kept:
+         *  the part of a picture that never moves, drawn with `ctx.drawImage(…, 0, 0)`. */
+        still,
       };
       // Libraries that call Math.random (Rough.js does, even when seeded) stay deterministic.
       const real = Math.random;
@@ -124,6 +176,6 @@
     });
   }
 
-  Object.assign(kumaCanvas, { rand, hash, noise, kf, spring, ring, onTwos, arcPt, jump, take });
+  Object.assign(kumaCanvas, { rand, hash, noise, cycles, phase, loopNoise, rgba, mix, kf, spring, ring, onTwos, arcPt, jump, take });
   window.kumaCanvas = kumaCanvas;
 })();

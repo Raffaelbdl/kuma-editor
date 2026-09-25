@@ -211,7 +211,7 @@ House numbers, for overlays that should sit beside the shipped blueprints:
 | Stagger | 0.08–0.15 s between a line and its subline. Two things arriving together read as one thing arriving badly |
 | Hold | ≥ 1.2 s on screen after the entrance settles for one line, ≥ 2 s for two, ≥ 2.5 s for a person's name |
 | Anything longer than 0.6 s | only when the motion *is* the content: a countdown, a chart drawing itself, a line being traced |
-| Loops | a pointer's pulse and nothing else, under 20% travel in scale or opacity |
+| Loops | a pointer's pulse and nothing else, under 20% travel in scale or opacity (over footage; a scene layer is different, below) |
 
 - Scale from 0.9, never from 0: a thing that grows from nothing reads as a glitch at
   speed, and its first frames are unreadable anyway.
@@ -245,11 +245,49 @@ kumaCanvas(tpl, "#paint", (g, t) => {
   first versions of these two, whose values for alike keys are related; the lint warns
   on them, and they are kept only so overlays that use them keep drawing what they drew.)
 - Helpers on `kumaCanvas`, pure functions of `t`: `kf`, `spring`, `ring`, `jump`, `take`,
-  `arcPt`, `onTwos`, `noise`. Eases are GSAP's: `gsap.parseEase("power3.out")`, so the
-  house numbers above apply unchanged.
+  `arcPt`, `onTwos`, `noise`, and for loops `cycles`, `phase`, `loopNoise` (below). Eases
+  are GSAP's: `gsap.parseEase("power3.out")`, so the house numbers above apply unchanged.
+- `g.still(key, paint)` is the part of a picture that never moves, painted once into a
+  frame-sized canvas and kept: `g.ctx.drawImage(g.still("hills", ({ ctx, w, h, u, rough }) => …), 0, 0)`.
+  It is seeded by its key alone, so it is the same whichever frame is rendered first;
+  draw into the `ctx` it is given, and take hand-drawn strokes from its `rough()`. A value
+  kept on `g` itself is gone by the next frame, since `g` is rebuilt for each.
+- Colours: `kumaCanvas.rgba(hex, a)` and `kumaCanvas.mix(hexA, hexB, k)` give CSS colours
+  from a `color` var, with its own alpha kept.
 - 2D only: a bake has no GPU. Cost is `draw`, on every frame; hundreds of shapes are fine.
 - Lay out along the frame's axes in `g.u` and fractions of `g.w`/`g.h`, and check 1080×1920
   with `sample_frames` and `frame`.
+
+## Scenes and ambient layers
+
+Everything above is about overlays that sit over footage, where motion competes with the
+picture and the house numbers keep it brief. A layer that *is* the picture — a sky, a sea,
+grain, scanlines, a drawn backdrop that other layers stack on — has the opposite job: its
+motion is the content and it runs for the whole clip. The rules change accordingly.
+
+- **It never exits.** Put `data-fixed-timing` on the root (it runs as long as its clip, so
+  there is no end to anchor to), or mark it `static` in `overlay.json` when it does not
+  move at all: a static overlay bakes one frame, whatever the clip's length.
+- **Every periodic motion completes whole cycles over `duration`**, so the layer loops by
+  construction at any clip length and a cut back to its start does not jump:
+  ```js
+  const n = kumaCanvas.cycles(tpl.duration, 4);          // ≈ one sway every 4 s, whole
+  const sway = Math.sin(2 * Math.PI * kumaCanvas.phase(t, tpl.duration, n));
+  const drift = kumaCanvas.loopNoise(x * 0.01, y * 0.01, t, tpl.duration); // back to its start at the end
+  ```
+  A plain `noise(x, y, t)` walks a line through the noise and never comes back;
+  `loopNoise` walks a circle.
+- **Keep amplitudes small and slow**: a few percent of the frame, periods of seconds. A
+  scene that is always moving is only restful if no one part of it asks to be looked at.
+- **Depth is speed**: things further away move less. Several layers stacked at different
+  rates read as a place; one layer moving everything at once reads as a wobble.
+- **Paint what never moves once** with `g.still` and move only the rest. A static sky
+  gradient redrawn on every frame is 300 paints of nothing new.
+- **Grain and scanlines carry their own alpha**: draw light and dark specks, each with its
+  opacity, on transparency. A blend mode on the layer is a property of the clip (the
+  `blend` effect), not something the overlay can do to what is under it.
+- **Look at the seam**: sample the overlay entry at `t0: 0` and at a frame just before
+  `duration`; the two should be one step of motion apart, not two different pictures.
 
 ## Checking your work
 

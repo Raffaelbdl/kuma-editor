@@ -237,6 +237,13 @@ async fn a_blueprint_is_copied_into_the_project_not_referenced() {
     assert_eq!(state.project.read().unwrap().revision, before);
     let (status, _) = post(&addr, "/api/blueprints/nope/copy", "{}");
     assert!(status.contains("400"), "{status}");
+    // The copy can be named for what it holds; `null` is no name, as the MCP tool sends it.
+    let (_, named) = post(&addr, "/api/blueprints/probe/copy", r#"{ "folder": "kanji-title" }"#);
+    assert_eq!(named["overlay"], "overlays/kanji-title");
+    let (_, unnamed) = post(&addr, "/api/blueprints/probe/copy", r#"{ "folder": null }"#);
+    assert_eq!(unnamed["overlay"], "overlays/probe-3");
+    let (status, _) = post(&addr, "/api/blueprints/probe/copy", r#"{ "folder": "../out" }"#);
+    assert!(status.contains("400"), "a folder name is a name, not a path: {status}");
 
     // Adding the folder by path, as a drop does, imports it.
     let (status, added) = post(&addr, "/api/bin", r#"{ "path": "overlays/probe-2" }"#);
@@ -455,4 +462,10 @@ async fn a_sample_job_ends_with_the_frames_or_the_reason() {
     let samples = job["result"]["samples"].as_array().unwrap();
     assert_eq!(samples.len(), 1);
     assert!(std::path::Path::new(samples[0]["path"].as_str().unwrap()).is_file(), "{job}");
+
+    // A range with no count is several frames across it, not one frame of its start.
+    let job = finished(r#"{"t0": 0.2, "t1": 1.8, "overlays": false}"#);
+    let times: Vec<f64> = job["result"]["samples"].as_array().unwrap().iter().map(|s| s["t"].as_f64().unwrap()).collect();
+    assert_eq!(times.len(), kuma_daemon::jobs::RANGE_COUNT, "{job}");
+    assert_eq!((times[0], times[times.len() - 1]), (0.2, 1.8));
 }

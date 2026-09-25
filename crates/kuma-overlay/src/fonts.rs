@@ -20,8 +20,29 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 /// Extensions read as fonts. WOFF/WOFF2 are compressed and would need decoding to read
-/// their names; a font that ships only as one is rare enough to convert.
+/// their names; a font that ships only as one is rare enough to convert. A collection
+/// (`.ttc`/`.otc`) is split into these when it is added (`split_collection`).
 pub const EXTENSIONS: &[&str] = &["ttf", "otf"];
+
+/// Font collections: several faces sharing tables in one file, which is how CJK families
+/// usually ship. `@font-face` wants one face per file.
+pub const COLLECTIONS: &[&str] = &["ttc", "otc"];
+
+/// Writing systems a face is asked about, each by one character it cannot set without:
+/// what `list_fonts` reports, so text in a script a family lacks is not left to whatever
+/// fallback the baking machine happens to have.
+const SCRIPTS: &[(&str, char)] = &[
+    ("latin", 'A'),
+    ("greek", 'Ω'),
+    ("cyrillic", 'Ж'),
+    ("arabic", 'ع'),
+    ("hebrew", 'א'),
+    ("devanagari", 'क'),
+    ("thai", 'ก'),
+    ("han", '永'),
+    ("kana", 'あ'),
+    ("hangul", '한'),
+];
 
 /// Where a font folder is: what the picker groups families by.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -43,6 +64,8 @@ pub struct Face {
     /// bake is found without reading the font again.
     #[serde(skip)]
     pub digest: String,
+    /// The writing systems it can set (`SCRIPTS`), in that order.
+    pub scripts: Vec<String>,
 }
 
 impl Face {
@@ -56,6 +79,9 @@ impl Face {
 pub struct Family {
     pub name: String,
     pub origin: Origin,
+    /// Writing systems any of its faces can set: text in another one is drawn by the
+    /// overlay's fallback stack, which is the baking machine's, not the project's.
+    pub scripts: Vec<String>,
     pub faces: Vec<Face>,
 }
 
@@ -130,16 +156,31 @@ pub fn css_string(s: &str) -> String {
 /// What a font file says about itself, or `None` when it is not one kuma can read.
 pub fn read_face(path: &Path) -> Option<(String, Face)> {
     let data = std::fs::read(path).ok()?;
-    let (family, weight, italic) = parse_face(&data)?;
+    let info = parse_face(&data)?;
     let digest = hex::encode(Sha256::digest(&data));
-    Some((family, Face { path: path.to_path_buf(), weight, italic, digest }))
+    Some((info.family, Face { path: path.to_path_buf(), weight: info.weight, italic: info.italic, digest, scripts: info.scripts }))
 }
 
-/// Family, weight range and slant from a font's bytes.
-pub fn parse_face(data: &[u8]) -> Option<(String, [u16; 2], bool)> {
+/// What a font's bytes say about it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FaceInfo {
+    pub family: String,
+    pub weight: [u16; 2],
+    pub italic: bool,
+    pub scripts: Vec<String>,
+}
+
+/// Family, weight range, slant and scripts from a font's bytes.
+pub fn parse_face(data: &[u8]) -> Option<FaceInfo> {
     use ttf_parser::{name_id, Face as Ttf, Tag};
     let face = Ttf::parse(data, 0).ok()?;
-    let name = |id: u16| face.names().into_iter().filter(|n| n.name_id == id).find_map(|n| n.to_string()).filter(|s| !s.trim().is_empty());
+    // The English name when there is one: a CJK font often lists its localized names
+    // first, and "WenQuanYi Zen Hei" is what a person types, not "文泉驛正黑".
+    let name = |id: u16| {
+        let records: Vec<_> = face.names().into_iter().filter(|n| n.name_id == id).collect();
+        let english = records.iter().filter(|n| n.language() == ttf_parser::Language::English_UnitedStates);
+        english.chain(records.iter()).filter_map(|n| n.to_string()).find(|s| !s.trim().is_empty())
+    };
     // The typographic family groups "Oswald Light" and "Oswald Bold" under "Oswald"; older
     // fonts only have the legacy family, which is the whole name for a static weight.
     let family = name(name_id::TYPOGRAPHIC_FAMILY).or_else(|| name(name_id::FAMILY))?.trim().to_string();
@@ -150,7 +191,41 @@ pub fn parse_face(data: &[u8]) -> Option<(String, [u16; 2], bool)> {
         .find(|a| a.tag == Tag::from_bytes(b"wght"))
         .map(|a| [a.min_value.round() as u16, a.max_value.round() as u16])
         .unwrap_or([fixed, fixed]);
-    Some((family, weight, face.is_italic() || face.is_oblique()))
+    let scripts = SCRIPTS.iter().filter(|(_, c)| face.glyph_index(*c).is_some()).map(|(s, _)| s.to_string()).collect();
+    Some(FaceInfo { family, weight, italic: face.is_italic() || face.is_oblique(), scripts })
+}
+
+/// The faces of a font collection as standalone fonts, each with the extension its
+/// outlines call for (`otf` for CFF, else `ttf`); `None` when `data` is not a collection.
+/// A face is its own table directory pointing into the shared tables, so it is rewritten
+/// with its tables copied after it; nothing inside a table changes.
+pub fn split_collection(data: &[u8]) -> Option<Vec<(Vec<u8>, &'static str)>> {
+    let u32_at = |o: usize| Some(u32::from_be_bytes(data.get(o..o + 4)?.try_into().ok()?) as usize);
+    let u16_at = |o: usize| Some(u16::from_be_bytes(data.get(o..o + 2)?.try_into().ok()?) as usize);
+    if data.get(..4)? != b"ttcf" {
+        return None;
+    }
+    (0..u32_at(8)?)
+        .map(|i| {
+            let dir = u32_at(12 + 4 * i)?;
+            let tables = u16_at(dir + 4)?;
+            let head = 12 + 16 * tables;
+            // The offset table as it was (version and search fields); records follow.
+            let mut out = data.get(dir..dir + 12)?.to_vec();
+            let mut body = Vec::new();
+            for t in 0..tables {
+                let r = dir + 12 + 16 * t;
+                let (offset, length) = (u32_at(r + 8)?, u32_at(r + 12)?);
+                out.extend_from_slice(data.get(r..r + 8)?); // tag and checksum
+                out.extend_from_slice(&((head + body.len()) as u32).to_be_bytes());
+                out.extend_from_slice(&(length as u32).to_be_bytes());
+                body.extend_from_slice(data.get(offset..offset + length)?);
+                body.resize(body.len().next_multiple_of(4), 0);
+            }
+            out.extend(body);
+            Some((out, if data.get(dir..dir + 4)? == b"OTTO" { "otf" } else { "ttf" }))
+        })
+        .collect()
 }
 
 /// Every font file under `dir`, at any depth, sorted.
@@ -220,7 +295,8 @@ impl FontLibrary {
             }
             for (name, mut faces) in found {
                 faces.sort_by(|a, b| (a.italic, a.weight, &a.path).cmp(&(b.italic, b.weight, &b.path)));
-                out.insert(name.clone(), Family { name, origin: *origin, faces });
+                let scripts = SCRIPTS.iter().map(|(s, _)| s.to_string()).filter(|s| faces.iter().any(|f| f.scripts.contains(s))).collect();
+                out.insert(name.clone(), Family { name, origin: *origin, scripts, faces });
             }
         }
         out
@@ -287,6 +363,65 @@ mod tests {
         let upright: Vec<u16> = ubuntu.faces.iter().filter(|f| !f.italic).map(|f| f.weight[0]).collect();
         assert_eq!(upright, [300, 400, 500, 700], "{ubuntu:?}");
         assert_eq!(ubuntu.faces.iter().filter(|f| f.italic).count(), 4);
+    }
+
+    /// A collection built from standalone fonts: one table directory per font, every
+    /// offset absolute, the way `.ttc` files lay them out.
+    fn collection(fonts: &[Vec<u8>]) -> Vec<u8> {
+        let u32_at = |d: &[u8], o: usize| u32::from_be_bytes(d[o..o + 4].try_into().unwrap()) as usize;
+        let mut out = b"ttcf\0\x01\0\0".to_vec();
+        out.extend_from_slice(&(fonts.len() as u32).to_be_bytes());
+        let dirs_at = out.len() + 4 * fonts.len();
+        let dir_len = |f: &Vec<u8>| 12 + 16 * u16::from_be_bytes([f[4], f[5]]) as usize;
+        let mut dir_offsets = Vec::new();
+        let mut at = dirs_at;
+        for f in fonts {
+            dir_offsets.push(at);
+            at += dir_len(f);
+        }
+        dir_offsets.iter().for_each(|o| out.extend_from_slice(&(*o as u32).to_be_bytes()));
+        let mut body = Vec::new();
+        for f in fonts {
+            let n = dir_len(f);
+            out.extend_from_slice(&f[..12]);
+            for t in 0..(n - 12) / 16 {
+                let r = 12 + 16 * t;
+                let (off, len) = (u32_at(f, r + 8), u32_at(f, r + 12));
+                out.extend_from_slice(&f[r..r + 8]);
+                out.extend_from_slice(&((at + body.len()) as u32).to_be_bytes());
+                out.extend_from_slice(&(len as u32).to_be_bytes());
+                body.extend_from_slice(&f[off..off + len]);
+                body.resize(body.len().next_multiple_of(4), 0);
+            }
+        }
+        out.extend(body);
+        out
+    }
+
+    /// Each face of a collection comes out a font of its own that reads as the face it was.
+    #[test]
+    fn a_collection_splits_into_the_fonts_it_holds() {
+        let read = |p: &str| std::fs::read(repo_fonts().join(p)).unwrap();
+        let fonts = [read("Anton/Anton-Regular.ttf"), read("Inter/Inter-Italic[opsz,wght].ttf")];
+        let faces = split_collection(&collection(&fonts)).expect("a collection");
+        assert_eq!(faces.len(), 2);
+        for ((bytes, ext), original) in faces.iter().zip(&fonts) {
+            assert_eq!(*ext, "ttf");
+            assert_eq!(parse_face(bytes), parse_face(original), "a face reads as it did before it was collected");
+        }
+        assert_eq!(parse_face(&faces[1].0).unwrap().family, "Inter");
+        assert!(split_collection(&fonts[0]).is_none(), "a single font is not a collection");
+        assert!(split_collection(&collection(&fonts)[..40]).is_none(), "a truncated file is refused, not read past");
+    }
+
+    /// Which writing systems a font sets is read from the font, not from its name.
+    #[test]
+    fn a_face_says_which_scripts_it_sets() {
+        let inter = parse_face(&std::fs::read(repo_fonts().join("Inter/Inter[opsz,wght].ttf")).unwrap()).unwrap();
+        assert!(inter.scripts.iter().any(|s| s == "latin") && inter.scripts.iter().any(|s| s == "cyrillic"), "{:?}", inter.scripts);
+        assert!(!inter.scripts.iter().any(|s| s == "han" || s == "kana"), "{:?}", inter.scripts);
+        let lib = FontLibrary::new(vec![(repo_fonts(), Origin::Library)]);
+        assert!(lib.families()["Inter"].scripts.contains(&"latin".to_string()));
     }
 
     #[test]

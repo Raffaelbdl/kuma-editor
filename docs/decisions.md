@@ -1875,10 +1875,11 @@ An agent built a 10 s seamless loop (a drawn 1986 Tokyo Bay dusk: ten `kuma-canv
 scene layers in a nested sequence placed twice, five titles from one blueprint copy, CRT
 and grain textures, a synthesised city-pop track) through MCP alone, and wrote up what
 cost it time. Each claim below was checked against the code before it was recorded, and
-the blend-mode bug against melt 7.22. Items 1, 2, 4 and 5 are fixed and 3 half fixed; the
-rest is not built. What the session praised is worth keeping as well: `base_revision` plus atomic patches with a `note` never lost an edit, nested sequences made a bloom pass
-trivial, one overlay folder behind five entries worked as intended, and `sample_frames`
-with `overlay` was fast enough to draw with.
+the blend-mode bug against melt 7.22. Items 1, 2, 4, 5 and 7 are fixed, 3 is half fixed and
+6 is built except its model-side part. What the session praised is worth keeping as well:
+`base_revision` plus atomic patches with a `note` never lost an edit, nested sequences made
+a bloom pass trivial, one overlay folder behind five entries worked as intended, and
+`sample_frames` with `overlay` was fast enough to draw with.
 
 **Order of work**, cheapest correctness first:
 
@@ -1976,25 +1977,49 @@ with `overlay` was fast enough to draw with.
      asserts no findings at all, as the scaffold's test does: a blueprint is read as an
      example of the contract, so a warning in one teaches the wrong thing, or is a rule
      that is wrong. Without hyperframes installed it still checks kuma's own rules.
-6. **Loops as an idea** — cheap pieces, no model change:
-   - `kumaCanvas.cycles(duration, period)`, `phase(t, duration, cycles)` and a
-     time-periodic `loopNoise`: every drawn layer re-implemented them.
-   - A section in `library/blueprints/CLAUDE.md` on scene and ambient layers. Its motion
-     table ("Loops: a pointer's pulse and nothing else") is written for UI over footage and
-     read as a prohibition where the motion *is* the content.
-   - `kumaCanvas` memo for "paint the static part once and blit it" (6 of 10 layers
-     needed it, and `g` being rebuilt per frame makes caching on it silently useless), and
-     the `rgba(hex, a)`/colour-mix helpers every file repeated.
-   - Model-side, and a `PROJECT_VERSION` bump: a `repeat` on keyframe lists (a 1 Hz blink
-     was 20 hand-written `hold` keys) and a defined tangent at the ends of a `smooth`
-     list, so a closed loop is smooth at the seam. Agreed in direction, not shaped.
-7. **Smaller, each an afternoon**: `sample_frames` with `t1` and no `count` returns one
-   frame (default to several, or refuse the ambiguity); `add_font` refuses `.ttc`, which
-   is how CJK families ship (`fonts.rs` `EXTENSIONS`); a Latin title showing kanji falls
-   back to whatever the baking machine has, so `list_fonts` should say which families
-   lack CJK coverage; `add_blueprint` names the copy (`title-2`) with no way to choose;
-   `kuma compile` omits overlays, so the whole graph cannot be inspected while debugging
-   a compile bug like 1.
+6. **Loops as an idea** — **the cheap pieces built**; the model-side part is not.
+   - `kumaCanvas.cycles(duration, period)` (whole cycles, at least one), `phase(t,
+     duration, n)` and `loopNoise(x, y, t, duration, n)`, which walks a circle through
+     the noise field instead of a line so it returns to its start. `_vendor/` is
+     append-only in behaviour, so these are additions and a test pins what they return.
+   - `g.still(key, paint)`: a frame-sized canvas painted once and kept. It is seeded by
+     its key alone (Math.random and its `rough()`), because which frame asks first differs
+     between the bake (frame 0) and the preview (anywhere), and the picture must not.
+     Checked in the real renderer: an overlay built on it lints clean and bakes the same
+     pixels twice, 24 frames of 24.
+   - `kumaCanvas.rgba(hex, a)` and `mix(a, b, k)`, keeping a colour var's own alpha.
+   - *Scenes and ambient layers* in `library/blueprints/CLAUDE.md`: no exit
+     (`data-fixed-timing` or `static`), whole cycles over `duration`, small slow
+     amplitudes, depth as speed, `g.still` for what never moves, grain carrying its own
+     alpha, and looking at the seam. The motion table's "Loops" row now says it is about
+     overlays over footage.
+   - **Not built:** a `repeat` on keyframe lists and a defined tangent at the ends of a
+     `smooth` list, so a closed loop is smooth at the seam. Both are model changes and a
+     `PROJECT_VERSION` bump, and neither has a shape yet; agreed in direction only.
+7. **Smaller, each an afternoon** — **built**.
+   - `sample_frames` over a range with no `count` returns `RANGE_COUNT` (5) frames rather
+     than one; one time is still one frame. On every surface, since the default moved
+     into the daemon's `SampleRequest`.
+   - `add_font` takes a `.ttc`/`.otc` and splits it into one file per face
+     (`split_collection`: each face's table directory rewritten with its tables copied
+     after it, nothing inside a table changed), each under its own family. A collection is
+     split on the way in rather than read in place because `@font-face` takes one face per
+     file, and "a font is a file" stays true for everything downstream. Checked with
+     `wqy-zenhei.ttc` in a bake with the system's CJK fonts hidden from Chrome: the split
+     face drew 夕焼け, and Inter drew NO GLYPH boxes.
+   - That check found a second fault: a family was read under whichever name record
+     decoded first, which for that font was "文泉驛正黑". The US-English record now wins
+     when there is one, since that is the name a person types.
+   - Every face and family reports `scripts` (latin, greek, cyrillic, arabic, hebrew,
+     devanagari, thai, han, kana, hangul), each by one character it cannot set without;
+     `list_fonts` says what it means and the editor's font picker shows it on hover.
+     Scripts rather than a CJK flag, because han without kana is a Chinese font that
+     cannot set Japanese.
+   - `add_blueprint` takes a `folder` name; the daemon's copy already accepted one and the
+     MCP tool never passed it.
+   - `kuma compile` includes every overlay the cache has baked (`Baker::cached`, keyed by
+     the same `bake_request` as the render) and names the clips it left out; `--bake`
+     bakes those first. Its help said "skipped unless baked" but it never looked.
 
 **Recorded, not scheduled** — each is a feature with its own design question:
 

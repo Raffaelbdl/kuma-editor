@@ -13,7 +13,7 @@ import { keysFor } from "../shortcuts";
 import { desktop } from "../desktop";
 import { askForm } from "../modal";
 import { store, toast } from "../store";
-import type { BinItem, Clip, Cue, Ease, Effect, PatchOp, Project, Streams, VarSpec } from "../types";
+import type { BinItem, Clip, Cue, Ease, Effect, FontFamily, PatchOp, Project, Streams, VarSpec } from "../types";
 import { blueprintActions, makeOverlayUnique, manifestOf, moveBinItem, overlayError, placeBinItem, previewImg, renderPreview, saveAsBlueprint, sharersOf } from "../edits";
 import type { Animation } from "../keyframes";
 import { animationOf } from "../keyframes";
@@ -782,14 +782,16 @@ function varSection(host: HTMLElement, label: string): HTMLElement {
 function fontInput(cur: string, onChange: (v: string) => void): HTMLElement {
   const fonts = store.state.fonts;
   const s = el("select");
-  const group = (label: string, names: string[]) => {
-    if (!names.length) return;
+  const group = (label: string, families: FontFamily[]) => {
+    if (!families.length) return;
     const g = el("optgroup");
     g.label = label;
-    for (const n of names) {
-      const o = el("option", "", n);
-      o.value = n;
-      o.style.fontFamily = `"${n}", system-ui`;
+    for (const f of families) {
+      const o = el("option", "", f.name);
+      o.value = f.name;
+      o.style.fontFamily = `"${f.name}", system-ui`;
+      // Text in a script the family lacks is drawn by whatever this machine has.
+      o.title = `Sets ${f.scripts.join(", ") || "no script kuma checks for"}`;
       g.appendChild(o);
     }
     s.appendChild(g);
@@ -799,12 +801,12 @@ function fontInput(cur: string, onChange: (v: string) => void): HTMLElement {
     o.value = cur;
     s.appendChild(o);
   }
-  group("This project", fonts.filter((f) => f.origin === "project").map((f) => f.name));
-  group("Library", fonts.filter((f) => f.origin !== "project").map((f) => f.name));
+  group("This project", fonts.filter((f) => f.origin === "project"));
+  group("Library", fonts.filter((f) => f.origin !== "project"));
   s.value = cur;
   s.style.fontFamily = `"${cur}", system-ui`;
   s.onchange = () => onChange(s.value);
-  const add = button("+", () => void addFonts(onChange), "Add font files (.ttf, .otf) to this project or to every project");
+  const add = button("+", () => void addFonts(onChange), "Add font files (.ttf, .otf, or a .ttc collection) to this project or to every project");
   return row("row", s, add);
 }
 
@@ -828,7 +830,7 @@ async function addFonts(use: (family: string) => void): Promise<void> {
   ], "project", () => {});
   const ok = await askForm({
     title: paths.length > 1 ? `Add ${paths.length} fonts` : "Add a font",
-    note: "A .ttf or .otf file is copied in. A family's weights and italics are separate files in most fonts: add them together. A font in the project goes wherever the project goes; one in your library is there for every project on this machine.",
+    note: "A .ttf or .otf file is copied in; a .ttc or .otc collection is split into its faces. A family's weights and italics are separate files in most fonts: add them together. A font in the project goes wherever the project goes; one in your library is there for every project on this machine.",
     rows: [...(app ? [] : [{ label: "File", input: typed }]), { label: "For", input: where }],
     ok: "Add",
   });

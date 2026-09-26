@@ -2312,6 +2312,11 @@ Code skill (`SKILL.md`, references, scripts that check a project).
   files, and leaves anything else in the folder alone. A stale copy misleads more than a
   missing one. `kuma doctor` reports current, stale or missing. A test fails if a file in
   the folder is not listed in `FILES`.
+- **Written from one video, kept general.** Its first version described the explainer it
+  came from (manga page turns, kanji glosses, a pixel-art seascape). It now starts from what
+  kind of video is being made (footage-first or overlay-first), and keeps that project's
+  lessons as examples: a skill every project receives must not steer a vlog towards
+  screentone wipes.
 - **Scripts over prose where a check is possible**: reading time per scene
   (`reading_audit.py`), contact sheets of a rendered file, a Japanese font subsetter, and a
   procedural footage template. It shipped with a model of the audio mix (`mixsim.py`) and a

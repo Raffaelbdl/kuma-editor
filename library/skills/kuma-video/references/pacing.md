@@ -1,52 +1,50 @@
 # Pacing: readable, and still punchy
 
-A text-dense explainer fails in two opposite ways: text that leaves before it can be read,
-and a steady reading rhythm that loses attention even when every scene is well timed. The
-second is the harder one to see. The first cut of a 10-minute video had only ~45 s of dead
-holds in total, and it still felt slow.
+A video fails in two opposite ways: text or speech that leaves before it lands, and an even
+rhythm that loses attention even when every shot is well timed. The second is the harder
+one to see. The first cut of a 10-minute explainer had only ~45 s of dead holds in total,
+and it still felt slow.
 
 ## Readable
 
-- Budget **~14 characters a second** of on-screen text, plus ~0.4 s for it to arrive. A
-  typed JRPG window: its typing time, plus ~1.2 s.
-- `scripts/reading_audit.py` lists, per scene, when the last text can have been read and
-  how long the scene then holds. A negative hold means too much text: cut words, don't add
-  seconds. A hold over ~2 s is a candidate for a cut.
+- Budget **~14 characters a second** of on-screen text, plus ~0.4 s for it to arrive.
+  `scripts/reading_audit.py` lists every overlay clip showing text: when it can have been
+  read and how long it then stays. A negative hold means too much text: cut words, don't
+  add seconds. A hold over ~2.5 s is a candidate for a cut.
 - Shorter sentences and active verbs: "Hand it an XML file describing the edit" beats "You
   hand it an XML file that describes the edit".
-- A summary (まとめ) at each chapter's end may be dense: it is a recap, and the viewer can
-  pause.
+- Subtitles: short lines (the `subtitles` blueprint groups words by `words_per_line`), and
+  never under a lower third or a caption that shares the bottom of the frame.
+- A recap at the end of a part may be dense: the viewer can pause.
 
 ## Punchy
 
 In order of payoff:
 
-1. **A hook in the first five seconds**: a cold open with an open loop, closed later ("Psst…
-   this whole video hides a secret. I'll show you at the twist." → at the twist, a 秘密 seal
-   and the reveal).
-2. **A beat on every scene change**: a light screentone "page turn" (a 0.6 s wipe centred
-   on the cut, sweeping right to left like manga pages) and a soft whoosh (gain ~0.26).
-   Heavier ink wipes are for chapter cuts only.
-3. **Camera hits** from the sound effects: transform keyframes on the chapter's clip on the
+1. **A hook in the first five seconds**: the result first, a question, or an open loop
+   closed later ("this whole video hides a secret — I'll show you at the end").
+2. **Trim**: dead air in speech (`footage.md`), holds after the last thing to read (keep
+   ≥ 1 s), the second take of anything said twice.
+3. **A beat on every change** of scene or topic: a short transition centred on the cut (a
+   ~0.6 s wipe) and a soft whoosh (gain ~0.25). Heavier ones for the change of part only.
+4. **Camera hits**: `transform` keyframes on the clip, footage or a whole part placed on the
    master.
    - Punch: scale 1 → 1.045 in 2 frames, then back via an intermediate key over ~0.4 s.
      Use linear keys: a `smooth` key can undershoot below 1 and bare the frame's edge.
-   - Tap: 1.018, for stamps and correct answers.
-   - Shake: ±14 px, decaying over 5 frames at scale ≥ 1.02, so the edges stay covered; for
-     tears, slashes, a refused edit.
-   - Derive them from the SFX list (don → punch, stamp → tap, slash → shake), at most one
-     per 0.55 s.
-4. **Snappy motion**: arrivals in ~0.3 s (`expo.out`, pops overshoot), exits in 0.2 s.
-5. **Short chapter cards**: ~3.4 s. A brush kanji, focus lines, a *don*, the name, the
-   episode line.
-6. **Trim holds** with cuts (`storyboard-as-code.md`), keeping ≥ 1 s after the last read.
-7. **Music with a pulse** under long stretches (`audio.md`).
-8. A visible structure (a HUD with the chapter lit up) so a viewer always knows where they
-   are.
+   - Tap: 1.018, for a small emphasis.
+   - Shake: ±14 px, decaying over 5 frames at scale ≥ 1.02, so the edges stay covered.
+   - Derive them from the sound effects (a hit → punch, a click → tap), at most one per
+     ~0.5 s.
+5. **Snappy motion**: overlays arrive in ~0.3 s (`expo.out`, pops overshoot) and leave in
+   0.2 s.
+6. **Short title cards**: ~3.5 s for a part's title.
+7. **Music with a pulse** under long talking or reading stretches (`audio.md`).
+8. **A visible structure** (part titles, a progress bar or a chapter strip) so a viewer
+   always knows where they are.
 
 ## Keep the craft invisible
 
-- One accent colour for emphasis, one per engine or actor, and no more.
-- Every foreign word glossed (`japanese-type.md`).
-- Characters as guides, each with their own voice: a narrator's box, a mascot's round
-  balloons, the agent's JRPG window.
+- One accent colour for emphasis, and few others.
+- Every foreign or technical word explained where it first appears (`japanese-type.md` for
+  kanji).
+- A recurring guide (a narrator's box, a mascot, the presenter) keeps one voice and one look.

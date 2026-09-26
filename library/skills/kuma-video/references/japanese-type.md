@@ -1,7 +1,9 @@
 # Japanese (and other CJK) type
 
-Two separate failures: kanji drawn in the **wrong glyph forms**, and kanji whose **meaning**
-the viewer cannot get.
+For any video that shows Chinese, Japanese or Korean text. Japanese is the worked case; the
+same holds for the others with their own regional faces and `lang`. Two separate failures:
+characters drawn in the **wrong glyph forms**, and, when the video teaches words, kanji
+whose **meaning** the viewer cannot get.
 
 ## Glyph forms: every character from a Japanese font
 
@@ -48,7 +50,7 @@ So:
 7. Vertical text: `writing-mode: vertical-rl; text-orientation: upright`. Keep all layout
    features when subsetting (`vert`, `vrt2`).
 
-## Meaning: gloss with Japanese, not only with the reading
+## Meaning: when the video teaches words, gloss with Japanese, not only with the reading
 
 A kanji shown with only its **on'yomi** (the Sino-Japanese reading) carries no meaning
 for a viewer. The viewer who saw "承 · SHŌ · development" did not know what 承 means. The

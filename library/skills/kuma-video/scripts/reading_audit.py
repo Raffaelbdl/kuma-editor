@@ -1,13 +1,18 @@
 #!/usr/bin/env python3
-"""Is every scene on screen long enough to read, and not much longer? For each sequence,
-overlay clips that end together form a scene; each text clip is readable from about
-start + 0.4 s + characters / CPS (typed windows: their typing time + 1.2 s; lists: their
-last item + its own reading). The scene's hold is its end minus the latest of those.
+"""Is every scene's text up long enough to read, and not much longer? Overlay clips that end
+together form a scene (a title and its subtitle, a panel and its labels; a lone lower third
+is a scene of one). Each clip's text, its `string` and `text` vars from the overlay's
+manifest, is readable from about start + 0.4 s + characters / CPS. A scene is readable once
+its slowest text is, and holds from then to its end.
 
     reading_audit.py [project.kuma.json] [--cps 14] [--long 2.5]
 
-A negative hold means more text than time: cut words rather than add seconds. A hold
-over --long is dead air a cut could take. The master is skipped (it only places chapters).
+A negative hold means more text than time: cut words rather than add seconds. A hold over
+--long is dead air a cut could take. It is an estimate for text shown at once: text an
+overlay reveals as it goes (typed out, a list line by line) is readable later than it says.
+Left out: subtitles (`cues` keep their own timing),
+clips longer than a minute (a persistent frame, a watermark), and string vars that are
+mostly digits and punctuation, which are data (timings, marks) rather than text.
 """
 import argparse
 import collections
@@ -18,26 +23,11 @@ import re
 
 
 def visible(s):
-    return len(re.sub(r"[*_~`]", "", s).replace("\n", ""))
+    return len(re.sub(r"[*_~`\s]", "", s))
 
 
-def ready(clip, entry, cps):
-    v = entry["source"].get("vars", {})
-    t0 = clip["start"]
-    text = v.get("text") if isinstance(v.get("text"), str) else ""
-    if not text:
-        return t0 + 1.0, ""
-    if "cps" in v:  # typed windows
-        return t0 + float(v.get("delay", 0.2)) + visible(text) / float(v["cps"]) + 1.2, text
-    items = text.split("\n")
-    if "times" in v or "stagger" in v:  # lists that reveal line by line
-        if "times" in v:
-            ts = [float(x) for x in str(v["times"]).split(",") if x.strip()]
-        else:
-            ts = [i * float(v["stagger"]) for i in range(len(items))]
-        last = ts[-1] if ts else 0.0
-        return max(t0 + last + visible(items[-1]) / cps + 0.5, t0 + visible(text) / cps + 0.8), text
-    return t0 + 0.4 + max(1.0, visible(text) / cps), text
+def is_text(v):
+    return isinstance(v, str) and sum(c.isalpha() for c in v) * 2 > visible(v)
 
 
 def main():
@@ -47,10 +37,25 @@ def main():
     ap.add_argument("--long", type=float, default=2.5)
     a = ap.parse_args()
     path = a.project or glob.glob("*.kuma.json")[0]
+    root = os.path.dirname(os.path.abspath(path))
     doc = json.load(open(path))
     b = doc["bin"]
+    manifests = {}
+
+    def text_of(entry):
+        folder = entry["source"]["overlay"]
+        if folder not in manifests:
+            try:
+                manifests[folder] = json.load(open(os.path.join(root, folder, "overlay.json"))).get("vars", {})
+            except (OSError, ValueError):
+                manifests[folder] = {}
+        spec = manifests[folder]
+        vars_ = {k: v.get("default") for k, v in spec.items()}
+        vars_.update(entry["source"].get("vars", {}))
+        return " ".join(v for k, v in vars_.items() if spec.get(k, {}).get("type") in ("string", "text") and is_text(v))
+
     for sid, seq in b.items():
-        if "tracks" not in seq.get("source", {}) or sid == doc["master"]:
+        if "tracks" not in seq.get("source", {}):
             continue
         scenes = collections.defaultdict(list)
         for t in seq["source"]["tracks"]:
@@ -59,19 +64,18 @@ def main():
             for c in t["clips"]:
                 e = b.get(c["bin"], {})
                 if "overlay" not in e.get("source", {}) or c["end"] - c["start"] > 60:
-                    continue  # HUDs and other chapter-long furniture
-                r, text = ready(c, e, a.cps)
-                scenes[round(c["end"], 1)].append((r, c["start"], text))
-        # A scene starts with its first text, not with furniture that shares its end.
-        rows = [(end, min((s for _, s, txt in g if txt), default=min(s for _, s, _ in g)), max(g))
-                for end, g in sorted(scenes.items()) if len(g) >= 2]
-        if not rows:
+                    continue
+                text = text_of(e)
+                if visible(text):
+                    scenes[round(c["end"], 1)].append((c["start"] + 0.4 + visible(text) / a.cps, c["start"], text))
+        if not scenes:
             continue
         print(f"== {sid}  ({seq.get('name', '')})")
-        for end, first, (r, _, text) in rows:
-            hold = end - r
+        for end, scene in sorted(scenes.items()):
+            ready, _, text = max(scene)
+            hold = end - ready
             flag = "  SHORT: cut words" if hold < 0 else ("  long: a cut could take it" if hold > a.long else "")
-            print(f"  {first:6.1f}–{end:6.1f}  readable at {r:6.1f}  hold {hold:+5.1f}{flag}  | {text[:50]!r}")
+            print(f"  {min(s for _, s, _ in scene):6.1f}–{end:6.1f}  readable at {ready:6.1f}  hold {hold:+5.1f}{flag}  | {text[:50]!r}")
 
 
 if __name__ == "__main__":

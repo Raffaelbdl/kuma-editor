@@ -6,8 +6,8 @@
   Several bake side by side, but a change to `_vendor/`, to a font file, or to a component
   used everywhere re-bakes everything: ~400 overlays took about 20 minutes. Unchanged
   overlays come from the cache.
-- **Sampling the master bakes every changed overlay in it**, whatever time you ask for.
-  While iterating, sample the overlay entry or its chapter sequence over a short range.
+- **Sampling bakes every changed overlay the sampled frames show.** While iterating, sample
+  the overlay entry or its part's sequence over a short range, or chosen `times`.
 - **Encoding.**
   - `draft`: x264 ultrafast, CRF 26. For review.
   - `youtube-1080p`: x264 slow, CRF 18. The final.
@@ -32,10 +32,10 @@
 Before the final render:
 ```
 validate_project                                  # no issues, no font warnings
-python3 assets/diff.py … > patches/diff.json      # 0 ops
-measure_audio                                     # ≈ -16…-17 LUFS, peak ≤ -1.5 dBTP, only the silences you meant
-sample_frames times=[…] tile=true                 # every cut ±0.3 s, each key scene, one sheet
-python3 <skill>/scripts/reading_audit.py          # no scene badly short, few long holds
+python3 <your diff script> > patches/diff.json    # 0 ops, if you work as code
+measure_audio                                     # ≈ -14…-16 LUFS, peak ≤ -1.5 dBTP, only the silences you meant
+sample_frames times=[…] tile=true                 # every cut ±0.3 s, each key moment, one sheet
+python3 <skill>/scripts/reading_audit.py          # if it shows text: none too short, few long holds
 ```
 
 After it:

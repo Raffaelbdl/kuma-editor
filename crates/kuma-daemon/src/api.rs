@@ -419,8 +419,10 @@ async fn font_file(State(st): S, Path((slug, file)): Path<(String, String)>) -> 
     file_response(&path.ok_or(ApiError::not_found("no such font"))?)
 }
 
-async fn presets() -> Json<Value> {
-    Json(json!(kuma_mlt::PRESETS))
+/// Export presets, each with why this machine cannot render with it, if it cannot. Trying
+/// a hardware one takes a second, once per daemon, so it happens off the async threads.
+async fn presets() -> ApiResult {
+    Ok(Json(json!(blocking(kuma_mlt::presets::offered).await?)))
 }
 
 /// Effect presets: `presets/*.json` from every library, then the project (wins on id).
@@ -567,11 +569,20 @@ fn project_relative(st: &AppState, p: &std::path::Path) -> std::path::PathBuf {
     p.strip_prefix(st.config.project_root()).unwrap_or(p).to_path_buf()
 }
 
+/// `jobs::render_target` off the async threads: it can try a hardware encoder.
+async fn target(st: &Arc<AppState>, req: &RenderRequest) -> Result<(String, &'static kuma_mlt::ExportPreset, PathBuf), ApiError> {
+    let (st, req) = (st.clone(), req.clone());
+    blocking(move || jobs::render_target(&st, &req)).await?.map_err(ApiError::bad_request)
+}
+
 /// Queue a render. Sequence and output are settled now, so the queue shows what will be
 /// written whatever is opened meanwhile, and a bad preset is refused here.
 async fn render(State(st): S, Json(mut req): Json<RenderRequest>) -> ApiResult {
-    let (sequence, preset, output) = jobs::render_target(&st, &req).map_err(ApiError::bad_request)?;
-    let params = json!({ "sequence": sequence, "preset": preset.id, "output": output, "path": project_relative(&st, &output) });
+    let (sequence, preset, output) = target(&st, &req).await?;
+    let params = json!({
+        "sequence": sequence, "preset": preset.id, "output": output, "path": project_relative(&st, &output),
+        "threads": req.threads, "quality": req.quality, "speed": req.speed,
+    });
     req.sequence = Some(sequence);
     req.output = Some(output);
     let s2 = st.clone();
@@ -580,10 +591,15 @@ async fn render(State(st): S, Json(mut req): Json<RenderRequest>) -> ApiResult {
 }
 
 /// Where a render would write and what it would replace — a file there, or unfinished
-/// renders to the same path — so a client can warn first. Reads only.
+/// renders to the same path — so a client can warn first; and how many frames it would
+/// build at once, which is this machine's to say. Reads only.
 async fn render_target(State(st): S, Query(req): Query<RenderRequest>) -> ApiResult {
-    let (sequence, preset, output) = jobs::render_target(&st, &req).map_err(ApiError::bad_request)?;
-    Ok(Json(json!({ "sequence": sequence, "preset": preset.id, "path": project_relative(&st, &output), "exists": output.exists(), "pending": st.jobs.writing(&output), "output": output })))
+    let (sequence, preset, output) = target(&st, &req).await?;
+    let threads = req.threads.unwrap_or_else(kuma_mlt::melt::render_threads);
+    Ok(Json(json!({
+        "sequence": sequence, "preset": preset.id, "path": project_relative(&st, &output), "exists": output.exists(),
+        "pending": st.jobs.writing(&output), "output": output, "threads": threads, "max_threads": kuma_mlt::presets::MAX_THREADS,
+    })))
 }
 
 #[derive(Deserialize)]

@@ -134,7 +134,7 @@ async fn a_cancelled_render_stops_melt_and_leaves_nothing() {
     }
     let (state, dir) = fixture();
     let output = dir.path().join("renders/out.mp4");
-    let req = RenderRequest { preset: "draft".into(), output: Some(output.clone()), range: None, sequence: None };
+    let req = RenderRequest { preset: "draft".into(), output: Some(output.clone()), ..Default::default() };
     let (_, preset, _) = jobs::render_target(&state, &req).unwrap();
     let s2 = state.clone();
     let id = jobs::spawn_cancellable(state.clone(), "render", serde_json::json!({ "preset": preset.id }), move |p, c| jobs::render(&s2, &req, p, c));
@@ -146,4 +146,61 @@ async fn a_cancelled_render_stops_melt_and_leaves_nothing() {
     assert_eq!(job.state, JobState::Cancelled);
     assert!(start.elapsed() < Duration::from_secs(20), "melt outlived its cancel");
     assert!(!output.exists(), "a cancelled render left {}", output.display());
+}
+
+fn request(preset: &str) -> RenderRequest {
+    RenderRequest { preset: preset.into(), ..Default::default() }
+}
+
+/// A tuning the preset does not offer is refused when the render is asked for, not when
+/// its turn comes (the checks themselves are `kuma-mlt`'s).
+#[test]
+fn a_bad_tuning_is_refused_when_asked_for() {
+    let (state, _dir) = fixture();
+    let refused = jobs::render_target(&state, &RenderRequest { quality: Some(10), ..request("prores-master") });
+    assert_eq!(refused.unwrap_err().to_string(), "preset `prores-master` has no quality to set");
+    assert!(jobs::render_target(&state, &RenderRequest { quality: Some(20), speed: Some("medium".into()), threads: Some(2), ..request("youtube-1080p") }).is_ok());
+}
+
+/// The quality and speed asked for are what x264 encoded with: it writes its settings into
+/// the stream, `crf=` as given and `subme=` by preset (0 for `ultrafast`, 2 for `veryfast`).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_render_encodes_with_the_quality_and_speed_asked_for() {
+    if !kuma_mlt::melt::melt_available() {
+        eprintln!("skipping: no melt");
+        return;
+    }
+    let (state, dir) = fixture();
+    let settings = |name: &str, req: RenderRequest| {
+        let req = RenderRequest { output: Some(dir.path().join(format!("renders/{name}.mp4"))), range: Some((0.0, 1.0)), ..req };
+        jobs::render(&state, &req, &|_, _| {}, &AtomicBool::new(false)).expect("render");
+        // The settings are one NUL-terminated string in the stream.
+        let bytes = std::fs::read(req.output.unwrap()).unwrap();
+        let at = bytes.windows(11).position(|w| w == b"x264 - core").expect("x264 settings in the stream");
+        let end = bytes[at..].iter().position(|&b| b == 0).map_or(bytes.len(), |n| at + n);
+        let options = String::from_utf8_lossy(&bytes[at..end]);
+        let get = |k: &str| options.split_whitespace().find_map(|w| w.strip_prefix(&format!("{k}="))).unwrap_or("?").to_string();
+        (get("crf"), get("subme"))
+    };
+    assert_eq!(settings("preset", request("draft")), ("26.0".into(), "0".into()), "the preset's own: crf 26, ultrafast");
+    let asked = RenderRequest { quality: Some(30), speed: Some("veryfast".into()), threads: Some(2), ..request("draft") };
+    assert_eq!(settings("asked", asked), ("30.0".into(), "2".into()));
+}
+
+/// A preset this machine cannot run is refused when asked for, with the encoder's reason,
+/// not handed to melt to crash on; one it can run is accepted. Which of the two depends on
+/// the machine, so both are checked against what `available` says here.
+#[test]
+fn a_preset_this_machine_cannot_run_is_refused() {
+    let (state, _dir) = fixture();
+    let nvenc = kuma_mlt::presets::find("youtube-nvenc").unwrap();
+    let asked = jobs::render_target(&state, &request("youtube-nvenc"));
+    match kuma_mlt::presets::available(nvenc) {
+        Ok(()) => assert!(asked.is_ok(), "{asked:?}"),
+        Err(why) => {
+            let refused = asked.expect_err("refused").to_string();
+            assert!(refused.starts_with("preset `youtube-nvenc` cannot run on this machine: ") && refused.ends_with(&why), "{refused}");
+        }
+    }
+    assert!(jobs::render_target(&state, &request("youtube-1080p")).is_ok(), "software presets are always there");
 }

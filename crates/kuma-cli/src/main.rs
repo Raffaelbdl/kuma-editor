@@ -254,7 +254,7 @@ async fn main() -> anyhow::Result<()> {
         Cmd::Doctor => doctor(&cli).await?,
         Cmd::Render { preset, output, sequence } => {
             let state = open(&cli)?;
-            let req = kuma_daemon::jobs::RenderRequest { preset: preset.clone(), output: output.as_deref().map(absolute).transpose()?, range: None, sequence: sequence.clone() };
+            let req = kuma_daemon::jobs::RenderRequest { preset: preset.clone(), output: output.as_deref().map(absolute).transpose()?, sequence: sequence.clone(), ..Default::default() };
             let out = tokio::task::spawn_blocking(move || kuma_daemon::jobs::render(&state, &req, &|p, m| eprintln!("[{p:3}%] {m}"), &Default::default())).await??;
             println!("{}", serde_json::to_string_pretty(&out)?);
         }

@@ -513,6 +513,18 @@ and the values live with the rest of the project's decisions.
 - **`.kuma/` keeps growing** — superseded bakes and sampled frames are never deleted on
   their own. `kuma cache prune` (or the job queue's button, or `prune_cache`) removes what
   the project no longer uses; `--all` empties bakes and frames.
+- **Bakes or renders load the machine, or you want them faster** — overlay clips bake side
+  by side, each in its own hyperframes process with its own Chrome (about 250 MB).
+  `KUMA_BAKE_JOBS` sets how many run at once, across everything the daemon bakes; the
+  default is half the hardware threads, at most 8, and `KUMA_BAKE_JOBS=1` bakes one at a
+  time. One long overlay still bakes in one process, so a transcript split into several
+  entries bakes faster than one that spans the video. A render builds several frames at once
+  (melt's `real_time`), `KUMA_RENDER_THREADS` of them with the same default; `1` renders one
+  at a time. The output is the same either way.
+- **`youtube-nvenc` is greyed out** — it renders on an NVIDIA GPU (NVENC), and kuma
+  offers it only where a short test encode works; the preset's tooltip in the render dialog
+  (and `unavailable` in `GET /api/presets`) says why it did not, usually no CUDA device or
+  driver. The other presets encode on the CPU.
 - **A blueprint is missing from the Blueprints tab** — `GET /api/health` lists
   `blueprint_dirs` (where kuma looked) and `blueprint_errors` (manifests that failed to load
   and why). No library at all: run `kuma library`.

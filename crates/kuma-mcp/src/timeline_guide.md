@@ -60,7 +60,10 @@ person, and `overlay_guide` ends with the checklist to run through.
 
 A sample is exact, so every overlay it shows is baked first, for its whole clip: a changed
 overlay costs about 0.1 s per frame at 1080p before the first frame comes back, while an
-unchanged one is cached. While you are drawing, sample the overlay entry on its own (seconds),
+unchanged one is cached. Changed overlays bake side by side, so the wait is the longest one's,
+not their sum; but a clip bakes in one process for its whole length, and any change to it rebakes
+all of it. So **compose many short overlays rather than one long one**: a title per scene, a callout
+per point, subtitles in stretches. While you are drawing, sample the overlay entry on its own (seconds),
 and sample the sequence once it looks right. A sample still baking after `wait_seconds` returns
 its job id and what it is baking; call `sample_frames` with `job` set to that id to keep waiting.
 Asking again with the same arguments costs nothing extra either: an overlay already baking is
@@ -76,5 +79,12 @@ entry's styling and placement, and with `language` (an ISO 639-1 code) to force 
 than detect it. `parent` on a bin entry is organisation only: the entry it is listed under
 in the browser, which can be any entry or a folder (`{"source": {"folder": true}}`, never placeable);
 `order` sorts siblings there (ordered ones first, the rest by id).
+
+**Never leave a transcript longer than about a minute in one entry.** `transcribe` puts a whole
+recording in one entry, so split it straight after: one `subtitles` entry per stretch of up to about
+60 s, cut at a pause between cues, each holding only its own cues. Give each the same styling vars,
+`offset` set to the stretch's first source second, and place it over that stretch of the clip. One
+transcript over a 20-minute recording bakes as a single 20-minute clip, again after every correction.
+
 Vertical (9:16) is only
 `width`/`height`: patch them to 1080×1920 (or swap them) and every preset renders portrait.

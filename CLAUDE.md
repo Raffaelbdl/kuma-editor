@@ -113,7 +113,10 @@ Chrome headless shell if hyperframes should not download one.
 - Every MLT detail (inclusive in/out, `<blank length>`, background track, `qtblend`/`mix`
   transitions, A/B lanes for dissolves) stays in `crates/kuma-mlt/src/compile.rs`.
   `tests/fixtures/reference.mlt` is a golden file: regenerate with
-  `UPDATE_GOLDEN=1 cargo test -p kuma-mlt` and read the diff.
+  `UPDATE_GOLDEN=1 cargo test -p kuma-mlt` and read the diff. Renders build several frames
+  at once (`real_time`, `melt.rs`), and not every MLT service is thread-safe: a new effect
+  goes into the reference project, where `parallel_frames_render_what_serial_frames_do`
+  checks it renders the same in parallel.
 - A **design system** is a document, not a runtime layer: `kuma design-system <id>` copies
   one into `<project>/design-system/` and an agent reads it there. Nothing injects it, so
   applying it is an ordinary edit to an overlay folder or to an entry's vars — do not add a
@@ -136,7 +139,9 @@ Chrome headless shell if hyperframes should not download one.
   offers itself there, and creating one is the same copy as adding any blueprint — one
   folder per entry, so no two titles share markup.
 - Overlay bakes run hyperframes with **one worker**; multi-worker capture was measured
-  to be non-deterministic on GSAP-driven transforms.
+  to be non-deterministic on GSAP-driven transforms. Separate one-worker processes side by
+  side were measured byte-identical, so clips bake in parallel: `bake_clips` runs a pool,
+  and `Baker::concurrency` (`KUMA_BAKE_JOBS`) caps the processes across every caller.
 - Subtitles are not a model concept: a transcript is the `cues` var of a `subtitles`
   overlay entry, in source seconds, edited and baked like any other var. Portrait is not
   one either: it is `width`/`height`, and nothing else in the model may depend on which

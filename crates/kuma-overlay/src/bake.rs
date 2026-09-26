@@ -108,9 +108,24 @@ pub struct Baker {
     pub vendor_dir: PathBuf,
     /// What `font` vars resolve against. Empty unless the caller sets it.
     pub fonts: FontLibrary,
+    /// How many renders may run at once, across every caller of this baker and its clones
+    /// (`KUMA_BAKE_JOBS`). Each is its own one-worker hyperframes process: separate processes
+    /// were measured byte-identical to a serial bake, where one with several workers was not.
+    /// Each costs about 250 MB (Chrome).
+    pub concurrency: usize,
     /// Keys being baked by this process right now. A second bake of one waits for the
     /// first and reads its result, rather than rendering the same frames alongside it.
     inflight: Arc<(Mutex<HashSet<String>>, Condvar)>,
+    /// The renders running and the queue for more, first come first served.
+    slots: Arc<(Mutex<Slots>, Condvar)>,
+}
+
+#[derive(Debug, Default)]
+struct Slots {
+    running: usize,
+    /// Tickets handed out, and the next one allowed in when a slot is free.
+    issued: u64,
+    next: u64,
 }
 
 impl Baker {
@@ -128,7 +143,17 @@ impl Baker {
             .map(PathBuf::from)
             .or_else(|| std::env::var_os("PUPPETEER_EXECUTABLE_PATH").map(PathBuf::from))
             .or_else(find_playwright_headless_shell);
-        let mut b = Baker { cache_dir, hyperframes, browser, version: None, vendor_dir, fonts: FontLibrary::default(), inflight: Arc::default() };
+        let mut b = Baker {
+            cache_dir,
+            hyperframes,
+            browser,
+            version: None,
+            vendor_dir,
+            fonts: FontLibrary::default(),
+            concurrency: kuma_mlt::melt::threads_from_env("KUMA_BAKE_JOBS"),
+            inflight: Arc::default(),
+            slots: Arc::default(),
+        };
         b.version = b.available().ok();
         b
     }
@@ -219,18 +244,36 @@ impl Baker {
 
     /// The bake already in the cache for `req`, rendering nothing: `None` when there is none.
     pub fn cached(&self, req: &BakeRequest) -> Result<Option<BakeResult>, BakeError> {
-        Ok(read_done(&self.cache_dir.join(self.key(req)?)))
+        self.cached_keyed(req, None)
+    }
+
+    /// [`cached`](Self::cached), given `req`'s [`key`](Self::key) when the caller has it.
+    pub fn cached_keyed(&self, req: &BakeRequest, key: Option<&str>) -> Result<Option<BakeResult>, BakeError> {
+        let key = match key {
+            Some(k) => k.to_string(),
+            None => self.key(req)?,
+        };
+        Ok(read_done(&self.cache_dir.join(key)))
     }
 
     /// Bake (or fetch from cache). Work happens in a private directory that is renamed
     /// into place at the end, so concurrent bakes of the same key never see each other's
     /// partial output and a crash leaves no half-written cache entry.
     pub fn bake(&self, req: &BakeRequest) -> Result<BakeResult, BakeError> {
+        self.bake_keyed(req, None)
+    }
+
+    /// [`bake`](Self::bake), given `req`'s [`key`](Self::key) when the caller has it, so
+    /// the folder is not hashed again.
+    pub fn bake_keyed(&self, req: &BakeRequest, key: Option<&str>) -> Result<BakeResult, BakeError> {
         let problems = req.manifest.check_vars(req.vars);
         if !problems.is_empty() {
             return Err(BakeError::Vars(problems));
         }
-        let key = self.key(req)?;
+        let key = match key {
+            Some(k) => k.to_string(),
+            None => self.key(req)?,
+        };
         let dir = self.cache_dir.join(&key);
         if let Some(r) = read_done(&dir) {
             return Ok(r);
@@ -240,6 +283,7 @@ impl Baker {
         if let Some(r) = read_done(&dir) {
             return Ok(r);
         }
+        let _slot = self.slot();
         let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
         let work = WorkDir(self.cache_dir.join(format!("{key}.tmp-{}-{nanos:x}", std::process::id())));
         std::fs::create_dir_all(&work.0)?;
@@ -263,6 +307,24 @@ impl Baker {
         }
         held.insert(key.to_string());
         Claim(&self.inflight, key.to_string())
+    }
+
+    /// Wait for one of the `concurrency` render slots, in the order asked: a preview's one
+    /// bake queues behind at most the renders already running, never behind a whole batch
+    /// that asks for slot after slot. Held until the returned slot drops.
+    fn slot(&self) -> Slot<'_> {
+        let (slots, freed) = &*self.slots;
+        let mut s = slots.lock().unwrap_or_else(PoisonError::into_inner);
+        let ticket = s.issued;
+        s.issued += 1;
+        while s.next != ticket || s.running >= self.concurrency.max(1) {
+            s = freed.wait(s).unwrap_or_else(PoisonError::into_inner);
+        }
+        s.next += 1;
+        s.running += 1;
+        // The next ticket may fit in a slot that is still free.
+        freed.notify_all();
+        Slot(&self.slots)
     }
 
     /// Stage an overlay into `src`: its own files, the shared `_vendor/` when it has none
@@ -473,6 +535,17 @@ impl Drop for Claim<'_> {
     fn drop(&mut self) {
         let (keys, freed) = self.0;
         keys.lock().unwrap_or_else(PoisonError::into_inner).remove(&self.1);
+        freed.notify_all();
+    }
+}
+
+/// A render slot; dropping it, however the bake ended, lets the next ticket in.
+struct Slot<'a>(&'a (Mutex<Slots>, Condvar));
+
+impl Drop for Slot<'_> {
+    fn drop(&mut self) {
+        let (slots, freed) = self.0;
+        slots.lock().unwrap_or_else(PoisonError::into_inner).running -= 1;
         freed.notify_all();
     }
 }

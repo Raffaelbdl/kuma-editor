@@ -1,22 +1,28 @@
 // The render dialog, Kdenlive's two tabs: what to render, and the job queue. Renders are
 // daemon jobs run one at a time; this asks for them, watches them and cancels them. The
-// master is preselected, and the sequence picked is always sent.
+// master is preselected, and the sequence picked is always sent. An Advanced section,
+// folded by default, changes this render's frames at once and its preset's quality and
+// speed; left empty, each is the preset's (or the machine's) own.
 
-import { api, type RenderTarget } from "../api";
+import { api, type RenderOptions, type RenderTarget } from "../api";
 import { desktop } from "../desktop";
 import { button, capitalize, el, options, plural, row } from "../dom";
+import { icon } from "../icons";
 import { askForm, openDialog } from "../modal";
 import { store, toast } from "../store";
-import { isFinal, sequenceIds, type CacheUsage, type Job } from "../types";
+import { isFinal, sequenceIds, type CacheUsage, type Job, type Preset } from "../types";
 
 type Tab = "render" | "queue";
 
 /** What the daemon settled when the render was queued; `path` is `output`, project-relative. */
-interface RenderParams { sequence?: string; preset?: string; output?: string; path?: string }
+interface RenderParams { sequence?: string; preset?: string; output?: string; path?: string; threads?: number | null; quality?: number | null; speed?: string | null }
 
 /** The open dialog's tab switch: asking again switches rather than stacking a second. */
 let showing: ((tab: Tab) => void) | null = null;
 let lastPreset = "";
+/** The Advanced section as last left: open or folded, and the values last rendered with.
+ *  Quality and speed are `lastPreset`'s, and only come back with it. */
+let advanced = { open: false, threads: "", quality: "", speed: "" };
 
 const binName = (id?: string) => (id && store.state.project?.bin[id]?.name) || id || "?";
 const fail = (e: unknown) => toast((e as Error).message, "err");
@@ -41,6 +47,66 @@ export function openRenderDialog(tab: Tab = "render"): void {
   const warning = el("p", "render-warning");
   warning.hidden = true;
 
+  // ---- advanced: what this render changes of its preset. Empty is the preset's own.
+  const threads = numberInput("Frames rendered at once. The file is identical however many; fewer keeps the machine responsive while it renders.");
+  threads.value = advanced.threads;
+  const quality = numberInput("");
+  const speed = el("select");
+  speed.title = "Encoder speed";
+  const fixed = el("p", "muted tiny render-fixed");
+  let presets = new Map<string, Preset>();
+  const field = (label: string, input: HTMLElement) => row("field", el("label", "", label), input);
+  const qualityField = field("Quality", row("row", quality, el("span", "muted tiny", "CRF · lower is better and larger")));
+  const speedField = field("Speed", row("row", speed, el("span", "muted tiny", "faster is larger")));
+  // Fit the fields to the preset picked: its range and its own values, or nothing to
+  // change. Quality and speed are the codec's, so each preset starts from its own.
+  const fit = () => {
+    const p = presets.get(preset.value);
+    const q = p?.quality, sp = p?.speed;
+    qualityField.hidden = !q;
+    speedField.hidden = !sp;
+    fixed.hidden = !!(q || sp);
+    fixed.textContent = p ? `${p.id} has no quality or speed to change.` : "";
+    quality.value = "";
+    if (q) {
+      quality.min = String(q.min);
+      quality.max = String(q.max);
+      quality.placeholder = `${q.default} (preset)`;
+      quality.title = `Rate factor, ${q.min} to ${q.max}: lower is better and makes a larger file`;
+    }
+    if (sp) {
+      options(speed, sp.options.map((o) => ({ value: o, label: o === sp.default ? `${o} (preset)` : o })), sp.default);
+      speed.title = `Encoder speed (${sp.label}), fastest first. At the same quality, faster makes a larger file.`;
+    }
+    summarize();
+  };
+  // What the render asks for beyond its preset: nothing when every field is its default.
+  const chosen = (): RenderOptions => {
+    const p = presets.get(preset.value);
+    const int = (i: HTMLInputElement) => (i.value.trim() === "" ? undefined : Number(i.value));
+    return {
+      threads: int(threads),
+      quality: p?.quality ? int(quality) : undefined,
+      speed: p?.speed && speed.value !== p.speed.default ? speed.value : undefined,
+    };
+  };
+  // Folded, the head still says what it changes.
+  const note = el("span", "muted tiny render-advanced-note");
+  const summarize = () => { note.textContent = describe(chosen()); };
+  threads.oninput = quality.oninput = speed.onchange = summarize;
+  const box = el("div", `render-advanced${advanced.open ? "" : " closed"}`);
+  const disclose = button(icon("chevron-right", 11), () => {
+    advanced.open = box.classList.contains("closed");
+    box.classList.toggle("closed", !advanced.open);
+    disclose.setAttribute("aria-expanded", String(advanced.open));
+  }, "Show or hide what this render changes of its preset", "disclose");
+  disclose.append("Advanced");
+  disclose.setAttribute("aria-expanded", String(advanced.open));
+  box.append(
+    row("head", disclose, note),
+    row("render-advanced-body", field("Threads", threads), qualityField, speedField, fixed),
+  );
+
   // The daemon says where a render would write and what it would replace; the default
   // name is its rule, so the placeholder is its answer. Stale answers are dropped.
   let target: RenderTarget | null = null;
@@ -51,14 +117,29 @@ export function openRenderDialog(tab: Tab = "render"): void {
     if (!t || n !== asked) return;
     target = t;
     output.placeholder = t.path;
+    threads.placeholder = `${t.threads} (default)`;
+    threads.max = String(t.max_threads);
     warning.hidden = !clashes(t);
     warning.textContent = clashes(t) ? overwriteNote(t) : "";
   };
   let typing = 0;
-  sequence.onchange = preset.onchange = () => void check();
+  sequence.onchange = () => void check();
+  preset.onchange = () => { fit(); void check(); };
   output.oninput = () => { clearTimeout(typing); typing = window.setTimeout(check, 250); };
   void api.presets().then((ps) => {
-    options(preset, ps.map((p) => ({ value: p.id, title: p.description })), lastPreset || ps[0]?.id);
+    presets = new Map(ps.map((p) => [p.id, p]));
+    // One this machine cannot run (NVENC without a GPU) is listed greyed, saying why.
+    const usable = ps.filter((p) => !p.unavailable);
+    options(preset, ps.map((p) => (p.unavailable
+      ? { value: p.id, label: `${p.id} (unavailable)`, title: `${p.description}. Needs ${p.needs}: ${p.unavailable}` }
+      : { value: p.id, title: p.description })), (usable.find((p) => p.id === lastPreset) ?? usable[0])?.id);
+    for (const o of preset.options) o.disabled = !!presets.get(o.value)?.unavailable;
+    fit();
+    if (preset.value === lastPreset) {
+      quality.value = advanced.quality;
+      if (advanced.speed) speed.value = advanced.speed;
+      summarize();
+    }
     void check();
   });
 
@@ -67,14 +148,15 @@ export function openRenderDialog(tab: Tab = "render"): void {
     await check(); // fresh: another render may have been queued since
     if (target && clashes(target) && !(await askForm({ title: "Overwrite?", note: overwriteNote(target), rows: [], ok: "Render anyway" }))) return;
     try {
-      await api.render(preset.value, sequence.value, output.value.trim() || undefined);
+      const tuning = chosen();
+      await api.render(preset.value, sequence.value, output.value.trim() || undefined, tuning);
       lastPreset = preset.value;
+      advanced = { ...advanced, threads: threads.value, quality: quality.value, speed: tuning.speed ?? "" };
       show("queue");
     } catch (e) { fail(e); }
   }, "", "primary");
-  const field = (label: string, input: HTMLElement) => row("field", el("label", "", label), input);
   const renderPane = row("render-pane",
-    field("Sequence", sequence), field("Preset", preset), field("Output", output), warning,
+    field("Sequence", sequence), field("Preset", preset), field("Output", output), warning, box,
     el("p", "muted tiny", "Renders run one at a time; one asked for while another is encoding waits in the queue."),
     row("modal-actions", button("Close", close), start),
   );
@@ -134,6 +216,21 @@ export function openRenderDialog(tab: Tab = "render"): void {
   show(tab);
 }
 
+function numberInput(title: string): HTMLInputElement {
+  const i = el("input");
+  i.type = "number";
+  i.step = "1";
+  i.min = "1";
+  i.title = title;
+  return i;
+}
+
+/** A render's choices beyond its preset, as the dialog's head and the queue name them. */
+function describe(o: { threads?: number | null; quality?: number | null; speed?: string | null }): string {
+  const parts = [o.quality != null && `CRF ${o.quality}`, o.speed, o.threads != null && plural(o.threads, "thread")];
+  return parts.filter(Boolean).join(" · ");
+}
+
 /** `1.4 GB`, decimal, as a file manager says it. */
 function bytes(n: number): string {
   const units = ["B", "kB", "MB", "GB", "TB"];
@@ -176,7 +273,8 @@ function jobRow(id: number): JobRow {
       const p = (j.params ?? {}) as RenderParams;
       file = p.output ?? "";
       root.className = `job ${j.state}`;
-      title.textContent = j.kind === "render" ? `#${j.id} · ${binName(p.sequence)} · ${p.preset ?? ""}` : `#${j.id} · ${j.kind}`;
+      const asked = describe(p);
+      title.textContent = j.kind === "render" ? `#${j.id} · ${binName(p.sequence)} · ${p.preset ?? ""}${asked ? ` (${asked})` : ""}` : `#${j.id} · ${j.kind}`;
       bar.value = j.state === "done" ? 100 : j.percent;
       state.textContent = j.state === "running" ? `${j.percent}% · ${j.message}` : j.state === "failed" ? `Failed: ${j.message}` : capitalize(j.state);
       path.textContent = p.path ?? file;

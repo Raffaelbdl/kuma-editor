@@ -174,32 +174,34 @@ fn a_drawn_overlay_bakes_the_same_pixels_twice() {
     assert_eq!(alpha(&frames[0], w / 2, h / 2), 0, "nothing is drawn at t = 0");
 }
 
-/// Two bakes of one key at once — an agent retrying a sample while the first is still
-/// baking — render once: the second waits and reads the first's result. A stand-in
-/// renderer counts its runs, so this needs no hyperframes and no browser.
-#[test]
-fn concurrent_bakes_of_one_key_render_once() {
-    let tmp = tempfile::tempdir().unwrap();
-    let runs = tmp.path().join("runs");
-    let fake = tmp.path().join("hyperframes");
-    // `render <src> --format png-sequence -o <dir> …`, so the output is `$6`: slow enough for the two to overlap.
-    std::fs::write(
-        &fake,
-        format!("#!/bin/sh\necho run >> '{}'\nsleep 1\nmkdir -p \"$6\"\nfor i in 1 2 3 4 5 6; do : > \"$6/f$i.png\"; done\n", runs.display()),
-    )
-    .unwrap();
+/// A baker whose renderer is a stand-in that takes a second, writes six empty frames, and
+/// logs `start` and `end` for each run, in the order they happen; and a probe overlay. So
+/// these need no hyperframes and no browser.
+fn stand_in(tmp: &std::path::Path) -> (Baker, PathBuf, OverlayManifest, PathBuf) {
+    let log = tmp.join("log");
+    let fake = tmp.join("hyperframes");
+    // `render <src> --format png-sequence -o <dir> …`, so the output is `$6`.
+    let script = format!("#!/bin/sh\necho start >> '{0}'\nsleep 1\nmkdir -p \"$6\"\nfor i in 1 2 3 4 5 6; do : > \"$6/f$i.png\"; done\necho end >> '{0}'\n", log.display());
+    std::fs::write(&fake, script).unwrap();
     std::fs::set_permissions(&fake, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
-
-    let overlay = tmp.path().join("probe");
+    let overlay = tmp.join("probe");
     std::fs::create_dir_all(&overlay).unwrap();
     std::fs::write(overlay.join("overlay.json"), r#"{ "name": "Probe" }"#).unwrap();
     std::fs::write(overlay.join("index.html"), "<html><body data-composition-id=\"root\"></body></html>").unwrap();
     let manifest = OverlayManifest::load(&overlay).unwrap();
-    let mut baker = Baker::discover(tmp.path(), tmp.path().join("vendor"), tmp.path().join("cache"));
+    let mut baker = Baker::discover(tmp, tmp.join("vendor"), tmp.join("cache"));
     baker.hyperframes = fake;
     baker.version = Some("stand-in".into());
     baker.browser = None;
+    (baker, overlay, manifest, log)
+}
 
+/// Two bakes of one key at once — an agent retrying a sample while the first is still
+/// baking — render once: the second waits and reads the first's result.
+#[test]
+fn concurrent_bakes_of_one_key_render_once() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (baker, overlay, manifest, log) = stand_in(tmp.path());
     let vars = Map::new();
     let req = BakeRequest { overlay_dir: &overlay, manifest: &manifest, vars: &vars, fps: Fps::new(6, 1), width: 64, height: 36, duration: 1.0, speed: 1.0 };
     let (a, b) = std::thread::scope(|s| {
@@ -207,7 +209,34 @@ fn concurrent_bakes_of_one_key_render_once() {
         let b = s.spawn(|| baker.bake(&req).expect("second bake"));
         (a.join().unwrap(), b.join().unwrap())
     });
-    assert_eq!(std::fs::read_to_string(&runs).unwrap().lines().count(), 1, "the renderer ran for each bake");
+    assert_eq!(std::fs::read_to_string(&log).unwrap().matches("start").count(), 1, "the renderer ran for each bake");
     assert_eq!(a.key, b.key);
     assert!(a.cached != b.cached, "one bake renders, the other reads it");
+}
+
+/// Bakes of different keys run side by side up to `concurrency` and no further, however
+/// many callers ask at once: the limit is the baker's, not the loop's that asks.
+#[test]
+fn renders_run_side_by_side_up_to_the_limit() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (mut baker, overlay, manifest, log) = stand_in(tmp.path());
+    baker.concurrency = 2;
+
+    // Four keys: the width is in the key, and the stand-in does not read it.
+    let vars = Map::new();
+    let reqs: Vec<BakeRequest> = (0..4).map(|i| BakeRequest { overlay_dir: &overlay, manifest: &manifest, vars: &vars, fps: Fps::new(6, 1), width: 64 + 2 * i, height: 36, duration: 1.0, speed: 1.0 }).collect();
+    std::thread::scope(|s| {
+        for req in &reqs {
+            let baker = &baker;
+            s.spawn(move || baker.bake(req).expect("bake"));
+        }
+    });
+    // The most running at once, counted down the log.
+    let text = std::fs::read_to_string(&log).unwrap();
+    let most = text.lines().scan(0, |now, l| {
+        *now += if l == "start" { 1 } else { -1 };
+        Some(*now)
+    });
+    assert_eq!(text.lines().count(), 8, "four renders, each a start and an end");
+    assert_eq!(most.max(), Some(2), "two at a time, never more");
 }

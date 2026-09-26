@@ -252,9 +252,32 @@ pub struct Render {
     /// Bin id of the sequence to render. The project's `master` when omitted.
     #[serde(default)]
     pub sequence: Option<String>,
+    /// Frames rendered at once (1–64); the machine's default when omitted. The file is the
+    /// same however many; fewer leaves the machine responsive.
+    #[serde(default)]
+    pub threads: Option<usize>,
+    /// Rate factor within the preset's `quality` (see `list_presets`): lower is better and
+    /// larger. The preset's own when omitted.
+    #[serde(default)]
+    pub quality: Option<u32>,
+    /// One of the preset's `speed.options`: faster is larger at the same quality. The
+    /// preset's own when omitted.
+    #[serde(default)]
+    pub speed: Option<String>,
     /// Seconds to wait for completion before returning the job id (default 900).
     #[serde(default)]
     pub wait_seconds: Option<u64>,
+}
+
+impl Render {
+    /// The `POST /api/render` body: what was given, the rest left to the daemon.
+    fn body(&self) -> Value {
+        json!({
+            "preset": self.preset.clone().unwrap_or_else(|| "youtube-1080p".into()),
+            "output": self.output, "range": self.range, "sequence": self.sequence,
+            "threads": self.threads, "quality": self.quality, "speed": self.speed,
+        })
+    }
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -382,7 +405,7 @@ impl KumaServer {
         Ok(CallToolResult::success(vec![ContentBlock::text(include_str!("../../../library/blueprints/CLAUDE.md"))]))
     }
 
-    #[tool(description = "List export presets (YouTube 1080p/4K, draft, VP9, ProRes). A 9:16 project renders vertical with the same presets.")]
+    #[tool(description = "List export presets (YouTube 1080p/4K, YouTube on the NVIDIA GPU, draft, VP9, ProRes); a 9:16 project renders vertical with any. Each has `quality` {min, max, default} and `speed` {options fastest first, default} that `render` may override (null where the codec has none), and `unavailable`: why this machine cannot use it, else null.")]
     async fn list_presets(&self) -> Result<CallToolResult, McpError> {
         self.get("/api/presets").await
     }
@@ -487,13 +510,9 @@ impl KumaServer {
         self.job("/api/bake", &json!({ "clips": p.clips }), Duration::from_secs(1800)).await
     }
 
-    #[tool(description = "Render the timeline to a video file with an export preset. Renders the master unless `sequence` names another one. Renders run one at a time: a render asked for while another encodes waits `queued`. Waits up to wait_seconds; if still running, returns the job id to poll with job_status or stop with cancel_job.")]
+    #[tool(description = "Render the timeline to a video file with an export preset. Renders the master unless `sequence` names another one. `threads`, `quality` and `speed` change this render only and default to the preset's (see list_presets). Renders run one at a time: a render asked for while another encodes waits `queued`. Waits up to wait_seconds; if still running, returns the job id to poll with job_status or stop with cancel_job.")]
     async fn render(&self, Parameters(p): Parameters<Render>) -> Result<CallToolResult, McpError> {
-        let body = json!({
-            "preset": p.preset.unwrap_or_else(|| "youtube-1080p".into()),
-            "output": p.output, "range": p.range, "sequence": p.sequence,
-        });
-        self.job("/api/render", &body, Duration::from_secs(p.wait_seconds.unwrap_or(900))).await
+        self.job("/api/render", &p.body(), Duration::from_secs(p.wait_seconds.unwrap_or(900))).await
     }
 
     #[tool(description = "Delete what the project's `.kuma/` cache no longer uses: superseded bakes, sampled frames, thumbnails of removed entries. sample_frames leaves PNGs behind, so prune after a long session. Returns what was freed and what is left.")]
@@ -553,6 +572,18 @@ mod tests {
         let s = KumaServer::new(Client::new("http://127.0.0.1:1"), Some(note));
         let n = s.get_info().instructions.unwrap().chars().count();
         assert!(n <= CLIENT_LIMIT, "instructions and note are {n} characters; move detail into timeline_guide.md");
+    }
+
+    /// The render options reach the daemon as given, and what is left out stays null for
+    /// the daemon to fill in — the preset's own, or the machine's.
+    #[test]
+    fn render_passes_its_options_to_the_daemon() {
+        let given: Render = serde_json::from_value(json!({ "preset": "draft", "threads": 2, "quality": 30, "speed": "veryfast" })).unwrap();
+        let body = given.body();
+        assert_eq!((&body["preset"], &body["threads"], &body["quality"], &body["speed"]), (&json!("draft"), &json!(2), &json!(30), &json!("veryfast")));
+        let bare = serde_json::from_value::<Render>(json!({})).unwrap().body();
+        assert_eq!(bare["preset"], "youtube-1080p");
+        assert!(bare["threads"].is_null() && bare["quality"].is_null() && bare["speed"].is_null(), "{bare}");
     }
 
     #[test]

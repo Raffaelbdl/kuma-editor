@@ -17,4 +17,4 @@ pub mod xml;
 pub use compile::{compile, CompileError, CompileOptions, OverlayBake, UnbakedPolicy};
 pub use kuma_core::Streams;
 pub use melt::{render, MeltError, RenderJob, RenderProgress};
-pub use presets::{ExportPreset, PRESETS};
+pub use presets::{ExportPreset, Tuning, PRESETS};

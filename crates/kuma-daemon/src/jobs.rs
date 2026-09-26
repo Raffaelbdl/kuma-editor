@@ -3,7 +3,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use kuma_core::manifest::Region;
@@ -501,7 +501,7 @@ pub fn bake_for(
         OverlayScope::Nested => true,
         OverlayScope::All => false,
     };
-    let (out, errs) = bake_clips(state, project, &overlay_clips(project, root, nested_only, within), progress, cancel, &|r| state.baker.bake(r).map(Some));
+    let (out, errs) = bake_clips(state, project, &overlay_clips(project, root, nested_only, within), progress, cancel, &|r, key| state.baker.bake_keyed(r, key).map(Some));
     if !nested_only {
         return strict((out, errs));
     }
@@ -518,7 +518,7 @@ pub fn bake_all(state: &AppState, project: &Project, only: Option<&[String]>, pr
         .map(|c| c.id.clone())
         .filter(|id| only.is_none_or(|o| o.contains(id)))
         .collect();
-    strict(bake_clips(state, project, &ids, progress, None, &|r| state.baker.bake(r).map(Some)))
+    strict(bake_clips(state, project, &ids, progress, None, &|r, key| state.baker.bake_keyed(r, key).map(Some)))
 }
 
 /// The bakes the cache already holds for every overlay `root` shows, nested ones included,
@@ -526,7 +526,7 @@ pub fn bake_all(state: &AppState, project: &Project, only: Option<&[String]>, pr
 /// keyed). What `kuma compile` includes without waiting on hyperframes.
 pub fn cached_bakes(state: &AppState, project: &Project, root: &str) -> (Bakes, Vec<String>) {
     let ids = overlay_clips(project, root, false, None);
-    let (out, _) = bake_clips(state, project, &ids, &|_, _| {}, None, &|r| state.baker.cached(r));
+    let (out, _) = bake_clips(state, project, &ids, &|_, _| {}, None, &|r, key| state.baker.cached_keyed(r, key));
     let missing = ids.into_iter().filter(|id| !out.contains_key(id)).collect();
     (out, missing)
 }
@@ -541,42 +541,109 @@ fn strict((out, errs): (Bakes, Vec<anyhow::Error>)) -> anyhow::Result<Bakes> {
     errs.into_iter().next().map_or(Ok(out), Err)
 }
 
-/// How `bake_clips` gets a clip's bake: `Baker::bake`, or `Baker::cached` to render none.
-type Fetch<'a> = &'a dyn Fn(&BakeRequest) -> Result<Option<kuma_overlay::BakeResult>, kuma_overlay::BakeError>;
+/// How `bake_clips` gets a clip's bake: `Baker::bake_keyed`, or `Baker::cached_keyed` to
+/// render none, given the key when it could be worked out. Called from several threads.
+type Fetch<'a> = &'a (dyn Fn(&BakeRequest, Option<&str>) -> Result<Option<kuma_overlay::BakeResult>, kuma_overlay::BakeError> + Sync);
 
 /// Bake the named overlay clips (cached), returning what succeeded and what did not.
 /// Whether a failure is fatal is the caller's to decide — the loop does not care. A set
-/// `cancel` stops it between two bakes, which the cache makes free to pick up again.
+/// `cancel` stops it starting another bake, which the cache makes free to pick up again.
 /// `fetch` bakes a clip or only looks it up; `None` from it leaves the clip out, no error.
+///
+/// Clips bake on up to `Baker::concurrency` threads, longest first. Clips that come to one
+/// key are fetched once, rather than parking a thread on `Baker::claim` for the length of a
+/// bake. Progress comes from this thread alone, and errors in `ids` order.
 fn bake_clips(state: &AppState, project: &Project, ids: &[String], progress: &dyn Fn(u8, &str), cancel: Option<&AtomicBool>, fetch: Fetch) -> (Bakes, Vec<anyhow::Error>) {
-    // Clips of one entry, and entries of one folder, share a manifest: read each once.
-    let mut folders: std::collections::HashMap<String, Result<crate::overlays::Resolved, String>> = Default::default();
-    let (mut out, mut errs) = (Bakes::new(), Vec::new());
-    let n = ids.len().max(1);
+    let cancelled = || cancel.is_some_and(|c| c.load(Ordering::SeqCst));
+    // Clips of one entry, and entries of one folder, share a manifest and a digest: read each once.
+    let mut folders: HashMap<&str, Result<(crate::overlays::Resolved, Option<String>), String>> = HashMap::new();
+    let mut clips = Vec::new();
     for (i, id) in ids.iter().enumerate() {
-        if cancel.is_some_and(|c| c.load(Ordering::SeqCst)) {
-            errs.push(anyhow::anyhow!("cancelled"));
-            break;
-        }
         let Some((_, _, clip)) = project.find_clip(id) else { continue };
         let Some(BinSource::Overlay { overlay, vars }) = project.item(clip).map(|i| &i.source) else { continue };
-        let resolved = folders.entry(overlay.clone()).or_insert_with(|| crate::overlays::resolve(state, overlay).map_err(|e| format!("{e:#}")));
-        let r = match resolved {
-            Ok(r) => r,
+        folders.entry(overlay.as_str()).or_insert_with(|| {
+            let r = crate::overlays::resolve(state, overlay).map_err(|e| format!("{e:#}"))?;
+            let digest = state.baker.folder_digest(&r.dir).ok();
+            Ok((r, digest))
+        });
+        clips.push((i, id.as_str(), overlay.as_str(), vars, clip));
+    }
+
+    /// One fetch, and the clips (index into `ids`, id) that share its key.
+    struct Task<'a> {
+        req: BakeRequest<'a>,
+        key: Option<String>,
+        label: String,
+        clips: Vec<(usize, &'a str)>,
+    }
+    let mut errs = std::collections::BTreeMap::new();
+    let mut tasks: Vec<Task> = Vec::new();
+    let mut by_key: HashMap<String, usize> = HashMap::new();
+    for (i, id, overlay, vars, clip) in clips {
+        let (r, digest) = match &folders[overlay] {
+            Ok(f) => f,
             Err(e) => {
-                errs.push(anyhow::anyhow!("clip `{id}`: {e}"));
+                errs.insert(i, anyhow::anyhow!("clip `{id}`: {e}"));
                 continue;
             }
         };
-        progress(((i * 100) / n) as u8, &format!("baking {id} ({overlay})"));
         let req = bake_request(r, vars, project, clip);
-        match fetch(&req) {
-            Ok(Some(r)) => {
-                out.insert(id.clone(), r.overlay_bake());
-            }
-            Ok(None) => {}
-            Err(e) => errs.push(anyhow::anyhow!("bake `{id}`: {e}")),
+        // A clip that cannot be keyed here gets a fetch of its own, which reports why.
+        let key = digest.as_deref().and_then(|d| state.baker.key_with(d, &req).ok());
+        if let Some(&t) = key.as_ref().and_then(|k| by_key.get(k)) {
+            tasks[t].clips.push((i, id));
+            continue;
         }
+        if let Some(k) = &key {
+            by_key.insert(k.clone(), tasks.len());
+        }
+        tasks.push(Task { req, key, label: format!("{id} ({overlay})"), clips: vec![(i, id)] });
+    }
+    // A still is one frame however long its clip. The sort is stable: ties keep `ids` order.
+    let frames = |t: &Task| if t.req.manifest.is_static { 0.0 } else { t.req.duration };
+    tasks.sort_by(|a, b| frames(b).total_cmp(&frames(a)));
+
+    let mut out = Bakes::new();
+    let next = AtomicUsize::new(0);
+    std::thread::scope(|s| {
+        // Each worker says when it starts a task (`None`) and when it has its result.
+        let (tx, rx) = std::sync::mpsc::channel();
+        for _ in 0..state.baker.concurrency.max(1).min(tasks.len()) {
+            let (tx, next, tasks) = (tx.clone(), &next, &tasks);
+            s.spawn(move || {
+                while !cancelled() {
+                    let t = next.fetch_add(1, Ordering::SeqCst);
+                    let Some(task) = tasks.get(t) else { break };
+                    let _ = tx.send((t, None));
+                    let _ = tx.send((t, Some(fetch(&task.req, task.key.as_deref()))));
+                }
+            });
+        }
+        drop(tx);
+        let (mut running, mut done) = (std::collections::BTreeSet::new(), 0);
+        for (t, fetched) in rx {
+            let task = &tasks[t];
+            if fetched.is_none() {
+                running.insert(t);
+            } else {
+                running.remove(&t);
+                done += 1;
+            }
+            match fetched {
+                Some(Ok(Some(r))) => out.extend(task.clips.iter().map(|(_, id)| (id.to_string(), r.overlay_bake()))),
+                Some(Err(e)) => errs.extend(task.clips.iter().map(|&(i, id)| (i, anyhow::anyhow!("bake `{id}`: {e}")))),
+                _ => {}
+            }
+            if !running.is_empty() {
+                let labels: Vec<&str> = running.iter().map(|&t| tasks[t].label.as_str()).collect();
+                progress((done * 100 / tasks.len()) as u8, &format!("baking {}", labels.join(", ")));
+            }
+        }
+    });
+    let mut errs: Vec<anyhow::Error> = errs.into_values().collect();
+    // Workers only stop short of the end when cancelled.
+    if next.into_inner() < tasks.len() {
+        errs.push(anyhow::anyhow!("cancelled"));
     }
     (out, errs)
 }
@@ -629,15 +696,40 @@ pub struct RenderRequest {
     /// Sequence to render. The master when absent — rendering a part is the exception.
     #[serde(default)]
     pub sequence: Option<String>,
+    /// What this render changes of its preset (`kuma_mlt::Tuning`); each absent is the
+    /// preset's own, or the machine's for threads.
+    #[serde(default)]
+    pub threads: Option<usize>,
+    #[serde(default)]
+    pub quality: Option<u32>,
+    #[serde(default)]
+    pub speed: Option<String>,
 }
 fn default_preset() -> String {
     "youtube-1080p".into()
 }
 
+impl Default for RenderRequest {
+    fn default() -> Self {
+        RenderRequest { preset: default_preset(), output: None, range: None, sequence: None, threads: None, quality: None, speed: None }
+    }
+}
+
+impl RenderRequest {
+    pub fn tuning(&self) -> kuma_mlt::Tuning {
+        kuma_mlt::Tuning { threads: self.threads, quality: self.quality, speed: self.speed.clone() }
+    }
+}
+
 /// A render request with its defaults filled in: sequence, preset, absolute output path.
+/// Its tuning, and whether this machine has the preset's encoder, are checked here too, so
+/// a bad one is refused when the render is asked for rather than when its turn comes. Can
+/// block the first time a hardware preset is asked for, while it is tried.
 pub fn render_target(state: &AppState, req: &RenderRequest) -> anyhow::Result<(String, &'static kuma_mlt::ExportPreset, PathBuf)> {
     let project = read(&state.project);
     let preset = kuma_mlt::presets::find(&req.preset).ok_or_else(|| anyhow::anyhow!("unknown preset `{}`", req.preset))?;
+    kuma_mlt::presets::available(preset).map_err(|why| anyhow::anyhow!("preset `{}` cannot run on this machine: {why}", preset.id))?;
+    preset.check(&req.tuning()).map_err(|e| anyhow::anyhow!(e))?;
     let sequence = project.sequence_or_master(req.sequence.as_deref()).map_err(|e| anyhow::anyhow!(e))?.clone();
     let output = req.output.clone().unwrap_or_else(|| {
         let name = if project.name.is_empty() { "kuma" } else { project.name.as_str() };
@@ -702,7 +794,7 @@ fn render_now(state: &AppState, req: &RenderRequest, progress: &dyn Fn(u8, &str)
         (f.in_, f.out)
     });
     let extra = vec![("ar".to_string(), project.sample_rate.to_string())];
-    let job = RenderJob { mlt_file: mlt.clone(), output: output.clone(), preset, range, extra };
+    let job = RenderJob { mlt_file: mlt.clone(), output: output.clone(), preset, range, tuning: req.tuning(), extra };
     progress(50, "rendering with melt");
     if let Err(e) = kuma_mlt::render(&job, cancel, |p| progress(50 + p.percent / 2, &format!("frame {}", p.frame))) {
         // A stopped encode leaves nothing behind.

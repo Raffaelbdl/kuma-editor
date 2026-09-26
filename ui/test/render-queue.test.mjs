@@ -132,4 +132,50 @@ describe("the render queue", { skip: why ? `skipping: ${why}` : false }, () => {
     assert.equal(await page.eval(`document.querySelector("#topbar .status").textContent`), "");
     assert.deepEqual(await page.eval(`fetch("/api/jobs").then(r => r.json()).then(j => j.jobs)`), []);
   });
+
+  it("asks for the threads, quality and speed chosen under Advanced, and only what the preset has", async () => {
+    await page.eval(`document.querySelector("#topbar button.primary").click()`);
+    await page.until(`${dialog}?.querySelector(".render-pane select:not([title]) option[value=draft]") && !${dialog}.querySelector(".render-pane").hidden`);
+    const adv = `${dialog}.querySelector(".render-advanced")`;
+    const field = (label) => `[...${adv}.querySelectorAll(".field")].find(f => f.querySelector("label").textContent === "${label}")`;
+    const pick = (preset) => `(() => { const p = ${dialog}.querySelector(".render-pane select:not([title])"); p.value = "${preset}"; p.dispatchEvent(new Event("change")); })()`;
+    const set = (label, value, event) => `(() => { const i = ${field(label)}.querySelector("input, select"); i.value = "${value}"; i.dispatchEvent(new Event("${event}")); })()`;
+
+    // A preset this machine cannot run is listed greyed, and only such a one.
+    const offered = await page.eval(`[...${dialog}.querySelectorAll(".render-pane select:not([title]) option")].map(o => [o.value, o.disabled])`);
+    const presets = await page.eval(`fetch("/api/presets").then(r => r.json()).then(ps => ps.map(p => [p.id, !!p.unavailable]))`);
+    assert.deepEqual(offered, presets);
+
+    // Folded by default; opening it shows the machine's threads as the placeholder.
+    assert.equal(await page.eval(`${adv}.classList.contains("closed")`), true);
+    await page.eval(`${adv}.querySelector(".disclose").click()`);
+    await page.until(`!${adv}.classList.contains("closed") && /^\\d+ \\(default\\)$/.test(${field("Threads")}.querySelector("input").placeholder)`);
+
+    // ProRes has neither to change; draft has both, with its own values as the defaults.
+    await page.eval(pick("prores-master"));
+    await page.until(`${field("Quality")}.hidden && ${field("Speed")}.hidden && !${adv}.querySelector(".render-fixed").hidden`);
+    await page.eval(pick("draft"));
+    await page.until(`!${field("Quality")}.hidden && !${field("Speed")}.hidden`);
+    assert.equal(await page.eval(`${field("Quality")}.querySelector("input").placeholder`), "26 (preset)");
+    assert.equal(await page.eval(`${field("Speed")}.querySelector("select").value`), "ultrafast");
+
+    await page.eval(set("Threads", "2", "input"));
+    await page.eval(set("Quality", "30", "input"));
+    await page.eval(set("Speed", "veryfast", "change"));
+    assert.equal(await page.eval(`${adv}.querySelector(".render-advanced-note").textContent`), "CRF 30 · veryfast · 2 threads");
+    await page.eval(`${dialog}.querySelector(".render-pane input").value = "renders/advanced.mp4"`);
+    await page.eval(`${dialog}.querySelector(".render-pane button.primary").click()`);
+    await page.until(`${JOB_IDS}.length === 1`);
+    const [id] = await page.eval(JOB_IDS);
+
+    // The daemon was asked for exactly those, and the queue says so.
+    const params = await page.eval(`fetch("/api/jobs?kind=render").then(r => r.json()).then(j => j.jobs[0].params)`);
+    assert.deepEqual([params.threads, params.quality, params.speed], [2, 30, "veryfast"]);
+    assert.match(await page.eval(`${row(id)}.querySelector(".job-title").textContent`), /draft \(CRF 30 · veryfast · 2 threads\)$/);
+    await page.until(`${status(id)} === "running" || ${status(id)} === "done"`, 60_000);
+    if (await page.eval(`${status(id)} === "running"`)) {
+      await page.eval(cancel(id));
+      await page.until(`${status(id)} === "cancelled"`, 20_000);
+    }
+  });
 });

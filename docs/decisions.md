@@ -366,7 +366,7 @@ unchanged.
 
 Tauri was the obvious choice and lost on one point. Its Linux webview is WebKitGTK, and
 the overlay baker drives **Chromium** (hyperframes on Playwright's
-`chromium_headless_shell`). The premise in the README is "same HTML, two consumers": live
+`chromium_headless_shell`). The premise in the manual (`docs/manual.md`) is "same HTML, two consumers": live
 DOM while you scrub, baked alpha at export. Previewing in one engine and baking in another
 breaks that quietly — a blend mode, a font metric or a filter that differs shows up only
 after a bake, which is the slowest possible feedback loop. Electron is Chromium, so the

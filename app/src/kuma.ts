@@ -125,7 +125,7 @@ function staleBinary(repo: string, version: string): string | null {
   return `the kuma binary is ${behind} commit${behind === "1" ? "" : "s"} behind this checkout — \`cargo build --release\` (an old binary writes projects this version cannot open)`;
 }
 
-/** The user library `kuma` itself would read, by the rule the README documents. */
+/** The user library `kuma` itself would read, by the rule the manual (docs/manual.md) documents. */
 function userLibraryDir(): string | null {
   const base = process.env.XDG_DATA_HOME || (process.env.HOME ? path.join(process.env.HOME, ".local", "share") : null);
   return base ? path.join(base, "kuma") : null;

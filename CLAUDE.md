@@ -2,7 +2,7 @@
 
 Hybrid video editor: the video half is MLT (the engine under Kdenlive/Shotcut), the
 overlay half is HTML/CSS/TS baked with alpha by hyperframes, both driven from one JSON
-project file and exposed to agents over MCP. Read `README.md` for the architecture and
+project file and exposed to agents over MCP. Read `docs/manual.md` for the architecture and
 `library/blueprints/CLAUDE.md` before authoring an overlay.
 
 **Picking this up? Read `docs/decisions.md` first.** It records why the model looks the
@@ -166,4 +166,4 @@ Chrome headless shell if hyperframes should not download one.
   implement `prompt`, `alert` or `confirm`, so UI code that calls them works in a browser
   and throws in the app. Ask for text with `askText` in `ui/src/modal.ts`.
 - Do not add a dependency on `mlt-sys`, `ffmpeg-next` or `wgpu` without a reason written
-  in the README; the PoC deliberately uses `melt`/`ffmpeg` as subprocesses.
+  in `docs/manual.md`; the PoC deliberately uses `melt`/`ffmpeg` as subprocesses.

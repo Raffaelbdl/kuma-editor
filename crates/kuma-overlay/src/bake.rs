@@ -39,8 +39,11 @@ pub struct BakeRequest<'a> {
     pub fps: Fps,
     pub width: u32,
     pub height: u32,
-    /// Clip duration on the timeline, seconds.
+    /// Clip duration on the timeline, seconds: what the overlay is told it lasts.
     pub duration: f64,
+    /// Frames it is placed on: `fps.length(duration)`, or one more or less when the clip's
+    /// ends fall between frames (0.9 s from 426.0 at 25 fps is placed on 23, not 22).
+    pub frames: i64,
     /// Playback speed; applied as a time remap of the seek (never by frame duplication).
     pub speed: f64,
 }
@@ -243,6 +246,10 @@ impl Baker {
         }
         let (duration, speed) = if req.manifest.is_static { (0.0, 0.0) } else { (req.duration, req.speed) };
         h.update(format!("\n{}/{} {}x{} d={duration:.6} s={speed:.6}", req.fps.num, req.fps.den, req.width, req.height).as_bytes());
+        // Only a clip between frames adds its count, so no other bake is re-keyed.
+        if !req.manifest.is_static && req.frames != req.fps.length(req.duration) {
+            h.update(format!(" n={}", req.frames).as_bytes());
+        }
         Ok(hex::encode(h.finalize())[..24].to_string())
     }
 
@@ -414,7 +421,7 @@ impl Baker {
         if req.speed < 0.0 && !is_still {
             files.reverse();
         }
-        let want = if is_still { 1 } else { req.fps.length(req.duration) };
+        let want = if is_still { 1 } else { req.frames };
         let got = (files.len() as i64).min(want);
         for (i, f) in files.iter().take(got as usize).enumerate() {
             std::fs::rename(f, frames_dir.join(frame_name(i as i64 + 1)))?;
@@ -460,16 +467,8 @@ impl Baker {
     /// length this preview does not have, so showing it would be a lie anyway. A still
     /// overlay renders one frame of it.
     pub fn preview_request<'a>(overlay_dir: &'a Path, manifest: &'a OverlayManifest, vars: &'a Map<String, Value>) -> BakeRequest<'a> {
-        BakeRequest {
-            overlay_dir,
-            manifest,
-            vars,
-            fps: Fps::new(PREVIEW_FPS as u32, 1),
-            width: 480,
-            height: 270,
-            duration: manifest.duration_default.min(3.0).max(1.0),
-            speed: 1.0,
-        }
+        let (fps, duration) = (Fps::new(PREVIEW_FPS as u32, 1), manifest.duration_default.min(3.0).max(1.0));
+        BakeRequest { overlay_dir, manifest, vars, fps, width: 480, height: 270, duration, frames: fps.length(duration), speed: 1.0 }
     }
 
     /// Bake a **moving** preview of an overlay with some vars: an animated WebP with alpha,

@@ -24,6 +24,7 @@ fn lint(baker: &Baker, dir: &Path) -> LintReport {
         width: 1920,
         height: 1080,
         duration: manifest.duration_default,
+        frames: Fps::new(30, 1).length(manifest.duration_default),
         speed: 1.0,
     };
     baker.lint(&req).expect("lint ran")

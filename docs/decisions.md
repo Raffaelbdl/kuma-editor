@@ -2503,6 +2503,22 @@ Its worst item, bakes read at 25 fps whatever the project's rate, had already be
    - `an_opaque_first_frame_keeps_the_sequence_alpha`: ffprobe reads the sequence as
      `rgba`, for a new bake and for one cached with the frame Chrome wrote.
 
+2. **A clip whose ends fall between frames baked a frame short** — **fixed**. A bake had
+   `fps.length(end - start)` frames and the compiler places `frame(end) - frame(start)`:
+   0.9 s from 426.0 at 25 fps is 22 frames baked and 23 placed. About a quarter of clips
+   timed to the hundredth disagree. The report saw that frame white, which was the missing
+   `force_fps`; with it, melt holds the last frame, seeking or playing, so what was left
+   was a one-frame freeze.
+   - A `BakeRequest` carries the frames its clip is placed on (`clip_frames`, in
+     `bake_request`) beside the duration, and bakes that many. The overlay is still told
+     its clip's duration, so a document an older kuma baked is the same document.
+   - **The key adds the count only when it differs from what the duration rounds to**, so
+     only clips between frames re-bake. Snapping the duration to whole frames instead
+     would have re-keyed nearly every bake at 29.97: 3.0 s is 90 frames either way, but
+     90 frames last 3.003 s.
+   - `a_clip_between_frames_bakes_the_frames_it_is_placed_on`, which pins two keys an
+     older kuma gave.
+
 ## Still open
 
 Nested sequences are done and the editor is an application now, so this list is the whole

@@ -72,7 +72,7 @@ fn the_live_set_is_every_clip_in_every_sequence_and_each_entrys_preview() {
     let folder = dir.path().join("overlays/probe");
     let manifest = kuma_core::manifest::OverlayManifest::load(&folder).unwrap();
     let vars = serde_json::Map::new();
-    let clip = |duration| BakeRequest { overlay_dir: &folder, manifest: &manifest, vars: &vars, fps: project.fps, width: 320, height: 240, duration, speed: 1.0 };
+    let clip = |duration| BakeRequest { overlay_dir: &folder, manifest: &manifest, vars: &vars, fps: project.fps, width: 320, height: 240, duration, frames: project.fps.length(duration), speed: 1.0 };
     let on_master = state.baker.key(&clip(4.0)).unwrap();
     let unplaced = state.baker.key(&clip(2.0)).unwrap();
     let preview = state.baker.key(&kuma_overlay::Baker::preview_request(&folder, &manifest, &vars)).unwrap();

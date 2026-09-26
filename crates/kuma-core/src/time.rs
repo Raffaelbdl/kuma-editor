@@ -105,6 +105,7 @@ impl Fps {
     pub fn length(&self, secs: f64) -> i64 {
         self.frame(secs).max(1)
     }
+
 }
 
 impl Default for Fps {

@@ -2478,6 +2478,31 @@ against hyperframes' own Chrome, the one the daemon's bakes use. Not changed: th
 path is hashed into every bake key, so finding one where none was found would re-bake every
 finished video, and change which Chrome draws it.
 
+## Field report: a pixel-art music video
+
+Six agents made a 90 s pixel-art music video: 21 tracks, 117 clips, 13 overlays drawn as
+480×270 canvases scaled up ×4. They worked with a binary from 2026-09-14, eight days older
+than the checkout, so the list was checked against the code before anything was recorded.
+Its worst item, bakes read at 25 fps whatever the project's rate, had already been fixed
+(`force_fps`, 59985a4).
+
+1. **An overlay that opens on an opaque frame lost its alpha for the whole clip** —
+   **fixed**. Chrome writes a screenshot with no transparent pixel as an RGB PNG, and
+   ffmpeg's image2 demuxer takes the whole sequence's pixel format from its first file, so
+   a flash or a wipe that opens full-frame composited as an opaque rectangle to its last
+   frame. `mlt_image_format=rgba` on the producer does not help, since the alpha is gone
+   before MLT sees the frame. Reproduced with melt: an RGB first frame over purple showed
+   the transparent pixels' colour, an RGBA one showed purple. Only the first file decides:
+   RGB frames later in an RGBA sequence composite as the opaque frames they are.
+   - A bake's first frame is rewritten as RGBA when its header says it has no alpha
+     (`first_frame_rgba`), with ffmpeg, pixels unchanged. One frame per bake, so nothing
+     is paid for the overlays that already begin transparent.
+   - **A cached bake is repaired when it is read**, not re-keyed: bumping `kuma-bake-v5`
+     would re-bake every finished video for the few that open opaque. The rewrite is
+     scratch (`.tmp-…`) until renamed, since readers may hold the bake.
+   - `an_opaque_first_frame_keeps_the_sequence_alpha`: ffprobe reads the sequence as
+     `rgba`, for a new bake and for one cached with the frame Chrome wrote.
+
 ## Still open
 
 Nested sequences are done and the editor is an application now, so this list is the whole

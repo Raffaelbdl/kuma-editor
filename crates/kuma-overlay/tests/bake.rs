@@ -211,10 +211,15 @@ fn an_apostrophe_in_a_var_leaves_the_vars_after_it_alone() {
 /// logs `start` and `end` for each run, in the order they happen; and a probe overlay. So
 /// these need no hyperframes and no browser.
 fn stand_in(tmp: &std::path::Path) -> (Baker, PathBuf, OverlayManifest, PathBuf) {
+    stand_in_writing(tmp, "for i in 1 2 3 4 5 6; do : > \"$6/f$i.png\"; done")
+}
+
+/// [`stand_in`], writing its frames into `$6` with the shell command `frames`.
+fn stand_in_writing(tmp: &std::path::Path, frames: &str) -> (Baker, PathBuf, OverlayManifest, PathBuf) {
     let log = tmp.join("log");
     let fake = tmp.join("hyperframes");
     // `render <src> --format png-sequence -o <dir> …`, so the output is `$6`.
-    let script = format!("#!/bin/sh\necho start >> '{0}'\nsleep 1\nmkdir -p \"$6\"\nfor i in 1 2 3 4 5 6; do : > \"$6/f$i.png\"; done\necho end >> '{0}'\n", log.display());
+    let script = format!("#!/bin/sh\necho start >> '{0}'\nsleep 1\nmkdir -p \"$6\"\n{frames}\necho end >> '{0}'\n", log.display());
     std::fs::write(&fake, script).unwrap();
     std::fs::set_permissions(&fake, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
     let overlay = tmp.join("probe");
@@ -272,4 +277,47 @@ fn renders_run_side_by_side_up_to_the_limit() {
     });
     assert_eq!(text.lines().count(), 8, "four renders, each a start and an end");
     assert_eq!(most.max(), Some(2), "two at a time, never more");
+}
+
+/// An opaque first frame, which Chrome writes as RGB, is made RGBA in a new bake and in
+/// one cached before the fix, so the sequence reads with alpha (`first_frame_rgba`).
+#[test]
+fn an_opaque_first_frame_keeps_the_sequence_alpha() {
+    if !kuma_overlay::media::ffprobe_available() {
+        eprintln!("ffmpeg unavailable; skipping");
+        return;
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("src-frames");
+    std::fs::create_dir_all(&src).unwrap();
+    let make = |i: u32, lavfi: &str, pix_fmt: &str| {
+        let out = src.join(format!("f{i}.png")).to_string_lossy().into_owned();
+        kuma_overlay::media::ffmpeg(&["-f", "lavfi", "-i", lavfi, "-frames:v", "1", "-pix_fmt", pix_fmt, &out].map(String::from)).unwrap();
+    };
+    make(1, "color=white:s=64x36", "rgb24");
+    for i in 2..=6 {
+        make(i, "color=black@0:s=64x36,format=rgba", "rgba");
+    }
+    let (baker, overlay, manifest, _) = stand_in_writing(tmp.path(), &format!("cp '{}'/*.png \"$6\"/", src.display()));
+    let vars = Map::new();
+    let req = BakeRequest { overlay_dir: &overlay, manifest: &manifest, vars: &vars, fps: Fps::new(6, 1), width: 64, height: 36, duration: 1.0, speed: 1.0 };
+    let pix_fmt = |seq: &std::path::Path| {
+        let probe = std::process::Command::new("ffprobe")
+            .args(["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=pix_fmt", "-of", "csv=p=0"])
+            .arg(seq)
+            .output()
+            .expect("ffprobe");
+        String::from_utf8_lossy(&probe.stdout).trim().to_string()
+    };
+    let r = baker.bake(&req).expect("bake");
+    assert_eq!(pix_fmt(&r.resource), "rgba", "the sequence reads without alpha");
+    assert_eq!(rgba_at(&r.dir.join("frames/frame_000001.png"), 5, 5), [255, 255, 255, 255], "the first frame is still opaque white");
+    assert_eq!(rgba_at(&r.dir.join("frames/frame_000002.png"), 5, 5)[3], 0, "later frames are untouched");
+
+    // A bake cached by an older kuma, first frame as Chrome wrote it.
+    std::fs::copy(src.join("f1.png"), r.dir.join("frames/frame_000001.png")).unwrap();
+    assert_eq!(pix_fmt(&r.resource), "rgb24");
+    let cached = baker.bake(&req).expect("cached bake");
+    assert!(cached.cached);
+    assert_eq!(pix_fmt(&cached.resource), "rgba", "the cached sequence was not repaired");
 }

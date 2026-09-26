@@ -109,7 +109,9 @@ across projects**, not part of the codebase: they live in a user library at
 `~/.local/share/kuma/{blueprints,presets,design-systems,fonts}`
 (`$XDG_DATA_HOME/kuma`), plus any directories in `KUMA_LIBRARY` (a `:`-separated path
 list); presets are also read from a project's own `presets/`. Later entries win on an id
-clash. The repository ships a starter set under `library/`; install it once:
+clash. The repository ships a starter set under `library/`. Until a user library has
+blueprints of its own, and when `KUMA_LIBRARY` is unset, every daemon reads that starter set
+from the checkout (the desktop app says so in its launcher); install it once to make it yours:
 
 ```
 kuma library                                 # copies library/{blueprints,presets,design-systems,fonts} → ~/.local/share/kuma; adds what is missing (--force to overwrite)
@@ -304,6 +306,14 @@ kuma mcp-config            # writes .mcp.json next to the project file (merges i
 kuma mcp-config --print
 ```
 
+Both also install the **`kuma-video` skill** into `.claude/skills/kuma-video/`: how to make
+a video through the MCP, from a screen recording to a motion-graphics explainer (footage,
+overlays, loudness, pacing, working as code, CJK type, review), with scripts that check
+what kuma does not (`reading_audit.py`, `contact_sheet.py` of a rendered file, …). Its source is `library/skills/kuma-video/`; the
+binary embeds it, so a project gets the version that documents that `kuma`, and
+`kuma mcp-config` refreshes it (other files in that folder are left alone). `kuma doctor`
+says whether a project's copy is current.
+
 The equivalent by hand, for any of Claude Code's scopes:
 
 ```
@@ -315,12 +325,17 @@ claude mcp add --scope user    kuma -- kuma mcp --project /abs/path.kuma.json  #
 `kuma mcp` starts the daemon in-process if none is running on the port, so the browser UI
 and the agent always share one state. Tools: `timeline_guide`, `get_project`, `get_schema`, `apply_edits`,
 `undo`, `redo`, `validate_project`, `list_presets`, `add_media`, `probe_media`,
-`transcribe`, **`sample_frames`**, `bake_overlay`, `render`, `job_status`, `cancel_job`,
+`transcribe`, **`sample_frames`**, `measure_audio`, `bake_overlay`, `render`, `job_status`, `cancel_job`,
 `prune_cache`, `health`, and for overlays `overlay_guide`, `new_overlay`, `check_overlay`,
 `import_overlay`, `make_overlay_unique`, `list_blueprints`, `add_blueprint`,
 `save_blueprint`. An agent scaffolds an overlay with `new_overlay`, checks it with
 `check_overlay` and adds it with `import_overlay`; `sample_frames` with `overlay` (a bin id)
-shows one entry on its own. `overlay_guide` returns `library/blueprints/CLAUDE.md`, and
+shows one entry on its own, and with `times` and `tile` a contact sheet of chosen moments.
+`apply_edits` takes a patch inline or, with `patch_path`, from a file in the project, so a
+script's patch of any size is one exact edit. `measure_audio` meters a sequence's sound (EBU
+R128, per chapter, loudest moments, silences), rendered through the real graph without
+baking anything. A server that outlives a rebuild of `kuma` says so on every call, since its
+tools are the old build's. `overlay_guide` returns `library/blueprints/CLAUDE.md`, and
 `timeline_guide` returns `crates/kuma-mcp/src/timeline_guide.md`: the server's own
 instructions are kept under the 2048 characters a client shows and point at both.
 
@@ -330,6 +345,8 @@ instructions are kept under the 2048 characters a client shows and point at both
 kuma render --preset youtube-1080p         # bakes overlays, compiles, renders with melt
 kuma sample 12.0 14.0 --count 4 --rect 400,300,800,400
 kuma sample 0 3 --count 6 --overlay paris          # one overlay entry on its own, no placement (--backdrop, --duration, --frame 1080x1920)
+kuma sample --times 3.2,3.8,41.7,42.3 --tile      # chosen moments, and one captioned contact sheet of them
+kuma measure-audio                         # loudness (LUFS), true peak, per chapter, loudest moments, silences
 kuma bake                                  # bake all overlay clips (cached by content)
 kuma cache                                 # how big .kuma/ is: bakes, sampled frames, thumbnails
 kuma cache prune                           # delete what the project no longer uses (--all: every bake and frame)
@@ -340,7 +357,7 @@ kuma transcribe screen --replace           # re-transcribe in place: same entry,
 kuma new-overlay my-tag                    # a contract-abiding skeleton in the project's overlays/ (--blueprint for the user library)
 kuma import-overlay overlays/my-tag        # add that folder to the bin (--id)
 kuma lint                                  # every blueprint and every folder the bin uses (exit 1 on errors); `kuma lint overlays/my-tag` or `kuma lint location-tag` for one
-kuma validate | thumbs | library | doctor
+kuma validate | thumbs | library | doctor  # validate also names text the entries' fonts will not draw
 ```
 
 ## The project file
@@ -527,7 +544,11 @@ and the values live with the rest of the project's decisions.
   driver. The other presets encode on the CPU.
 - **A blueprint is missing from the Blueprints tab** — `GET /api/health` lists
   `blueprint_dirs` (where kuma looked) and `blueprint_errors` (manifests that failed to load
-  and why). No library at all: run `kuma library`.
+  and why). No library at all: run `kuma library` (until then the checkout's starter set
+  stands in, unless `KUMA_LIBRARY` is set).
+- **A title renders in the wrong font** — `validate_project` (`kuma validate`) warns about
+  every entry whose `font` names a family that is not installed, and about text none of an
+  entry's fonts can set; a render's result lists the same `warnings`.
 - **A project from before blueprints will not open** ("names the template …") — the
   message says how to convert the entry.
 - **Bakes fail with "timelines did not become ready"** — an overlay without a GSAP timeline

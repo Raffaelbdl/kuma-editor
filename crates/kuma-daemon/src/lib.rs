@@ -16,11 +16,15 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-pub use state::{add_missing, copy_tree, default_library_dirs, AppState, Config};
+pub use state::{add_missing, copy_tree, default_library_dirs, library_dirs, AppState, Config};
 
 /// Start serving. Resolves when the listener is bound; the server runs in the background.
 pub async fn serve(config: Config) -> anyhow::Result<(Arc<AppState>, SocketAddr)> {
     let state = Arc::new(AppState::load(config)?);
+    let shipped = state.config.repo_root.join("library");
+    if state.config.library_dirs.contains(&shipped) {
+        tracing::info!("no library installed; reading the starter set in {} (`kuma library` installs it)", shipped.display());
+    }
     let app = api::router(state.clone());
     let listener = tokio::net::TcpListener::bind(state.config.bind).await?;
     let addr = listener.local_addr()?;

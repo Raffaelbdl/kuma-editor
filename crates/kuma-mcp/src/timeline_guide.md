@@ -4,7 +4,8 @@ The timeline is a JSON project (get it with `get_project`, its
 JSON Schema with `get_schema`). Times are seconds (f64); clip `end` is exclusive; `fps` is rational.
 Tracks composite bottom-up. Edit with `apply_edits` (RFC 6902 JSON Patch) and pass the `base_revision`
 you read, so you never overwrite a human edit made meanwhile. Every edit is validated atomically and
-undoable; label your edits with `note`.
+undoable; label your edits with `note`. A patch a script wrote goes in a file in the project, and
+`apply_edits` with `patch_path` applies it in one call, whatever its size.
 
 Everything placeable lives in `bin`, keyed by a short id: media files (`{"source": {"path": …}}`),
 configured overlays (`{"source": {"overlay": "overlays/<name>", "vars": {…}}}`), colours, and *sequences*
@@ -47,7 +48,10 @@ Overlays are live DOM in the preview and baked to alpha frames at export. For a 
 vars — set those rather than writing markup. A `font` var takes a family name from `list_fonts`;
 `add_font` copies a new one in (a `.ttc` collection is split into its faces). Each family lists the
 `scripts` it can set: text in any other (kanji in a Latin font, say) is drawn by the baking machine's
-fonts, not the project's, so pick or add a family that covers the text.
+fonts, not the project's, so pick or add a family that covers the text. `validate_project` warns
+about every entry whose `font` var names a family that is not installed, whose text has characters
+none of its fonts can set (it lists them), or that shows CJK text on a page whose `lang` is another
+language; a render's result carries the same `warnings` for what it drew.
 
 To look at the footage, call `sample_frames` with a time range (and an optional pixel `rect`); it
 returns the composited frames as images plus their PNG paths. To look at an *overlay you are
@@ -56,7 +60,10 @@ own over a backdrop, with no placement anywhere, and `t0`/`t1` count from the st
 so an animation can be checked frame by frame before anything is placed in the cut — in another
 frame with `frame: [1080, 1920]`, and over `backdrop` white and black to see whether it stays
 legible over footage you have not seen. It is the same view the editor's overlay workbench gives a
-person, and `overlay_guide` ends with the checklist to run through.
+person, and `overlay_guide` ends with the checklist to run through. To look at chosen moments,
+pass `times` (`[3.5, 41.7, 42.3]`) instead of a range: each bakes only what it shows, and with
+`tile: true` they come back as one captioned contact sheet, so every cut and a moment either side
+of it is one image.
 
 A sample is exact, so every overlay it shows is baked first, for its whole clip: a changed
 overlay costs about 0.1 s per frame at 1080p before the first frame comes back, while an
@@ -68,6 +75,12 @@ and sample the sequence once it looks right. A sample still baking after `wait_s
 its job id and what it is baking; call `sample_frames` with `job` set to that id to keep waiting.
 Asking again with the same arguments costs nothing extra either: an overlay already baking is
 waited for, not baked twice.
+
+Sound: `measure_audio` renders a sequence's sound through the real graph (no overlay is baked) and
+meters it: integrated loudness (LUFS), range and true peak (dBTP), overall and per chapter (each
+clip placing a sequence, or the `sections` you name), the loudest moments and every silent stretch
+of a second or more. kuma has no limiter, so loudness and peak are whatever the gains make them:
+measure before a final render, and read the silences against what you meant.
 
 Subtitles: `transcribe` runs a local speech-to-text model (whisper.cpp) and adds a `subtitles`
 overlay entry whose `cues` var is `[{start, end, text}, …]` in source seconds, one cue per word (the

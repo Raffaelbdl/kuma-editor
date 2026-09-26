@@ -174,6 +174,39 @@ fn a_drawn_overlay_bakes_the_same_pixels_twice() {
     assert_eq!(alpha(&frames[0], w / 2, h / 2), 0, "nothing is drawn at t = 0");
 }
 
+/// A var holding `Let's` opened a CSS string that ran over the custom properties after it,
+/// to the end of the stylesheet or the next var's apostrophe, so the overlay drew its
+/// fallbacks with no error. The colour var sits between two such vars: a red frame is the
+/// colour read, blue its fallback.
+#[test]
+fn an_apostrophe_in_a_var_leaves_the_vars_after_it_alone() {
+    let root = repo_root();
+    let tmp = tempfile::tempdir().unwrap();
+    let baker = Baker::discover(&root, root.join("library/blueprints/_vendor"), tmp.path().join("cache"));
+    if baker.available().is_err() || (baker.browser.is_none() && std::env::var_os("KUMA_ALLOW_BROWSER_DOWNLOAD").is_none()) {
+        eprintln!("hyperframes or a browser is unavailable; skipping");
+        return;
+    }
+    let dir = tmp.path().join("swatch");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("overlay.json"), r##"{ "name": "Swatch", "static": true, "vars": {
+        "a_title": { "type": "string", "default": "" }, "b_color": { "type": "color", "default": "#00ff00" },
+        "c_note": { "type": "string", "default": "" } } }"##).unwrap();
+    std::fs::write(dir.join("index.html"), r#"<!doctype html><html><head><style>
+        html, body { margin: 0; background: transparent; }
+        #fill { position: absolute; inset: 0; background: var(--var-b_color, #0000ff); }
+        #fill::after { content: var(--var-a_title) var(--var-c_note); }
+      </style></head><body>
+      <div id="root" data-composition-id="main" data-no-timeline data-start="0" data-duration="1" data-width="64" data-height="36"><div id="fill"></div></div>
+      </body></html>"#).unwrap();
+    let manifest = OverlayManifest::load(&dir).unwrap();
+    let vars: Map<String, serde_json::Value> = json!({ "a_title": "Let's go", "b_color": "#ff0000", "c_note": "it's red" }).as_object().unwrap().clone();
+    let req = BakeRequest { overlay_dir: &dir, manifest: &manifest, vars: &vars, fps: Fps::new(30, 1), width: 64, height: 36, duration: 1.0, speed: 1.0 };
+    let r = baker.bake(&req).expect("bake");
+    let px = rgba_at(&r.resource, 32, 18);
+    assert!(px[0] > 200 && px[2] < 50, "the colour after the apostrophe was not read: {px:?}");
+}
+
 /// A baker whose renderer is a stand-in that takes a second, writes six empty frames, and
 /// logs `start` and `end` for each run, in the order they happen; and a probe overlay. So
 /// these need no hyperframes and no browser.

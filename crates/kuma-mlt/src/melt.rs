@@ -154,6 +154,14 @@ fn run_cancellable(mut cmd: Command, cancel: &AtomicBool, mut on_line: impl FnMu
     let pid = child.id();
     let stderr = child.stderr.take().expect("piped stderr");
     let finished = AtomicBool::new(false);
+    // Set however the reading ends, a panic in `on_line` included: the watcher waits for it,
+    // and the scope for the watcher, so a callback that panicked used to hang the caller.
+    struct Finished<'a>(&'a AtomicBool);
+    impl Drop for Finished<'_> {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
     std::thread::scope(|scope| -> Result<(), MeltError> {
         // The reader blocks on stderr, so the flag is watched beside it. Killing the child
         // closes the pipe, which ends the read.
@@ -176,21 +184,16 @@ fn run_cancellable(mut cmd: Command, cancel: &AtomicBool, mut on_line: impl FnMu
             kill_tree(pid, "KILL");
         });
         // melt writes progress as "Current Frame: N, percentage: P" on stderr, using \r.
-        let read = (|| -> Result<(), MeltError> {
-            for chunk in BufReader::new(stderr).split(b'\r') {
-                let chunk = chunk?;
-                for line in chunk.split(|b| *b == b'\n') {
-                    let line = String::from_utf8_lossy(line);
-                    let line = line.trim();
-                    if !line.is_empty() {
-                        on_line(line);
-                    }
+        let _finished = Finished(&finished);
+        for chunk in BufReader::new(stderr).split(b'\r') {
+            for line in chunk?.split(|b| *b == b'\n') {
+                let line = String::from_utf8_lossy(line);
+                if !line.trim().is_empty() {
+                    on_line(line.trim());
                 }
             }
-            Ok(())
-        })();
-        finished.store(true, Ordering::SeqCst);
-        read
+        }
+        Ok(())
     })?;
     let status = child.wait()?;
     if cancel.load(Ordering::SeqCst) {
@@ -309,6 +312,18 @@ mod tests {
             // The backgrounded sleep holds stderr open too: returning at all means it died.
             assert!(matches!(run_cancellable(cmd, &cancel, |_| {}), Err(MeltError::Cancelled)));
         });
+        assert!(started.elapsed() < Duration::from_secs(10));
+    }
+
+    /// A callback that panics fails the run instead of hanging it: the watcher beside the
+    /// reader is told the reading is over however it ended.
+    #[test]
+    fn a_panicking_callback_does_not_hang_the_run() {
+        let mut cmd = Command::new("sh");
+        cmd.args(["-c", "echo one >&2"]);
+        let started = std::time::Instant::now();
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run_cancellable(cmd, &AtomicBool::new(false), |_| panic!("a bad callback"))));
+        assert!(outcome.is_err(), "the panic reaches the caller");
         assert!(started.elapsed() < Duration::from_secs(10));
     }
 

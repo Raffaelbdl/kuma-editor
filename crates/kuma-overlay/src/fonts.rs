@@ -70,11 +70,42 @@ pub struct Face {
     /// written with one of them still finds the family (`FontLibrary::resolve`).
     #[serde(skip)]
     pub aliases: Vec<String>,
+    /// Every character it has a glyph for: what says a text var's characters are drawn by
+    /// this font rather than by whatever the baking machine falls back to.
+    #[serde(skip)]
+    pub coverage: Coverage,
 }
 
 impl Face {
     fn ext(&self) -> String {
         self.path.extension().and_then(|e| e.to_str()).unwrap_or("ttf").to_ascii_lowercase()
+    }
+}
+
+/// The characters a font maps to glyphs, as sorted inclusive ranges of code points. Shared,
+/// since a face is cloned on every lookup and a CJK face maps tens of thousands.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Coverage(Arc<[(u32, u32)]>);
+
+impl Coverage {
+    /// From code points in any order.
+    fn from_points(mut points: Vec<u32>) -> Self {
+        points.sort_unstable();
+        points.dedup();
+        let mut ranges: Vec<(u32, u32)> = Vec::new();
+        for p in points {
+            match ranges.last_mut() {
+                Some((_, end)) if *end + 1 == p => *end = p,
+                _ => ranges.push((p, p)),
+            }
+        }
+        Coverage(ranges.into())
+    }
+
+    pub fn contains(&self, c: char) -> bool {
+        let c = c as u32;
+        let i = self.0.partition_point(|&(_, end)| end < c);
+        self.0.get(i).is_some_and(|&(start, _)| start <= c)
     }
 }
 
@@ -96,6 +127,13 @@ impl Family {
     /// The family's folder in a font path: the name reduced to `[a-z0-9-]`.
     pub fn slug(&self) -> String {
         slug(&self.name)
+    }
+
+    /// Whether some face of the family draws `c`. Per family, not per face: which face a
+    /// weight picks is the browser's business, and a family whose bold lacks a character its
+    /// regular has is rare enough not to guess about.
+    pub fn covers(&self, c: char) -> bool {
+        self.faces.iter().any(|f| f.coverage.contains(c))
     }
 
     /// Each face under the one name it is staged and served as, `<i>.<ext>`.
@@ -167,7 +205,8 @@ pub fn read_face(path: &Path) -> Option<(String, Face)> {
     let data = std::fs::read(path).ok()?;
     let info = parse_face(&data)?;
     let digest = hex::encode(Sha256::digest(&data));
-    Some((info.family, Face { path: path.to_path_buf(), weight: info.weight, italic: info.italic, digest, scripts: info.scripts, aliases: info.aliases }))
+    let face = Face { path: path.to_path_buf(), weight: info.weight, italic: info.italic, digest, scripts: info.scripts, aliases: info.aliases, coverage: info.coverage };
+    Some((info.family, face))
 }
 
 /// What a font's bytes say about it.
@@ -178,6 +217,7 @@ pub struct FaceInfo {
     pub italic: bool,
     pub scripts: Vec<&'static str>,
     pub aliases: Vec<String>,
+    pub coverage: Coverage,
 }
 
 /// Family, weight range, slant and scripts from a font's bytes.
@@ -211,7 +251,17 @@ pub fn parse_face(data: &[u8]) -> Option<FaceInfo> {
         .map(|a| [a.min_value.round() as u16, a.max_value.round() as u16])
         .unwrap_or([fixed, fixed]);
     let scripts = SCRIPTS.iter().filter(|(_, c)| face.glyph_index(*c).is_some()).map(|(s, _)| *s).collect();
-    Some(FaceInfo { family, weight, italic: face.is_italic() || face.is_oblique(), scripts, aliases })
+    // Every Unicode subtable's mapped code points; a code point mapped to glyph 0 is
+    // `.notdef`, the missing-glyph box, and does not count.
+    let mut points = Vec::new();
+    for sub in face.tables().cmap.into_iter().flat_map(|c| c.subtables).filter(|s| s.is_unicode()) {
+        sub.codepoints(|p| {
+            if sub.glyph_index(p).is_some_and(|g| g.0 != 0) {
+                points.push(p);
+            }
+        });
+    }
+    Some(FaceInfo { family, weight, italic: face.is_italic() || face.is_oblique(), scripts, aliases, coverage: Coverage::from_points(points) })
 }
 
 /// The faces of a font collection as standalone fonts, each with the extension its
@@ -460,6 +510,23 @@ mod tests {
         assert!(!inter.scripts.contains(&"han") && !inter.scripts.contains(&"kana"), "{:?}", inter.scripts);
         let lib = FontLibrary::new(vec![(repo_fonts(), Origin::Library)]);
         assert!(lib.families()["Inter"].scripts.contains(&"latin"));
+    }
+
+    /// Coverage is the font's own cmap: every character it maps, and nothing else.
+    #[test]
+    fn a_face_knows_every_character_it_draws() {
+        let c = Coverage::from_points(vec![0x41, 0x43, 0x42, 0x61, 0x41]);
+        assert_eq!(&*c.0, [(0x41, 0x43), (0x61, 0x61)]);
+        assert!(c.contains('A') && c.contains('C') && c.contains('a'));
+        assert!(!c.contains('@') && !c.contains('D') && !c.contains('b') && !Coverage::default().contains('A'));
+
+        let inter = parse_face(&std::fs::read(repo_fonts().join("Inter/Inter[opsz,wght].ttf")).unwrap()).unwrap();
+        for ch in ['A', 'é', 'Ж', '→'] {
+            assert!(inter.coverage.contains(ch), "Inter draws {ch}");
+        }
+        assert!(!inter.coverage.contains('承') && !inter.coverage.contains('あ'));
+        let lib = FontLibrary::new(vec![(repo_fonts(), Origin::Library)]);
+        assert!(lib.families()["Inter"].covers('é'));
     }
 
     #[test]

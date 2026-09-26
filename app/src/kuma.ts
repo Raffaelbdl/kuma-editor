@@ -132,14 +132,13 @@ function userLibraryDir(): string | null {
 }
 
 /**
- * `KUMA_LIBRARY` to hand the daemon, or null to leave it alone.
+ * The checkout's starter library a daemon falls back on, or null when it reads the user's.
  *
- * With no library installed a daemon loads zero blueprints, and an overlay renders
- * without `_vendor/kuma.css` — blank, which reads as a broken overlay. The checkout
- * ships the starter set, so point at it.
- *
- * Only as a fallback: `KUMA_LIBRARY` outranks the user library, so setting it always
- * would shadow blueprints they had installed and edited, and only inside the app.
+ * With no library installed a daemon would load zero blueprints, and an overlay would
+ * render without `_vendor/kuma.css` — blank, which reads as a broken overlay. So until the
+ * user library has blueprints, and when `KUMA_LIBRARY` is unset, the daemon reads the
+ * checkout's (`library_dirs` in `crates/kuma-daemon/src/state.rs`). This is the same rule,
+ * so the launcher can say so.
  */
 export function libraryFallback(repo: string): string | null {
   if (process.env.KUMA_LIBRARY) return null;

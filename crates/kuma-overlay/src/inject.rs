@@ -44,27 +44,13 @@ impl Contract<'_> {
     pub fn apply(&self, html: &str) -> String {
         let html = stamp_root(html, self.duration, self.width, self.height);
         // One custom property per scalar var; a point becomes `--var-<name>-x`/`-y`.
-        // Values are user text: keep them from closing the declaration or the block.
         let css = |name: &str, v: &Value| {
             if let (Some(family), true) = (v.as_str(), self.fonts.vars.iter().any(|f| f == name)) {
                 return format!("--var-{name}: {};", crate::fonts::css_string(family));
             }
-            let s = match v {
-                Value::String(s) => s.clone(),
-                other => other.to_string(),
-            };
-            format!("--var-{name}: {};", s.replace([';', '{', '}', '<', '>', '\n'], " "))
+            format!("--var-{name}: {};", css_value(&scalar_text(v)))
         };
-        let css_vars: String = self
-            .vars
-            .iter()
-            .flat_map(|(k, v)| match v {
-                Value::Object(o) => o.iter().map(|(sub, x)| css(&format!("{k}-{sub}"), x)).collect::<Vec<_>>(),
-                Value::Array(_) => vec![],
-                other => vec![css(k, other)],
-            })
-            .collect::<Vec<_>>()
-            .join(" ");
+        let css_vars: String = scalars(self.vars).map(|(name, v)| css(&name, v)).collect::<Vec<_>>().join(" ");
         // `</script>` inside a string var must not end the inline script.
         let payload = json!({
             "vars": self.vars,
@@ -94,10 +80,100 @@ impl Contract<'_> {
     }
 }
 
+/// Every var that becomes a custom property, under its property name: a point as its two
+/// axes, a list (cues) as none, since it has no CSS spelling.
+fn scalars(vars: &Map<String, Value>) -> impl Iterator<Item = (String, &Value)> {
+    vars.iter().flat_map(|(k, v)| match v {
+        Value::Object(o) => o.iter().map(|(sub, x)| (format!("{k}-{sub}"), x)).collect::<Vec<_>>(),
+        Value::Array(_) => vec![],
+        other => vec![(k.clone(), other)],
+    })
+}
+
+fn scalar_text(v: &Value) -> String {
+    match v {
+        Value::String(s) => s.clone(),
+        other => other.to_string(),
+    }
+}
+
+/// What a value always lost: anything that could close the declaration or the block.
+fn css_safe(s: &str) -> String {
+    s.replace([';', '{', '}', '<', '>', '\n'], " ")
+}
+
+/// A var's value as the right-hand side of its custom property. Values are user text and
+/// are kept as written, since a string var may hold a CSS value (a shadow, a quoted string
+/// for `content:`), except for what would run on past the end of the declaration:
+///
+/// - a quote whose string never closes, as in `Let's go`, which swallowed every var after
+///   it and rendered the overlay with nothing wrong reported;
+/// - a comment that never ends;
+/// - a backslash at the very end, which would escape the `;`;
+/// - `\r` and form feeds, which end a string as a newline does.
+///
+/// Each is escaped, so the value reads as the characters it holds and the declarations
+/// after it survive. Anything that could close the declaration or the block becomes a
+/// space, as it always has.
+pub fn css_value(s: &str) -> String {
+    let c: Vec<char> = css_safe(s).replace(['\r', '\x0c'], " ").chars().collect();
+    // The index of the quote closing a string opened just before `from`, skipping escapes.
+    let closing = |from: usize, q: char| {
+        let mut j = from;
+        while j < c.len() {
+            match c[j] {
+                '\\' => j += 2,
+                x if x == q => return Some(j),
+                _ => j += 1,
+            }
+        }
+        None
+    };
+    let comment_end = |from: usize| (from..c.len().saturating_sub(1)).find(|&j| c[j] == '*' && c[j + 1] == '/').map(|j| j + 2);
+    let mut out = String::with_capacity(c.len());
+    let mut i = 0;
+    while i < c.len() {
+        // Where what starts here ends; `None` for an opener nothing closes.
+        let end = match c[i] {
+            q @ ('"' | '\'') => closing(i + 1, q).map(|e| e + 1),
+            '\\' => (i + 1 < c.len()).then_some(i + 2),
+            '/' if c.get(i + 1) == Some(&'*') => comment_end(i + 2),
+            _ => Some(i + 1),
+        };
+        match end {
+            Some(end) => {
+                out.extend(&c[i..end]);
+                i = end;
+            }
+            // Escaped, and read as the character it is: `\'`, `\"`, `\\`, and `/\` before a `*`.
+            None => {
+                out.extend(if c[i] == '/' { ['/', '\\'] } else { ['\\', c[i]] });
+                i += 1;
+            }
+        }
+    }
+    out
+}
+
+/// The declarations `css_value` writes differently from how kuma wrote them before it
+/// repaired unclosed quotes, for the bake key. The key hashes the vars, not the document
+/// they are injected into, so these are what must move it; every other bake is the same
+/// document it always was, and stays cached. Empty for almost every overlay.
+pub fn repaired_css(vars: &Map<String, Value>, font_vars: &[String]) -> String {
+    scalars(vars)
+        .filter(|(name, _)| !font_vars.contains(name))
+        .filter_map(|(name, v)| {
+            let s = scalar_text(v);
+            let written = css_value(&s);
+            (written != css_safe(&s)).then(|| format!("\n{name}: {written}"))
+        })
+        .collect()
+}
+
 /// An opening tag (or comment/doctype) in the markup: its name and byte span.
-struct Tag<'a> {
-    name: &'a str,
-    text: &'a str,
+pub(crate) struct Tag<'a> {
+    pub(crate) name: &'a str,
+    pub(crate) text: &'a str,
     start: usize,
     end: usize,
 }
@@ -105,7 +181,7 @@ struct Tag<'a> {
 /// Every `<…>` in document order, skipping text and the contents of `<script>`,
 /// `<style>` and comments so a selector or string mentioning `data-composition-id`
 /// cannot be mistaken for the root.
-fn tags(html: &str) -> impl Iterator<Item = Tag<'_>> {
+pub(crate) fn tags(html: &str) -> impl Iterator<Item = Tag<'_>> {
     let mut pos = 0;
     std::iter::from_fn(move || {
         let lt = pos + html[pos..].find('<')?;
@@ -195,12 +271,13 @@ fn attr_num(tag: &str, name: &str) -> Option<f64> {
     tag[vs..ve].trim().parse().ok()
 }
 
-/// Byte span of the value of attribute `name` inside an opening tag (quoted or bare).
-fn attr_value_span(tag: &str, name: &str) -> Option<(usize, usize)> {
+/// Byte span of the value of attribute `name` inside an opening tag (quoted or bare). A
+/// namespaced one (`xml:lang`) is another attribute.
+pub(crate) fn attr_value_span(tag: &str, name: &str) -> Option<(usize, usize)> {
     let mut from = 0;
     while let Some(rel) = tag[from..].find(name) {
         let i = from + rel;
-        let boundary = i == 0 || !(tag.as_bytes()[i - 1].is_ascii_alphanumeric() || tag.as_bytes()[i - 1] == b'-');
+        let boundary = i == 0 || !(tag.as_bytes()[i - 1].is_ascii_alphanumeric() || matches!(tag.as_bytes()[i - 1], b'-' | b':'));
         let after = &tag[i + name.len()..];
         let trimmed = after.trim_start();
         if boundary && trimmed.starts_with('=') {
@@ -324,5 +401,46 @@ mod tests {
         let style = &html[html.find("<style id=\"kuma-vars\">").unwrap() + 22..];
         let style = &style[..style.find("</style>").unwrap()];
         assert!(!style.contains('<') && style.contains("--var-sub: x    body   display:none;"), "{style}");
+    }
+
+    /// A lone apostrophe opened a CSS string that swallowed every declaration after it, so
+    /// an overlay rendered with its vars missing and no error. What cannot close is escaped;
+    /// what does close is a value someone wrote on purpose and is kept.
+    #[test]
+    fn a_quote_that_never_closes_cannot_swallow_the_vars_after_it() {
+        for (given, written) in [
+            ("Let's go", r"Let\'s go"),
+            (r#"say "hi"#, r#"say \"hi"#),
+            (r#"It's "fine""#, r#"It\'s "fine""#),
+            (r#""quoted, on purpose""#, r#""quoted, on purpose""#),
+            ("'a' and 'b'", "'a' and 'b'"),
+            (r"'escaped \' inside'", r"'escaped \' inside'"),
+            (r"C:\", r"C:\\"),
+            (r"a\b", r"a\b"),
+            ("and/or /* note", r"and/or /\* note"),
+            ("a /* closed */ b", "a /* closed */ b"),
+            ("0 2px 4px rgba(0,0,0,.5)", "0 2px 4px rgba(0,0,0,.5)"),
+            ("line\r\nbreak", "line  break"),
+        ] {
+            assert_eq!(css_value(given), written, "{given:?}");
+        }
+        let mut vars = Map::new();
+        vars.insert("a_title".into(), json!("Let's go"));
+        vars.insert("b_color".into(), json!("#ff0000"));
+        let c = Contract { vars: &vars, fps: Fps::new(30, 1), width: 1920, height: 1080, duration: 2.0, speed: 1.0, bake: true, clip: None, head_extra: "", fonts: FontCss::default() };
+        let html = c.apply("<html><head></head><body><div data-composition-id=\"main\"></div></body></html>");
+        assert!(html.contains(r"--var-a_title: Let\'s go; --var-b_color: #ff0000;"), "{html}");
+    }
+
+    /// Only a var the repair changed moves its bake key; every other bake is the same
+    /// document it was, and a font var is written as a family name, not by `css_value`.
+    #[test]
+    fn only_a_repaired_var_needs_a_new_bake() {
+        let repaired = |v: serde_json::Value, fonts: &[String]| repaired_css(v.as_object().unwrap(), fonts);
+        assert_eq!(repaired(json!({ "label": "Hello", "at": { "x": 0.5 }, "cues": [{ "text": "it's" }] }), &[]), "");
+        assert_eq!(repaired(json!({ "label": "a; b { c }" }), &[]), "", "what was always replaced is not a repair");
+        assert_eq!(repaired(json!({ "label": "Let's go" }), &[]), "\nlabel: Let\\'s go");
+        assert_eq!(repaired(json!({ "at": { "x": "it's" } }), &[]), "\nat-x: it\\'s");
+        assert_eq!(repaired(json!({ "font": "Rock 'n' Roll One's" }), &["font".into()]), "");
     }
 }

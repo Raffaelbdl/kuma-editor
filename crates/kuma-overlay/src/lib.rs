@@ -11,6 +11,7 @@ pub mod bake;
 pub mod fonts;
 pub mod inject;
 pub mod lint;
+pub mod loudness;
 pub mod media;
 pub mod scaffold;
 pub mod transcribe;

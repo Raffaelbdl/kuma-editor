@@ -136,6 +136,19 @@ macro_rules! youtube_h264 {
     };
 }
 
+/// The graph's sound alone, as 32-bit float WAV: what `measure_audio` meters. Not offered
+/// for export. Float, because kuma has no limiter and a mix can go over full scale, which
+/// 16-bit samples would clip before the meter saw it.
+pub static AUDIO_ONLY: ExportPreset = ExportPreset {
+    id: "audio-only",
+    description: "the sound of a sequence as float WAV, for measuring",
+    extension: "wav",
+    properties: &[("f", "wav"), ("acodec", "pcm_f32le"), ("ac", "2"), ("vn", "1")],
+    quality: None,
+    speed: None,
+    needs: None,
+};
+
 pub const PRESETS: &[ExportPreset] = &[
     ExportPreset {
         id: "youtube-1080p",

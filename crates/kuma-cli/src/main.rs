@@ -4,6 +4,8 @@ use std::path::{Path, PathBuf};
 use clap::{Parser, Subcommand};
 use kuma_daemon::{default_library_dirs, find_repo_root, Config};
 
+mod skill;
+
 const VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), " (", env!("KUMA_GIT"), ")");
 const DEFAULT_BIND: &str = "127.0.0.1:7455";
 
@@ -47,6 +49,7 @@ enum Cmd {
     Bake { clips: Vec<String> },
     /// Sample composited frames as PNGs.
     Sample {
+        #[arg(default_value_t = 0.0)]
         t0: f64,
         t1: Option<f64>,
         /// Frames over [t0, t1]: 1 without t1, 5 across a range.
@@ -74,6 +77,25 @@ enum Cmd {
         /// the orientation the project is not in.
         #[arg(long)]
         frame: Option<String>,
+        /// Frames at exactly these times, `t,t,…` seconds, instead of t0/t1/--count.
+        #[arg(long, value_delimiter = ',')]
+        times: Option<Vec<f64>>,
+        /// Also tile the frames into one captioned contact sheet.
+        #[arg(long)]
+        tile: bool,
+        /// Columns of the sheet (about square by default).
+        #[arg(long)]
+        columns: Option<u32>,
+    },
+    /// Measure how loud a sequence is (EBU R128): overall, per chapter, its loudest moments
+    /// and its silences. Renders the sound only, so no overlay is baked.
+    MeasureAudio {
+        /// Sequence (bin id) to use instead of the project's master.
+        #[arg(long)]
+        sequence: Option<String>,
+        /// Only `start,end` seconds of it.
+        #[arg(long, value_delimiter = ',', num_args = 2)]
+        range: Option<Vec<f64>>,
     },
     /// Show how big the project's `.kuma/` cache is, or prune it.
     Cache {
@@ -162,7 +184,8 @@ enum Cmd {
         #[arg(long, default_value_t = 1)]
         max_chars: u32,
     },
-    /// Create a new empty project file (and a project-scoped `.mcp.json` for Claude Code).
+    /// Create a new empty project file (and, for Claude Code, a project-scoped `.mcp.json`
+    /// and the `kuma-video` skill in `.claude/skills/`).
     Init {
         #[arg(long, default_value_t = 1920)]
         width: u32,
@@ -170,11 +193,12 @@ enum Cmd {
         height: u32,
         #[arg(long, default_value = "30")]
         fps: String,
-        /// Do not write `.mcp.json` next to the project.
+        /// Do not write `.mcp.json` or the skill next to the project.
         #[arg(long)]
         no_mcp: bool,
     },
-    /// Write (or print) a project-scoped `.mcp.json` so `claude` in this directory gets the kuma server.
+    /// Write (or print) a project-scoped `.mcp.json` so `claude` in this directory gets the kuma
+    /// server, and install (or refresh) the `kuma-video` skill in `.claude/skills/`.
     McpConfig {
         /// Print the JSON instead of writing the file.
         #[arg(long)]
@@ -203,7 +227,8 @@ fn repo_root(cli: &Cli) -> anyhow::Result<PathBuf> {
 }
 
 fn config(cli: &Cli) -> anyhow::Result<Config> {
-    Ok(Config { project_file: absolute(&cli.project)?, repo_root: repo_root(cli)?, library_dirs: default_library_dirs(), bind: cli.bind })
+    let repo_root = repo_root(cli)?;
+    Ok(Config { project_file: absolute(&cli.project)?, library_dirs: kuma_daemon::library_dirs(&repo_root), repo_root, bind: cli.bind })
 }
 
 /// Load the project state for one-shot commands (no server).
@@ -270,7 +295,7 @@ async fn main() -> anyhow::Result<()> {
                 println!("{k}\t{}", b.resource.display());
             }
         }
-        Cmd::Sample { t0, t1, count, rect, width, sequence, overlay, duration, backdrop, frame } => {
+        Cmd::Sample { t0, t1, count, rect, width, sequence, overlay, duration, backdrop, frame, times, tile, columns } => {
             let state = open(&cli)?;
             let rect = rect
                 .as_deref()
@@ -299,10 +324,21 @@ async fn main() -> anyhow::Result<()> {
                 backdrop: backdrop.clone(),
                 frame_width: frame.map(|(w, _)| w),
                 frame_height: frame.map(|(_, h)| h),
+                times: times.clone(),
+                tile: *tile,
+                columns: *columns,
                 ..Default::default()
             };
-            let samples = tokio::task::spawn_blocking(move || kuma_daemon::jobs::sample_frames(&state, &req, &|_, _| {})).await??;
-            println!("{}", serde_json::to_string_pretty(&samples)?);
+            let out = tokio::task::spawn_blocking(move || kuma_daemon::jobs::sample(&state, &req, &|_, _| {})).await??;
+            // The list of frames, as it always printed; with a sheet, the sheet beside it.
+            let out = if *tile { out } else { out["samples"].clone() };
+            println!("{}", serde_json::to_string_pretty(&out)?);
+        }
+        Cmd::MeasureAudio { sequence, range } => {
+            let state = open(&cli)?;
+            let req = kuma_daemon::jobs::MeasureRequest { sequence: sequence.clone(), range: range.as_deref().map(|r| (r[0], r[1])), sections: None };
+            let out = tokio::task::spawn_blocking(move || kuma_daemon::jobs::measure_audio(&state, &req, &|p, m| eprintln!("[{p:3}%] {m}"), &Default::default())).await??;
+            println!("{}", serde_json::to_string_pretty(&out)?);
         }
         Cmd::Cache { action } => {
             // Through a running daemon, so the prune waits for its renders.
@@ -344,7 +380,7 @@ async fn main() -> anyhow::Result<()> {
         Cmd::Validate => {
             let state = open(&cli)?;
             let project = state.project.read().unwrap().clone();
-            let issues = kuma_core::validate(&project, &state.validation_context());
+            let issues = state.validate(&project);
             println!("{}", serde_json::to_string_pretty(&issues)?);
             if kuma_core::validate::has_errors(&issues) {
                 std::process::exit(1);
@@ -485,6 +521,7 @@ async fn main() -> anyhow::Result<()> {
                 let out = path.parent().unwrap().join(".mcp.json");
                 write_mcp_config(&out, &json)?;
                 println!("wrote {}", out.display());
+                println!("wrote {}", skill::install(path.parent().unwrap())?.display());
             }
         }
         Cmd::Init { width, height, fps, no_mcp } => {
@@ -514,6 +551,7 @@ async fn main() -> anyhow::Result<()> {
                     }
                     Err(e) => eprintln!("note: {e}; skipping .mcp.json (run `kuma mcp-config` later)"),
                 }
+                println!("wrote {} — the agent skill for making a video with kuma", skill::install(path.parent().unwrap())?.display());
             }
         }
     }
@@ -555,6 +593,15 @@ async fn doctor(cli: &Cli) -> anyhow::Result<()> {
     }
     let mcp = cfg.project_root().join(".mcp.json");
     println!("mcp config    {}", if mcp.is_file() { mcp.display().to_string() } else { "none — run `kuma mcp-config`".into() });
+    let skill_dir = skill::dir(&cfg.project_root());
+    println!(
+        "agent skill   {}",
+        match skill::status(&cfg.project_root()) {
+            "current" => skill_dir.display().to_string(),
+            "stale" => format!("{} is from another kuma — run `kuma mcp-config` to refresh it", skill_dir.display()),
+            _ => "none — run `kuma mcp-config`".into(),
+        }
+    );
     Ok(())
 }
 

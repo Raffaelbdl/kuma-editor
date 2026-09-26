@@ -17,6 +17,7 @@ use std::process::Command;
 
 use kuma_core::manifest::OverlayManifest;
 use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
 
 use crate::bake::{BakeError, BakeRequest, Baker};
 
@@ -38,14 +39,20 @@ pub struct Finding {
     /// What to do about it, in one line.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fix: Option<String>,
+    /// The var it is about, when it is about one: where a project check points.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub var: Option<String>,
 }
 
 impl Finding {
     fn error(code: &str, message: impl Into<String>, fix: &str) -> Self {
-        Finding { level: Level::Error, code: code.into(), message: message.into(), fix: Some(fix.into()) }
+        Finding { level: Level::Error, code: code.into(), message: message.into(), fix: Some(fix.into()), var: None }
     }
     fn warn(code: &str, message: impl Into<String>, fix: &str) -> Self {
-        Finding { level: Level::Warning, code: code.into(), message: message.into(), fix: Some(fix.into()) }
+        Finding { level: Level::Warning, code: code.into(), message: message.into(), fix: Some(fix.into()), var: None }
+    }
+    fn about(self, var: &str) -> Self {
+        Finding { var: Some(var.into()), ..self }
     }
 }
 
@@ -114,19 +121,7 @@ impl Baker {
         let staged = self.stage(req, &work.path().join("src"))?;
         let html = std::fs::read_to_string(&staged.entry)?;
         let mut findings = contract_findings(&html, req.manifest, &staged.dir);
-        // A family that is not installed renders in the overlay's fallback stack: legal,
-        // and not what anyone picked.
-        let missing = self.fonts(req.manifest, &req.manifest.resolve_vars(req.vars)).missing;
-        // A collection in a font folder is not read; saying so is the difference between
-        // "not installed" and "installed the wrong way".
-        let collections = if missing.is_empty() { Vec::new() } else { self.fonts.collections() };
-        for (k, family) in missing {
-            let mut fix = String::from("add the font file to the project's `fonts/` (or a library's), or pick one that is installed");
-            if let Some(c) = collections.first() {
-                fix.push_str(&format!("; `{}` is a collection, which is only read once `add_font` has split it into its faces", c.display()));
-            }
-            findings.push(Finding { level: Level::Warning, code: "font_missing".into(), message: format!("`{k}` names the font `{family}`, which is not installed"), fix: Some(fix) });
-        }
+        findings.extend(self.font_findings(req.manifest, &req.manifest.resolve_vars(req.vars), &html));
 
         let renderer_skipped = match hyperframes_lint(&self.hyperframes, &staged.dir) {
             Ok(mut fs) => {
@@ -147,6 +142,120 @@ impl Baker {
         let overlay = req.overlay_dir.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
         Ok(LintReport { overlay, findings, renderer_skipped })
     }
+
+    /// What an overlay's text will not be drawn in, with these (resolved) vars and its
+    /// markup: a family a `font` var names that is not installed, characters none of its
+    /// `font` vars' families can set, and CJK text on a page whose `lang` is not a CJK one.
+    /// Each is legal and renders, in whatever the baking machine falls back to — a
+    /// different picture on another machine, and not what anyone picked. Part of `lint`,
+    /// and what the daemon checks every overlay entry of a project for.
+    pub fn font_findings(&self, manifest: &OverlayManifest, vars: &Map<String, Value>, html: &str) -> Vec<Finding> {
+        let mut out = Vec::new();
+        let fonts = self.fonts(manifest, vars);
+        // A collection in a font folder is not read; saying so is the difference between
+        // "not installed" and "installed the wrong way".
+        let collections = if fonts.missing.is_empty() { Vec::new() } else { self.fonts.collections() };
+        for (k, family) in &fonts.missing {
+            let mut fix = String::from("add the font file to the project's `fonts/` (or a library's), or pick one that is installed");
+            if let Some(c) = collections.first() {
+                fix.push_str(&format!("; `{}` is a collection, which is only read once `add_font` has split it into its faces", c.display()));
+            }
+            out.push(Finding::warn("font_missing", format!("`{k}` names the font `{family}`, which is not installed"), &fix).about(k));
+        }
+
+        let text = shown_text(manifest, vars);
+        // Which font draws which var is the markup's business; any family a `font` var
+        // names may be the one, so a character is covered when one of them has it. With no
+        // family at all to go on (none declared, or none installed) there is nothing to
+        // check against: the overlay names its own fonts, or `font_missing` said why not.
+        if !fonts.families.is_empty() {
+            let names: Vec<&str> = fonts.families.iter().map(|f| f.name.as_str()).collect();
+            for (var, s) in &text {
+                let lacking: std::collections::BTreeSet<char> = s.chars().filter(|&c| !c.is_whitespace() && !c.is_control() && !fonts.families.iter().any(|f| f.covers(c))).collect();
+                if lacking.is_empty() {
+                    continue;
+                }
+                let listed: String = lacking.iter().take(40).collect();
+                let more = if lacking.len() > 40 { format!(" and {} more", lacking.len() - 40) } else { String::new() };
+                out.push(
+                    Finding::warn(
+                        "glyphs_missing",
+                        format!("`{var}` shows {listed}{more}, which none of its fonts ({}) can set: the baking machine's fallback font draws them", names.join(", ")),
+                        "pick a family that covers the text (`list_fonts` gives each one's `scripts`), or add one with `add_font` and name it in a `font` var the overlay falls back to",
+                    )
+                    .about(var),
+                );
+            }
+        }
+
+        // Han characters are drawn in the regional forms the page's language picks, and a
+        // fallback is chosen by it too: under `lang="en"` a Linux machine draws kanji from its
+        // Simplified Chinese face.
+        let lang = page_lang(html);
+        let wanted = |s: &str| {
+            if s.chars().any(is_kana) {
+                Some("`lang=\"ja\"`")
+            } else if s.chars().any(is_hangul) {
+                Some("`lang=\"ko\"`")
+            } else if s.chars().any(is_han) {
+                Some("`lang=\"ja\"` or `lang=\"zh\"`")
+            } else {
+                None
+            }
+        };
+        let cjk_page = lang.as_deref().and_then(|l| l.split('-').next()).is_some_and(|p| ["ja", "zh", "ko"].iter().any(|c| p.eq_ignore_ascii_case(c)));
+        if let Some((var, want)) = text.iter().find_map(|(var, s)| wanted(s).map(|w| (var, w))).filter(|_| !cjk_page) {
+            let is = lang.map(|l| format!("`lang=\"{l}\"`")).unwrap_or_else(|| "no `lang`".into());
+            out.push(
+                Finding::warn(
+                    "cjk_lang",
+                    format!("`{var}` shows CJK text and the page has {is}: which glyph forms are drawn, and which font falls back, follow the page's language"),
+                    &format!("put {want} on the overlay's `<html>`, whichever is the language of its text"),
+                )
+                .about(var),
+            );
+        }
+        out
+    }
+}
+
+/// What an overlay shows as text, by var: `string` and `text` vars, and the lines of a
+/// `cues` list. A `string` can hold a CSS value too; any font someone picks sets those.
+fn shown_text(manifest: &OverlayManifest, vars: &Map<String, Value>) -> Vec<(String, String)> {
+    use kuma_core::VarType;
+    manifest
+        .vars
+        .iter()
+        .filter_map(|(k, spec)| {
+            let v = vars.get(k)?;
+            let s = match spec.ty {
+                VarType::String | VarType::Text => v.as_str()?.to_string(),
+                VarType::Cues => v.as_array()?.iter().filter_map(|c| c.get("text")?.as_str()).collect::<Vec<_>>().join("\n"),
+                _ => return None,
+            };
+            (!s.trim().is_empty()).then(|| (k.clone(), s))
+        })
+        .collect()
+}
+
+fn is_kana(c: char) -> bool {
+    matches!(c as u32, 0x3040..=0x30FF | 0x31F0..=0x31FF | 0xFF66..=0xFF9F)
+}
+
+fn is_hangul(c: char) -> bool {
+    matches!(c as u32, 0xAC00..=0xD7AF | 0x1100..=0x11FF | 0x3130..=0x318F)
+}
+
+fn is_han(c: char) -> bool {
+    matches!(c as u32, 0x3400..=0x4DBF | 0x4E00..=0x9FFF | 0xF900..=0xFAFF | 0x20000..=0x3134F)
+}
+
+/// The `lang` of the document's `<html>`, if it has one.
+fn page_lang(html: &str) -> Option<String> {
+    let tag = crate::inject::tags(html).find(|t| t.name.eq_ignore_ascii_case("html"))?;
+    let (a, b) = crate::inject::attr_value_span(tag.text, "lang")?;
+    // A bare value runs to the end of the tag.
+    Some(tag.text[a..b].trim_end_matches(['>', '/']).trim().to_string()).filter(|v| !v.is_empty())
 }
 
 /// hyperframes rules that do not apply to an overlay kuma stages. `studio_*` are about
@@ -444,7 +553,7 @@ fn parse_hyperframes(text: &str) -> Vec<Finding> {
         };
         let rest = rest.trim();
         let (code, message) = rest.split_once(':').unwrap_or(("hyperframes", rest));
-        out.push(Finding { level, code: code.trim().to_string(), message: message.trim().to_string(), fix: None });
+        out.push(Finding { level, code: code.trim().to_string(), message: message.trim().to_string(), fix: None, var: None });
     }
     // The summary line is the one thing least likely to change shape. If it counts errors
     // that the lines above did not yield — the glyphs changed, say — the report must not
@@ -452,7 +561,7 @@ fn parse_hyperframes(text: &str) -> Vec<Finding> {
     if out.is_empty() {
         if let Some(n) = text.lines().find_map(|l| l.trim().split_once(" error(s)")).and_then(|(head, _)| head.rsplit(' ').next()?.parse::<usize>().ok()) {
             if n > 0 {
-                out.push(Finding { level: Level::Error, code: "hyperframes".into(), message: format!("hyperframes reported {n} error(s) in a form this version does not parse:\n{}", text.trim()), fix: None });
+                out.push(Finding { level: Level::Error, code: "hyperframes".into(), message: format!("hyperframes reported {n} error(s) in a form this version does not parse:\n{}", text.trim()), fix: None, var: None });
             }
         }
     }
@@ -600,6 +709,66 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let codes: Vec<String> = contract_findings(html, &manifest(&["anchor"]), dir.path()).into_iter().map(|f| f.code).collect();
         assert!(!codes.contains(&"unused_var".to_string()), "{codes:?}");
+    }
+
+    /// A baker that reads the starter fonts, and a manifest of a font var and two text vars.
+    fn with_fonts() -> (Baker, OverlayManifest) {
+        let tmp = std::env::temp_dir();
+        let fonts = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../library/fonts");
+        let baker = Baker::discover(&tmp, tmp.join("no-vendor"), tmp.join("no-cache")).with_fonts(vec![(fonts, crate::fonts::Origin::Library)]);
+        let manifest = serde_json::from_value(serde_json::json!({ "vars": {
+            "font": { "type": "font", "default": "Inter" },
+            "label": { "type": "text", "default": "" },
+            "accent": { "type": "color", "default": "#ffffff" },
+            "cues": { "type": "cues", "default": [] }
+        } }))
+        .unwrap();
+        (baker, manifest)
+    }
+
+    fn vars(v: serde_json::Value) -> Map<String, Value> {
+        v.as_object().unwrap().clone()
+    }
+
+    /// Kanji in a Latin font's label are drawn by the machine's CJK fallback, in forms the
+    /// page's language picks: both are said, with the characters, and nothing is said about
+    /// text the font sets or vars that are not text.
+    #[test]
+    fn text_its_fonts_cannot_set_is_named() {
+        let (baker, m) = with_fonts();
+        let en = r#"<!doctype html><html lang="en"><body></body></html>"#;
+        let found = baker.font_findings(&m, &vars(serde_json::json!({ "font": "Inter", "label": "承ける take it up", "accent": "#fff", "cues": [{ "start": 0, "end": 1, "text": "Café" }] })), en);
+        let codes: Vec<&str> = found.iter().map(|f| f.code.as_str()).collect();
+        assert_eq!(codes, ["glyphs_missing", "cjk_lang"], "{found:?}");
+        assert!(found[0].message.contains("ける承") && found[0].message.contains("Inter"), "{}", found[0].message);
+        assert_eq!(found[0].var.as_deref(), Some("label"));
+        assert!(found[1].fix.as_deref().unwrap().contains(r#"lang="ja""#), "kana say Japanese: {:?}", found[1].fix);
+
+        // Set in a font that has the characters, on a Japanese page: nothing to say.
+        let ja = r#"<html lang="ja-JP"><body></body></html>"#;
+        assert!(baker.font_findings(&m, &vars(serde_json::json!({ "font": "Inter", "label": "take it up" })), ja).is_empty());
+        let found = baker.font_findings(&m, &vars(serde_json::json!({ "font": "Inter", "label": "承" })), ja);
+        assert_eq!(found.iter().map(|f| f.code.as_str()).collect::<Vec<_>>(), ["glyphs_missing"], "{found:?}");
+    }
+
+    /// A family that is not installed is `font_missing`, and there is then nothing to check
+    /// coverage against; an overlay with no `font` var names its own fonts.
+    #[test]
+    fn coverage_is_checked_only_against_fonts_that_are_there() {
+        let (baker, m) = with_fonts();
+        let page = "<html><body></body></html>";
+        let found = baker.font_findings(&m, &vars(serde_json::json!({ "font": "Nope Sans", "label": "é" })), page);
+        assert_eq!(found.iter().map(|f| (f.code.as_str(), f.var.as_deref())).collect::<Vec<_>>(), [("font_missing", Some("font"))], "{found:?}");
+        let bare: OverlayManifest = serde_json::from_value(serde_json::json!({ "vars": { "label": { "type": "string", "default": "" } } })).unwrap();
+        assert!(baker.font_findings(&bare, &vars(serde_json::json!({ "label": "ÿ ☃" })), page).is_empty());
+    }
+
+    #[test]
+    fn the_page_language_is_read_from_the_html_tag() {
+        assert_eq!(page_lang(r#"<!doctype html><HTML class="x" lang='ja'><head lang="en">"#).as_deref(), Some("ja"));
+        assert_eq!(page_lang(r#"<html xml:lang="ja"><body>"#), None);
+        assert_eq!(page_lang("<htmlx lang=ja><html lang=ko>").as_deref(), Some("ko"));
+        assert_eq!(page_lang("<div>no page</div>"), None);
     }
 
     /// A format change must not turn into a clean report.

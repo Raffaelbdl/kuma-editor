@@ -458,8 +458,8 @@ impl From<bool> for OverlayScope {
 }
 
 /// Overlay clips in the sequences `root` reaches; `nested_only` drops `root`'s own, and
-/// `within` keeps only those overlapping a time window — on `root` alone, where clip times
-/// are the times asked for. A nested sequence's clips are in its own time, and one
+/// `within` keeps only those drawn at one of its times, in frames as the sample renders them
+/// — on `root` alone, where clip times are the times asked for. A nested sequence's clips are in its own time, and one
 /// sequence can be placed more than once, so there is no single window to test them
 /// against.
 ///
@@ -467,7 +467,7 @@ impl From<bool> for OverlayScope {
 /// every preview reload nor a browser run on every render. A *hidden* track does not:
 /// the compiler still emits its clips (hiding is per track, on the tractor), so skipping
 /// their bakes would make a render fail with "overlay clip has no bake".
-fn overlay_clips(project: &Project, root: &str, nested_only: bool, within: Option<(f64, f64)>) -> Vec<String> {
+fn overlay_clips(project: &Project, root: &str, nested_only: bool, within: Option<&[f64]>) -> Vec<String> {
     project
         .compile_order(root)
         .unwrap_or_default()
@@ -476,7 +476,10 @@ fn overlay_clips(project: &Project, root: &str, nested_only: bool, within: Optio
         .filter_map(|id| Some((id.as_str() == root, project.seq(id)?)))
         .flat_map(|(is_root, s)| s.clips().map(move |c| (is_root, c)))
         .filter(|(is_root, c)| match within {
-            Some((t0, t1)) if *is_root => c.end > t0 && c.start <= t1,
+            Some(times) if *is_root => {
+                let f = project.fps.clip_frames(c.start, c.end);
+                times.iter().any(|&t| (f.in_..=f.out).contains(&project.fps.frame(t)))
+            }
             _ => true,
         })
         .filter(|(_, c)| project.item(c).is_some_and(kuma_core::BinItem::is_overlay))
@@ -492,7 +495,7 @@ pub fn bake_for(
     project: &Project,
     root: &str,
     scope: OverlayScope,
-    within: Option<(f64, f64)>,
+    within: Option<&[f64]>,
     progress: &dyn Fn(u8, &str),
     cancel: Option<&AtomicBool>,
 ) -> anyhow::Result<Bakes> {
@@ -803,10 +806,139 @@ fn render_now(state: &AppState, req: &RenderRequest, progress: &dyn Fn(u8, &str)
         }
         return Err(e.into());
     }
-    Ok(serde_json::json!({ "output": output, "mlt": mlt, "preset": preset.id, "sequence": sequence }))
+    // What the render drew in fallback fonts: it rendered, and it is not what was picked.
+    let warnings = crate::fonts::check(state, &project, &overlay_entries(&project, &sequence));
+    Ok(serde_json::json!({ "output": output, "mlt": mlt, "preset": preset.id, "sequence": sequence, "warnings": warnings }))
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct MeasureRequest {
+    /// Sequence to measure. The master when absent.
+    #[serde(default)]
+    pub sequence: Option<String>,
+    /// `[start, end]` seconds of it; all of it when absent.
+    #[serde(default)]
+    pub range: Option<(f64, f64)>,
+    /// Parts to measure one by one. When absent, every clip of the sequence that places
+    /// another sequence: its chapters, if it is built of them.
+    #[serde(default)]
+    pub sections: Option<Vec<Section>>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct Section {
+    pub start: f64,
+    pub end: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    /// The clip it is, when it is one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clip: Option<String>,
+}
+
+/// How loud a sequence is, measured rather than modelled: its sound rendered through the
+/// real graph — every fade, volume and mix as a render builds them, and no bakes, since
+/// overlays make no sound — then metered to EBU R128 (`kuma_overlay::loudness`). The whole,
+/// each section, the loudest moments and the silent stretches, in sequence seconds.
+///
+/// kuma has no limiter, so loudness and peak are whatever the gains make them; this is how
+/// an agent that cannot listen finds out, before and after rendering.
+pub fn measure_audio(state: &AppState, req: &MeasureRequest, progress: &dyn Fn(u8, &str), cancel: &AtomicBool) -> anyhow::Result<serde_json::Value> {
+    let project = read(&state.project).clone();
+    let sequence = project.sequence_or_master(req.sequence.as_deref()).map_err(|e| anyhow::anyhow!(e))?.clone();
+    let total = project.seq_duration(&sequence);
+    let (from, to) = req.range.unwrap_or((0.0, total));
+    anyhow::ensure!(from >= 0.0 && to > from, "the range must be `[start, end]` with 0 ≤ start < end");
+    let to = to.min(total);
+    anyhow::ensure!(to > from, "`{sequence}` is {total:.2} s long, so there is nothing after {from} s to measure");
+    let fps = project.fps;
+    let frames = fps.clip_frames(from, to);
+    // Where the file starts, in sequence seconds: the frame it was cut at.
+    let offset = frames.in_ as f64 / fps.as_f64();
+
+    let mut opts = compile_options(state);
+    opts.sequence = Some(sequence.clone());
+    opts.streams = kuma_mlt::Streams::Audio;
+    let dir = state.config.cache_dir();
+    std::fs::create_dir_all(&dir)?;
+    let mlt = tempfile::Builder::new().prefix(".tmp-measure-").suffix(".mlt").tempfile_in(&dir)?;
+    std::fs::write(mlt.path(), compile_xml(&project, &opts)?)?;
+    let wav = tempfile::Builder::new().prefix(".tmp-measure-").suffix(".wav").tempfile_in(&dir)?;
+    let job = RenderJob {
+        mlt_file: mlt.path().to_path_buf(),
+        output: wav.path().to_path_buf(),
+        preset: &kuma_mlt::presets::AUDIO_ONLY,
+        range: Some((frames.in_, frames.out)),
+        tuning: kuma_mlt::Tuning::default(),
+        extra: vec![("ar".to_string(), project.sample_rate.to_string())],
+    };
+    progress(0, "rendering the sound");
+    kuma_mlt::render(&job, cancel, |p| progress((p.percent as u16 * 4 / 5) as u8, &format!("rendering the sound: frame {}", p.frame)))?;
+    progress(80, "measuring");
+    let scan = kuma_overlay::loudness::scan(wav.path()).map_err(|e| anyhow::anyhow!(e))?;
+
+    let sections = req.sections.clone().unwrap_or_else(|| chapters(&project, &sequence));
+    let db = |v: f64| v.is_finite().then(|| (v * 10.0).round() / 10.0);
+    // `+ 0.0` turns a rounded `-0.0` into `0.0`.
+    let secs = |v: f64| (v * 100.0).round() / 100.0 + 0.0;
+    let measured: Vec<serde_json::Value> = sections
+        .iter()
+        .filter_map(|s| {
+            let (a, b) = (s.start.max(from), s.end.min(to));
+            (b > a).then(|| {
+                let mut v = serde_json::to_value(Section { start: secs(a), end: secs(b), ..s.clone() }).unwrap_or_default();
+                v["integrated"] = serde_json::json!(scan.integrated_over(a - offset, b - offset).and_then(db));
+                v["true_peak"] = serde_json::json!(db(scan.peak_over(a - offset, b - offset)));
+                v
+            })
+        })
+        .collect();
+    let hottest: Vec<serde_json::Value> = scan
+        .hottest(5, 2.0)
+        .iter()
+        .map(|s| serde_json::json!({ "t": secs(s.t - kuma_overlay::loudness::STEP + offset), "true_peak": db(s.true_peak), "short_term": db(s.short_term) }))
+        .collect();
+    let silences: Vec<serde_json::Value> = scan.silences(1.0).iter().map(|(a, b)| serde_json::json!({ "start": secs(a + offset), "end": secs(b + offset) })).collect();
+    Ok(serde_json::json!({
+        "sequence": sequence,
+        "start": secs(from),
+        "end": secs(to),
+        "integrated": scan.integrated.and_then(db),
+        "range": db(scan.range),
+        "true_peak": db(scan.true_peak),
+        "sections": measured,
+        "hottest": hottest,
+        "silences": silences,
+        "note": "LUFS and dBTP of the mix as the graph builds it, before encoding; the encoded file's true peak can come out a little higher. `null` is silence.",
+    }))
+}
+
+/// A sequence's chapters: its clips that place another sequence, in time order.
+fn chapters(project: &Project, sequence: &str) -> Vec<Section> {
+    let Some(seq) = project.seq(sequence) else { return Vec::new() };
+    let mut out: Vec<Section> = seq
+        .clips()
+        .filter_map(|c| {
+            let item = project.item(c).filter(|i| i.is_sequence())?;
+            let label = if c.label.is_empty() { item.display_name(&c.bin).to_string() } else { c.label.clone() };
+            Some(Section { start: c.start, end: c.end, label: Some(label), clip: Some(c.id.clone()) })
+        })
+        .collect();
+    out.sort_by(|a, b| a.start.total_cmp(&b.start));
+    out
+}
+
+/// The overlay entries whose clips `root` shows, nested sequences included, each once.
+pub fn overlay_entries<'p>(project: &'p Project, root: &str) -> Vec<&'p str> {
+    let mut ids: Vec<&str> = overlay_clips(project, root, false, None).iter().filter_map(|c| project.find_clip(c)).map(|(_, _, c)| c.bin.as_str()).collect();
+    ids.sort_unstable();
+    ids.dedup();
+    ids
+}
+
+/// One frame of the master at t=0, overlays included, by default. Callers name what they
+/// change; adding a field here no longer means visiting every construction.
+#[derive(Debug, Clone, Default, Deserialize)]
 pub struct SampleRequest {
     pub t0: f64,
     #[serde(default)]
@@ -850,30 +982,24 @@ pub struct SampleRequest {
     pub frame_width: Option<u32>,
     #[serde(default)]
     pub frame_height: Option<u32>,
+    /// Frames at exactly these times, in place of `t0`, `t1` and `count`: every cut and a
+    /// moment either side of it, the key beat of each scene. Each bakes only the overlays
+    /// it shows, not everything between the first and the last.
+    #[serde(default)]
+    pub times: Option<Vec<f64>>,
+    /// Also tile the frames into one image, captioned with their times (`contact_sheet`).
+    #[serde(default)]
+    pub tile: bool,
+    /// The sheet's columns; about square when absent.
+    #[serde(default)]
+    pub columns: Option<u32>,
 }
 /// How many frames a range is sampled at when no count is given.
 pub const RANGE_COUNT: usize = 5;
-
-/// One frame of the master at t=0, overlays included. Callers name what they change;
-/// adding a field here no longer means visiting every construction.
-impl Default for SampleRequest {
-    fn default() -> Self {
-        SampleRequest {
-            t0: 0.0,
-            t1: None,
-            count: None,
-            rect: None,
-            width: None,
-            overlays: OverlayScope::default(),
-            sequence: None,
-            overlay: None,
-            duration: None,
-            backdrop: None,
-            frame_width: None,
-            frame_height: None,
-        }
-    }
-}
+/// The most frames one sample renders.
+pub const MAX_FRAMES: usize = 32;
+/// How wide a frame on a sheet is when no width is asked for.
+pub const SHEET_TILE_WIDTH: u32 = 480;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Sample {
@@ -906,11 +1032,21 @@ pub fn sample_frames(state: &AppState, req: &SampleRequest, progress: &dyn Fn(u8
             (doc, seq, req.overlays)
         }
     };
-    let t1 = req.t1.unwrap_or(req.t0);
-    let count = req.count.unwrap_or(if t1 > req.t0 { RANGE_COUNT } else { 1 }).clamp(1, 32);
+    let times: Vec<f64> = match &req.times {
+        Some(times) => {
+            anyhow::ensure!((1..=MAX_FRAMES).contains(&times.len()), "`times` takes 1 to {MAX_FRAMES} times, not {}", times.len());
+            anyhow::ensure!(times.iter().all(|t| t.is_finite() && *t >= 0.0), "every time in `times` is seconds, 0 or more");
+            times.clone()
+        }
+        None => {
+            let t1 = req.t1.unwrap_or(req.t0);
+            let count = req.count.unwrap_or(if t1 > req.t0 { RANGE_COUNT } else { 1 }).clamp(1, MAX_FRAMES);
+            (0..count).map(|i| if count == 1 { req.t0 } else { req.t0 + (t1 - req.t0) * i as f64 / (count - 1) as f64 }).collect()
+        }
+    };
     // Only the overlays this sample can actually show: one frame must not pay for a bake
     // of every overlay on the timeline, nor fail because one somewhere else is broken.
-    let bakes = bake_for(state, &project, &sequence, scope, Some((req.t0, t1)), &|p, m| progress(p / 2, m), None)?;
+    let bakes = bake_for(state, &project, &sequence, scope, Some(&times), &|p, m| progress(p / 2, m), None)?;
     let out_dir = state.config.samples_dir();
     std::fs::create_dir_all(&out_dir)?;
     let mut opts = compile_options(state);
@@ -924,43 +1060,115 @@ pub fn sample_frames(state: &AppState, req: &SampleRequest, progress: &dyn Fn(u8
     let doc_stamp = hash_str(&xml);
     let mlt_file = tempfile::Builder::new().prefix("sample-").suffix(".mlt").tempfile_in(state.config.cache_dir())?;
     std::fs::write(mlt_file.path(), xml)?;
-    // Produce `target` through `f(tmp)` and publish it with a rename.
-    let atomic = |target: &Path, f: &dyn Fn(&Path) -> anyhow::Result<()>| -> anyhow::Result<()> {
-        if target.is_file() {
-            return Ok(());
-        }
-        let tmp = tempfile::Builder::new().prefix(".tmp-").suffix(".png").tempfile_in(&out_dir)?;
-        f(tmp.path())?;
-        tmp.persist(target)?;
-        Ok(())
-    };
-    let mut samples = Vec::new();
-    for i in 0..count {
-        let t = if count == 1 { req.t0 } else { req.t0 + (t1 - req.t0) * i as f64 / (count - 1) as f64 };
-        let frame = project.fps.frame(t);
-        progress((50 + 50 * i / count) as u8, &format!("frame {frame}"));
+    // A sheet's frames are small unless a size is asked for.
+    let width = req.width.or((req.tile && req.rect.is_none()).then_some(SHEET_TILE_WIDTH));
+    let one = |frame: i64| -> anyhow::Result<PathBuf> {
         let stamp = format!("{doc_stamp}_{frame}");
         let full = out_dir.join(format!("f{stamp}.png"));
-        atomic(&full, &|tmp| Ok(kuma_mlt::melt::snapshot(mlt_file.path(), frame, tmp)?))?;
-        let path = if req.rect.is_some() || req.width.is_some() {
-            let mut vf = Vec::new();
-            if let Some(r) = req.rect {
-                vf.push(format!("crop={}:{}:{}:{}", r.w, r.h, r.x, r.y));
-            }
-            if let Some(w) = req.width {
-                vf.push(format!("scale={w}:-2"));
-            }
-            let p = out_dir.join(format!("f{stamp}_{}.png", hash_str(&vf.join(","))));
-            atomic(&p, &|tmp| {
-                kuma_overlay::media::ffmpeg(&["-i".into(), full.to_string_lossy().into_owned(), "-vf".into(), vf.join(","), tmp.to_string_lossy().into_owned()]).map_err(|e| anyhow::anyhow!(e))
-            })?;
-            p
-        } else {
-            full
-        };
-        samples.push(Sample { t, frame, path });
+        publish(&out_dir, &full, &|tmp| Ok(kuma_mlt::melt::snapshot(mlt_file.path(), frame, tmp)?))?;
+        if req.rect.is_none() && width.is_none() {
+            return Ok(full);
+        }
+        let mut vf = Vec::new();
+        if let Some(r) = req.rect {
+            vf.push(format!("crop={}:{}:{}:{}", r.w, r.h, r.x, r.y));
+        }
+        if let Some(w) = width {
+            vf.push(format!("scale={w}:-2"));
+        }
+        let p = out_dir.join(format!("f{stamp}_{}.png", hash_str(&vf.join(","))));
+        publish(&out_dir, &p, &|tmp| {
+            kuma_overlay::media::ffmpeg(&["-i".into(), full.to_string_lossy().into_owned(), "-vf".into(), vf.join(","), tmp.to_string_lossy().into_owned()]).map_err(|e| anyhow::anyhow!(e))
+        })?;
+        Ok(p)
+    };
+    // Each frame is a melt run of its own, which loads the whole document: several at once,
+    // as a render builds several frames at once, and once however many times round to it.
+    // Progress is reported from this thread.
+    let mut frames: Vec<i64> = times.iter().map(|&t| project.fps.frame(t)).collect();
+    frames.sort_unstable();
+    frames.dedup();
+    let workers = kuma_mlt::melt::render_threads().clamp(1, 4).min(frames.len());
+    let next = AtomicUsize::new(0);
+    let mut rendered = HashMap::new();
+    std::thread::scope(|s| {
+        let (tx, rx) = std::sync::mpsc::channel();
+        for _ in 0..workers {
+            let (tx, next, frames, one) = (tx.clone(), &next, &frames, &one);
+            s.spawn(move || {
+                while let Some(&frame) = frames.get(next.fetch_add(1, Ordering::SeqCst)) {
+                    let _ = tx.send((frame, one(frame)));
+                }
+            });
+        }
+        drop(tx);
+        for (done, (frame, path)) in rx.into_iter().enumerate() {
+            progress((50 + 50 * (done + 1) / frames.len()) as u8, &format!("frame {frame}"));
+            rendered.insert(frame, path);
+        }
+    });
+    let paths: HashMap<i64, PathBuf> = rendered.into_iter().map(|(f, p)| Ok((f, p?))).collect::<anyhow::Result<_>>()?;
+    Ok(times.iter().map(|&t| (t, project.fps.frame(t))).map(|(t, frame)| Sample { t, frame, path: paths[&frame].clone() }).collect())
+}
+
+/// Produce `target` in `dir` through `f(tmp)` and publish it with a rename, unless it is
+/// there already: a reader never sees a half-written file, and scratch is named `.tmp-…`.
+fn publish(dir: &Path, target: &Path, f: &dyn Fn(&Path) -> anyhow::Result<()>) -> anyhow::Result<()> {
+    if target.is_file() {
+        return Ok(());
     }
-    Ok(samples)
+    let tmp = tempfile::Builder::new().prefix(".tmp-").suffix(".png").tempfile_in(dir)?;
+    f(tmp.path())?;
+    tmp.persist(target)?;
+    Ok(())
+}
+
+/// What `/api/sample` answers: the frames, and with `tile` the sheet of them.
+pub fn sample(state: &AppState, req: &SampleRequest, progress: &dyn Fn(u8, &str)) -> anyhow::Result<serde_json::Value> {
+    let samples = sample_frames(state, req, progress)?;
+    let sheet = if req.tile { Some(contact_sheet(state, &samples, req.columns)?) } else { None };
+    Ok(serde_json::json!({ "samples": samples, "sheet": sheet }))
+}
+
+/// A sample's frames tiled into one image, left to right then down, each captioned with its
+/// time: a contact sheet, so looking at a dozen moments is one image rather than a dozen.
+/// Cached beside the frames, under the frames it holds.
+pub fn contact_sheet(state: &AppState, samples: &[Sample], columns: Option<u32>) -> anyhow::Result<PathBuf> {
+    anyhow::ensure!(!samples.is_empty(), "no frames to tile");
+    let n = samples.len();
+    let cols = columns.map_or_else(|| (n as f64).sqrt().ceil() as usize, |c| c as usize).clamp(1, n);
+    let paths: Vec<String> = samples.iter().map(|s| s.path.to_string_lossy().into_owned()).collect();
+    // Named by the frames and the captions: two times can round to one frame.
+    let named: Vec<String> = samples.iter().zip(&paths).map(|(s, p)| format!("{p}@{:.2}", s.t)).collect();
+    let dir = state.config.samples_dir();
+    let out = dir.join(format!("s{}_{cols}.png", hash_str(&named.join("\n"))));
+    publish(&dir, &out, &|tmp| {
+        let probe = kuma_overlay::probe(&samples[0].path).map_err(|e| anyhow::anyhow!(e))?;
+        let (w, h) = (probe.meta.width.unwrap_or_default(), probe.meta.height.unwrap_or_default());
+        anyhow::ensure!(w > 0 && h > 0, "cannot read the size of {}", samples[0].path.display());
+        // Every frame of a sample is the same size, so a tile's place is its column and row.
+        let layout: Vec<String> = (0..n).map(|i| format!("{}_{}", (i % cols) as u32 * w, (i / cols) as u32 * h)).collect();
+        let run = |captions: bool| {
+            let mut graph = String::new();
+            for (i, s) in samples.iter().enumerate() {
+                let caption = format!("drawtext=text='{:.2} s':x=8:y=8:fontsize={}:fontcolor=white:box=1:boxcolor=black@0.6:boxborderw=5", s.t, (h / 14).max(10));
+                graph.push_str(&format!("[{i}:v]{}[t{i}];", if captions { caption.as_str() } else { "null" }));
+            }
+            let tiles: String = (0..n).map(|i| format!("[t{i}]")).collect();
+            graph.push_str(&if n == 1 { "[t0]null".to_string() } else { format!("{tiles}xstack=inputs={n}:layout={}:fill=0x202020", layout.join("|")) });
+            let mut args: Vec<String> = paths.iter().flat_map(|p| ["-i".to_string(), p.clone()]).collect();
+            args.extend(["-filter_complex".into(), graph, "-frames:v".into(), "1".into(), "-update".into(), "1".into(), tmp.to_string_lossy().into_owned()]);
+            kuma_overlay::media::ffmpeg(&args)
+        };
+        // Captions need a font ffmpeg can find; a sheet without them is still a sheet.
+        run(true)
+            .or_else(|e| {
+                tracing::warn!("contact sheet without captions: {e}");
+                run(false)
+            })
+            .map_err(|e| anyhow::anyhow!(e))
+    })?;
+    Ok(out)
 }
 
 /// An overlay entry as the workbench or an agent asks to see it: at some length, in some
@@ -1072,7 +1280,9 @@ pub fn overlay_project(state: &AppState, doc: &Project, id: &str, req: &SampleRe
     let mut out = doc.clone();
     (out.width, out.height) = frame;
     out.bin = [
-        (id.to_string(), item.clone()),
+        // Out of whatever folder it is filed under, which this bin does not hold: the
+        // folder is where the bin lists it, nothing it shows.
+        (id.to_string(), kuma_core::BinItem { parent: None, ..item.clone() }),
         (bg_id, entry(kuma_core::BinSource::Color { color: colour })),
         (seq_id.clone(), entry(kuma_core::BinSource::Sequence(sequence))),
     ]
@@ -1166,7 +1376,12 @@ mod tests {
             }
         }))
         .unwrap();
-        assert_eq!(overlay_clips(&p, "main", false, Some((0.0, 1.0))), vec!["o_nested", "o_early"]);
-        assert_eq!(overlay_clips(&p, "main", false, Some((50.5, 51.0))), vec!["o_nested", "o_late"]);
+        assert_eq!(overlay_clips(&p, "main", false, Some(&[0.0, 1.0])), vec!["o_nested", "o_early"]);
+        assert_eq!(overlay_clips(&p, "main", false, Some(&[50.5, 51.0])), vec!["o_nested", "o_late"]);
+        // Each frame bakes what it shows, not everything between the first and the last.
+        assert_eq!(overlay_clips(&p, "main", false, Some(&[1.0, 51.0])), vec!["o_nested", "o_early", "o_late"]);
+        assert_eq!(overlay_clips(&p, "main", false, Some(&[10.0, 20.0])), vec!["o_nested"]);
+        // In frames: 49.99 s is frame 1500 at 30 fps, the first of a clip starting at 50 s.
+        assert_eq!(overlay_clips(&p, "main", false, Some(&[49.99])), vec!["o_nested", "o_late"]);
     }
 }

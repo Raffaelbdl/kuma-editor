@@ -150,6 +150,29 @@ pub fn default_library_dirs() -> Vec<PathBuf> {
     dirs
 }
 
+/// The libraries a daemon reads: `default_library_dirs`, then, when `KUMA_LIBRARY` is unset
+/// and the user library holds no blueprints, the checkout's own `library/`, the starter set.
+///
+/// The desktop shell has always done this for the daemons it starts (`libraryFallback` in
+/// `app/src/kuma.ts`, which also says so in the launcher). A daemon `kuma mcp` or `kuma
+/// serve` started did not, so before `kuma library` had been run it had no blueprints and
+/// none of the fonts they name: the same project drew its titles in fallback fonts or not,
+/// depending on which process had started the daemon. `health` lists the folders either way.
+pub fn library_dirs(repo_root: &Path) -> Vec<PathBuf> {
+    with_starter_set(default_library_dirs(), std::env::var_os("KUMA_LIBRARY").is_some(), repo_root)
+}
+
+/// `dirs` (the user library first), and the checkout's `library/` after them when nothing
+/// else was asked for and the user library has no blueprints.
+fn with_starter_set(mut dirs: Vec<PathBuf>, asked: bool, repo_root: &Path) -> Vec<PathBuf> {
+    let installed = std::fs::read_dir(dirs[0].join("blueprints")).is_ok_and(|mut d| d.next().is_some());
+    let shipped = repo_root.join("library");
+    if !asked && !installed && shipped.join("blueprints").is_dir() {
+        dirs.push(shipped);
+    }
+    dirs
+}
+
 /// Events pushed to WebSocket subscribers.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -309,6 +332,14 @@ impl AppState {
         Ok(self.current_sequence())
     }
 
+    /// What `validate_project` and `kuma validate` report: the document's issues, and the
+    /// text its overlay entries will not be drawn in (`fonts::check`).
+    pub fn validate(&self, p: &Project) -> Vec<Issue> {
+        let mut issues = kuma_core::validate(p, &self.validation_context());
+        issues.extend(crate::fonts::check(self, p, &p.bin.keys().map(String::as_str).collect::<Vec<_>>()));
+        issues
+    }
+
     pub fn validation_context(&self) -> ValidationContext {
         // Files are checked, so a missing overlay folder is an error now, not at render.
         ValidationContext { root: self.config.project_root(), check_files: true }
@@ -432,6 +463,25 @@ mod tests {
         assert_eq!(found["studio"].1, "Studio (mine)", "the later library wins");
         assert_eq!(found["studio"].0, b.join("design-systems/studio"));
         assert!(config(tmp.path(), vec![a]).project_design_system().is_none());
+    }
+
+    /// A daemon reads the starter set only while the user has no library of their own and
+    /// asked for none: never shadowing blueprints they installed and edited.
+    #[test]
+    fn the_starter_set_stands_in_for_a_missing_library() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (user, repo) = (tmp.path().join("user"), tmp.path().join("repo"));
+        std::fs::create_dir_all(repo.join("library/blueprints/title")).unwrap();
+        let shipped = repo.join("library");
+        let dirs = |repo: &Path, asked: bool| with_starter_set(vec![user.clone()], asked, repo);
+        let (both, alone) = ([user.clone(), shipped], std::slice::from_ref(&user));
+        assert_eq!(dirs(&repo, false), both, "nothing installed");
+        assert_eq!(dirs(&repo, true), alone, "KUMA_LIBRARY names the libraries");
+        std::fs::create_dir_all(user.join("blueprints")).unwrap();
+        assert_eq!(dirs(&repo, false), both, "an empty folder is not a library");
+        std::fs::create_dir_all(user.join("blueprints/mine")).unwrap();
+        assert_eq!(dirs(&repo, false), alone, "the user's own library");
+        assert_eq!(dirs(&tmp.path().join("elsewhere"), false), alone, "no checkout, nothing to fall back on");
     }
 
     #[test]

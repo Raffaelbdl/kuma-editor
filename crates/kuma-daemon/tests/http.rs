@@ -412,6 +412,71 @@ async fn a_font_is_added_and_an_overlay_draws_with_it() {
     assert!(css.contains("url(\"/fonts/anton/0.ttf\")"), "{css}");
 }
 
+/// A patch a script wrote is applied from its file, exactly, as one revision-checked edit;
+/// a file outside the project, one that is not a patch, and a request that names both a
+/// patch and a file are refused before anything is applied.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_patch_is_applied_from_a_file_in_the_project() {
+    let (state, addr, _dir) = daemon().await;
+    let root = state.config.project_root();
+    std::fs::create_dir_all(root.join("patches")).unwrap();
+    let ops: Vec<serde_json::Value> = (0..200).map(|i| serde_json::json!({ "op": "add", "path": format!("/bin/c{i}"), "value": { "name": format!("Colour {i}"), "source": { "color": "#102030" } } })).collect();
+    std::fs::write(root.join("patches/diff.json"), serde_json::to_string(&ops).unwrap()).unwrap();
+    let rev = state.project.read().unwrap().revision;
+
+    let (status, body) = post(&addr, "/api/project/patch", &format!(r#"{{ "patch_path": "./patches/diff.json", "base_revision": {rev} }}"#));
+    assert!(status.contains("200"), "{status}: {body}");
+    assert_eq!(body["ops"], 200);
+    let p = state.project.read().unwrap().clone();
+    assert_eq!(p.revision, rev + 1, "one edit, one undo step");
+    assert_eq!(p.bin["c199"].name, "Colour 199");
+
+    let elsewhere = tempfile::tempdir().unwrap();
+    std::fs::write(elsewhere.path().join("outside.json"), "[]").unwrap();
+    std::os::unix::fs::symlink(elsewhere.path().join("outside.json"), root.join("patches/link.json")).unwrap();
+    std::fs::write(root.join("patches/notes.json"), r#"{ "patch": [] }"#).unwrap();
+    for (body, says) in [
+        (serde_json::json!({ "patch_path": "patches/link.json" }), "not inside the project"),
+        (serde_json::json!({ "patch_path": elsewhere.path().join("outside.json") }), "not inside the project"),
+        (serde_json::json!({ "patch_path": "patches/notes.json" }), "not a JSON Patch"),
+        (serde_json::json!({ "patch_path": "patches/missing.json" }), "cannot read"),
+        (serde_json::json!({ "patch_path": "patches/diff.json", "patch": [] }), "one of the two"),
+        (serde_json::json!({}), "one of the two"),
+    ] {
+        let (status, answer) = post(&addr, "/api/project/patch", &body.to_string());
+        assert!(status.contains("400") && answer["error"].as_str().unwrap().contains(says), "{body}: {status} {answer}");
+    }
+    assert_eq!(state.project.read().unwrap().revision, rev + 1, "nothing refused was applied");
+}
+
+/// `validate_project` says what an entry will not be drawn in, pointing at the var: a font
+/// that is not installed, and text its fonts cannot set on a page in another language.
+/// `check_overlay` only ever saw a folder's defaults, and a render fell back quietly.
+#[tokio::test(flavor = "multi_thread")]
+async fn validation_names_text_the_fonts_will_not_draw() {
+    let (state, addr, _dir) = daemon().await;
+    let fonts = state.config.project_root().join("fonts/Anton");
+    std::fs::create_dir_all(&fonts).unwrap();
+    std::fs::copy(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../library/fonts/Anton/Anton-Regular.ttf"), fonts.join("Anton-Regular.ttf")).unwrap();
+    let label = state.config.project_root().join("overlays/label");
+    std::fs::create_dir_all(&label).unwrap();
+    std::fs::write(label.join("overlay.json"), r#"{ "name": "Label", "vars": { "font": { "type": "font", "default": "Anton" }, "label": { "type": "text", "default": "Hello" } } }"#).unwrap();
+    std::fs::write(label.join("index.html"), "<html lang=\"en\"><head></head><body data-composition-id=\"root\"></body></html>").unwrap();
+    for (id, vars) in [("kanji", r#"{ "label": "承ける" }"#), ("unset", r#"{ "font": "Nope Sans" }"#), ("fine", "{}")] {
+        let (status, body) = post(&addr, "/api/overlays/import", &format!(r#"{{ "path": "overlays/label", "id": "{id}", "vars": {vars} }}"#));
+        assert!(status.contains("200"), "{status}: {body}");
+    }
+    let (status, body) = get_body(&addr, "/api/project/validate");
+    assert!(status.contains("200"), "{status}");
+    let issues = serde_json::from_str::<serde_json::Value>(&body).unwrap()["issues"].clone();
+    let at = |path: &str| issues.as_array().unwrap().iter().filter(|i| i["path"] == path).map(|i| i["message"].as_str().unwrap().to_string()).collect::<Vec<_>>();
+    let kanji = at("/bin/kanji/source/vars/label");
+    assert!(kanji.iter().any(|m| m.contains("ける承") && m.contains("Anton")), "{issues}");
+    assert!(kanji.iter().any(|m| m.contains(r#"lang="en""#)), "{issues}");
+    assert!(at("/bin/unset/source/vars/font").iter().any(|m| m.contains("Nope Sans")), "{issues}");
+    assert!(issues.as_array().unwrap().iter().all(|i| i["severity"] == "warning" && !i["path"].as_str().unwrap().starts_with("/bin/fine")), "{issues}");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn the_cache_is_measured_and_pruned_over_http() {
     let (state, addr, dir) = daemon().await;

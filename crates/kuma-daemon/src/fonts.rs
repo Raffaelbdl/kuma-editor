@@ -47,6 +47,36 @@ pub fn add_font(state: &AppState, path: &Path, shared: bool) -> anyhow::Result<V
     Ok(json!({ "family": added[0]["family"], "origin": origin, "path": added[0]["path"], "faces": added }))
 }
 
+/// What the overlay entries `ids` will not be drawn in (`Baker::font_findings`), as project
+/// warnings pointing at the var: a family that is not installed, characters none of the
+/// entry's fonts can set, CJK text on a page in another language. All of it is legal and
+/// renders in the baking machine's fallbacks, which is why a render says so rather than
+/// falling back quietly, and `validate_project` checks the whole bin. An entry whose folder
+/// does not load is validation's to report, not this.
+pub fn check(state: &AppState, project: &kuma_core::Project, ids: &[&str]) -> Vec<kuma_core::Issue> {
+    use kuma_core::{BinSource, Issue, Severity};
+    let mut folders: std::collections::HashMap<&str, Option<(crate::overlays::Resolved, String)>> = Default::default();
+    let mut out = Vec::new();
+    for &id in ids {
+        let Some(BinSource::Overlay { overlay, vars }) = project.bin.get(id).map(|i| &i.source) else { continue };
+        let folder = folders.entry(overlay.as_str()).or_insert_with(|| {
+            let r = crate::overlays::resolve(state, overlay).ok()?;
+            let html = std::fs::read_to_string(r.dir.join("index.html")).ok()?;
+            Some((r, html))
+        });
+        let Some((r, html)) = folder else { continue };
+        for f in state.baker.font_findings(&r.manifest, &r.manifest.resolve_vars(vars), html) {
+            let path = match &f.var {
+                Some(var) => format!("/bin/{id}/source/vars/{var}"),
+                None => format!("/bin/{id}"),
+            };
+            let fix = f.fix.map(|x| format!("; {x}")).unwrap_or_default();
+            out.push(Issue { severity: Severity::Warning, path, message: format!("{}{fix}", f.message) });
+        }
+    }
+    out
+}
+
 /// Write `bytes` as `<root>/<family>/<name>`, or find them already there.
 fn place(root: &Path, family: &str, name: &str, bytes: &[u8]) -> anyhow::Result<std::path::PathBuf> {
     // The folder is named after the family for a person browsing it; kuma reads the name

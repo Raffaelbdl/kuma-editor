@@ -49,6 +49,7 @@ enum Cmd {
     Bake { clips: Vec<String> },
     /// Sample composited frames as PNGs.
     Sample {
+        #[arg(default_value_t = 0.0)]
         t0: f64,
         t1: Option<f64>,
         /// Frames over [t0, t1]: 1 without t1, 5 across a range.
@@ -76,6 +77,25 @@ enum Cmd {
         /// the orientation the project is not in.
         #[arg(long)]
         frame: Option<String>,
+        /// Frames at exactly these times, `t,t,…` seconds, instead of t0/t1/--count.
+        #[arg(long, value_delimiter = ',')]
+        times: Option<Vec<f64>>,
+        /// Also tile the frames into one captioned contact sheet.
+        #[arg(long)]
+        tile: bool,
+        /// Columns of the sheet (about square by default).
+        #[arg(long)]
+        columns: Option<u32>,
+    },
+    /// Measure how loud a sequence is (EBU R128): overall, per chapter, its loudest moments
+    /// and its silences. Renders the sound only, so no overlay is baked.
+    MeasureAudio {
+        /// Sequence (bin id) to use instead of the project's master.
+        #[arg(long)]
+        sequence: Option<String>,
+        /// Only `start,end` seconds of it.
+        #[arg(long, value_delimiter = ',', num_args = 2)]
+        range: Option<Vec<f64>>,
     },
     /// Show how big the project's `.kuma/` cache is, or prune it.
     Cache {
@@ -207,7 +227,8 @@ fn repo_root(cli: &Cli) -> anyhow::Result<PathBuf> {
 }
 
 fn config(cli: &Cli) -> anyhow::Result<Config> {
-    Ok(Config { project_file: absolute(&cli.project)?, repo_root: repo_root(cli)?, library_dirs: default_library_dirs(), bind: cli.bind })
+    let repo_root = repo_root(cli)?;
+    Ok(Config { project_file: absolute(&cli.project)?, library_dirs: kuma_daemon::library_dirs(&repo_root), repo_root, bind: cli.bind })
 }
 
 /// Load the project state for one-shot commands (no server).
@@ -274,7 +295,7 @@ async fn main() -> anyhow::Result<()> {
                 println!("{k}\t{}", b.resource.display());
             }
         }
-        Cmd::Sample { t0, t1, count, rect, width, sequence, overlay, duration, backdrop, frame } => {
+        Cmd::Sample { t0, t1, count, rect, width, sequence, overlay, duration, backdrop, frame, times, tile, columns } => {
             let state = open(&cli)?;
             let rect = rect
                 .as_deref()
@@ -303,10 +324,21 @@ async fn main() -> anyhow::Result<()> {
                 backdrop: backdrop.clone(),
                 frame_width: frame.map(|(w, _)| w),
                 frame_height: frame.map(|(_, h)| h),
+                times: times.clone(),
+                tile: *tile,
+                columns: *columns,
                 ..Default::default()
             };
-            let samples = tokio::task::spawn_blocking(move || kuma_daemon::jobs::sample_frames(&state, &req, &|_, _| {})).await??;
-            println!("{}", serde_json::to_string_pretty(&samples)?);
+            let out = tokio::task::spawn_blocking(move || kuma_daemon::jobs::sample(&state, &req, &|_, _| {})).await??;
+            // The list of frames, as it always printed; with a sheet, the sheet beside it.
+            let out = if *tile { out } else { out["samples"].clone() };
+            println!("{}", serde_json::to_string_pretty(&out)?);
+        }
+        Cmd::MeasureAudio { sequence, range } => {
+            let state = open(&cli)?;
+            let req = kuma_daemon::jobs::MeasureRequest { sequence: sequence.clone(), range: range.as_deref().map(|r| (r[0], r[1])), sections: None };
+            let out = tokio::task::spawn_blocking(move || kuma_daemon::jobs::measure_audio(&state, &req, &|p, m| eprintln!("[{p:3}%] {m}"), &Default::default())).await??;
+            println!("{}", serde_json::to_string_pretty(&out)?);
         }
         Cmd::Cache { action } => {
             // Through a running daemon, so the prune waits for its renders.
@@ -348,7 +380,7 @@ async fn main() -> anyhow::Result<()> {
         Cmd::Validate => {
             let state = open(&cli)?;
             let project = state.project.read().unwrap().clone();
-            let issues = kuma_core::validate(&project, &state.validation_context());
+            let issues = state.validate(&project);
             println!("{}", serde_json::to_string_pretty(&issues)?);
             if kuma_core::validate::has_errors(&issues) {
                 std::process::exit(1);

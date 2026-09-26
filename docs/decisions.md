@@ -2047,8 +2047,8 @@ a bloom pass trivial, one overlay folder behind five entries worked as intended,
      every stage and every served font. A `.ttc` dropped straight into a `fonts/` folder
      is still not read, and the lint's `font_missing` fix now names it and says to add it
      with `add_font`. Not built: splitting inside `FontLibrary` into a derived cache, so
-     that dropping one in works too; and a lint that names the characters of a text var
-     no resolved family can set, which is what `scripts` only lets an agent check.
+     that dropping one in works too. The lint that names the characters of a text var no
+     resolved family can set was built later (`glyphs_missing`, the explainer's report).
    - Every face and family reports `scripts` (latin, greek, cyrillic, arabic, hebrew,
      devanagari, thai, han, kana, hangul), each by one character it cannot set without;
      `list_fonts` says what it means and the editor's font picker shows it on hover.
@@ -2075,6 +2075,8 @@ a bloom pass trivial, one overlay folder behind five entries worked as intended,
   format bump.
 - **Audio has no counterpart to `sample_frames`.** Loudness and peak from `probe_media`,
   and a waveform or spectrogram image, would let an agent check what it cannot hear.
+  Loudness and peak are built, for a sequence rather than a file: `measure_audio` (the
+  explainer's report). A picture of the sound is not.
 - **A `history` or diff-since-revision tool**, so an agent that sees the revision move can
   learn what moved instead of re-reading the project.
 - **Checking a loop's seam**: comparing the last frame with the first was done by hand in
@@ -2310,80 +2312,166 @@ Code skill (`SKILL.md`, references, scripts that check a project).
   files, and leaves anything else in the folder alone. A stale copy misleads more than a
   missing one. `kuma doctor` reports current, stale or missing. A test fails if a file in
   the folder is not listed in `FILES`.
-- **Scripts over prose where a check is possible**: the audio mix modelled offline
-  (`mixsim.py`, within 0.5 LU of a real render), CJK glyph coverage (`fontcheck.py`),
-  reading time per scene (`reading_audit.py`), contact sheets, a Japanese font subsetter,
-  and a procedural footage template.
+- **Scripts over prose where a check is possible**: reading time per scene
+  (`reading_audit.py`), contact sheets of a rendered file, a Japanese font subsetter, and a
+  procedural footage template. It shipped with a model of the audio mix (`mixsim.py`) and a
+  CJK glyph check (`fontcheck.py`) too; `measure_audio` and the font lint replaced them (the
+  explainer's field report below).
 
 ## Field report: a ten-minute explainer
 
 An agent made a 9½-minute explainer about kuma in kuma, through MCP alone: 26 overlay
 components, ~400 entries, ~590 clips, seven nested sequences, a storyboard kept as code and
-diffed into patches. What cost it time, each checked against the code; all are open:
+diffed into patches. What cost it time is below, each checked against the code before it
+was recorded. All seven items are fixed or built, and so are the four things the report
+wanted moved into kuma, except where it says otherwise.
 
-1. **A quote in a string var breaks every CSS var after it.** `kuma-overlay/src/inject.rs`
-   writes string vars unquoted into one `:root { … }` line and only neutralises
-   `; { } < > \n`. A lone `'` (as in "Let's") opens a CSS string that swallows the rest,
-   and the overlay renders with missing vars and no error. Quote or escape the value, or
-   write one declaration per line so a bad token only drops itself.
-2. **`sample_frames` with `overlay` refuses an entry that has a `parent`**: the throwaway
-   one-clip project copies the entry but not its folder ("parent … is not in the bin").
-3. **A fade that rounds to one frame, on a clip whose own range starts at frame 0, applies
-   to the whole clip.** The fade arm of `kuma-mlt/src/compile.rs` writes it as a filter
-   with `in="0" out="0"`, and MLT reads `out=0` as unbounded. A 0.05 s `audio_fade` silenced
-   93 s of music. Clamp fades to ≥ 2 frames, drop a sub-frame one, or never emit `out=0` for
-   a bounded filter. The video fade has the same edge.
-4. **Library fonts can vanish after a rebuild.** `default_library_dirs` is
-   `~/.local/share/kuma` plus `KUMA_LIBRARY`, and without `kuma library` the Latin faces the
-   starter blueprints name (JetBrains Mono, Caveat, Anton) are missing. `check_overlay`
-   says so (`font_missing`), but a render just falls back.
-5. **Kanji fell back to Chinese forms.** Nothing was kuma's fault, but kuma could catch it.
-   Overlay pages are `lang="en"`, so kanji in a Latin-font label are drawn by the machine's
-   CJK font, which on Linux is Noto CJK SC. `list_fonts` reporting `scripts` made the cause
-   findable. A lint could flag CJK text in an entry whose fonts lack `han`/`kana`.
-6. **No audio view**: there is no audio counterpart to `sample_frames`. The loudness had to
-   be modelled outside kuma (-24 LUFS on the first render). This echoes the loop report's
-   item.
-7. **The MCP process outlives a rebuild.** After a rebuild that added render options, the
-   running MCP server still exposed the old tool schema while the daemon accepted the new
-   options.
+1. **A quote in a string var broke the vars after it** — **fixed**. `inject.rs` wrote string
+   vars unquoted into one `:root { … }` line, neutralising only `; { } < > \n`, so the `'` in
+   "Let's" opened a CSS string that ran to the end of the stylesheet, or to the next var's
+   apostrophe. Reproduced both ways: `getComputedStyle` in a headless shell read the title as
+   `Let's go; --var-b_color: …` and no colour at all, and a bake drew the colour var's
+   fallback.
+   - `css_value` keeps a value's tokens as written, since a string var may hold a CSS value
+     (a shadow, a quoted string for `content:`). It escapes only what cannot close inside the
+     value: an unclosed quote (`\'`), a comment with no end (`/\*`), a backslash at the very
+     end. `\r` and form feeds become spaces, as `\n` always did. Quoting every string var
+     would have broken the CSS values. The report's other suggestion, a declaration per line,
+     still loses one: the bad string stops at the newline, and its declaration runs on to the
+     next `;`.
+   - **The bake key hashes the vars, not the document they are injected into**, so the fix
+     alone would have left the broken bakes cached. The key now also hashes `repaired_css`:
+     the declarations the repair writes differently, which is nothing for almost every
+     overlay. Every other bake is the same document it was and stays cached; bumping
+     `kuma-bake-v5` would have re-baked every finished video to no effect. Hashing the text
+     rather than a flag means a later change to `css_value` moves exactly the keys it
+     changes, with no salt to remember.
+   - Tests: `a_quote_that_never_closes_cannot_swallow_the_vars_after_it`,
+     `only_a_repaired_var_needs_a_new_bake`, and a real bake,
+     `an_apostrophe_in_a_var_leaves_the_vars_after_it_alone`: blue without the repair, red
+     with it.
+2. **`sample_frames` with `overlay` refused an entry that has a `parent`** — **fixed**. The
+   throwaway project keeps the entry and drops its `parent`: where the bin lists an entry is
+   nothing it shows. `an_entry_filed_in_a_folder_can_be_sampled`.
+3. **A fade that rounds to one frame covered the whole clip** — **fixed**. On a clip whose
+   range starts at frame 0 it was a filter at `in="0" out="0"`, which MLT reads as no range.
+   A fade is now at least two frames, clamped by the clip, so only a one-frame clip keeps
+   one, and there the whole clip is that frame. Two frames draw the same picture a one-frame
+   fade did (frame 0 at 0), and a sound fade gets a ramp. `a_fade_under_two_frames_is_two_frames`
+   checks the ranges. The measuring test below renders a 0.02 s fade-in and measures its
+   chapter: without the fix the chapter is silent.
+4. **Library fonts vanished** — **fixed**, both halves.
+   - **Why they vanished.** The desktop shell hands the daemons it starts the checkout's
+     `library/` when the user library has no blueprints (`libraryFallback`). `kuma mcp` and
+     `kuma serve` did not. On this machine `~/.local/share/kuma` has no `blueprints/` or
+     `fonts/`, so a daemon the app started had the starter fonts, and one that `kuma mcp`
+     started after the app closed had none. `library_dirs` (`state.rs`) now applies the rule
+     to every daemon, whoever starts it: the app no longer sets `KUMA_LIBRARY`, which would
+     have made its copy win, and keeps `libraryFallback` only to say so in the launcher.
+     `serve` logs it, and `health` lists the folders either way.
+     `the_starter_set_stands_in_for_a_missing_library`.
+   - **Why nobody noticed.** `Baker::font_findings` is now what `check_overlay`,
+     `validate_project`, `kuma validate` and a render's result report. `validate_project`
+     checks every overlay entry with its own vars; a render's `warnings` cover the entries it
+     drew. `validation_names_text_the_fonts_will_not_draw`.
+5. **Kanji fell back to Chinese forms** — **built** as the glyph-coverage lint (3 below).
+6. **No audio view** — **built** as `measure_audio` (2 below).
+7. **The MCP process outlived a rebuild** — **fixed**. The server stats the executable it
+   started from on every call. Once that file has changed (another size or time, or gone
+   mid-build), every tool result starts with a note: the tools are the old build's, so tell
+   the user and restart the server. An error carries the note too.
+   - Rejected: comparing versions with the daemon. The git hash is the same across rebuilds
+     of uncommitted work, and what bit was this process being old, whatever the daemon is.
+   - Rejected: re-executing itself. The client has initialised the old process, and a new
+     one would wait for a handshake that never comes.
+   - Tests: `a_rebuilt_binary_is_noticed`, `a_stale_server_says_so_before_the_answer`.
 
-**What could move into kuma**, so the skill's scripts and workarounds shrink. In order of
-payoff:
+**What moved into kuma**, so the skill's scripts and workarounds shrink, in the report's
+order of payoff:
 
-1. **Apply a patch from a file**: `apply_edits` taking `patch_path` inside the project
-   (`assets/patches/diff.json`), or a server-side "make this sequence and these entries equal
-   to this document" that computes the patch itself. The costliest part of the explainer
-   was copying 10–25 KB patches through tool calls in chunks, then re-running the
-   storyboard's diff to prove the copy was exact. With a file, applying is exact and cheap.
-   The loop report's `history` / diff-since-revision item belongs to the same family.
-2. **Measuring audio** (replaces `scripts/mixsim.py`). A `measure_audio` tool would render
-   the master's audio through the real graph, which needs no bakes since overlays make no
-   sound. It would return:
-   - integrated loudness, LRA and true peak;
-   - loudness per clip of the master (chapters);
-   - the hottest moments;
-   - silent stretches.
-   The script models the mix kuma is *meant* to build. It matched a real render within
-   0.5 LU, but it could not have caught item 3 above. This is the "Audio has no counterpart
-   to `sample_frames`" item, with a concrete shape. Further: an optional loudness target on
-   render (analyse, then normalise or limit on the master). That is a master-bus concept
-   the model does not have yet.
-3. **Glyph coverage in the lint** (replaces `scripts/fontcheck.py`). `Baker::fonts` already
-   knows every family's scripts. The rule: an entry's text has characters none of its
-   overlay's font vars cover, with the characters listed. Also warn about CJK text on a
-   page whose `lang` is not a CJK one. Worth deciding with it: a project-level fallback
-   family injected into the contract, so overlays need not each declare a `jp` font var as
-   the explainer's did.
-4. **`sample_frames` with explicit times and a tiled sheet** (replaces
-   `scripts/contact_sheet.py` before rendering): `times: [3.5, 41.7, 42.3, …]` and `tile:
-   true`, returning one image. Checking every cut ±0.3 s currently costs one call, or one
-   image, per time.
+1. **A patch from a file** — **built**. `apply_edits` (and `POST /api/project/patch`) take
+   `patch_path`: a JSON Patch array in a file inside the project, which the daemon reads and
+   applies as one atomic, revision-checked edit. The answer counts its `ops`. The path is
+   relative, or absolute under the project; anything else is refused before it is read.
+   `a_patch_is_applied_from_a_file_in_the_project` applies 200 operations as one revision.
+   - Not built: a server-side "make these equal". What a storyboard may remove is its own
+     to know (its diff removes only entries of its chapter's folder), so the diff stays in
+     the storyboard.
+   - Not built: `history` / diff-since-revision, still recorded under the loop report.
+2. **Measuring audio** — **built**: `measure_audio`, `POST /api/audio/measure`, `kuma
+   measure-audio`; a job `cancel_job` can stop, since it is a melt run of the whole length.
+   - **How.** The sequence compiles as the preview's audio half graph (`Streams::Audio`,
+     checked sample by sample against the full graph), so nothing is baked. melt writes it as
+     32-bit float WAV (`presets::AUDIO_ONLY`): float, so a mix over full scale is metered
+     rather than clipped. ffmpeg's `ebur128` with `framelog=verbose` then gives every 100 ms
+     the momentary and short-term loudness and the true peak. The whole comes from the
+     meter's summary. A section's integrated loudness comes from its 400 ms blocks, gated as
+     BS.1770 gates them (`kuma-overlay/src/loudness.rs`).
+   - **What it returns.** Sections default to the clips that place a sequence, the chapters;
+     `sections` names others. `hottest` is the five loudest steps by true peak, at least 2 s
+     apart. `silences` are stretches of at least 1 s under the absolute gate (-70 LUFS).
+   - **Measured on the explainer** (9½ min, seven chapters): 43 s with the release build,
+     430 MB at most. It read -17.3 LUFS, 5.1 LU of range and -1.9 dBTP; the final render's
+     file meters -17.3 LUFS, 5.2 LU and -1.9 dBTP. The script it replaces modelled the mix
+     within 0.5 LU and could not have seen item 3.
+   - Tests: `a_sequence_is_measured_whole_by_chapter_and_where_it_is_silent` (two chapters
+     6.0 dB apart, the gap between them found to within 0.15 s), and the parse and gating in
+     `loudness.rs`.
+   - Not built: a loudness target on render (normalise or limit on the master), still a
+     master-bus concept the model does not have.
+   - **Found on the way:** a progress callback that panicked hung its job for ever. This
+     job's first version overflowed a `u8`; `run_cancellable`'s watcher then waited for a
+     `finished` flag the unwinding reader never set, and the scope waited for the watcher. A
+     drop guard sets the flag now. `a_panicking_callback_does_not_hang_the_run`.
+3. **Glyph coverage in the lint** — **built**. Each face keeps its cmap as code-point ranges
+   (`Coverage`, shared between clones). Two warnings, both from `font_findings`:
+   - `glyphs_missing` names the characters of each text var (`string`, `text`, the lines of
+     `cues`) that none of the overlay's `font` vars' families can set. It checks against the
+     union of those families, since which var draws which text is the markup's business, and
+     not at all when no family resolved.
+   - `cjk_lang` flags kana, hangul or han on a page whose `lang` is not `ja`, `zh` or `ko`,
+     and names the language the text suggests.
+   - On the explainer's own project there is nothing to report (it had fixed everything by
+     hand), and the check takes 3 s for ~400 entries. With one label's fonts switched to
+     Inter, `ketsu_label4` is reported showing 五第話.
+   - **Decided: no project-level fallback family, for now.** The lint names every
+     character, and a `jp` font var in an overlay is two lines. If it is built, the shape is
+     `unicode-range`: the fallback's faces declared again under each font var's family,
+     restricted to what that family lacks, so `font-family: var(--var-font)` draws kanji
+     from it and no overlay changes. It is a project field, so a `PROJECT_VERSION` bump.
+     Worth it when a second CJK project asks for it.
+4. **`sample_frames` with explicit times and a sheet** — **built**.
+   - `times` (up to 32) replaces `t0`/`t1`/`count`. A sample bakes the overlays drawn at
+     the frames it renders and nothing else, in frames rather than seconds (`overlay_clips`
+     takes the times): frames at 3 s and 400 s bake what those two show and nothing between,
+     a range sample stopped baking what falls between its frames, and 41.99 s, which rounds
+     to the first frame of a clip starting at 42 s, bakes that clip where a test in seconds
+     left it out.
+   - `tile` returns the frames as one sheet, each captioned with its time (ffmpeg
+     `drawtext`, left off if ffmpeg finds no font). Frames are 480 px wide unless `width`
+     says, and `columns` defaults to about square. The MCP tool returns the sheet in place of
+     the frames.
+   - A sample's frames now render up to four at a time, since each is a melt run that loads
+     the whole document, and a frame two times round to renders once.
+   - `frames_at_chosen_times_tile_into_one_sheet`. The skill keeps `contact_sheet.py` for a
+     rendered file.
+
+**The skill** lost `mixsim.py`, `fontcheck.py`, the three trap rows the fixes removed
+(quotes, the one-frame fade, sampling a filed entry) and chunked applying. It points at
+`measure_audio`, `validate_project`, `patch_path` and `times`/`tile` instead.
 
 **Better left in the skill:** `reading_audit.py`, which relies on its components' var
 names, unless manifests someday declare which vars hold text to be read;
 `pixel_footage_template.py`, which is content, not tooling; and `subset_jp_fonts.py`, since
 `add_font` of the full collection already gives a complete JP family.
+
+**Also found:** the real-bake tests skip on a machine whose only headless Chrome is
+hyperframes' own download, or a Playwright build that lays itself out as
+`chrome-headless-shell-linux64/chrome-headless-shell` (1208 and later here), which
+`find_playwright_headless_shell` does not know. `KUMA_ALLOW_BROWSER_DOWNLOAD=1` runs them
+against hyperframes' own Chrome, the one the daemon's bakes use. Not changed: the browser
+path is hashed into every bake key, so finding one where none was found would re-bake every
+finished video, and change which Chrome draws it.
 
 ## Still open
 

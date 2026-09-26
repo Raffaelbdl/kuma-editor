@@ -74,14 +74,13 @@ project on disk. Re-run the storyboard after applying, so the counts include the
 
 ## Applying through MCP
 
-- **Chunk** big patches (≤ ~25 KB per `apply_edits`) in an order where every
-  intermediate state is valid:
-  1. new entries and var changes;
-  2. the master, whose chapter clips only get shorter;
-  3. each chapter's tracks.
-- For a small change, send targeted ops (`…/clips/<j>/volume`) rather than a whole track.
-- Then **re-run the diff: it must print 0 ops**, and `validate_project` must be clean. A
-  typo in a copied number shows up here and nowhere else.
+- Write the patch into the project (`patches/diff.json`) and apply it with `apply_edits`
+  and `patch_path`: the daemon reads the file, so the whole patch lands in one atomic,
+  undoable edit, exactly as the diff wrote it. Pass the `base_revision` the diff printed.
+  The answer's `ops` says how many operations were applied.
+- For a small change, send targeted ops (`…/clips/<j>/volume`) inline rather than a whole
+  track.
+- Then **re-run the diff: it must print 0 ops**, and `validate_project` must be clean.
 - If the revision moved since you last looked, someone else edited. Read what the diff
   would change and make sure every op is yours before sending it.
 - Before a sweeping change (a new time model, a shared helper), copy `assets/` and

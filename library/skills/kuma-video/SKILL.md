@@ -13,14 +13,14 @@ so keep project notes elsewhere.
 
 ## Every session, first
 
-1. Read `timeline_guide` and `overlay_guide`; they change with kuma. If the guide or
-   `list_presets` names an option your `render` tool does not take (say `speed`), the MCP
-   process is older than the daemon: say so and ask for it to be restarted.
+1. Read `timeline_guide` and `overlay_guide`; they change with kuma. A tool result that
+   starts "kuma was rebuilt after this MCP server started" means your tools are the old
+   build's: say so and ask for the MCP server to be restarted.
 2. `health`, `list_presets` (note what is `available`, e.g. `youtube-nvenc`), `list_fonts`
    (note each family's `scripts`: a family without `han`/`kana` cannot set Japanese).
-3. `check_overlay` on one overlay. `font_missing` for JetBrains Mono, Caveat, etc. means
-   the daemon cannot see kuma's font library: `kuma library` once, or a daemon started with
-   `KUMA_LIBRARY=<kuma-editor>/library`.
+3. `validate_project`. Besides errors, it warns about every entry whose font is not
+   installed (`health`'s `blueprint_dirs` say which libraries the daemon reads; `kuma
+   library` installs the starter fonts) and every character an entry's fonts cannot set.
 
 ## The shape of a video
 
@@ -44,10 +44,10 @@ Keep the whole video in a `storyboard.py` with a small DSL, generate the patches
 send only the difference: `references/storyboard-as-code.md`. In short:
 
 - `diff.py` compares the storyboard with the live project and writes the smallest JSON
-  Patch. Send it with `apply_edits`, split into chunks of ≤ ~25 KB in an order that keeps
-  every intermediate state valid.
-- **Run the diff again afterwards: it must print 0 ops.** That proves the transcription was
-  exact, and that nobody else's edit is being overwritten.
+  Patch to a file in the project. Apply it with `apply_edits` and `patch_path`: one call,
+  exact, whatever its size, with the `base_revision` the diff read.
+- **Run the diff again afterwards: it must print 0 ops.** That proves nothing was left out,
+  and that nobody else's edit is being overwritten.
 - Clip ids are stable (`<entry>_<start ms>`); pin the ids of entries you insert later.
 - Retime with cuts (a time warp applied at build), never by editing every time by hand.
 
@@ -55,35 +55,31 @@ send only the difference: `references/storyboard-as-code.md`. In short:
 
 | Symptom | Cause | Rule |
 |---|---|---|
-| A box renders tiny in a corner, no error | a lone `'` or `"` in a string var broke every CSS var after it | typographic apostrophes (’); assert balanced quotes in the DSL |
-| Kanji look Chinese, or odd | a Latin-font label fell back to the machine's CJK font under `lang="en"` (Noto CJK **SC** on Linux) | `lang="ja"`, a `jp` fallback font var, JP-face fonts with full JIS coverage, `scripts/fontcheck.py` → `references/japanese-type.md` |
+| Kanji look Chinese, or odd | a Latin-font label fell back to the machine's CJK font under `lang="en"` (Noto CJK **SC** on Linux) | `lang="ja"`, a `jp` fallback font var, JP-face fonts with full JIS coverage; `validate_project` names the characters and the page → `references/japanese-type.md` |
 | Viewers don't know what 承 means | only the on'yomi ("SHŌ") was given | gloss kanji with the kun'yomi verb and its English sense (承ける *ukeru*, "take it up") |
-| 93 s of music silent | a fade that rounds to 1 frame, on a clip starting at frame 0, compiles to `in=0 out=0`, which MLT reads as the whole clip | fades ≥ 2 frames; check the first seconds of every render for silence |
 | `<!--` drawn as an arrow | programming ligatures in the mono font | `font-feature-settings: "liga" 0, "calt" 0` on code |
-| `sample_frames` with `overlay` refuses: parent not in the bin | the one-clip sample copies the entry, not its folder | sample the sequence instead |
 | A clip's `in` runs past the source | generated footage too short | make footage longer than any clip reads into it |
 | "keyframe beyond clip end" after a trim | keyframes were timed to the old length | compute keyframe times from the clip's actual length |
 | Inserting one entry renamed every later one | counter-based entry ids | pin ids of new entries; content-based clip ids |
-| The mix is 10 dB too quiet | kuma has no limiter, and gains were guessed | model the mix offline before rendering (`scripts/mixsim.py`) → `references/audio.md` |
+| The mix is 10 dB too quiet | kuma has no limiter, and gains were guessed | `measure_audio` before rendering → `references/audio.md` |
 | Scenes read fine but the video drags | a steady reading rhythm with no beats | hook, page turns, camera hits, snappy motion → `references/pacing.md` |
 | A tweak costs 20 minutes | a `_vendor/` or font change re-bakes every overlay | decide motion and type early, batch such changes, review with the `draft` preset |
-
-The first, fourth and sixth rows are kuma bugs at the time of writing. Check whether they
-still hold (a var containing `Let's`, a 0.05 s `audio_fade` at 0) before working around them.
 
 ## Review loop
 
 - **While drawing**, sample the overlay entry on its own, or its sequence over a short
-  range. Sampling the master bakes every changed overlay in it: do that once, on purpose,
-  or render `draft` and pull frames from the file (`scripts/contact_sheet.py`).
-- **Before the final render**: `validate_project`, diff at 0 ops, `scripts/fontcheck.py`,
-  `scripts/mixsim.py` (loudness and peak), and `scripts/reading_audit.py` (text on screen
-  long enough to read, holds not too long).
+  range. Sampling the master bakes every changed overlay it shows: `sample_frames` with
+  `times` bakes only what those frames show, and `tile` returns them as one contact sheet.
+- **Before the final render**: `validate_project` (no font warnings), diff at 0 ops,
+  `measure_audio` (loudness overall and per chapter, true peak, the loudest moments,
+  silences), `sample_frames` with `times` at every cut ±0.3 s and `tile`, and
+  `scripts/reading_audit.py` (text on screen long enough to read, holds not too long).
 - **After it**, check:
-  - duration (ffprobe);
-  - loudness overall and per chapter, and true peak (ebur128);
-  - 2 s volume windows over the opening (silence);
-  - a contact sheet of every cut ±0.3 s and each key scene.
+  - duration (ffprobe), and the render result's `warnings`;
+  - loudness and true peak of the file itself (ebur128), which should read what
+    `measure_audio` did;
+  - a contact sheet of every cut ±0.3 s and each key scene, from the file
+    (`scripts/contact_sheet.py`).
   
   Look at the frames. Keep the previous render under another name before re-rendering to
   the same path.
@@ -98,19 +94,17 @@ a venv: `python3 -m venv .venv && .venv/bin/pip install numpy pillow fonttools`.
 
 | Script | Does |
 |---|---|
-| `mixsim.py` | models the project's audio mix; prints the peak, and with `--lufs` the loudness overall and per chapter; `--gain bin=vol` tries gains without editing |
-| `fontcheck.py` | every CJK character in every text var is drawn by a project font (the overlay's own, or its `jp` fallback) |
 | `subset_jp_fonts.py` | only to shrink a project (`add_font` of the full collection is simpler): the JP face, JIS X 0208 and the project's text |
 | `reading_audit.py` | per scene: when the last text can have been read, and how long the scene then holds |
-| `contact_sheet.py` | frames of a video at given times, tiled into one image |
+| `contact_sheet.py` | frames of a rendered file at given times, tiled into one image (before rendering, `sample_frames` with `times` and `tile`) |
 | `pixel_footage_template.py` | a deterministic pixel-art seascape, encoded as real H.264 footage; adapt it |
 
 ## References
 
-- `references/storyboard-as-code.md`: the DSL, stable ids, cuts, the diff, chunked applying
+- `references/storyboard-as-code.md`: the DSL, stable ids, cuts, the diff, applying it
 - `references/overlays.md`: authoring gotchas beyond the contract
 - `references/japanese-type.md`: fonts, fallback, glyph forms, glossing kanji
-- `references/audio.md`: loudness with gains only, the mix model, SFX peaks, music cues
+- `references/audio.md`: loudness with gains only, measuring the mix, SFX peaks, music cues
 - `references/pacing.md`: reading speed, hooks, page turns, camera hits, motion
 - `references/footage.md`: generating footage MLT can cut
 - `references/render-and-review.md`: costs, presets, versions, the checklist with commands

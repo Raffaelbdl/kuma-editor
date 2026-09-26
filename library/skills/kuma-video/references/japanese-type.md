@@ -42,8 +42,9 @@ So:
    font-family: var(--var-font), var(--var-jp, serif), serif;
    ```
    The `var(--var-jp, serif)` form keeps the stack valid where an overlay lacks the var.
-6. **Check it:** `scripts/fontcheck.py` walks every entry and reports any CJK character
-   that neither the overlay's font nor its `jp` fallback draws.
+6. **Check it:** `validate_project` warns about every entry with characters none of its
+   `font` vars' families can set (`glyphs_missing`, with the characters), and CJK text on a
+   page whose `lang` is not a CJK one. `check_overlay` says the same of a folder's defaults.
 7. Vertical text: `writing-mode: vertical-rl; text-orientation: upright`. Keep all layout
    features when subsetting (`vert`, `vrt2`).
 

@@ -33,11 +33,6 @@ contract does not say, or what bit anyway.
 
 ## Text
 
-- **Quotes in string vars**: at the time of writing kuma writes string vars unquoted into
-  one `:root { … }` line, so a lone `'` or `"` opens a CSS string that swallows every custom
-  property after it. The overlay then renders with missing vars, often tiny in a corner,
-  with no error. Use typographic apostrophes (’), and assert balanced quotes in the DSL.
-  Check whether a var containing `Let's` still breaks before relying on the workaround.
 - **Ligatures**: mono fonts with programming ligatures draw `<!--`, `->` and `!=` as
   symbols. Put `font-variant-ligatures: none; font-feature-settings: "liga" 0, "calt" 0`
   on code.
@@ -59,7 +54,5 @@ contract does not say, or what bit anyway.
 
 ## Looking at one
 
-- `sample_frames` with `overlay` renders the entry on its own. At the time of writing it
-  fails for entries that have a `parent` folder ("parent … is not in the bin"); sample the
-  chapter sequence over the clip's range instead.
+- `sample_frames` with `overlay` renders the entry on its own, before any clip places it.
 - Sample over **white and black** backdrops if it can sit over footage.

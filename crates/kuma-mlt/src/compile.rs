@@ -663,13 +663,19 @@ fn emit_filters(ctx: &Ctx, p: &Plan, w: &mut XmlWriter) {
                 };
                 let (own_in, own_out) = (f_in + p.pre, f_out - p.post);
                 let own_len = own_out - own_in + 1;
+                // At least two frames. A one-frame fade on a clip whose range starts at
+                // frame 0 is a filter at `in="0" out="0"`, which MLT reads as no range at
+                // all: a 0.05 s fade-in silenced 93 s of music. A ramp needs two frames
+                // anyway, and one frame of it drew the same frame 0 at 0 as two do. Only a
+                // one-frame clip is left with one, and there the whole clip is that frame.
+                let length = |secs: f64| fps.length(secs).max(2).min(own_len);
                 if *fade_in > 0.0 {
-                    let fi = fps.length(*fade_in).min(own_len);
+                    let fi = length(*fade_in);
                     open_at(w, &format!("{name}in"), service, own_in, own_in + fi - 1);
                     ramp(w, "0", "1");
                 }
                 if *fade_out > 0.0 {
-                    let fo = fps.length(*fade_out).min(own_len);
+                    let fo = length(*fade_out);
                     open_at(w, &format!("{name}out"), service, own_out - fo + 1, own_out);
                     ramp(w, "1", "0");
                 }
@@ -910,6 +916,32 @@ mod tests {
         let mut picture = CompileOptions::new("/proj");
         picture.streams = Streams::Video;
         assert!(!compile(&p, &picture).unwrap().contains(">volume<"));
+    }
+
+    /// A fade shorter than two frames is written as two. As one, on a clip starting at
+    /// frame 0 it was a filter at `in="0" out="0"`, which MLT reads as unbounded, so a
+    /// 0.02 s fade-in on the opening music ramped over the whole clip. No filter in any
+    /// compile may have that range unless its clip is one frame long.
+    #[test]
+    fn a_fade_under_two_frames_is_two_frames() {
+        let p = project(json!({
+            "fps": 30, "bin": { "x": { "source": { "path": "x.mp4" } }, "song": { "source": { "path": "song.wav", "kind": "audio" } } },
+            "tracks": [
+                { "id": "v1", "clips": [{ "id": "a", "start": 0, "end": 90, "bin": "x", "effects": [
+                    { "type": "fade", "in": 0.02, "out": 0.02 }
+                ] }] },
+                { "id": "a1", "kind": "audio", "clips": [{ "id": "m", "start": 0, "end": 93, "bin": "song", "effects": [
+                    { "type": "audio_fade", "in": 0.02, "out": 0.01 }
+                ] }] }
+            ]
+        }));
+        let xml = compile(&p, &CompileOptions::new("/proj")).unwrap();
+        let range = |id: &str| xml.split(&format!(r#"<filter id="{id}""#)).nth(1).unwrap().split('>').next().unwrap().trim().to_string();
+        assert_eq!(range("clip_a_fadein1"), r#"in="0" out="1""#, "{xml}");
+        assert_eq!(range("clip_a_fadeout2"), r#"in="2698" out="2699""#, "{xml}");
+        assert_eq!(range("clip_m_afadein1"), r#"in="0" out="1""#, "{xml}");
+        assert_eq!(range("clip_m_afadeout2"), r#"in="2788" out="2789""#, "{xml}");
+        assert!(!xml.contains(r#"in="0" out="0""#), "{xml}");
     }
 
     /// An entry's volume multiplies the clip's fader, and a Volume effect's gain and keys.

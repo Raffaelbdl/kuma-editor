@@ -6,9 +6,11 @@ use std::time::Duration;
 
 use base64::Engine as _;
 use rmcp::handler::server::router::tool::ToolRouter;
+use rmcp::handler::server::tool::ToolCallContext;
 use rmcp::handler::server::wrapper::Parameters;
-use rmcp::model::{CallToolResult, ContentBlock, ServerCapabilities, ServerInfo};
-use rmcp::{schemars, tool, tool_handler, tool_router, ErrorData as McpError, ServerHandler};
+use rmcp::model::{CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, ServerCapabilities, ServerInfo};
+use rmcp::service::RequestContext;
+use rmcp::{schemars, tool, tool_handler, tool_router, ErrorData as McpError, RoleServer, ServerHandler};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
@@ -41,12 +43,61 @@ const TIMELINE_GUIDE: &str = include_str!("timeline_guide.md");
 pub struct KumaServer {
     client: Client,
     note: Option<String>,
+    build: Build,
     tool_router: ToolRouter<Self>,
+}
+
+/// What an agent is told on every call once the kuma this server runs is not the one on
+/// disk any more. A client lists a server's tools once, so a server that outlives a rebuild
+/// keeps the old tools and the old options — which a newer daemon would have taken — and
+/// an option the old schema lacks is dropped without a word.
+const REBUILT: &str = "kuma was rebuilt after this MCP server started, so these tools are the old build's: an option or tool the rebuild added is missing here, and a daemon this server started is the old one too. Tell the user, and ask them to restart the kuma MCP server (in Claude Code: `/mcp`, then reconnect kuma).";
+
+/// The executable a server runs from, as it was when the server started.
+#[derive(Clone, Debug)]
+struct Build {
+    path: Option<std::path::PathBuf>,
+    stamp: Option<(u64, std::time::SystemTime)>,
+}
+
+impl Build {
+    fn of(path: Option<std::path::PathBuf>) -> Self {
+        let stamp = path.as_deref().and_then(stamp);
+        Build { path, stamp }
+    }
+
+    /// This process's executable. Linux names one that has been replaced `<path> (deleted)`,
+    /// and the path it had is where the new build is.
+    fn current() -> Self {
+        let exe = std::env::current_exe().ok().map(|p| std::path::PathBuf::from(p.to_string_lossy().trim_end_matches(" (deleted)")));
+        Build::of(exe)
+    }
+
+    /// Whether the file at the path is no longer the one this started from: another size or
+    /// time, or gone (a build in progress).
+    fn replaced(&self) -> bool {
+        self.path.as_deref().is_some_and(|p| stamp(p) != self.stamp)
+    }
+}
+
+fn stamp(path: &std::path::Path) -> Option<(u64, std::time::SystemTime)> {
+    let m = std::fs::metadata(path).ok()?;
+    Some((m.len(), m.modified().ok()?))
+}
+
+/// `response`, with `note` put before whatever it says.
+fn noted(mut response: Result<CallToolResponse, McpError>, note: &str) -> Result<CallToolResponse, McpError> {
+    match &mut response {
+        Ok(CallToolResponse::Complete(r)) => r.content.insert(0, ContentBlock::text(note)),
+        Err(e) => e.message = format!("{note}\n\n{}", e.message).into(),
+        _ => {}
+    }
+    response
 }
 
 impl KumaServer {
     pub fn new(client: Client, note: Option<String>) -> Self {
-        Self { client, note, tool_router: Self::tool_router() }
+        Self { client, note, build: Build::current(), tool_router: Self::tool_router() }
     }
 
     async fn get(&self, path: &str) -> Result<CallToolResult, McpError> {
@@ -85,7 +136,13 @@ fn err(e: anyhow::Error) -> McpError {
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct ApplyEdits {
     /// RFC 6902 JSON Patch operations against the project document.
-    pub patch: Vec<Value>,
+    #[serde(default)]
+    pub patch: Option<Vec<Value>>,
+    /// Or a file inside the project holding the operations (a JSON array), e.g.
+    /// `patches/diff.json`: the daemon reads it, so a large patch is applied exactly as a
+    /// script wrote it, in one call. One of `patch` or `patch_path`.
+    #[serde(default)]
+    pub patch_path: Option<String>,
     /// The `revision` of the project you read. Rejected (409) if someone edited since.
     #[serde(default)]
     pub base_revision: Option<u64>,
@@ -176,6 +233,18 @@ pub struct SampleFrames {
     /// 5 across a range.
     #[serde(default)]
     pub count: Option<usize>,
+    /// Frames at exactly these times (seconds, up to 32) instead of `t0`/`t1`/`count`:
+    /// every cut and a moment either side, the key beat of each scene. Each bakes only the
+    /// overlays it shows.
+    #[serde(default)]
+    pub times: Option<Vec<f64>>,
+    /// Return the frames as one contact sheet, left to right then down, each captioned with
+    /// its time, instead of one image per frame. Frames on it are 480 px wide unless `width` says.
+    #[serde(default)]
+    pub tile: Option<bool>,
+    /// Columns of the sheet; about square when omitted.
+    #[serde(default)]
+    pub columns: Option<u32>,
     /// Crop rectangle in composition pixels `{x, y, w, h}`.
     #[serde(default)]
     pub rect: Option<Rect>,
@@ -281,6 +350,23 @@ impl Render {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct MeasureAudio {
+    /// Bin id of the sequence to measure. The project's `master` when omitted.
+    #[serde(default)]
+    pub sequence: Option<String>,
+    /// Optional `[start, end]` seconds to measure only part of it.
+    #[serde(default)]
+    pub range: Option<(f64, f64)>,
+    /// Parts to measure one by one, `{start, end, label}` in seconds. By default, every
+    /// clip of the sequence that places another sequence (its chapters).
+    #[serde(default)]
+    pub sections: Option<Vec<Value>>,
+    /// Seconds to wait before returning the job id instead (default 600).
+    #[serde(default)]
+    pub wait_seconds: Option<u64>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct AddMedia {
     /// Media path relative to the project directory (or absolute).
     pub path: String,
@@ -352,10 +438,10 @@ impl KumaServer {
         self.get("/api/schema").await
     }
 
-    #[tool(description = "Apply a JSON Patch to the project. Atomic: rejected entirely if the result is invalid or the base_revision is stale. Returns the new revision and any warnings.")]
+    #[tool(description = "Apply a JSON Patch to the project: `patch` inline, or `patch_path`, a file in the project holding it (for a patch a script wrote, of any size). Atomic: rejected entirely if the result is invalid or the base_revision is stale. Returns the new revision, the number of operations applied and any warnings.")]
     async fn apply_edits(&self, Parameters(p): Parameters<ApplyEdits>) -> Result<CallToolResult, McpError> {
         let origin = format!("claude: {}", p.note.unwrap_or_else(|| "edit".into()));
-        self.post("/api/project/patch", &json!({ "patch": p.patch, "base_revision": p.base_revision, "origin": origin })).await
+        self.post("/api/project/patch", &json!({ "patch": p.patch, "patch_path": p.patch_path, "base_revision": p.base_revision, "origin": origin })).await
     }
 
     #[tool(description = "Undo the last edit (yours or the user's). Returns the new revision; fails when there is nothing to undo.")]
@@ -453,15 +539,17 @@ impl KumaServer {
         self.post("/api/overlays/save-blueprint", &json!({ "bin": p.bin, "id": p.id, "force": p.force.unwrap_or(false) })).await
     }
 
-    #[tool(description = "Render exact composited frames (through the real MLT graph, overlays included) and return them as images. Use a rect to zoom into a region. Pass `sequence` to look at a nested sequence instead of the master, or `overlay` to look at one overlay bin entry on its own — no placement needed, times counted from the start of the overlay, which is how to check an animation you are authoring before it is in the cut. Frames are also written as PNGs whose paths are returned. An overlay changed since it was last baked is baked for its whole clip first, which can take a minute or more per overlay: after `wait_seconds` a sample still baking returns its job id and progress, and calling again with `job` set to that id picks it up.")]
+    #[tool(description = "Render exact composited frames (through the real MLT graph, overlays included) and return them as images: evenly over `t0`..`t1`, or at exactly the `times` given, and with `tile` as one captioned contact sheet (every cut ±0.3 s in one image). Use a rect to zoom into a region. Pass `sequence` to look at a nested sequence instead of the master, or `overlay` to look at one overlay bin entry on its own — no placement needed, times counted from the start of the overlay, which is how to check an animation you are authoring before it is in the cut. Frames are also written as PNGs whose paths are returned. An overlay changed since it was last baked is baked for its whole clip first, which can take a minute or more per overlay: after `wait_seconds` a sample still baking returns its job id and progress, and calling again with `job` set to that id picks it up.")]
     async fn sample_frames(&self, Parameters(p): Parameters<SampleFrames>) -> Result<CallToolResult, McpError> {
         let id = match p.job {
             Some(id) => id,
             None => {
+                let tile = p.tile.unwrap_or(false);
                 let body = json!({
-                    "t0": p.t0, "t1": p.t1, "count": p.count,
+                    "t0": p.t0, "t1": p.t1, "count": p.count, "times": p.times, "tile": tile, "columns": p.columns,
                     "rect": p.rect.as_ref().map(|r| json!({ "x": r.x, "y": r.y, "w": r.w, "h": r.h })),
-                    "width": p.width.or(if p.rect.is_some() { None } else { Some(960) }),
+                    // A sheet sizes its own frames.
+                    "width": p.width.or((p.rect.is_none() && !tile).then_some(960)),
                     "overlays": p.overlays.unwrap_or(true),
                     "sequence": p.sequence,
                     "overlay": p.overlay, "duration": p.duration, "backdrop": p.backdrop,
@@ -489,17 +577,22 @@ impl KumaServer {
         let mut content = Vec::new();
         let samples = j["result"]["samples"].as_array().cloned().unwrap_or_default();
         let listing: Vec<Value> = samples.iter().map(|s| json!({ "t": s["t"], "frame": s["frame"], "path": s["path"] })).collect();
-        content.push(ContentBlock::text(serde_json::to_string_pretty(&json!({ "samples": listing })).unwrap()));
-        for s in &samples {
-            let path = s["path"].as_str().unwrap_or_default();
-            let label = format!("t={:.3}s", s["t"].as_f64().unwrap_or(0.0));
-            // The PNGs live on the daemon's disk; say so when this process cannot see them.
-            match std::fs::read(path) {
-                Ok(bytes) => {
-                    content.push(ContentBlock::text(label));
-                    content.push(ContentBlock::image(base64::engine::general_purpose::STANDARD.encode(bytes), "image/png"));
+        let sheet = j["result"]["sheet"].as_str();
+        content.push(ContentBlock::text(serde_json::to_string_pretty(&json!({ "samples": listing, "sheet": sheet })).unwrap()));
+        // The PNGs live on the daemon's disk; say so when this process cannot see them.
+        let mut image = |label: String, path: &str| match std::fs::read(path) {
+            Ok(bytes) => {
+                content.push(ContentBlock::text(label));
+                content.push(ContentBlock::image(base64::engine::general_purpose::STANDARD.encode(bytes), "image/png"));
+            }
+            Err(e) => content.push(ContentBlock::text(format!("{label}: cannot read {path}: {e}"))),
+        };
+        match sheet {
+            Some(path) => image(format!("contact sheet, {} frames in the order listed, left to right then down", samples.len()), path),
+            None => {
+                for s in &samples {
+                    image(format!("t={:.3}s", s["t"].as_f64().unwrap_or(0.0)), s["path"].as_str().unwrap_or_default());
                 }
-                Err(e) => content.push(ContentBlock::text(format!("{label}: cannot read {path}: {e}"))),
             }
         }
         Ok(CallToolResult::success(content))
@@ -515,6 +608,12 @@ impl KumaServer {
         self.job("/api/render", &p.body(), Duration::from_secs(p.wait_seconds.unwrap_or(900))).await
     }
 
+    #[tool(description = "Measure how loud a sequence is (the master by default): its sound rendered through the real graph, no bakes needed, and metered to EBU R128. Returns integrated loudness (LUFS), loudness range and true peak (dBTP) overall and per section (by default each clip placing a sequence, i.e. each chapter), the five loudest moments, and silent stretches of a second or more. kuma has no limiter, so check this before a final render: a fade that silences music, or effects stacking on a peak, show up here.")]
+    async fn measure_audio(&self, Parameters(p): Parameters<MeasureAudio>) -> Result<CallToolResult, McpError> {
+        let body = json!({ "sequence": p.sequence, "range": p.range, "sections": p.sections });
+        self.job("/api/audio/measure", &body, Duration::from_secs(p.wait_seconds.unwrap_or(600))).await
+    }
+
     #[tool(description = "Delete what the project's `.kuma/` cache no longer uses: superseded bakes, sampled frames, thumbnails of removed entries. sample_frames leaves PNGs behind, so prune after a long session. Returns what was freed and what is left.")]
     async fn prune_cache(&self, Parameters(p): Parameters<PruneCache>) -> Result<CallToolResult, McpError> {
         self.job("/api/cache/prune", &json!({ "all": p.all }), Duration::from_secs(3600)).await
@@ -525,7 +624,7 @@ impl KumaServer {
         self.get(&format!("/api/jobs/{}", p.id)).await
     }
 
-    #[tool(description = "Cancel a render job, whether it is queued or encoding. melt is stopped, the partial file is removed, and the job ends in state `cancelled`. Refused for a job that has finished or is not a render.")]
+    #[tool(description = "Cancel a render job, whether it is queued or encoding, or an audio measurement. melt is stopped, the partial file is removed, and the job ends in state `cancelled`. Refused for a job that has finished or cannot be stopped.")]
     async fn cancel_job(&self, Parameters(p): Parameters<JobArg>) -> Result<CallToolResult, McpError> {
         self.post(&format!("/api/jobs/{}/cancel", p.id), &json!({})).await
     }
@@ -547,6 +646,12 @@ impl KumaServer {
 
 #[tool_handler(router = self.tool_router)]
 impl ServerHandler for KumaServer {
+    /// Every tool, through the router, and told when this server is an old build.
+    async fn call_tool(&self, request: CallToolRequestParams, context: RequestContext<RoleServer>) -> Result<CallToolResponse, McpError> {
+        let response = self.tool_router.call(ToolCallContext::new(self, request, context)).await;
+        if self.build.replaced() { noted(response, REBUILT) } else { response }
+    }
+
     fn get_info(&self) -> ServerInfo {
         let instructions = match &self.note {
             // First: a client keeps only the start of long instructions.
@@ -584,6 +689,34 @@ mod tests {
         let bare = serde_json::from_value::<Render>(json!({})).unwrap().body();
         assert_eq!(bare["preset"], "youtube-1080p");
         assert!(bare["threads"].is_null() && bare["quality"].is_null() && bare["speed"].is_null(), "{bare}");
+    }
+
+    /// The binary a server started from, replaced under it, is noticed, the way a rebuild
+    /// replaces `target/release/kuma`; left alone, it is not.
+    #[test]
+    fn a_rebuilt_binary_is_noticed() {
+        let path = std::env::temp_dir().join(format!("kuma-mcp-build-{}", std::process::id()));
+        std::fs::write(&path, b"old build").unwrap();
+        let build = Build::of(Some(path.clone()));
+        assert!(!build.replaced());
+        std::fs::write(&path, b"the new build").unwrap();
+        assert!(build.replaced(), "a different size");
+        std::fs::remove_file(&path).unwrap();
+        assert!(build.replaced(), "gone, mid-build");
+        assert!(!Build::of(None).replaced(), "an executable it cannot name is not a rebuild");
+        assert!(!Build::current().replaced(), "the test binary is the one running");
+    }
+
+    /// The note goes first in a result, and into an error's message, so it is read whatever
+    /// the tool said.
+    #[test]
+    fn a_stale_server_says_so_before_the_answer() {
+        let ok: Result<CallToolResponse, McpError> = Ok(CallToolResult::success(vec![ContentBlock::text("answer")]).into());
+        let Ok(CallToolResponse::Complete(r)) = noted(ok, REBUILT) else { panic!("still a result") };
+        let texts: Vec<String> = r.content.iter().filter_map(|c| c.as_text().map(|t| t.text.clone())).collect();
+        assert_eq!(texts, [REBUILT, "answer"]);
+        let Err(e) = noted(Err(McpError::invalid_params("bad", None)), REBUILT) else { panic!("still an error") };
+        assert!(e.message.starts_with("kuma was rebuilt") && e.message.ends_with("bad"), "{}", e.message);
     }
 
     #[test]

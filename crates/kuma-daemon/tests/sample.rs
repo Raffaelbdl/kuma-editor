@@ -2,8 +2,9 @@
 //!
 //! An entry is a whole thing before any clip places it, so checking what it looks like
 //! must not require putting one in the cut — and must not leave anything behind in the
-//! document if it does. That invariant is what these tests pin; they need no melt, no
-//! hyperframes and no browser, because what they check happens before any of them run.
+//! document if it does. That invariant is what most of these tests pin; they need no melt,
+//! no hyperframes and no browser, because what they check happens before any of them run.
+//! The last samples chosen times of a timeline, and needs melt and ffmpeg.
 
 use std::sync::Arc;
 
@@ -128,4 +129,55 @@ fn the_synthetic_project_has_the_shape_the_sample_relies_on() {
     let colours: Vec<_> = r.bin.values().filter_map(|i| match &i.source { kuma_core::BinSource::Color { color } => Some(color.clone()), _ => None }).collect();
     assert_eq!(colours, ["#00000000"]);
     assert_ne!(seq, seq3);
+}
+
+/// An entry filed in a bin folder is sampled like any other. The throwaway project holds
+/// the entry and not its folder, and it used to keep the `parent`, which named an entry it
+/// did not have and failed the compile ("parent … is not in the bin").
+#[test]
+fn an_entry_filed_in_a_folder_can_be_sampled() {
+    let (state, _dir) = fixture();
+    let mut doc = state.project.read().unwrap().clone();
+    doc.bin.insert("titles".into(), serde_json::from_value(serde_json::json!({ "name": "Titles", "source": { "folder": true } })).unwrap());
+    doc.bin.get_mut("tag").unwrap().parent = Some("titles".into());
+    let (p, _) = overlay_project(&state, &doc, "tag", &req(Some("tag"), None)).unwrap();
+    let issues = kuma_core::validate(&p, &kuma_core::ValidationContext { check_files: false, ..Default::default() });
+    assert!(!kuma_core::validate::has_errors(&issues), "{issues:?}");
+    assert_eq!(p.bin["tag"].parent, None);
+}
+
+/// The RGB of one pixel of a PNG.
+fn pixel(png: &std::path::Path, x: u32, y: u32) -> Vec<u8> {
+    std::process::Command::new("ffmpeg").args(["-v", "error", "-i"]).arg(png).args(["-vf", &format!("crop=1:1:{x}:{y}"), "-pix_fmt", "rgb24", "-f", "rawvideo", "-"]).output().unwrap().stdout
+}
+
+/// Frames at chosen times come back in the order asked, and with `tile` as one sheet: the
+/// frames left to right then down, 480 px wide each, the cell left over filled.
+#[test]
+fn frames_at_chosen_times_tile_into_one_sheet() {
+    if !kuma_overlay::media::ffprobe_available() || !kuma_mlt::melt::melt_available() {
+        eprintln!("ffmpeg/melt not available; skipping");
+        return;
+    }
+    let (state, _dir) = fixture();
+    let req = SampleRequest { times: Some(vec![1.5, 0.5, 1.0]), tile: true, ..Default::default() };
+    let out = kuma_daemon::jobs::sample(&state, &req, &|_, _| {}).expect("sample");
+    let samples = out["samples"].as_array().unwrap();
+    assert_eq!(samples.iter().map(|s| s["frame"].as_i64().unwrap()).collect::<Vec<_>>(), [45, 15, 30], "in the order asked: {out}");
+    let sheet = std::path::PathBuf::from(out["sheet"].as_str().expect("a sheet"));
+    let probe = kuma_overlay::probe(&sheet).unwrap();
+    // Three frames, two columns: 2 × 480 by 2 × 360 (the project is 320×240).
+    assert_eq!((probe.meta.width, probe.meta.height), (Some(960), Some(720)));
+    let navy = |p: Vec<u8>| p.len() == 3 && (p[0] as i32 - 0x10).abs() <= 3 && (p[1] as i32 - 0x20).abs() <= 3 && (p[2] as i32 - 0x30).abs() <= 3;
+    for (x, y) in [(240, 300), (720, 300), (240, 660)] {
+        assert!(navy(pixel(&sheet, x, y)), "a frame at ({x}, {y}): {:?}", pixel(&sheet, x, y));
+    }
+    assert!(!navy(pixel(&sheet, 720, 660)), "the cell after the last frame is empty");
+
+    // Without `tile`, the frames alone; and nonsense is refused before anything renders.
+    let plain = kuma_daemon::jobs::sample(&state, &SampleRequest { times: Some(vec![0.5]), ..Default::default() }, &|_, _| {}).unwrap();
+    assert!(plain["sheet"].is_null() && plain["samples"].as_array().unwrap().len() == 1);
+    for times in [vec![], vec![-1.0], vec![0.1; 33]] {
+        assert!(sample_frames(&state, &SampleRequest { times: Some(times.clone()), ..Default::default() }, &|_, _| {}).is_err(), "{times:?}");
+    }
 }

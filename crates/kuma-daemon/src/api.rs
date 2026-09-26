@@ -11,13 +11,13 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use kuma_core::edit::EditError;
-use kuma_core::{validate, BinSource, Project};
+use kuma_core::{BinSource, Project};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use tower_http::services::ServeDir;
 use tower_http::set_header::SetResponseHeaderLayer;
 
-use crate::jobs::{self, RenderRequest, SampleRequest, TranscribeRequest};
+use crate::jobs::{self, MeasureRequest, RenderRequest, SampleRequest, TranscribeRequest};
 use crate::preview::{self, EngineEvent};
 use crate::state::{lock, read, AppState};
 
@@ -57,6 +57,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/bake", post(bake))
         .route("/api/sample", post(sample))
         .route("/api/sample/job", post(sample_job))
+        .route("/api/audio/measure", post(measure_audio))
         .route("/api/snapshot", get(snapshot))
         .route("/api/cache", get(cache_usage))
         .route("/api/cache/prune", post(cache_prune))
@@ -192,7 +193,13 @@ async fn get_project(State(st): S) -> Json<Project> {
 
 #[derive(Deserialize)]
 struct PatchProject {
-    patch: json_patch::Patch,
+    #[serde(default)]
+    patch: Option<json_patch::Patch>,
+    /// Or a file in the project holding the patch, a JSON array of operations. A script
+    /// that builds a video writes its patch there and the daemon reads it, so a patch of any
+    /// size is applied exactly as written instead of being copied through a client in chunks.
+    #[serde(default)]
+    patch_path: Option<String>,
     #[serde(default)]
     base_revision: Option<u64>,
     #[serde(default = "default_origin")]
@@ -205,8 +212,27 @@ fn default_origin() -> String {
 // Mutations validate, serialize and write the file under the edit lock, so they run on
 // the blocking pool rather than an async worker.
 async fn patch_project(State(st): S, Json(req): Json<PatchProject>) -> ApiResult {
-    let (rev, warnings) = blocking(move || st.apply_patch(&req.patch.0, req.base_revision, &req.origin)).await??;
-    Ok(Json(json!({ "revision": rev, "warnings": warnings })))
+    let out = blocking(move || -> Result<Value, ApiError> {
+        let patch = match (req.patch, req.patch_path) {
+            (Some(patch), None) => patch,
+            (None, Some(path)) => read_patch(&st, &path).map_err(bad_request_err)?,
+            _ => return Err(ApiError::bad_request("pass the operations as `patch`, or a file in the project holding them as `patch_path`: one of the two")),
+        };
+        let (rev, warnings) = st.apply_patch(&patch.0, req.base_revision, &req.origin)?;
+        Ok(json!({ "revision": rev, "warnings": warnings, "ops": patch.0.len() }))
+    })
+    .await??;
+    Ok(Json(out))
+}
+
+/// The JSON Patch in the file at `path`, which must be inside the project: relative to it,
+/// or absolute and under it.
+fn read_patch(st: &AppState, path: &str) -> anyhow::Result<json_patch::Patch> {
+    use anyhow::Context;
+    let file = jobs::resolve_path(st, std::path::Path::new(path)).canonicalize().with_context(|| format!("cannot read `{path}`"))?;
+    anyhow::ensure!(file.starts_with(st.config.project_root().canonicalize()?), "`{path}` is not inside the project");
+    let text = std::fs::read_to_string(&file).with_context(|| format!("cannot read `{path}`"))?;
+    serde_json::from_str(&text).with_context(|| format!("`{path}` is not a JSON Patch (an array of operations)"))
 }
 
 async fn undo(State(st): S) -> ApiResult {
@@ -216,10 +242,16 @@ async fn redo(State(st): S) -> ApiResult {
     Ok(Json(json!({ "revision": blocking(move || st.redo()).await?? })))
 }
 
-async fn validate_project(State(st): S) -> Json<Value> {
-    let p = read(&st.project).clone();
-    let issues = validate(&p, &st.validation_context());
-    Json(json!({ "issues": issues, "duration": p.duration() }))
+/// The document's issues, and what its overlay entries will not be drawn in (fonts that are
+/// not installed, characters no font of theirs sets): warnings no edit is refused for, but
+/// that a video should not be rendered with unread.
+async fn validate_project(State(st): S) -> ApiResult {
+    let out = blocking(move || {
+        let p = read(&st.project).clone();
+        json!({ "issues": st.validate(&p), "duration": p.duration() })
+    })
+    .await?;
+    Ok(Json(out))
 }
 
 /// Which sequence is open for editing. Session state: it is not in the document and does
@@ -620,16 +652,23 @@ async fn bake(State(st): S, Json(req): Json<BakeReq>) -> Json<Value> {
 
 /// Synchronous: sampling is what the agent waits on.
 async fn sample(State(st): S, Json(req): Json<SampleRequest>) -> ApiResult {
-    let samples = blocking(move || jobs::sample_frames(&st, &req, &|_, _| {})).await??;
-    Ok(Json(json!({ "samples": samples })))
+    Ok(Json(blocking(move || jobs::sample(&st, &req, &|_, _| {})).await??))
 }
 
 /// The same sample as a job, for a caller that must not block on the bakes it needs:
 /// progress names the overlay baking, and the result is what `/api/sample` answers.
 async fn sample_job(State(st): S, Json(req): Json<SampleRequest>) -> Json<Value> {
     let s2 = st.clone();
-    let id = jobs::spawn(st, "sample", move |progress| Ok(json!({ "samples": jobs::sample_frames(&s2, &req, progress)? })));
+    let id = jobs::spawn(st, "sample", move |progress| jobs::sample(&s2, &req, progress));
     Json(json!({ "job": id }))
+}
+
+/// How loud a sequence is, as a cancellable job: it renders the sound, which takes a while
+/// for a long video. The result is `jobs::measure_audio`'s.
+async fn measure_audio(State(st): S, Json(req): Json<MeasureRequest>) -> Json<Value> {
+    let s2 = st.clone();
+    let params = json!({ "sequence": req.sequence });
+    Json(json!({ "job": jobs::spawn_cancellable(st, "measure", params, move |progress, cancel| jobs::measure_audio(&s2, &req, progress, cancel)) }))
 }
 
 async fn cache_usage(State(st): S) -> ApiResult {

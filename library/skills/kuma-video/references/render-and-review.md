@@ -19,30 +19,31 @@
 
 ## Versions and environment
 
-- The MCP server is a separate process from the daemon. After kuma is rebuilt, the daemon
-  may offer options (render `speed`, new presets) that the MCP's tool schema does not have
-  yet. Say so and ask for the MCP server to be restarted. Don't work around it silently.
-- A daemon whose library lacks fonts reports `font_missing` in `check_overlay`, and the
-  Latin faces then render as fallbacks. Run `kuma library` once, or start it with
-  `KUMA_LIBRARY=<kuma-editor>/library`.
+- The MCP server is a separate process from the daemon. After kuma is rebuilt, every tool
+  result starts with a note saying the MCP server is the old build, whose tools lack what
+  the rebuild added. Say so and ask for the MCP server to be restarted. Don't work around
+  it silently.
+- A font an entry names that the daemon cannot find renders as a fallback. `validate_project`
+  and a render's `warnings` list each one; `health`'s `blueprint_dirs` say which libraries
+  the daemon reads. `kuma library` installs the starter fonts into the user library.
 
 ## The checklist
 
 Before the final render:
 ```
-validate_project                                  # no issues
+validate_project                                  # no issues, no font warnings
 python3 assets/diff.py … > patches/diff.json      # 0 ops
-python3 <skill>/scripts/fontcheck.py              # nothing reported
-python3 <skill>/scripts/mixsim.py --lufs          # ≈ -16…-17 LUFS, peak ≤ -1.5 dBFS
+measure_audio                                     # ≈ -16…-17 LUFS, peak ≤ -1.5 dBTP, only the silences you meant
+sample_frames times=[…] tile=true                 # every cut ±0.3 s, each key scene, one sheet
 python3 <skill>/scripts/reading_audit.py          # no scene badly short, few long holds
 ```
 
 After it:
 ```
+render result `warnings`                          # none
 ffprobe -v error -show_entries format=duration -of csv=p=0 out.mp4
 ffmpeg -i out.mp4 -vn -af ebur128=peak=true -f null - 2>&1 | tail -12        # integrated, true peak
-for t in 0 2 4 6; do ffmpeg -ss $t -t 2 -i out.mp4 -vn -af volumedetect -f null - 2>&1 | grep mean_volume; done
-python3 <skill>/scripts/contact_sheet.py out.mp4 sheet.png 3.5 41.7 42.3 …   # every cut ±0.3 s, each key scene
+python3 <skill>/scripts/contact_sheet.py out.mp4 sheet.png 3.5 41.7 42.3 …   # the same moments, from the file
 ```
 
 Then **look at the sheet**, and keep the previous render under another name before

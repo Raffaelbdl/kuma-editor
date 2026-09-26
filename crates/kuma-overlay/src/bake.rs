@@ -229,9 +229,13 @@ impl Baker {
         h.update(folder_digest.as_bytes());
         let vars = req.manifest.resolve_vars(req.vars);
         h.update(serde_json::to_vec(&vars).unwrap_or_default());
+        let fonts = self.fonts(req.manifest, &vars);
+        // A var the contract now writes differently (an unclosed quote, escaped) is a
+        // different document from the one an older kuma baked; no other var is.
+        h.update(crate::inject::repaired_css(&vars, &fonts.vars));
         // The fonts drawn, by content: the same family name can be different files on
         // another machine, or after a font is replaced.
-        for family in self.fonts(req.manifest, &vars).families {
+        for family in fonts.families {
             h.update(family.name.as_bytes());
             for face in &family.faces {
                 h.update(format!("\0{:?} {} {}\0", face.weight, face.italic, face.digest).as_bytes());

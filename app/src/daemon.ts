@@ -11,7 +11,6 @@ import net from "node:net";
 import fs from "node:fs";
 import path from "node:path";
 
-import { libraryFallback } from "./kuma";
 
 /** Where a hand-run `kuma serve` and `kuma mcp` look by default. */
 const DEFAULT_PORT = 7455;
@@ -108,10 +107,10 @@ export async function start(opts: StartOptions): Promise<Daemon> {
     return { projectFile, port, url, owned: false, child: null, log: [] };
   }
 
-  const library = libraryFallback(opts.repo);
+  // Which library it reads is the daemon's rule (`library_dirs`); the launcher only reports it.
   const child = spawn(opts.bin, ["serve", "--project", projectFile, "--bind", `127.0.0.1:${port}`], {
     cwd: path.dirname(projectFile),
-    env: { ...process.env, KUMA_REPO: opts.repo, ...(library ? { KUMA_LIBRARY: library } : {}) },
+    env: { ...process.env, KUMA_REPO: opts.repo },
     stdio: ["ignore", "pipe", "pipe"],
   });
 

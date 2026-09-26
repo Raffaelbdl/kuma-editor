@@ -34,7 +34,9 @@ Blueprints, presets and fonts are user assets, not code: at runtime kuma reads
 `KUMA_LIBRARY`, later wins; presets also come from the project's own `presets/`, and
 fonts from the project's own `fonts/`, which wins over every library.
 Blueprints never come from a project. `library/` is only the starter set that
-`kuma library` installs. Tests point `KUMA_LIBRARY` (or the baker) at it.
+`kuma library` installs; until the user library has blueprints, and when `KUMA_LIBRARY` is
+unset, every daemon reads it in place (`library_dirs`; the desktop shell only reports it).
+Tests point `KUMA_LIBRARY` (or the baker) at it.
 
 ## Commands
 

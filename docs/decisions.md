@@ -813,6 +813,8 @@ Not built, recorded for when the video half is too slow:
   reordered before sending. It raises playback throughput, not single-seek latency, and not
   every MLT service is thread-safe: compare parallel against serial output first. Only
   sensible once sound is its own graph, since audio has to be pulled in order and on time.
+  Renders now do this through melt, and `parallel_frames_render_what_serial_frames_do` is
+  the comparison (see *Bake and render speed*).
 - **Tracks in parallel within a frame.** Not possible with MLT as it is: a tractor pulls its
   tracks in turn. It would mean an upstream change or the engine blending tracks itself,
   which is a second compositor and refused as such. It is the one thing that would help
@@ -1824,6 +1826,33 @@ Found on the way: melt 7.22 takes `-silent` to suppress `-progress` too. A rende
 never reported a frame, so it sat at 50% until done. Renders no longer pass `-silent`, and
 the melt render test asserts that progress arrives.
 
+**Advanced render options** — adopted. The Render tab has an **Advanced** section, folded
+by default like an effect in the inspector, whose head lists what it changes while folded
+("CRF 20 · medium · 2 threads"). It sets three things for one render. Left empty, each is
+the preset's own, or the machine's for threads.
+
+- **Threads**: frames melt builds at once (`real_time`, see *Bake and render speed*). The
+  placeholder is this machine's default, which `GET /api/render/target` reports, since
+  it is the daemon's machine and not the browser's. The file is identical however many.
+- **Quality** and **Speed**: the codec's rate factor and speed. A preset declares whether
+  it has them (`ExportPreset::quality` and `speed` in `kuma-mlt/src/presets.rs`), with its
+  own value as the default and, for speed, the options fastest first. x264 has CRF 0–51 and
+  its presets. VP9 has CRF 0–63 and `cpu-used` 0–5: 45 s at its default of 1 for two
+  seconds of 1080p, 24 s at 2, 8 s at 4. The VP9 preset now writes `cpu-used=1` out, which
+  was checked to encode the same bytes as leaving it to libvpx, so the default the dialog
+  shows is the one passed. ProRes has neither: its profile is its quality. A test holds
+  each declared default to the preset's own property.
+- They are a typed `kuma_mlt::Tuning` on `RenderJob`, so melt's vocabulary stays in
+  kuma-mlt. `ExportPreset::check` refuses what the codec does not have, rather than passing
+  melt a key it would ignore, and `render_target` calls it, so a bad one is refused when
+  the render is asked for. `ExportPreset::tuned` writes each in place of the preset's own
+  value, not as a second key. `a_render_encodes_with_the_quality_and_speed_asked_for`
+  reads x264's own settings back out of the stream (`crf=`, and `subme=` by preset).
+- They are job params, so the queue shows them beside the preset. The dialog keeps what
+  was last rendered with for the session, quality and speed only with their own preset.
+- On the HTTP API (`threads`, `quality`, `speed` on `POST /api/render`) and the MCP
+  `render` tool, whose `list_presets` says what each preset offers. Not on `kuma render`.
+
 ## Pruning the cache
 
 **Adopted** (`crates/kuma-daemon/src/cache.rs`). Bakes, sampled frames and bin thumbnails
@@ -1936,10 +1965,8 @@ a bloom pass trivial, one overlay folder behind five entries worked as intended,
    (`concurrent_bakes_of_one_key_render_once`). The timeline guide now says what a sample
    costs and to sample an entry on its own while drawing it.
 
-   Still open here: baking different overlays of one sample in parallel (each its own
-   one-worker hyperframes process, so the one-worker determinism rule in `CLAUDE.md`
-   should hold, but it has not been measured), and the bake
-   size in *Recorded, not scheduled*.
+   Still open here: baking different overlays of one sample in parallel — since measured,
+   see *Bake and render speed* below — and the bake size in *Recorded, not scheduled*.
 4. **`kumaCanvas.hash` had no final mix** — **fixed, by addition**. It is bare FNV-1a
    (`_vendor/kuma-canvas.js`), so keys differing in their last character (`s1`, `s2`, …)
    land close together in the high bits that `/ 2^32` keeps. Measured: 400 stars placed at
@@ -2052,6 +2079,220 @@ a bloom pass trivial, one overlay folder behind five entries worked as intended,
   learn what moved instead of re-reading the project.
 - **Checking a loop's seam**: comparing the last frame with the first was done by hand in
   ffmpeg. Only worth a tool if loops become a declared property of a project.
+
+## Bake and render speed
+
+A study, prompted by "baking and rendering take a very long time for long videos". Every
+number below was measured on one machine: an i7-9750H laptop (6 cores, 12 threads, 16 GB)
+with a GTX 1660 Ti, hyperframes 0.8.37 and melt 7.22. The project was a 60 s 1080p30
+timeline: one H.264 source clip, a `subtitles` overlay over all of it (141 cues), a 10 s
+`lower-third` and a 5 s `title`. Where it says *identical*, frames were compared one by
+one: PNG bytes or decoded RGBA for bakes, and per-frame MD5s from melt's `framemd5` output
+for renders.
+
+**Where the time goes.**
+
+- **Baking** is the long pole for long videos. The 60 s subtitles (1800 frames) bake in
+  77 s, about 23 fps, and one hyperframes process uses about one core of the twelve.
+  `bake_clips` baked one clip after another, so the rest of the machine sat idle (the
+  first change below). Each captured frame costs 65–80 ms, which is Chrome's PNG
+  screenshot over CDP (software raster, then zlib). Each bake also has about 2.3 s of fixed start-up (a 5-frame bake).
+  hyperframes skips frames it can prove static (its *static dedup*, armed from the GSAP
+  timelines): it reused 885 of 1800 frames (49%), while 1457 of the 1800 (81%) were in
+  fact byte-identical to another frame. At this rate, a 20-minute transcript is about 26
+  minutes of baking on its own.
+- **Rendering** the 60 s timeline takes 69.5 s. Building the frames without encoding takes
+  56 s, of which the video track alone is 7.2 s. The subtitles track adds about 25 ms per
+  frame: about 12 ms of it is PNG decode of a full 1080p RGBA frame, and the rest is
+  `qtblend` converting the frame to RGBA, blending and converting it back. A track's blank
+  stretches cost next to nothing. That graph runs on about one core. The encoder is the
+  largest CPU cost: x264 `preset=slow` takes 228 of the render's 321 CPU-seconds, on
+  threads of its own.
+
+**Bake measurements**, the 60 s subtitles:
+
+| Change | Time | Output |
+|---|---|---|
+| Today, one process | 77 s | — |
+| 4 separate one-worker processes at once | 82 s for 4× the frames (3.75×) | byte-identical to serial, ×4 |
+| 8 at once | 105 s for 8× the frames (5.9×) | byte-identical to serial, ×8 |
+| hyperframes' distributed API, one clip in 4 chunks | 29 s (2.65×) | 298 of 1800 frames differ: fonts are substituted |
+| `--browser-gpu` | 83 s | identical |
+| hyperframes 0.8.78 | 79 s | identical |
+
+**Render measurements**, the 60 s timeline with its bakes cached, preset `youtube-1080p`
+unless stated:
+
+| Change | Time | Output |
+|---|---|---|
+| Today, serial | 69.5 s | — |
+| `real_time=-6`, `preset=medium` | 44.3 s | file 2.4% larger |
+| `real_time=-6`, `h264_nvenc` (`p6`, `cq 19`) | 33.9 s, at 380% CPU rather than 840% | file 118 MB rather than 74 MB; quality not compared |
+| The timeline split into 4 ranges, one melt each (frames only, no encode) | 28 s rather than 56 s | identical, the seams included |
+| Overlays as `qtrle` `.mov` rather than PNG sequences | frames only: 51.3 s rather than 51.8 s | identical; 20 MB rather than 42 MB |
+| Overlay cropped to its alpha box, placed with `qtblend`'s `rect` | frames only: 40.5 s rather than 51.3 s | identical |
+| `composite` in place of `qtblend` | frames only: 29.6 s | every frame differs: it blends in YUV |
+
+**Bake different clips in parallel** — adopted. Separate one-worker hyperframes processes
+are deterministic. The rule in `CLAUDE.md` is about hyperframes' own multi-worker capture
+inside one render, and 12 runs of 1800 frames, 4 and 8 at a time, came out byte-identical
+to the serial bake.
+
+- `bake_clips` runs a pool, **longest clip first**, and fetches clips that come to **one
+  key once**. Otherwise a clip placed five times would park up to four workers on
+  `Baker::claim`. It hands the key it computed to `Baker::bake_keyed`, so each folder is
+  hashed once per call.
+- **The limit is the baker's, not the loop's.** `Baker::concurrency` caps the hyperframes
+  processes across every caller (render, preview, sample, thumbnails), since a pool per call
+  would multiply when they overlap. The slots are first come, first served, so the preview's
+  one bake waits for at most the renders already running. A cache hit never waits. The
+  default is half the hardware threads, at most 8 (about 250 MB each), and `KUMA_BAKE_JOBS`
+  overrides it (`1` is serial).
+- **Measured in kuma** (`kuma bake`, the same laptop): the 60 s transcript split into four
+  15 s entries bakes in 21.8 s rather than 87.2 s (4.0×). The three-clip project goes from
+  91 s to 85 s, because its 60 s subtitles are the long pole. Every bake was byte-identical
+  to its serial counterpart.
+- Tests: `renders_run_side_by_side_up_to_the_limit`,
+  `clips_bake_side_by_side_and_a_shared_key_bakes_once` and
+  `a_cancelled_bake_starts_nothing`. The first two were checked to fail with the limit
+  ignored or the key-sharing removed.
+
+It does nothing for one long clip: see *One long overlay clip* below.
+
+**Melt rendering several frames at once (`real_time=-N`)** — adopted. Every render passes
+`real_time=-N` (`command` in `kuma-mlt/src/melt.rs`), N from the job's `Tuning::threads`
+or else the machine's default. Below zero, melt builds N frames at once and drops none.
+
+- **It changes no frame.** On the reference timeline (`reference.mlt`: timewarp, luma
+  dissolves, blur, `eq`, fades, `qtcrop`, eleven `qtblend`s with a blend mode, `mix`,
+  volume, stills, an animated and a still bake, nested sequences), every one of 450 video
+  frames and 451 audio packets was identical to a serial render, at 2, 3, 6 and 12
+  threads, three runs each. The comparison is not vacuous: 289 of the frames are distinct,
+  and a one-frame shift would change 288 of them. *Preview* above records that not every
+  MLT service is thread-safe, so this is now a test,
+  `parallel_frames_render_what_serial_frames_do` (`kuma-mlt/tests/render.rs`): the
+  reference project at preview size with a moving overlay, picture and sound compared
+  serial against 4 threads. A new effect belongs in the reference project, so it is checked
+  here too. Filters passed through the `mlt` escape hatch are not covered.
+- **How many.** The bench render, 60 s with its bakes present, on the laptop:
+
+  | `real_time` | `youtube-1080p` (x264 `slow`) | `draft` (x264 `ultrafast`) |
+  |---|---|---|
+  | `-1` (before) | 69.9 s | 61.2 s |
+  | `-2` | 55.1 s | — |
+  | `-3` | 52.5 s | 36.1 s |
+  | `-4` | 51.8 s | 35.4 s |
+  | `-6` | 51.1 s | 35.1 s |
+  | `-12` | — | 37.0 s |
+
+  The default is half the hardware threads, at most 8, the same rule as bakes. Above 6
+  it is unmeasured, and 12 was slower on 12 threads. `KUMA_RENDER_THREADS` overrides it. With
+  `slow` the gain stops at about 1.37×, because x264 then has the CPU to itself (830% of
+  1200%). With `ultrafast` it is 1.74×.
+- Samples are one-frame melt runs and gain nothing. The preview engine pulls frames itself
+  and is untouched: *Frames in parallel* under *Preview* still applies to it.
+
+Splitting the timeline into ranges and running one melt per range gains about the same,
+also exactly, but it has to stitch the encodes and render the sound separately, so
+`real_time` was preferred.
+
+**Encoder presets** — built: a render can choose its preset's speed and quality (*Advanced
+render options* under *Render dialog and queue*), and there is an NVENC preset. The render
+is CPU-bound once its frames are parallel, and x264 `slow` is the largest single cost.
+`medium` gains 13% with parallel frames and next to nothing without.
+
+**`youtube-nvenc`** — adopted. H.264 on the NVIDIA GPU: `h264_nvenc`, `p6`, `tune=hq`,
+`rc=vbr`, `cq 21`, `vb=0`, 3 B-frames, with CQ 1–51 and p1–p7 as its quality and speed.
+
+- **Calibrated on real footage**, a 1080p screen recording, against `youtube-1080p` (x264
+  `slow`, CRF 18), with ffmpeg's SSIM and PSNR against the source (this ffmpeg has no
+  VMAF). On its busiest 30 s, x264 made 11.5 MB (SSIM 0.99756, PSNR 51.1 dB), and NVENC
+  at CQ 21 made 15.1 MB (0.99791, 52.9 dB). At CQ 22 it made 13.5 MB (0.99748, 52.0 dB),
+  just under x264 on SSIM. On a near-still 30 s, CQ 22 was 1.5 MB against x264's 1.4 MB,
+  and a hair under it on SSIM. So CQ 21 is the default: as good or better on both
+  metrics, for about a third more bytes, which an upload YouTube re-encodes can afford.
+  `p7` measured no better than `p6`, and spatial and temporal adaptive quantisation spent
+  bytes on what these metrics do not score, so neither is on.
+- **Speed.** The 60 s bench with its bakes cached took 33.9 s on NVENC (measured at CQ 19,
+  before the calibration) against 51.1 s on x264 (1.5×), at 380% CPU rather than 835%, which leaves the CPU for bakes. Through
+  `kuma render` on a machine busy with another render it was 67 s against 100 s, the
+  same ratio. Once the encoder is on the GPU, building the frames is the bottleneck (29.9 s
+  of the 33.9).
+- **Offered only where it works.** `ffmpeg -encoders` lists `h264_nvenc` whether or not
+  there is a GPU, and **melt crashes** (a segfault, exit 139) on a render with it where
+  there is none. So a preset says what it `needs`, and `presets::available` tries it once
+  per process (`melt::try_preset`): five black frames through melt with all the preset's
+  properties. It reports the encoder's own last line from stderr as the reason
+  (`CUDA_ERROR_NO_DEVICE: no CUDA-capable device is detected`). The trial has to be
+  progressive (`atsc_720p_25`). melt's default profile is interlaced PAL, which NVENC
+  refuses, so it failed with the GPU present too until that was found. Every kuma profile
+  is progressive.
+- `GET /api/presets` (and MCP `list_presets`) is `presets::offered()`: each preset with
+  `unavailable`, the reason or null. A daemon from before it leaves the field out, which
+  reads as usable. The dialog lists an unavailable one greyed, with the reason on hover, and
+  never preselects it. `render_target` refuses one with its reason, so a render never reaches
+  melt to crash. The first ask costs about a second, off the async threads.
+- Tests: `the_nvenc_preset_renders_where_there_is_a_gpu` (skipped, with the reason, where
+  there is none), `a_preset_whose_encoder_is_missing_cannot_be_tried` and
+  `a_preset_this_machine_cannot_run_is_refused`. Both branches were run here, the second
+  with `CUDA_VISIBLE_DEVICES=-1`.
+- Not built: VAAPI or QSV on Intel and AMD, HEVC, and a 4K-specific NVENC preset (presets
+  do not set a size, so this one renders any size the GPU encodes). Intel's encoders are
+  listed on this laptop and unmeasured.
+
+**Baking in the background** — deferred. A render bakes every overlay on the sequence it
+renders, and on the open sequence none of them are baked, because the preview draws them
+as live DOM. So a render always starts with the whole bake. Baking the open sequence's
+overlays while the editor is idle (lowest priority, one or two workers) would take that
+wait out of the edit-then-render loop. The costs are CPU while editing and more superseded
+bakes to prune. **Not planned unless it proves needed.** Bakes are cached by content. With
+overlays kept short (below), an edit rebakes only the clip it touched, so the bake left
+before a render is small, and the render itself is the wait.
+
+**One long overlay clip** — avoided by composition, adopted as guidance. Parallel clips do
+not help a transcript that spans the whole video, and nothing splits one clip:
+
+- An overlay clip starts at its own time zero (`p_in` is 0 for everything that is not timed
+  media), and vars live on the entry, so a razor cut cannot give the second half a
+  different start. What works is one `subtitles` entry per minute or so, each with its own
+  cues and `offset`, cut at pauses. The pieces bake in parallel, and fixing a typo or
+  trimming a piece rebakes only that piece. The cost is a bin full of pieces, and a style
+  change that has to reach all of them.
+- **Decided:** the agent guidance (`timeline_guide`) says to compose many short overlays
+  rather than one long one, and to split a transcript into entries of at most about a
+  minute straight after `transcribe`. A long overlay is then a mistake the guide warns
+  against, rather than a case the baker must make fast. `transcribe` still writes one
+  entry; splitting there instead is possible if agents keep missing the rule.
+- *hyperframes' distributed API* (`@hyperframes/producer/distributed`: `plan`,
+  `renderChunk`, `assemble`) runs locally and supports PNG sequences. It is rejected as it
+  stands: it substitutes its own faces for system fonts, which were 298 frames of the
+  subtitles, so the render would not match the preview. It also only takes 24, 30 or
+  60 fps, which rules out 29.97 and the effective rate of a sped-up bake.
+- hyperframes' in-process capture stage already accepts a frame range and does not expose
+  it (`render` has no such option in 0.8.37 or 0.8.78). A `render --frame-range` upstream
+  would split one clip across processes with nothing substituted, and is worth asking for.
+
+**`qtrle` intermediates** — deferred. `qtrle` is lossless and stores an unchanged line in
+almost nothing, which suits overlays. It is half the size of the PNG sequence and decodes
+27× faster (0.8 s rather than 21.9 s for 1800 frames, single-threaded). But melt already
+decodes on its own thread, so a render gains only the CPU (about 5% once frames are
+parallel), and it would break the rule that alpha intermediates are PNG sequences.
+Reconsider if bake size (*Recorded, not scheduled*) becomes the problem.
+
+**Cropping bakes to their alpha box** — deferred, with *no per-overlay bake region* under
+*Still open*. The overlays cover 1.5–1.9% of the frame, and blending the cropped box is
+exact and 21% faster. `qtblend`'s fixed cost of converting the whole frame stays. The
+blend is a per-track transition while the box is per clip, so the compiler change is
+larger than the gain.
+
+**Rejected:** `--browser-gpu` (no faster, since PNG encoding is the cost rather than
+raster), upgrading hyperframes for speed (0.8.78 is the same speed, same pixels), and
+`composite` in place of `qtblend` (faster, but it changes every overlaid frame).
+
+**Found on the way:** a prune never deletes `.tmp-` scratch, however old. A killed bake's
+leftover (38 MB in one project, from a week before) stays forever. The name carries the
+baking process's id (`<key>.tmp-<pid>-<nanos>`), so a prune could delete the scratch of
+processes that are gone.
 
 ## Still open
 

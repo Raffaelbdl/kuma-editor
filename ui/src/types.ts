@@ -185,7 +185,17 @@ export interface OverlayInfo { manifest?: OverlayManifest; error?: string }
 export interface Finding { level: "error" | "warning"; code: string; message: string; fix?: string }
 export interface LintReport { overlay: string; findings: Finding[]; renderer_skipped?: string }
 
-export interface Preset { id: string; description: string; extension: string }
+/** An export preset, and what a render may change of it: the codec's rate factor (lower
+ *  is better and larger) and its speed, each with the preset's own value. */
+export interface Preset {
+  id: string; description: string; extension: string;
+  quality: { key: string; default: number; min: number; max: number } | null;
+  /** `options` fastest first. */
+  speed: { key: string; label: string; default: string; options: string[] } | null;
+  /** The hardware it needs, if any, and why the daemon's machine cannot run it, if not. */
+  needs?: string | null;
+  unavailable?: string | null;
+}
 
 /** An effect preset: typed params and effects whose values may be `$expr` strings. */
 export interface EffectPreset {

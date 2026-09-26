@@ -364,13 +364,13 @@ body.scrubbing, body.scrubbing * { cursor: ew-resize !important; user-select: no
 /* An effect folds away, because a clip with four of them is longer than the panel. The
    head is the disclosure — it reads as the heading it replaced, not as a button — and the
    chevron turns to point at what it opens. */
-.effect .head .disclose {
+.effect .head .disclose, .render-advanced .disclose {
   display: flex; align-items: center; gap: 5px; flex: 1 1 auto; min-width: 0;
   padding: 1px 2px; border: 0; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer;
 }
-.effect .head .disclose:hover { color: var(--sel); }
-.effect .head .disclose svg { flex: none; transition: transform 0.12s ease; }
-.effect:not(.closed) .head .disclose svg { transform: rotate(90deg); }
+.effect .head .disclose:hover, .render-advanced .disclose:hover { color: var(--sel); }
+.effect .head .disclose svg, .render-advanced .disclose svg { flex: none; transition: transform 0.12s ease; }
+.effect:not(.closed) .head .disclose svg, .render-advanced:not(.closed) .disclose svg { transform: rotate(90deg); }
 /* The keyframe toggle: a quiet outline until the effect is keyframed, then the selection
    colour — which is how a folded effect still says it moves. No button chrome: it sits in
    the head as an icon, beside the remove button, not as a row of its own. */
@@ -424,6 +424,18 @@ dialog.modal.render .field { grid-template-columns: 80px 1fr; }
 .modal-actions .push-left { margin-right: auto; }
 .modal-actions .cache-size { align-self: center; }
 .render-warning { margin: 4px 0 0 88px; font-size: 12px; color: var(--sel); }
+/* Advanced: folded by default. The head is a disclosure like an effect's (above), and says
+   what the render changes of its preset while folded. `.field` sets a display, so
+   `[hidden]` needs saying for the fields a preset does not have. */
+.render-advanced { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--line); }
+.render-advanced .head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.render-advanced.closed .head { margin-bottom: 0; }
+.render-advanced .disclose { flex: none; font-weight: 600; }
+.render-advanced.closed .render-advanced-body { display: none; }
+.render-advanced .field[hidden] { display: none; }
+.render-advanced .field input[type="number"] { width: 110px; flex: 0 0 110px; }
+.render-advanced .field .row select { flex: 0 0 140px; }
+.render-fixed { margin: 0 0 6px 88px; }
 #topbar .status.link { cursor: pointer; }
 #topbar .status.link:hover { color: var(--fg); text-decoration: underline; }
 

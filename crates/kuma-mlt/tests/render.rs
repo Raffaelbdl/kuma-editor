@@ -5,7 +5,7 @@ use std::path::Path;
 use std::process::Command;
 
 use kuma_mlt::melt::snapshot;
-use kuma_mlt::{compile, presets, render, CompileOptions, OverlayBake, RenderJob, Streams};
+use kuma_mlt::{compile, presets, render, CompileOptions, OverlayBake, RenderJob, Streams, Tuning};
 
 fn have(bin: &str) -> bool {
     Command::new(bin).arg("-version").output().map(|o| o.status.success()).unwrap_or(false)
@@ -25,6 +25,16 @@ fn pixel(png: &Path, x: u32, y: u32) -> Vec<u8> {
         .output()
         .unwrap()
         .stdout
+}
+
+/// The packet lines of a `framemd5` render of `mlt` with the `draft` preset and `tuning`,
+/// each ending in the MD5 of one packet; `extra` says which streams and how.
+fn framemd5(mlt: &Path, out: &Path, tuning: Tuning, extra: &[(&str, &str)]) -> Vec<String> {
+    let mut props = vec![("f".to_string(), "framemd5".to_string())];
+    props.extend(extra.iter().map(|(k, v)| (k.to_string(), v.to_string())));
+    let job = RenderJob { mlt_file: mlt.to_path_buf(), output: out.to_path_buf(), preset: presets::find("draft").unwrap(), range: None, tuning, extra: props };
+    render(&job, &std::sync::atomic::AtomicBool::new(false), |_| {}).expect("melt render");
+    std::fs::read_to_string(out).unwrap().lines().filter(|l| !l.starts_with('#')).map(str::to_string).collect()
 }
 
 fn make_media(root: &Path) {
@@ -63,7 +73,7 @@ fn renders_reference_project_with_melt() {
     std::fs::write(&mlt_file, &xml).unwrap();
 
     let out = root.join("out.mp4");
-    let job = RenderJob { mlt_file: mlt_file.clone(), output: out.clone(), preset: presets::find("draft").unwrap(), range: None, extra: vec![] };
+    let job = RenderJob { mlt_file: mlt_file.clone(), output: out.clone(), preset: presets::find("draft").unwrap(), range: None, tuning: Tuning::default(), extra: vec![] };
     let mut last = 0;
     render(&job, &std::sync::atomic::AtomicBool::new(false), |p| last = p.percent).expect("melt render");
     assert!(out.is_file());
@@ -174,13 +184,7 @@ fn each_half_graph_matches_the_full_graph() {
         file
     };
     let md5s = |mlt: &Path, name: &str, props: &[(&str, &str)]| -> Vec<String> {
-        let out = root.join(format!("{name}.framemd5"));
-        let mut extra: Vec<(String, String)> = vec![("f".into(), "framemd5".into()), ("real_time".into(), "-1".into())];
-        extra.extend(props.iter().map(|(k, v)| (k.to_string(), v.to_string())));
-        let job = RenderJob { mlt_file: mlt.to_path_buf(), output: out.clone(), preset: presets::find("draft").unwrap(), range: None, extra };
-        render(&job, &std::sync::atomic::AtomicBool::new(false), |_| {}).expect("melt render");
-        let text = std::fs::read_to_string(&out).unwrap();
-        let lines: Vec<String> = text.lines().filter(|l| !l.starts_with('#')).map(str::to_string).collect();
+        let lines = framemd5(mlt, &root.join(format!("{name}.framemd5")), Tuning { threads: Some(1), ..Tuning::default() }, props);
         assert!(!lines.is_empty(), "{name}: no frames");
         lines
     };
@@ -195,6 +199,93 @@ fn each_half_graph_matches_the_full_graph() {
     assert_eq!(md5s(&audio, "audio", &as_audio), sound, "the audio graph's sound differs");
     // Not silence: the comparison would pass vacuously if both sides were empty.
     assert!(sound.iter().collect::<std::collections::HashSet<_>>().len() > 10, "the reference sound is silent");
+}
+
+/// A render builds several frames at once (`real_time` below -1), which is only an
+/// optimisation if it plays exactly what one frame at a time does: every video frame and
+/// every audio frame of the reference timeline, which covers every service the compiler
+/// emits (timewarp, luma dissolves, blur, colour, fades, crop, blend modes, stills, nested
+/// sequences, a moving overlay). Not every MLT service is thread-safe, so a new effect or
+/// an MLT upgrade that breaks this is caught here.
+#[test]
+fn parallel_frames_render_what_serial_frames_do() {
+    if !have("ffmpeg") || !have("melt") {
+        eprintln!("ffmpeg/melt not available; skipping parallel frames test");
+        return;
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().to_path_buf();
+    make_media(&root);
+    // An overlay that moves, so frames delivered out of order would show; and a still.
+    std::fs::create_dir_all(root.join("moving")).unwrap();
+    ffmpeg(&["-f", "lavfi", "-i", "testsrc2=size=500x300:rate=30:duration=3,format=rgba,colorchannelmixer=aa=0.6,pad=1920:1080:600:400:color=black@0.0",
+        "-pix_fmt", "rgba", &root.join("moving/frame_%06d.png").to_string_lossy()]);
+
+    let p = kuma_core::parse_project(include_str!("fixtures/reference.kuma.json")).unwrap();
+    let mut opts = CompileOptions::new(&root);
+    opts.size = Some((480, 270));
+    opts.bakes.insert("o_c1".into(), OverlayBake { resource: root.join("moving/frame_%06d.png"), is_still: false });
+    opts.bakes.insert("o_c2".into(), OverlayBake { resource: root.join("media/logo.png"), is_still: true });
+    let mlt = root.join("reference.mlt");
+    std::fs::write(&mlt, compile(&p, &opts).unwrap()).unwrap();
+
+    // Picture and sound in one pass, as a render has them; each line is one packet of
+    // stream 0 (video) or 1 (audio), ending in its MD5.
+    let md5s = |threads: usize| -> [Vec<String>; 2] {
+        let props = [("vcodec", "rawvideo"), ("pix_fmt", "rgb24"), ("acodec", "pcm_s16le"), ("ar", "48000"), ("ac", "2")];
+        let lines = framemd5(&mlt, &root.join(format!("threads{threads}.framemd5")), Tuning { threads: Some(threads), ..Tuning::default() }, &props);
+        let stream = |i: &str| lines.iter().filter(|l| l.split(',').next().map(str::trim) == Some(i)).cloned().collect();
+        [stream("0"), stream("1")]
+    };
+
+    let [picture, sound] = md5s(1);
+    // Not vacuous: a timeline that barely changes would pass whatever the order.
+    let distinct = |v: &[String]| v.iter().map(|l| l.rsplit(',').next().unwrap()).collect::<std::collections::HashSet<_>>().len();
+    assert!(picture.len() == 450 && distinct(&picture) > 200, "{} frames, {} distinct", picture.len(), distinct(&picture));
+    assert!(distinct(&sound) > 10, "the reference sound is silent");
+    let [parallel_picture, parallel_sound] = md5s(4);
+    assert_eq!(parallel_picture, picture, "four frames at once: the picture differs");
+    assert_eq!(parallel_sound, sound, "four frames at once: the sound differs");
+}
+
+/// The GPU preset renders where there is a GPU: an H.264 file with every frame, and its
+/// quality reaches NVENC (a CQ of 45 makes a smaller file than the preset's 21). Elsewhere
+/// it says why it is not available, and this skips.
+#[test]
+fn the_nvenc_preset_renders_where_there_is_a_gpu() {
+    if !have("ffmpeg") || !have("melt") {
+        eprintln!("ffmpeg/melt not available; skipping");
+        return;
+    }
+    let preset = presets::find("youtube-nvenc").unwrap();
+    if let Err(why) = kuma_mlt::presets::available(preset) {
+        eprintln!("skipping: youtube-nvenc is not available here: {why}");
+        return;
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().to_path_buf();
+    make_media(&root);
+    let p = kuma_core::parse_project(include_str!("fixtures/reference.kuma.json")).unwrap();
+    let mut opts = CompileOptions::new(&root);
+    opts.size = Some((640, 360));
+    let mlt = root.join("reference.mlt");
+    std::fs::write(&mlt, compile(&p, &opts).unwrap()).unwrap();
+    let encode = |name: &str, tuning: Tuning| {
+        let out = root.join(name);
+        let job = RenderJob { mlt_file: mlt.clone(), output: out.clone(), preset, range: Some((0, 89)), tuning, extra: vec![] };
+        render(&job, &std::sync::atomic::AtomicBool::new(false), |_| {}).expect("nvenc render");
+        out
+    };
+    let own = encode("own.mp4", Tuning::default());
+    let probe = Command::new("ffprobe")
+        .args(["-v", "error", "-count_frames", "-select_streams", "v:0", "-show_entries", "stream=codec_name,nb_read_frames", "-of", "csv=p=0"])
+        .arg(&own)
+        .output()
+        .unwrap();
+    assert_eq!(String::from_utf8_lossy(&probe.stdout).trim(), "h264,90");
+    let coarse = encode("coarse.mp4", Tuning { quality: Some(45), ..Tuning::default() });
+    let size = |f: &Path| std::fs::metadata(f).unwrap().len();
+    assert!(size(&coarse) < size(&own), "CQ 45 ({}) should be smaller than CQ 21 ({})", size(&coarse), size(&own));
 }
 
 /// A bake is one PNG per timeline frame, and an image sequence has no rate of its own:

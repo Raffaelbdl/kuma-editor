@@ -13,8 +13,13 @@ async function json<T>(url: string, init?: RequestInit): Promise<T> {
 }
 
 /** Where a render would write (`path` project-relative when it can be) and what it
- *  would replace: a file there already, or unfinished renders to the same place. */
-export interface RenderTarget { output: string; path: string; exists: boolean; pending: number[] }
+ *  would replace: a file there already, or unfinished renders to the same place. And how
+ *  many frames it would build at once, which is the daemon's machine's to say. */
+export interface RenderTarget { output: string; path: string; exists: boolean; pending: number[]; threads: number; max_threads: number }
+
+/** What a render changes of its preset, each left to the preset (or the machine) when
+ *  absent. The daemon refuses what the preset does not offer. */
+export interface RenderOptions { threads?: number; quality?: number; speed?: string }
 
 export const api = {
   project: () => json<Project>("/api/project"),
@@ -63,8 +68,8 @@ export const api = {
   /** Queue a render of `sequence`, or of the project's master when it is left out — the
    *  daemon's own default, so the two agree without the client having to know which is
    *  the master. `output` is project-relative; the daemon names one when it is left out. */
-  render: (preset: string, sequence?: string, output?: string) =>
-    json<{ job: number }>("/api/render", { method: "POST", body: JSON.stringify({ preset, sequence, output }) }),
+  render: (preset: string, sequence?: string, output?: string, options: RenderOptions = {}) =>
+    json<{ job: number }>("/api/render", { method: "POST", body: JSON.stringify({ preset, sequence, output, ...options }) }),
   /** Where a render would write, whether a file is there already, and which unfinished
    *  renders will write the same path. Reads only. */
   renderTarget: (preset: string, sequence: string, output?: string) => {

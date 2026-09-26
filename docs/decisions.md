@@ -2527,6 +2527,34 @@ Its worst item, bakes read at 25 fps whatever the project's rate, had already be
    unchanged: the editor's blueprint browser draws from the manifests.
    `a_blueprint_summary_names_its_vars_by_type`.
 
+**Fixed before the report:** bakes read at 25 fps, `patch_path` for a patch too big to
+write inline, `sample_frames` blocking on bakes (now a job), and `kuma compile` leaving
+the bakes out.
+
+**Deferred** — true of the current code, and wanted for pixel art or by agents working at
+scale rather than for general editing or for a person working with an agent:
+
+- **An overlay cannot distort what is under it.** Blend modes act on the clip; a glitch
+  needs the `mlt` escape hatch, whose animation strings are MLT frames, and whose service
+  and property names nobody checks. `avfilter.chromashift` rendered black, and
+  `avfilter.scroll` keeps state across frames, so it cannot be sampled. A curated set of
+  glitch effects in seconds would replace them.
+- **Bake cost.** Full-frame PNGs whatever the overlay covers; *Bake and render speed* has
+  the measurements. What pixel art asks for, baking at the overlay's own resolution
+  (480×270) and scaling up without smoothing, was not measured, and it needs the next
+  item. A clip that loops its bake is `bake_period` under *Recorded, not scheduled*.
+- **`transform` scales smoothly**, through `qtblend`, which has no filter choice.
+- **No 4:4:4 or RGB preset**; every H.264 preset is 4:2:0, so hard pixel edges bleed a pixel of chroma.
+- **One clip at a time on a track.** 21 tracks for one video; lanes or stacks would be a
+  model change.
+- **No limiter or overs warning** (`measure_audio` reports the true peak), audio ins and
+  outs on video frames, and no sample rate or channel count from `probe_media`.
+- **Smaller:** no batch `add_media`, a `color` var cannot be optional, `sample_frames`
+  returns no pixel statistics, no MCP `compile`, `health`'s browser note reads as an
+  error, no transform keyframe example in `timeline_guide`, the HTTP API is not documented
+  for agents, and nothing compares the binary's commit with the checkout's (`--version`
+  has it).
+
 ## Still open
 
 Nested sequences are done and the editor is an application now, so this list is the whole

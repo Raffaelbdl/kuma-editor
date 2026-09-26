@@ -125,6 +125,21 @@ impl KumaServer {
     }
 }
 
+/// The daemon's `[{id, manifest}]` without what makes a library tens of thousands of tokens:
+/// each var's default, range and description, leaving its type.
+fn blueprint_summaries(all: &[Value]) -> Value {
+    let summary = |b: &Value| {
+        let m = &b["manifest"];
+        let vars: serde_json::Map<String, Value> = m["vars"].as_object().into_iter().flatten().map(|(k, v)| (k.clone(), v["type"].clone())).collect();
+        let mut out = json!({ "id": b["id"], "name": m["name"], "description": m["description"], "tags": m["tags"], "vars": vars });
+        if m["static"] == true {
+            out["static"] = json!(true);
+        }
+        out
+    };
+    Value::Array(all.iter().map(summary).collect())
+}
+
 fn ok_json(v: &Value) -> CallToolResult {
     CallToolResult::success(vec![ContentBlock::text(serde_json::to_string_pretty(v).unwrap_or_default())])
 }
@@ -183,6 +198,13 @@ pub struct ImportOverlay {
     pub vars: Option<serde_json::Map<String, Value>>,
     #[serde(default)]
     pub base_revision: Option<u64>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct ListBlueprints {
+    /// A blueprint id: return its whole manifest rather than every blueprint's summary.
+    #[serde(default)]
+    pub id: Option<String>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -459,9 +481,17 @@ impl KumaServer {
         self.get("/api/project/validate").await
     }
 
-    #[tool(description = "Rescan the user's library and list its blueprints (reusable overlays) with their manifests. Failed manifests are listed by `health`.")]
-    async fn list_blueprints(&self) -> Result<CallToolResult, McpError> {
-        self.post("/api/blueprints", &json!({})).await
+    #[tool(description = "Rescan the user's library and list its blueprints (reusable overlays): id, name, description, tags and each var's type. With `id`, that blueprint's whole manifest: every var's default, range, options and description. Failed manifests are listed by `health`.")]
+    async fn list_blueprints(&self, Parameters(p): Parameters<ListBlueprints>) -> Result<CallToolResult, McpError> {
+        let all = self.client.post("/api/blueprints", &json!({})).await.map_err(err)?;
+        let all = all.as_array().map(Vec::as_slice).unwrap_or_default();
+        let Some(id) = p.id else {
+            return Ok(ok_json(&blueprint_summaries(all)));
+        };
+        match all.iter().find(|b| b["id"] == id.as_str()) {
+            Some(b) => Ok(ok_json(b)),
+            None => Err(McpError::invalid_params(format!("no blueprint `{id}` in the library; `list_blueprints` without an id names them"), None)),
+        }
     }
 
     #[tool(description = "Copy a blueprint into the project's `overlays/` and add it to the bin. Returns the bin id; the copy is the project's to edit.")]
@@ -705,6 +735,20 @@ mod tests {
         assert!(build.replaced(), "gone, mid-build");
         assert!(!Build::of(None).replaced(), "an executable it cannot name is not a rebuild");
         assert!(!Build::current().replaced(), "the test binary is the one running");
+    }
+
+    /// A summary keeps what picks a blueprint and drops what configures one.
+    #[test]
+    fn a_blueprint_summary_names_its_vars_by_type() {
+        let all = json!([{ "id": "title", "manifest": {
+            "name": "Title", "description": "A big title", "duration_default": 4.0, "static": false, "tags": ["text"],
+            "vars": { "text": { "type": "string", "default": "Hello", "description": "What it says" },
+                      "accent": { "type": "color", "default": "#ff0000" } } } },
+            { "id": "logo", "manifest": { "name": "Logo", "description": "", "duration_default": 4.0, "static": true, "tags": [], "vars": {} } }]);
+        assert_eq!(blueprint_summaries(all.as_array().unwrap()), json!([
+            { "id": "title", "name": "Title", "description": "A big title", "tags": ["text"], "vars": { "text": "string", "accent": "color" } },
+            { "id": "logo", "name": "Logo", "description": "", "tags": [], "vars": {}, "static": true },
+        ]));
     }
 
     /// The note goes first in a result, and into an error's message, so it is read whatever

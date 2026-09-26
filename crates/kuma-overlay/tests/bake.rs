@@ -49,7 +49,7 @@ fn bakes_location_tag_with_alpha_and_caches() {
 
     let req = BakeRequest {
         overlay_dir: &dir, manifest: &manifest, vars: &vars, fps: Fps::new(30, 1), width: 1920, height: 1080,
-        duration: 2.0, speed: 1.0,
+        duration: 2.0, frames: 60, speed: 1.0,
     };
     let r = baker.bake(&req).expect("bake");
     assert!(!r.cached);
@@ -80,7 +80,7 @@ fn bakes_location_tag_with_alpha_and_caches() {
 
     // A clip LONGER than the overlay's markup default (4 s) must keep animating: the bake
     // used to render only the default and pad the rest with the last frame.
-    let long = BakeRequest { fps: Fps::new(4, 1), duration: 8.0, speed: 1.0, ..req.clone() };
+    let long = BakeRequest { fps: Fps::new(4, 1), duration: 8.0, frames: 32, speed: 1.0, ..req.clone() };
     let r4 = baker.bake(&long).expect("long bake");
     assert_eq!(r4.frames, 32, "8 s at 4 fps");
     let f = |n: u32| std::fs::read(r4.dir.join(format!("frames/frame_{n:06}.png"))).unwrap();
@@ -95,7 +95,7 @@ fn bakes_location_tag_with_alpha_and_caches() {
     let wm = OverlayManifest::load(&wm_dir).unwrap();
     let novars = Map::new();
     let still = baker
-        .bake(&BakeRequest { overlay_dir: &wm_dir, manifest: &wm, vars: &novars, fps: Fps::new(30, 1), width: 1920, height: 1080, duration: 10.0, speed: 2.0 })
+        .bake(&BakeRequest { overlay_dir: &wm_dir, manifest: &wm, vars: &novars, fps: Fps::new(30, 1), width: 1920, height: 1080, duration: 10.0, frames: 300, speed: 2.0 })
         .expect("static bake");
     assert!(still.is_still);
     assert_eq!(still.frames, 1);
@@ -156,7 +156,7 @@ fn a_drawn_overlay_bakes_the_same_pixels_twice() {
     let manifest = OverlayManifest::load(&dir).unwrap();
     let vars = Map::new();
     let (w, h) = (480, 270);
-    let req = BakeRequest { overlay_dir: &dir, manifest: &manifest, vars: &vars, fps: Fps::new(12, 1), width: w, height: h, duration: 1.0, speed: 1.0 };
+    let req = BakeRequest { overlay_dir: &dir, manifest: &manifest, vars: &vars, fps: Fps::new(12, 1), width: w, height: h, duration: 1.0, frames: 12, speed: 1.0 };
     let (ra, rb) = std::thread::scope(|s| {
         let (ja, jb) = (s.spawn(|| a.bake(&req).expect("bake a")), s.spawn(|| b.bake(&req).expect("bake b")));
         (ja.join().unwrap(), jb.join().unwrap())
@@ -201,7 +201,7 @@ fn an_apostrophe_in_a_var_leaves_the_vars_after_it_alone() {
       </body></html>"#).unwrap();
     let manifest = OverlayManifest::load(&dir).unwrap();
     let vars: Map<String, serde_json::Value> = json!({ "a_title": "Let's go", "b_color": "#ff0000", "c_note": "it's red" }).as_object().unwrap().clone();
-    let req = BakeRequest { overlay_dir: &dir, manifest: &manifest, vars: &vars, fps: Fps::new(30, 1), width: 64, height: 36, duration: 1.0, speed: 1.0 };
+    let req = BakeRequest { overlay_dir: &dir, manifest: &manifest, vars: &vars, fps: Fps::new(30, 1), width: 64, height: 36, duration: 1.0, frames: 30, speed: 1.0 };
     let r = baker.bake(&req).expect("bake");
     let px = rgba_at(&r.resource, 32, 18);
     assert!(px[0] > 200 && px[2] < 50, "the colour after the apostrophe was not read: {px:?}");
@@ -211,10 +211,15 @@ fn an_apostrophe_in_a_var_leaves_the_vars_after_it_alone() {
 /// logs `start` and `end` for each run, in the order they happen; and a probe overlay. So
 /// these need no hyperframes and no browser.
 fn stand_in(tmp: &std::path::Path) -> (Baker, PathBuf, OverlayManifest, PathBuf) {
+    stand_in_writing(tmp, "for i in 1 2 3 4 5 6; do : > \"$6/f$i.png\"; done")
+}
+
+/// [`stand_in`], writing its frames into `$6` with the shell command `frames`.
+fn stand_in_writing(tmp: &std::path::Path, frames: &str) -> (Baker, PathBuf, OverlayManifest, PathBuf) {
     let log = tmp.join("log");
     let fake = tmp.join("hyperframes");
     // `render <src> --format png-sequence -o <dir> …`, so the output is `$6`.
-    let script = format!("#!/bin/sh\necho start >> '{0}'\nsleep 1\nmkdir -p \"$6\"\nfor i in 1 2 3 4 5 6; do : > \"$6/f$i.png\"; done\necho end >> '{0}'\n", log.display());
+    let script = format!("#!/bin/sh\necho start >> '{0}'\nsleep 1\nmkdir -p \"$6\"\n{frames}\necho end >> '{0}'\n", log.display());
     std::fs::write(&fake, script).unwrap();
     std::fs::set_permissions(&fake, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
     let overlay = tmp.join("probe");
@@ -236,7 +241,7 @@ fn concurrent_bakes_of_one_key_render_once() {
     let tmp = tempfile::tempdir().unwrap();
     let (baker, overlay, manifest, log) = stand_in(tmp.path());
     let vars = Map::new();
-    let req = BakeRequest { overlay_dir: &overlay, manifest: &manifest, vars: &vars, fps: Fps::new(6, 1), width: 64, height: 36, duration: 1.0, speed: 1.0 };
+    let req = BakeRequest { overlay_dir: &overlay, manifest: &manifest, vars: &vars, fps: Fps::new(6, 1), width: 64, height: 36, duration: 1.0, frames: 6, speed: 1.0 };
     let (a, b) = std::thread::scope(|s| {
         let a = s.spawn(|| baker.bake(&req).expect("first bake"));
         let b = s.spawn(|| baker.bake(&req).expect("second bake"));
@@ -257,7 +262,7 @@ fn renders_run_side_by_side_up_to_the_limit() {
 
     // Four keys: the width is in the key, and the stand-in does not read it.
     let vars = Map::new();
-    let reqs: Vec<BakeRequest> = (0..4).map(|i| BakeRequest { overlay_dir: &overlay, manifest: &manifest, vars: &vars, fps: Fps::new(6, 1), width: 64 + 2 * i, height: 36, duration: 1.0, speed: 1.0 }).collect();
+    let reqs: Vec<BakeRequest> = (0..4).map(|i| BakeRequest { overlay_dir: &overlay, manifest: &manifest, vars: &vars, fps: Fps::new(6, 1), width: 64 + 2 * i, height: 36, duration: 1.0, frames: 6, speed: 1.0 }).collect();
     std::thread::scope(|s| {
         for req in &reqs {
             let baker = &baker;
@@ -272,4 +277,66 @@ fn renders_run_side_by_side_up_to_the_limit() {
     });
     assert_eq!(text.lines().count(), 8, "four renders, each a start and an end");
     assert_eq!(most.max(), Some(2), "two at a time, never more");
+}
+
+/// An opaque first frame, which Chrome writes as RGB, is made RGBA in a new bake and in
+/// one cached before the fix, so the sequence reads with alpha (`first_frame_rgba`).
+#[test]
+fn an_opaque_first_frame_keeps_the_sequence_alpha() {
+    if !kuma_overlay::media::ffprobe_available() {
+        eprintln!("ffmpeg unavailable; skipping");
+        return;
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("src-frames");
+    std::fs::create_dir_all(&src).unwrap();
+    let make = |i: u32, lavfi: &str, pix_fmt: &str| {
+        let out = src.join(format!("f{i}.png")).to_string_lossy().into_owned();
+        kuma_overlay::media::ffmpeg(&["-f", "lavfi", "-i", lavfi, "-frames:v", "1", "-pix_fmt", pix_fmt, &out].map(String::from)).unwrap();
+    };
+    make(1, "color=white:s=64x36", "rgb24");
+    for i in 2..=6 {
+        make(i, "color=black@0:s=64x36,format=rgba", "rgba");
+    }
+    let (baker, overlay, manifest, _) = stand_in_writing(tmp.path(), &format!("cp '{}'/*.png \"$6\"/", src.display()));
+    let vars = Map::new();
+    let req = BakeRequest { overlay_dir: &overlay, manifest: &manifest, vars: &vars, fps: Fps::new(6, 1), width: 64, height: 36, duration: 1.0, frames: 6, speed: 1.0 };
+    let pix_fmt = |seq: &std::path::Path| {
+        let probe = std::process::Command::new("ffprobe")
+            .args(["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=pix_fmt", "-of", "csv=p=0"])
+            .arg(seq)
+            .output()
+            .expect("ffprobe");
+        String::from_utf8_lossy(&probe.stdout).trim().to_string()
+    };
+    let r = baker.bake(&req).expect("bake");
+    assert_eq!(pix_fmt(&r.resource), "rgba", "the sequence reads without alpha");
+    assert_eq!(rgba_at(&r.dir.join("frames/frame_000001.png"), 5, 5), [255, 255, 255, 255], "the first frame is still opaque white");
+    assert_eq!(rgba_at(&r.dir.join("frames/frame_000002.png"), 5, 5)[3], 0, "later frames are untouched");
+
+    // A bake cached by an older kuma, first frame as Chrome wrote it.
+    std::fs::copy(src.join("f1.png"), r.dir.join("frames/frame_000001.png")).unwrap();
+    assert_eq!(pix_fmt(&r.resource), "rgb24");
+    let cached = baker.bake(&req).expect("cached bake");
+    assert!(cached.cached);
+    assert_eq!(pix_fmt(&cached.resource), "rgba", "the cached sequence was not repaired");
+}
+
+/// A clip whose ends fall between frames is placed on one frame more or less than its
+/// duration rounds to: the bake has the frames it is placed on, under a key of its own.
+/// Every other bake keeps the key it had.
+#[test]
+fn a_clip_between_frames_bakes_the_frames_it_is_placed_on() {
+    let tmp = tempfile::tempdir().unwrap();
+    let (baker, overlay, manifest, _) = stand_in(tmp.path());
+    let vars = Map::new();
+    // 0.9 s at 6 fps rounds to 5 frames; placed from 0.1 to 1.0, it is on 6.
+    let rounded = BakeRequest { overlay_dir: &overlay, manifest: &manifest, vars: &vars, fps: Fps::new(6, 1), width: 64, height: 36, duration: 0.9, frames: 5, speed: 1.0 };
+    let placed = BakeRequest { frames: 6, ..rounded.clone() };
+    assert_ne!(baker.key(&rounded).unwrap(), baker.key(&placed).unwrap());
+    assert_eq!(baker.bake(&placed).expect("bake").frames, 6);
+    // Keys an older kuma gave these, for a folder digest of "folder".
+    let key = |fps, duration, frames| baker.key_with("folder", &BakeRequest { fps, duration, frames, ..rounded.clone() }).unwrap();
+    assert_eq!(key(Fps::new(6, 1), 0.9, 5), "f993315fad001400b9bc2043");
+    assert_eq!(key(Fps::new(30000, 1001), 3.0, 90), "22b41cddcd6034dabd7377f7");
 }

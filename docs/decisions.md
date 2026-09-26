@@ -2478,6 +2478,83 @@ against hyperframes' own Chrome, the one the daemon's bakes use. Not changed: th
 path is hashed into every bake key, so finding one where none was found would re-bake every
 finished video, and change which Chrome draws it.
 
+## Field report: a pixel-art music video
+
+Six agents made a 90 s pixel-art music video: 21 tracks, 117 clips, 13 overlays drawn as
+480×270 canvases scaled up ×4. They worked with a binary from 2026-09-14, eight days older
+than the checkout, so the list was checked against the code before anything was recorded.
+Its worst item, bakes read at 25 fps whatever the project's rate, had already been fixed
+(`force_fps`, 59985a4).
+
+1. **An overlay that opens on an opaque frame lost its alpha for the whole clip** —
+   **fixed**. Chrome writes a screenshot with no transparent pixel as an RGB PNG, and
+   ffmpeg's image2 demuxer takes the whole sequence's pixel format from its first file, so
+   a flash or a wipe that opens full-frame composited as an opaque rectangle to its last
+   frame. `mlt_image_format=rgba` on the producer does not help, since the alpha is gone
+   before MLT sees the frame. Reproduced with melt: an RGB first frame over purple showed
+   the transparent pixels' colour, an RGBA one showed purple. Only the first file decides:
+   RGB frames later in an RGBA sequence composite as the opaque frames they are.
+   - A bake's first frame is rewritten as RGBA when its header says it has no alpha
+     (`first_frame_rgba`), with ffmpeg, pixels unchanged. One frame per bake, so nothing
+     is paid for the overlays that already begin transparent.
+   - **A cached bake is repaired when it is read**, not re-keyed: bumping `kuma-bake-v5`
+     would re-bake every finished video for the few that open opaque. The rewrite is
+     scratch (`.tmp-…`) until renamed, since readers may hold the bake.
+   - `an_opaque_first_frame_keeps_the_sequence_alpha`: ffprobe reads the sequence as
+     `rgba`, for a new bake and for one cached with the frame Chrome wrote.
+
+2. **A clip whose ends fall between frames baked a frame short** — **fixed**. A bake had
+   `fps.length(end - start)` frames and the compiler places `frame(end) - frame(start)`:
+   0.9 s from 426.0 at 25 fps is 22 frames baked and 23 placed. About a quarter of clips
+   timed to the hundredth disagree. The report saw that frame white, which was the missing
+   `force_fps`; with it, melt holds the last frame, seeking or playing, so what was left
+   was a one-frame freeze.
+   - A `BakeRequest` carries the frames its clip is placed on (`clip_frames`, in
+     `bake_request`) beside the duration, and bakes that many. The overlay is still told
+     its clip's duration, so a document an older kuma baked is the same document.
+   - **The key adds the count only when it differs from what the duration rounds to**, so
+     only clips between frames re-bake. Snapping the duration to whole frames instead
+     would have re-keyed nearly every bake at 29.97: 3.0 s is 90 frames either way, but
+     90 frames last 3.003 s.
+   - `a_clip_between_frames_bakes_the_frames_it_is_placed_on`, which pins two keys an
+     older kuma gave.
+
+3. **`list_blueprints` returned every manifest in full** — **fixed**, in the MCP tool only.
+   It lists each blueprint's id, name, description, tags and vars by type, and `id` returns
+   one whole manifest. This project's 35 manifests went from 76 KB to 21 KB. Every var's
+   default, range, options and description is what the bulk was, and an agent needs them
+   for the one or two blueprints it adds, not for picking. `GET /api/blueprints` is
+   unchanged: the editor's blueprint browser draws from the manifests.
+   `a_blueprint_summary_names_its_vars_by_type`.
+
+**Fixed before the report:** bakes read at 25 fps, `patch_path` for a patch too big to
+write inline, `sample_frames` blocking on bakes (now a job), and `kuma compile` leaving
+the bakes out.
+
+**Deferred** — true of the current code, and wanted for pixel art or by agents working at
+scale rather than for general editing or for a person working with an agent:
+
+- **An overlay cannot distort what is under it.** Blend modes act on the clip; a glitch
+  needs the `mlt` escape hatch, whose animation strings are MLT frames, and whose service
+  and property names nobody checks. `avfilter.chromashift` rendered black, and
+  `avfilter.scroll` keeps state across frames, so it cannot be sampled. A curated set of
+  glitch effects in seconds would replace them.
+- **Bake cost.** Full-frame PNGs whatever the overlay covers; *Bake and render speed* has
+  the measurements. What pixel art asks for, baking at the overlay's own resolution
+  (480×270) and scaling up without smoothing, was not measured, and it needs the next
+  item. A clip that loops its bake is `bake_period` under *Recorded, not scheduled*.
+- **`transform` scales smoothly**, through `qtblend`, which has no filter choice.
+- **No 4:4:4 or RGB preset**; every H.264 preset is 4:2:0, so hard pixel edges bleed a pixel of chroma.
+- **One clip at a time on a track.** 21 tracks for one video; lanes or stacks would be a
+  model change.
+- **No limiter or overs warning** (`measure_audio` reports the true peak), audio ins and
+  outs on video frames, and no sample rate or channel count from `probe_media`.
+- **Smaller:** no batch `add_media`, a `color` var cannot be optional, `sample_frames`
+  returns no pixel statistics, no MCP `compile`, `health`'s browser note reads as an
+  error, no transform keyframe example in `timeline_guide`, the HTTP API is not documented
+  for agents, and nothing compares the binary's commit with the checkout's (`--version`
+  has it).
+
 ## Still open
 
 Nested sequences are done and the editor is an application now, so this list is the whole

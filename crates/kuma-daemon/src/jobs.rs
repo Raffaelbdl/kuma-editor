@@ -653,7 +653,7 @@ fn bake_clips(state: &AppState, project: &Project, ids: &[String], progress: &dy
 
 /// What an overlay clip bakes as — the one definition, since the prune keys it too.
 pub(crate) fn bake_request<'a>(r: &'a crate::overlays::Resolved, vars: &'a serde_json::Map<String, serde_json::Value>, project: &Project, clip: &kuma_core::Clip) -> BakeRequest<'a> {
-    BakeRequest { overlay_dir: &r.dir, manifest: &r.manifest, vars, fps: project.fps, width: project.width, height: project.height, duration: clip.duration(), speed: clip.speed }
+    BakeRequest { overlay_dir: &r.dir, manifest: &r.manifest, vars, fps: project.fps, width: project.width, height: project.height, duration: clip.duration(), frames: project.fps.clip_frames(clip.start, clip.end).len(), speed: clip.speed }
 }
 
 /// Compile options pointed at this project's directories. Callers set what they need on

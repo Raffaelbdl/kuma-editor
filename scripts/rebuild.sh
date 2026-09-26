@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Rebuild every artifact kuma runs from, in dependency order, then run `kuma doctor`.
 #
-# Three of them are not in git — the `kuma` binary, `ui/dist` and `app/dist` — so a pull
-# updates the sources and leaves them behind, and a stale one fails far from its cause.
+# Three of them are not in git — the `kuma` binary (built, and installed on PATH), `ui/dist`
+# and `app/dist` — so a pull updates the sources and leaves them behind, and a stale one
+# fails far from its cause.
 #
 # Two pieces are optional and may fail without failing the rebuild: the preview engine
 # (it needs system libraries; without it the preview falls back to single frames) and
@@ -27,6 +28,11 @@ npm install --no-audit --no-fund
 
 step "kuma binary (cargo build --release)"
 cargo build --release
+
+step "kuma on PATH (cargo install --path crates/kuma-cli)"
+# Reuses target/release from the step above, so this is mostly a copy into ~/.cargo/bin.
+# Without it an agent's `kuma mcp` keeps running whatever was installed last.
+cargo install --path crates/kuma-cli --locked
 
 step "editor UI (ui/dist — served by the daemon)"
 npm --prefix ui install --no-audit --no-fund
@@ -83,5 +89,5 @@ fi
 step "kuma doctor"
 "$root/target/release/kuma" doctor || true
 
-printf '\n%sRebuilt.%s binary, ui/dist, app/dist. Preview engine: %s. whisper.cpp: %s\n' "$bold" "$off" "$engine_note" "$whisper_note"
+printf '\n%sRebuilt.%s binary (and ~/.cargo/bin/kuma), ui/dist, app/dist. Preview engine: %s. whisper.cpp: %s\n' "$bold" "$off" "$engine_note" "$whisper_note"
 printf 'Start the app with %snpm run app%s.\n' "$bold" "$off"

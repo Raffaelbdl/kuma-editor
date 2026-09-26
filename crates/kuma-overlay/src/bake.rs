@@ -39,8 +39,11 @@ pub struct BakeRequest<'a> {
     pub fps: Fps,
     pub width: u32,
     pub height: u32,
-    /// Clip duration on the timeline, seconds.
+    /// Clip duration on the timeline, seconds: what the overlay is told it lasts.
     pub duration: f64,
+    /// Frames it is placed on: `fps.length(duration)`, or one more or less when the clip's
+    /// ends fall between frames (0.9 s from 426.0 at 25 fps is placed on 23, not 22).
+    pub frames: i64,
     /// Playback speed; applied as a time remap of the seek (never by frame duplication).
     pub speed: f64,
 }
@@ -243,6 +246,10 @@ impl Baker {
         }
         let (duration, speed) = if req.manifest.is_static { (0.0, 0.0) } else { (req.duration, req.speed) };
         h.update(format!("\n{}/{} {}x{} d={duration:.6} s={speed:.6}", req.fps.num, req.fps.den, req.width, req.height).as_bytes());
+        // Only a clip between frames adds its count, so no other bake is re-keyed.
+        if !req.manifest.is_static && req.frames != req.fps.length(req.duration) {
+            h.update(format!(" n={}", req.frames).as_bytes());
+        }
         Ok(hex::encode(h.finalize())[..24].to_string())
     }
 
@@ -414,7 +421,7 @@ impl Baker {
         if req.speed < 0.0 && !is_still {
             files.reverse();
         }
-        let want = if is_still { 1 } else { req.fps.length(req.duration) };
+        let want = if is_still { 1 } else { req.frames };
         let got = (files.len() as i64).min(want);
         for (i, f) in files.iter().take(got as usize).enumerate() {
             std::fs::rename(f, frames_dir.join(frame_name(i as i64 + 1)))?;
@@ -425,6 +432,8 @@ impl Baker {
         for n in got + 1..=want {
             std::fs::copy(frames_dir.join(frame_name(got)), frames_dir.join(frame_name(n)))?;
         }
+        // 4. The first frame carries an alpha channel, whatever Chrome wrote.
+        first_frame_rgba(&frames_dir).map_err(BakeError::Other)?;
         let _ = std::fs::remove_dir_all(&raw_dir);
         Ok(BakeResult {
             key: dir.file_name().unwrap().to_string_lossy().into_owned(),
@@ -458,16 +467,8 @@ impl Baker {
     /// length this preview does not have, so showing it would be a lie anyway. A still
     /// overlay renders one frame of it.
     pub fn preview_request<'a>(overlay_dir: &'a Path, manifest: &'a OverlayManifest, vars: &'a Map<String, Value>) -> BakeRequest<'a> {
-        BakeRequest {
-            overlay_dir,
-            manifest,
-            vars,
-            fps: Fps::new(PREVIEW_FPS as u32, 1),
-            width: 480,
-            height: 270,
-            duration: manifest.duration_default.min(3.0).max(1.0),
-            speed: 1.0,
-        }
+        let (fps, duration) = (Fps::new(PREVIEW_FPS as u32, 1), manifest.duration_default.min(3.0).max(1.0));
+        BakeRequest { overlay_dir, manifest, vars, fps, width: 480, height: 270, duration, frames: fps.length(duration), speed: 1.0 }
     }
 
     /// Bake a **moving** preview of an overlay with some vars: an animated WebP with alpha,
@@ -516,6 +517,33 @@ fn frame_name(n: i64) -> String {
     format!("frame_{n:06}.png")
 }
 
+/// Give a bake's first frame an alpha channel if it has none. ffmpeg reads a whole image
+/// sequence in the pixel format of its first file, and Chrome writes a frame with no
+/// transparent pixel as RGB: an overlay that opens on a full-frame flash lost its alpha for
+/// every frame after it. Only the first file decides — a later RGB frame is read as the
+/// opaque frame it is — so only the first is rewritten, and its pixels stay the same.
+fn first_frame_rgba(frames: &Path) -> Result<(), String> {
+    let first = frames.join(frame_name(1));
+    if !png_lacks_alpha(&first) {
+        return Ok(());
+    }
+    // Named as scratch until renamed: a cached bake is repaired in place, under readers.
+    let tmp = tempfile::Builder::new().prefix(".tmp-").suffix(".png").tempfile_in(frames).map_err(|e| e.to_string())?;
+    let args = ["-i".into(), first.to_string_lossy().into_owned(), "-pix_fmt".into(), "rgba".into(), tmp.path().to_string_lossy().into_owned()];
+    crate::media::ffmpeg(&args).map_err(|e| format!("could not add an alpha channel to the first frame: {e}"))?;
+    tmp.persist(&first).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// A PNG whose header says it carries no alpha channel (colour type other than 6, RGBA).
+/// Anything that is not a PNG says nothing, and is left alone.
+fn png_lacks_alpha(path: &Path) -> bool {
+    use std::io::Read;
+    let mut head = [0u8; 26];
+    let read = std::fs::File::open(path).and_then(|mut f| f.read_exact(&mut head));
+    read.is_ok() && head.starts_with(b"\x89PNG\r\n\x1a\n") && &head[12..16] == b"IHDR" && head[25] != 6
+}
+
 /// Scratch still being written into `.kuma/`: every writer names it `….tmp-…` until renamed.
 pub fn is_in_flight(name: &str) -> bool {
     name.contains(".tmp-")
@@ -556,6 +584,12 @@ impl Drop for Slot<'_> {
 
 fn read_done(dir: &Path) -> Option<BakeResult> {
     let mut r: BakeResult = serde_json::from_slice(&std::fs::read(dir.join("done.json")).ok()?).ok()?;
+    // A bake cached before its first frame was made RGBA is repaired rather than re-keyed,
+    // which would re-bake every finished video for the few that open on an opaque frame.
+    // Best effort: unrepaired, it is the bake it always was.
+    if let Err(e) = first_frame_rgba(&dir.join("frames")) {
+        eprintln!("kuma: bake {}: {e}", dir.display());
+    }
     r.resource = dir.join("frames").join(r.resource.file_name()?);
     r.dir = dir.to_path_buf();
     r.cached = true;

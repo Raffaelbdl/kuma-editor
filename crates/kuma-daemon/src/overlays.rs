@@ -188,7 +188,7 @@ pub fn lint(state: &AppState, dir: &Path) -> anyhow::Result<kuma_overlay::LintRe
         (p.fps, p.width, p.height)
     };
     let manifest = OverlayManifest::load(dir).map_err(|e| anyhow::anyhow!("{e}"))?;
-    let req = kuma_overlay::BakeRequest { overlay_dir: dir, manifest: &manifest, vars: &Map::new(), fps, width, height, duration: manifest.duration_default, speed: 1.0 };
+    let req = kuma_overlay::BakeRequest { overlay_dir: dir, manifest: &manifest, vars: &Map::new(), fps, width, height, duration: manifest.duration_default, frames: fps.length(manifest.duration_default), speed: 1.0 };
     Ok(state.baker.lint(&req)?)
 }
 

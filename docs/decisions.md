@@ -2519,6 +2519,14 @@ Its worst item, bakes read at 25 fps whatever the project's rate, had already be
    - `a_clip_between_frames_bakes_the_frames_it_is_placed_on`, which pins two keys an
      older kuma gave.
 
+3. **`list_blueprints` returned every manifest in full** — **fixed**, in the MCP tool only.
+   It lists each blueprint's id, name, description, tags and vars by type, and `id` returns
+   one whole manifest. This project's 35 manifests went from 76 KB to 21 KB. Every var's
+   default, range, options and description is what the bulk was, and an agent needs them
+   for the one or two blueprints it adds, not for picking. `GET /api/blueprints` is
+   unchanged: the editor's blueprint browser draws from the manifests.
+   `a_blueprint_summary_names_its_vars_by_type`.
+
 ## Still open
 
 Nested sequences are done and the editor is an application now, so this list is the whole

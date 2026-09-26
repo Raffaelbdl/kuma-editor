@@ -8,7 +8,8 @@ contract does not say, or what bit anyway.
 - **Blueprints first.** `list_blueprints` has titles (`title`, `title-subtitle`,
   `section-title`), a `lower-third`, `subtitles`, a `callout-arrow`, `label-pin` and
   `location-tag`, a `countdown`, a `watermark` and a `paint-wipe` transition, each with its
-  looks as vars. `add_blueprint` copies one into the project; set vars before touching markup.
+  looks as vars. `list_blueprints` names each one's vars; with its `id`, it gives their
+  defaults and options. `add_blueprint` copies one into the project; set vars before touching markup.
 - A **component** is a folder (`overlays/label/`) with var-driven markup; a use of it is an
   entry with vars. Write one only for what no blueprint does. A handful covers most videos
   (title, lower third, caption, callout, panel, list, code card, progress bar); a

@@ -2294,6 +2294,97 @@ leftover (38 MB in one project, from a week before) stays forever. The name carr
 baking process's id (`<key>.tmp-<pid>-<nanos>`), so a prune could delete the scratch of
 processes that are gone.
 
+## The agent skill
+
+The MCP's `timeline_guide` and `overlay_guide` state the contract. What an agent needs to
+make a *whole* video well is craft around it: how to organise hundreds of clips, and the
+traps that each cost a render to find. That lives in `library/skills/kuma-video/`, a Claude
+Code skill (`SKILL.md`, references, scripts that check a project).
+
+- **Copied into the project, not installed globally.** `kuma init` (and so the launcher)
+  and `kuma mcp-config` write it to `<project>/.claude/skills/kuma-video/`, beside the
+  `.mcp.json` they already write. Claude Code picks up a project's skills there, so nothing
+  outside the project is touched, as with `.mcp.json`.
+- **Embedded in the binary** (`crates/kuma-cli/src/skill.rs`), so a project gets the
+  version that documents the `kuma` it runs with. `kuma mcp-config` refreshes kuma's own
+  files, and leaves anything else in the folder alone. A stale copy misleads more than a
+  missing one. `kuma doctor` reports current, stale or missing. A test fails if a file in
+  the folder is not listed in `FILES`.
+- **Scripts over prose where a check is possible**: the audio mix modelled offline
+  (`mixsim.py`, within 0.5 LU of a real render), CJK glyph coverage (`fontcheck.py`),
+  reading time per scene (`reading_audit.py`), contact sheets, a Japanese font subsetter,
+  and a procedural footage template.
+
+## Field report: a ten-minute explainer
+
+An agent made a 9½-minute explainer about kuma in kuma, through MCP alone: 26 overlay
+components, ~400 entries, ~590 clips, seven nested sequences, a storyboard kept as code and
+diffed into patches. What cost it time, each checked against the code; all are open:
+
+1. **A quote in a string var breaks every CSS var after it.** `kuma-overlay/src/inject.rs`
+   writes string vars unquoted into one `:root { … }` line and only neutralises
+   `; { } < > \n`. A lone `'` (as in "Let's") opens a CSS string that swallows the rest,
+   and the overlay renders with missing vars and no error. Quote or escape the value, or
+   write one declaration per line so a bad token only drops itself.
+2. **`sample_frames` with `overlay` refuses an entry that has a `parent`**: the throwaway
+   one-clip project copies the entry but not its folder ("parent … is not in the bin").
+3. **A fade that rounds to one frame, on a clip whose own range starts at frame 0, applies
+   to the whole clip.** The fade arm of `kuma-mlt/src/compile.rs` writes it as a filter
+   with `in="0" out="0"`, and MLT reads `out=0` as unbounded. A 0.05 s `audio_fade` silenced
+   93 s of music. Clamp fades to ≥ 2 frames, drop a sub-frame one, or never emit `out=0` for
+   a bounded filter. The video fade has the same edge.
+4. **Library fonts can vanish after a rebuild.** `default_library_dirs` is
+   `~/.local/share/kuma` plus `KUMA_LIBRARY`, and without `kuma library` the Latin faces the
+   starter blueprints name (JetBrains Mono, Caveat, Anton) are missing. `check_overlay`
+   says so (`font_missing`), but a render just falls back.
+5. **Kanji fell back to Chinese forms.** Nothing was kuma's fault, but kuma could catch it.
+   Overlay pages are `lang="en"`, so kanji in a Latin-font label are drawn by the machine's
+   CJK font, which on Linux is Noto CJK SC. `list_fonts` reporting `scripts` made the cause
+   findable. A lint could flag CJK text in an entry whose fonts lack `han`/`kana`.
+6. **No audio view**: there is no audio counterpart to `sample_frames`. The loudness had to
+   be modelled outside kuma (-24 LUFS on the first render). This echoes the loop report's
+   item.
+7. **The MCP process outlives a rebuild.** After a rebuild that added render options, the
+   running MCP server still exposed the old tool schema while the daemon accepted the new
+   options.
+
+**What could move into kuma**, so the skill's scripts and workarounds shrink. In order of
+payoff:
+
+1. **Apply a patch from a file**: `apply_edits` taking `patch_path` inside the project
+   (`assets/patches/diff.json`), or a server-side "make this sequence and these entries equal
+   to this document" that computes the patch itself. The costliest part of the explainer
+   was copying 10–25 KB patches through tool calls in chunks, then re-running the
+   storyboard's diff to prove the copy was exact. With a file, applying is exact and cheap.
+   The loop report's `history` / diff-since-revision item belongs to the same family.
+2. **Measuring audio** (replaces `scripts/mixsim.py`). A `measure_audio` tool would render
+   the master's audio through the real graph, which needs no bakes since overlays make no
+   sound. It would return:
+   - integrated loudness, LRA and true peak;
+   - loudness per clip of the master (chapters);
+   - the hottest moments;
+   - silent stretches.
+   The script models the mix kuma is *meant* to build. It matched a real render within
+   0.5 LU, but it could not have caught item 3 above. This is the "Audio has no counterpart
+   to `sample_frames`" item, with a concrete shape. Further: an optional loudness target on
+   render (analyse, then normalise or limit on the master). That is a master-bus concept
+   the model does not have yet.
+3. **Glyph coverage in the lint** (replaces `scripts/fontcheck.py`). `Baker::fonts` already
+   knows every family's scripts. The rule: an entry's text has characters none of its
+   overlay's font vars cover, with the characters listed. Also warn about CJK text on a
+   page whose `lang` is not a CJK one. Worth deciding with it: a project-level fallback
+   family injected into the contract, so overlays need not each declare a `jp` font var as
+   the explainer's did.
+4. **`sample_frames` with explicit times and a tiled sheet** (replaces
+   `scripts/contact_sheet.py` before rendering): `times: [3.5, 41.7, 42.3, …]` and `tile:
+   true`, returning one image. Checking every cut ±0.3 s currently costs one call, or one
+   image, per time.
+
+**Better left in the skill:** `reading_audit.py`, which relies on its components' var
+names, unless manifests someday declare which vars hold text to be read;
+`pixel_footage_template.py`, which is content, not tooling; and `subset_jp_fonts.py`, since
+`add_font` of the full collection already gives a complete JP family.
+
 ## Still open
 
 Nested sequences are done and the editor is an application now, so this list is the whole

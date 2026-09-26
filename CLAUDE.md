@@ -24,6 +24,9 @@ library/blueprints/   starter blueprints (folder = blueprint) + `_vendor/{gsap.m
 library/presets/      starter effect presets (typed params + `$expr` substitution)
 library/design-systems/ design systems (`DESIGN.md` + `tokens.css`) copied into a project; none ship yet
 library/fonts/        starter font families (open licences) that `font` vars name
+library/skills/       the agent skill (`kuma-video`) that `kuma init` / `kuma mcp-config` write into a
+                      project's `.claude/skills/`; embedded by `crates/kuma-cli/src/skill.rs`, whose
+                      `FILES` must list every file (a test checks)
 ```
 
 Blueprints, presets and fonts are user assets, not code: at runtime kuma reads

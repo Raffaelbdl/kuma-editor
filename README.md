@@ -304,6 +304,14 @@ kuma mcp-config            # writes .mcp.json next to the project file (merges i
 kuma mcp-config --print
 ```
 
+Both also install the **`kuma-video` skill** into `.claude/skills/kuma-video/`: how to make
+a whole video through the MCP (storyboard as code, overlay gotchas, Japanese type, loudness,
+pacing, review), with scripts that check a project (`mixsim.py`, `fontcheck.py`,
+`reading_audit.py`, `contact_sheet.py`, …). Its source is `library/skills/kuma-video/`; the
+binary embeds it, so a project gets the version that documents that `kuma`, and
+`kuma mcp-config` refreshes it (other files in that folder are left alone). `kuma doctor`
+says whether a project's copy is current.
+
 The equivalent by hand, for any of Claude Code's scopes:
 
 ```

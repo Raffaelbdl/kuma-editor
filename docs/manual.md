@@ -169,7 +169,7 @@ delete. On the ruler: a marker at that moment (`M` at the playhead). A **transit
 two clips that touch on one track and is centred on the cut, so it needs *handles* —
 material after the first clip's out point and before the second's in point; "Transition
 into the next clip" makes a one-second dissolve, or as long as the handles allow, and says
-which clip to trim when there are none. The clips stay end to end in the project; the transition is drawn hatched across the cut, over the handle frames it plays (red, black at the end, when the first clip runs out of source): double-click
+which clip to trim when there are none. The clips stay end to end in the project; the transition is drawn hatched across the cut, over the handle frames it plays (red, black at the end, when the first clip runs out of source). Click it to edit it in the inspector — kind, length, a wipe's pattern and softness, and how much handle each side needs and has; double-click
 it for its length, right-click to make it a wipe or remove it.
 
 **What a clip is shows on it.** A media clip carries frames of its file along the top and

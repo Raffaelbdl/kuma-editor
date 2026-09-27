@@ -11,6 +11,7 @@ import { mountTabs } from "./panels/tabs";
 import { mountTopbar } from "./panels/topbar";
 import { mountTransport } from "./panels/transport";
 import { installShortcuts } from "./shortcuts";
+import { installSplitters } from "./splitters";
 import { store, toast } from "./store";
 import { installTheme } from "./theme";
 import { Timeline } from "./panels/timeline";
@@ -43,6 +44,16 @@ function projectCommands() {
   command(Cmd.group, "Group Clips", () => groupSelection());
   command(Cmd.ungroup, "Ungroup Clips", () => ungroupSelection());
   command(Cmd.addTrack, "Add Track", (kind) => addTrack(kind as TrackKind));
+  // Record mode lost its button (see *Auto-key* in `docs/decisions.md`); a key keeps it
+  // reachable until it has a better home. The whole page says it is on: a red edge on the
+  // panel where the recording edits are made.
+  command(Cmd.autoKey, "Toggle Auto-key", () => store.set({ autoKey: !store.state.autoKey }));
+  let was = store.state.autoKey;
+  store.select((s) => [s.autoKey], (s) => {
+    document.body.classList.toggle("autokey", s.autoKey);
+    if (s.autoKey !== was) toast(s.autoKey ? "Auto-key on: changing an effect's value writes a keyframe at the playhead" : "Auto-key off", "");
+    was = s.autoKey;
+  });
 }
 
 async function main() {
@@ -51,6 +62,7 @@ async function main() {
   // is this browser's, not the project's.
   installTheme();
 
+  installSplitters();
   await store.init();
   // Before the panels: the title bar adds a row to the grid, and settling the layout once
   // is tidier than having every panel measure itself and then measure again.

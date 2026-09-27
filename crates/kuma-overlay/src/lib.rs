@@ -20,6 +20,6 @@ pub use bake::{copy_dir, is_in_flight, BakeError, BakeRequest, Baker, BakeResult
 pub use fonts::{Family, FontLibrary, Origin};
 pub use lint::{Finding, Level, LintReport};
 pub use inject::{Contract, FontCss};
-pub use media::{probe, Probe};
+pub use media::{filmstrip, peaks, probe, Probe, Strip, PEAK_RATE};
 pub use scaffold::new_overlay;
 pub use transcribe::{Cue, TranscribeOptions, Transcriber};

@@ -550,9 +550,58 @@ async fn bin_asset(State(st): S, Path((id, file)): Path<(String, String)>) -> Re
     let ext = match file.as_str() {
         "thumb.png" => "png",
         "preview.webp" => "webp",
+        // Written with `strip.json`, which is what says it is current.
+        "strip.jpg" => "strip.jpg",
+        "peaks.json" | "strip.json" => return media_view(st, id, file).await,
         _ => return Err(ApiError::not_found("not found")),
     };
     file_response(&bin_asset_path(&st, &id, ext))
+}
+
+/// One media view generated at a time: a timeline full of new clips asks for all of theirs
+/// at once, and ffmpeg per clip in parallel only makes every one of them late.
+static MEDIA_VIEWS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// What the timeline draws on a media entry's clips, made on first request and kept in
+/// `.kuma/thumbs/` beside the overlay stills (so a prune drops them with the entry):
+/// `peaks.json`, its waveform, and `strip.json`, the index of its filmstrip `strip.jpg`.
+/// Each names the file it was made from, so a relinked entry is made again. Looking, not
+/// editing: nothing here touches the document.
+async fn media_view(st: Arc<AppState>, id: String, file: String) -> Result<Response, ApiError> {
+    let (path, kind, meta) = match read(&st.project).bin.get(&id) {
+        Some(kuma_core::BinItem { source: BinSource::File { path, kind, .. }, meta, .. }) => (path.clone(), *kind, meta.clone().unwrap_or_default()),
+        _ => return Err(ApiError::not_found("not a media entry")),
+    };
+    let src = jobs::resolve_path(&st, std::path::Path::new(&path));
+    let out = bin_asset_path(&st, &id, &file);
+    let made = blocking(move || -> Result<Value, String> {
+        let _cache = read(&st.cache_users);
+        let _one = MEDIA_VIEWS.lock().unwrap_or_else(|p| p.into_inner());
+        let source = src.to_string_lossy().into_owned();
+        let stamp = std::fs::metadata(&src).and_then(|m| m.modified()).map_err(|e| format!("{path}: {e}"))?;
+        let current = |v: &Value| v["source"] == source.as_str() && std::fs::metadata(&out).and_then(|m| m.modified()).is_ok_and(|t| t >= stamp);
+        if let Some(v) = std::fs::read(&out).ok().and_then(|b| serde_json::from_slice::<Value>(&b).ok()).filter(|v| current(v)) {
+            return Ok(v);
+        }
+        let dir = st.config.thumbs_dir();
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        let v = if file == "peaks.json" {
+            json!({ "source": source, "rate": kuma_overlay::PEAK_RATE, "peaks": kuma_overlay::peaks(&src)? })
+        } else {
+            let jpg = bin_asset_path(&st, &id, "strip.jpg");
+            let tmp = dir.join(format!("{id}.strip.tmp-{}.jpg", std::process::id()));
+            let strip = kuma_overlay::filmstrip(&src, &meta, kind == kuma_core::MediaKind::Image, &tmp);
+            let strip = strip.and_then(|s| std::fs::rename(&tmp, &jpg).map(|_| s).map_err(|e| e.to_string()));
+            let _ = std::fs::remove_file(&tmp);
+            json!({ "source": source, "strip": strip? })
+        };
+        let tmp = dir.join(format!("{id}.{file}.tmp-{}", std::process::id()));
+        std::fs::write(&tmp, v.to_string()).and_then(|_| std::fs::rename(&tmp, &out)).map_err(|e| e.to_string())?;
+        Ok(v)
+    })
+    .await?
+    .map_err(ApiError::bad_request)?;
+    Ok(Json(made).into_response())
 }
 
 // ---------- assets ----------

@@ -50,7 +50,7 @@ export function mountTabs(host: HTMLElement): void {
         title: master ? `${name(id)} — the master, which is what renders` : name(id),
         open: () => void store.openSequence(id),
         // There is always one sequence open, so the last tab has nothing to fall back to.
-        close: s.sequences.length > 1 ? { run: () => void store.closeSequence(id), title: "Close this tab (the sequence stays in the bin)" } : undefined,
+        close: s.sequences.length > 1 ? { run: () => void store.closeSequence(id), title: "Close this tab — or middle-click it (the sequence stays in the bin)" } : undefined,
       }));
     }
     for (const id of s.overlays) {
@@ -60,7 +60,7 @@ export function mountTabs(host: HTMLElement): void {
         on: s.tab === id,
         title: name(id),
         open: () => store.openOverlay(id),
-        close: { run: () => store.closeOverlay(id), title: "Close this tab (the entry stays in the bin)" },
+        close: { run: () => store.closeOverlay(id), title: "Close this tab — or middle-click it (the entry stays in the bin)" },
       }));
     }
     host.appendChild(button("+ overlay", () => run(Cmd.newOverlay), "Create an overlay from a blueprint and open it here", "etab-add"));
@@ -86,6 +86,10 @@ function tab(t: Tab): HTMLDivElement {
     // the click still bubbles after it.
     x.onclick = (ev) => { ev.stopPropagation(); close.run(); };
     e.appendChild(x);
+    // A middle click closes, as in every browser and editor with tabs. The press is taken
+    // so it does not start the browser's autoscroll first.
+    e.onmousedown = (ev) => { if (ev.button === 1) ev.preventDefault(); };
+    e.onauxclick = (ev) => { if (ev.button === 1) { ev.preventDefault(); close.run(); } };
   }
   return e;
 }

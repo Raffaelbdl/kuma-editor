@@ -9,7 +9,7 @@ import { askForm, askText } from "./modal";
 import { startJob, store, toast } from "./store";
 import type { ClipboardEntry, Found } from "./store";
 import type { MenuItem } from "./menu";
-import type { BinItem, BinSource, Clip, Marker, OverlayManifest, OverlaySource, PatchOp, Project, Track, TrackKind } from "./types";
+import type { BinItem, BinSource, Clip, Marker, OverlayManifest, OverlaySource, PatchOp, Project, Track, TrackKind, Transition } from "./types";
 import { binItem, binPath, childrenOf, clipPathOf, hasAudio, isFileSource, isOverlaySource, isTimedMedia, itemKind, orientation, parentOf, seqDuration, shiftEffect, trackFor, trackPathOf, trimEffect, wouldNest, wouldRecurse } from "./types";
 
 /** Clip ids are minted by kind: `o1` for an overlay, `c1` for anything else. */
@@ -397,8 +397,9 @@ export async function addTrack(kind: TrackKind) {
 /** Split every selected clip the playhead crosses, in one patch — half a cut applying is
  *  not an outcome anyone wants. Time-relative effects follow: the left half keeps its
  *  fade-in, the right its fade-out, and keyframes are re-based on the new start. */
-export async function splitAtPlayhead() {
-  const t = store.state.playhead;
+/** Split the selected clips at `t` — the playhead for S, the pointer for a clip's
+ *  right-click. */
+export async function splitAtPlayhead(t = store.state.playhead) {
   const cutting = store.selectedFound.filter((f) => t > f.clip.start && t < f.clip.end);
   if (!cutting.length) { toast("Select a clip under the playhead to split", ""); return; }
   const ops: PatchOp[] = [];
@@ -666,8 +667,8 @@ async function askComment(t: number, value: string, ok: string): Promise<string 
 
 /** Add a marker at the playhead with a comment — or, when one is already on that frame,
  *  edit that one's: two markers on one frame are one note written twice. */
-export async function addMarker() {
-  const t = store.state.playhead;
+/** A marker at `t` — the playhead for M, the pointer for the ruler's right-click. */
+export async function addMarker(t = store.state.playhead) {
   const there = store.markers.findIndex((m) => Math.abs(m.t - t) < store.halfFrame);
   if (there >= 0) return editMarker(there);
   const label = await askComment(t, "", "Add");
@@ -689,3 +690,75 @@ export async function editMarker(i: number) {
 export const moveMarker = (i: number, t: number) => patchMarker(i, { t }, `move marker to ${at(t)}`);
 
 export const removeMarker = (i: number) => patchMarker(i, null, `remove marker at ${at(store.markers[i]?.t ?? 0)}`);
+
+// ---------- transitions ----------
+//
+// A transition joins two clips that touch on one track, `from` → `to`, and is centred on
+// the cut: half its length is drawn from after `from`'s out point and half from before
+// `to`'s in point. Those are the *handles*, and the validator refuses a transition that has
+// none — which is the one thing about them nobody guesses, so the editor says it in words.
+
+/** The clip that starts where `c` ends on its track: the one a transition from it goes to. */
+export const joinedAfter = (track: Track, c: Clip): Clip | undefined =>
+  track.clips.find((b) => b.id !== c.id && Math.abs(b.start - c.end) < 1e-6);
+
+/** How long a transition `a → b` may be, and when that is nothing, why. Other transitions
+ *  on either clip already use some of it. */
+function transitionRoom(track: Track, a: Clip, b: Clip): { max: number; why: string } {
+  const p = store.state.project!;
+  const used = (c: Clip) => track.transitions.filter((x) => x.from === c.id || x.to === c.id).reduce((n, x) => n + x.duration / 2, 0);
+  let half = Math.min(a.end - a.start - used(a), b.end - b.start - used(b));
+  let why = "the clips are too short";
+  const ib = binItem(p, b);
+  if (isTimedMedia(ib)) {
+    const room = (b.in ?? 0) / Math.abs(b.speed || 1);
+    if (room < half) { half = room; why = `“${b.label || ib?.name || b.id}” starts at the very beginning of its source: trim its start so there is material to fade in from`; }
+  }
+  const ia = binItem(p, a);
+  const total = ia?.meta?.duration ?? (ia && itemKind(ia) === "sequence" ? seqDuration(p, a.bin) : undefined);
+  if (isTimedMedia(ia) && total !== undefined) {
+    const speed = Math.abs(a.speed || 1);
+    const room = (total - (a.in ?? 0)) / speed - (a.end - a.start);
+    if (room < half) { half = Math.max(0, room); why = `“${a.label || ia?.name || a.id}” ends at the very end of its source: trim its end so there is material to fade out from`; }
+  }
+  return { max: 2 * half, why };
+}
+
+/** A dissolve between `from` and the clip joined after it: a second, or as much as the
+ *  handles allow. */
+export async function addTransition(from: string) {
+  const f = store.findClip(from);
+  const b = f && joinedAfter(f.track, f.clip);
+  if (!f || !b) { toast("A transition joins two clips that touch: move one against the other first", ""); return; }
+  if (f.track.kind === "overlay") { toast("Overlays cannot take a transition yet: their bakes carry no handles. Animate the overlay's own entrance instead", ""); return; }
+  if (f.track.transitions.some((x) => x.from === from && x.to === b.id)) { toast("These two clips already have a transition — right-click it to change it", ""); return; }
+  const { max, why } = transitionRoom(f.track, f.clip, b);
+  const frames = Math.floor(Math.min(1, max) * store.fps + 1e-6);
+  if (frames < 2) { toast(`No room for a transition: ${why}`, "err", 8000); return; }
+  const value: Transition = { from, to: b.id, kind: "dissolve", duration: frames / store.fps };
+  await store.patch([{ op: "add", path: `${trackPathOf(f)}/transitions/-`, value }], `dissolve ${from} → ${b.id}`);
+}
+
+/** Where transition `i` of track `ti` (on the open sequence) is, if it is still there. */
+const transitionPath = (ti: number, x: Transition): string | null => {
+  const i = store.tracks[ti]?.transitions.findIndex((y) => y.from === x.from && y.to === x.to) ?? -1;
+  return i < 0 ? null : `${store.seqPath}/tracks/${ti}/transitions/${i}`;
+};
+
+export async function editTransitionDuration(ti: number, x: Transition) {
+  const text = await askText({ title: "Transition length", label: "Seconds", value: String(+x.duration.toFixed(3)), ok: "Set" });
+  const d = Number(text);
+  if (text === null || !(d > 0)) return;
+  const path = transitionPath(ti, x);
+  if (path) await store.patch([{ op: "replace", path: `${path}/duration`, value: store.snap(d) || 1 / store.fps }], `transition ${x.from} → ${x.to} ${d}s`);
+}
+
+export async function setTransitionKind(ti: number, x: Transition, kind: Transition["kind"]) {
+  const path = transitionPath(ti, x);
+  if (path) await store.patch([{ op: "replace", path, value: { ...x, kind, luma: kind === "wipe" ? x.luma ?? "wipe_left" : null } }], `transition ${x.from} → ${x.to}: ${kind}`);
+}
+
+export async function removeTransition(ti: number, x: Transition) {
+  const path = transitionPath(ti, x);
+  if (path) await store.patch([{ op: "remove", path }], `remove transition ${x.from} → ${x.to}`);
+}

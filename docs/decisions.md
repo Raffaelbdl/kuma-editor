@@ -1371,6 +1371,9 @@ at the moment of the write rather than when the row is built, so switching it ne
 re-render. The button goes red and so does the top edge of the inspector: the whole page
 should say it is recording, not one control.
 
+*Superseded in part:* the button left the strip in the timeline usability pass (below) and
+auto-key is on `R` until it has a better home — see *Still open*.
+
 *The curve view is a graph you can drag points on, not a curve editor.* It draws one
 parameter over the clip with the same sampler the preview and the compiler agree on, so
 what it shows is the shape the render will have — a hold's step, a Catmull-Rom's overshoot
@@ -2555,6 +2558,50 @@ scale rather than for general editing or for a person working with an agent:
   for agents, and nothing compares the binary's commit with the checkout's (`--version`
   has it).
 
+## Timeline usability pass
+
+A round of feedback from using the editor rather than driving it: the strip above the
+timeline had grown buttons for things a right-click says better, the panels could not be
+sized, and a clip said nothing about what was in it.
+
+**A clip is drawn in two bands, and stays one clip** — adopted. Kdenlive splits a video
+file into a video clip and an audio clip on two tracks, which is what lets it draw frames
+on one and a waveform on the other. Here a clip is a placement of a file *with* its sound,
+and that is what makes it one thing for an agent to move, trim or delete; splitting it
+would make every edit two edits and a group to keep them together. So the split is only
+drawn: a media clip shows frames along the top and its waveform along the bottom (the whole
+height on an audio track), and the model does not change.
+
+**The pictures are the daemon's, made on first sight** — adopted. `GET /api/bin/{id}/peaks.json`
+(the loudest sample per 1/100 s, mono, 0–255) and `strip.json` + `strip.jpg` (a frame every
+couple of seconds, at most 120, tiled into one JPEG) are made with ffmpeg the first time the
+timeline asks and kept in `.kuma/thumbs/` beside the overlay stills, so `cache prune` drops
+them with their entry and nothing new has to be taught to it. Each names the file it was
+made from, so an entry pointed at another file is made again; one is made at a time, since a
+timeline full of new clips asks for all of them at once. A file over two minutes is read
+keyframes only — the strip is a sketch, and decoding an hour to draw sixty stamps is the
+difference between a second and a minute. Asking for them is looking, not an edit: no
+revision, no job. They were not added to the `thumbs` job, which renders overlays and is
+asked for; a waveform nobody requested is one you would have to wait for anyway.
+
+**Heights, folds and panel sizes are view state, in `localStorage`** — adopted, as the theme
+is. How tall a track is drawn is not something a render or an agent reads, and in the
+document it would be an edit, an undo step and a `409` for an agent because someone dragged
+a seam. A track's height is keyed by its id (unique across the project), a fold is one
+line of kind and name — the minimum Kdenlive also keeps.
+
+**Right-click carries the timeline's actions** — adopted. Split and Marker left the strip:
+a clip's right-click splits *at the pointer* (and offers transitions, clipboard, group,
+delete), the ruler's adds a marker at the pointer; `S` and `M` still act at the playhead,
+and the menus show the key beside the entry so the two stay one idea.
+
+**Transitions are made from the clip that leaves** — adopted. They existed in the model and
+the compiler with no way to make one in the editor. "Transition into the next clip" makes a
+one-second dissolve, or as long as the handles allow — the one rule about transitions nobody
+guesses, so when there is no room the toast says which clip to trim and which end. Kind and
+length are the transition's own right-click; a wipe's pattern and softness are left to the
+file until someone asks for them in the editor.
+
 ## Still open
 
 Nested sequences are done and the editor is an application now, so this list is the whole
@@ -2825,3 +2872,10 @@ because it is the part deliberately left out.
 - Overlays bake at full frame size; there is no per-overlay bake region.
 - Export presets are a `const` table in Rust and are not pluggable. Effect presets, being
   JSON on the library search path, already are.
+- **Auto-key needs a home a person finds** — open. It was a red button in the transport
+  strip and was taken out with Split and Marker: a record toggle beside play reads as a
+  recorder, and most people never want it. For now it is `R`, listed in the shortcuts,
+  with the inspector's red edge and a toast saying it is on. What it should become is not
+  decided: a toggle in the inspector's keyframe row (where it acts), a per-effect record
+  state, or Blender's model — keying is explicit (`I`) and auto-key a preference. Whichever
+  it is has to keep the property that the whole page says when it is recording.

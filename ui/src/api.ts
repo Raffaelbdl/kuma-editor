@@ -53,6 +53,10 @@ export const api = {
   effectPresets: () => json<EffectPreset[]>("/api/presets/effects"),
   /** Render previews of the given blueprints and overlay entries. */
   thumbs: (which: { blueprints?: string[]; bins?: string[] }) => json<{ job: number }>("/api/blueprints/thumbs", { method: "POST", body: JSON.stringify(which) }),
+  /** What the timeline draws on a media entry's clips, made on first asking: its waveform,
+   *  and the index of its filmstrip (`/api/bin/{id}/strip.jpg`). Looking, not an edit. */
+  peaks: (bin: string) => json<{ rate: number; peaks: number[] }>(`/api/bin/${encodeURIComponent(bin)}/peaks.json`),
+  strip: (bin: string) => json<{ strip: { count: number; step: number; width: number; height: number } }>(`/api/bin/${encodeURIComponent(bin)}/strip.json`),
   /** Check an overlay folder against the authoring contract. Reads only. */
   lintOverlay: (path: string) => json<LintReport>(`/api/overlays/lint?${new URLSearchParams({ path })}`),
   /** Add a media file, or an overlay folder of the project (or its `overlay.json`). */

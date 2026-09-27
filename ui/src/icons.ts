@@ -42,6 +42,14 @@ const ICONS = {
     shape("path", { d: "M10 14a4 4 0 0 0 6 0l3-3a4 4 0 0 0-6-6l-1 1", fill: "none", stroke: "currentColor", "stroke-width": 2.4, "stroke-linecap": "round" }),
     shape("path", { d: "M14 10a4 4 0 0 0-6 0l-3 3a4 4 0 0 0 6 6l1-1", fill: "none", stroke: "currentColor", "stroke-width": 2.4, "stroke-linecap": "round" }),
   ],
+  /** The bin's toolbar. Stroked, like `link`, in one weight so the row reads as a set. */
+  plus: [shape("path", { d: "M12 5v14M5 12h14", fill: "none", stroke: "currentColor", "stroke-width": 2.2, "stroke-linecap": "round", "stroke-linejoin": "round" })],
+  "folder-plus": [shape("path", { d: "M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2zM12 10v6M9 13h6", fill: "none", stroke: "currentColor", "stroke-width": 2.2, "stroke-linecap": "round", "stroke-linejoin": "round" })],
+  /** A file coming in: the arrow into the tray. */
+  import: [shape("path", { d: "M12 3v12M7 10l5 5 5-5M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2", fill: "none", stroke: "currentColor", "stroke-width": 2.2, "stroke-linecap": "round", "stroke-linejoin": "round" })],
+  /** A path typed by hand. */
+  path: [shape("path", { d: "M4 7l5 5-5 5M12 19h8", fill: "none", stroke: "currentColor", "stroke-width": 2.2, "stroke-linecap": "round", "stroke-linejoin": "round" })],
+  refresh: [shape("path", { d: "M20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7", fill: "none", stroke: "currentColor", "stroke-width": 2.2, "stroke-linecap": "round", "stroke-linejoin": "round" })],
 };
 
 export type IconName = keyof typeof ICONS;

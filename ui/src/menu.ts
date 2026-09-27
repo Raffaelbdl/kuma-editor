@@ -7,7 +7,8 @@
 
 import { el } from "./dom";
 
-export type MenuItem = { label: string; run: () => void; title?: string; disabled?: boolean } | "separator" | { heading: string };
+/** `keys` is the shortcut that does the same, shown at the right as a reminder. */
+export type MenuItem = { label: string; run: () => void; title?: string; disabled?: boolean; keys?: string } | "separator" | { heading: string };
 
 let open: (() => void) | null = null;
 
@@ -21,6 +22,7 @@ export function showMenu(items: MenuItem[], x: number, y: number): void {
     if (item === "separator") { menu.appendChild(el("div", "popup-sep")); continue; }
     if ("heading" in item) { menu.appendChild(el("div", "popup-heading", item.heading)); continue; }
     const b = el("button", "popup-item", item.label);
+    if (item.keys) b.appendChild(el("kbd", "", item.keys));
     b.type = "button";
     b.setAttribute("role", "menuitem");
     if (item.title) b.title = item.title;

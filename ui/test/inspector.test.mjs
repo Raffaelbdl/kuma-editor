@@ -154,9 +154,10 @@ describe("the inspector's property fields", { skip: why ? `skipping: ${why}` : f
     assert.equal(await page.eval(reads(".effect .num.axis-y")), "-42.5");
   });
   it("records a key instead of a value while auto-key is on", async () => {
-    const REC = `[...document.querySelectorAll("#transport button")].find(b => b.textContent.includes("Auto-key"))`;
-    await page.eval(`${REC}.click()`);
-    await page.until(`${REC}.classList.contains("on") && document.body.classList.contains("autokey")`);
+    // R toggles it: the strip's button is gone until auto-key has a better home.
+    const REC = `window.dispatchEvent(new KeyboardEvent("keydown", { key: "r", bubbles: true }))`;
+    await page.eval(REC);
+    await page.until(`document.body.classList.contains("autokey")`);
     // Two seconds in on an effect that has no keys: the edit becomes its first key, a
     // full sample of what the effect did there, with the one value changed — and the
     // static fields are left exactly as they were.
@@ -167,7 +168,7 @@ describe("the inspector's property fields", { skip: why ? `skipping: ${why}` : f
     await page.until(`${EFFECT}.then(e => e.keyframes.length === 1)`);
     assert.deepEqual(await page.eval(`${EFFECT}.then(e => [e.keyframes, e.x])`), [[{ t: 2, x: 33, y: -42.5, scale: 0.01, rotation: 0, opacity: 1 }], -150]);
     await settled();
-    await page.eval(`${REC}.click()`);
+    await page.eval(REC);
     await page.until(`!document.body.classList.contains("autokey")`);
   });
 

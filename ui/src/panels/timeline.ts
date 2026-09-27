@@ -1,15 +1,29 @@
 // Timeline: tracks, clips (move/trim), transitions, playhead, zoom.
 
+import { Cmd, run } from "../commands";
 import { button, dragPayload, dragPointer, el, isFileDrag } from "../dom";
-import { editMarker, moveMarker, placeBinItem, placeBlueprint, removeMarker } from "../edits";
+import { addMarker, addTransition, editMarker, editTransitionDuration, joinedAfter, moveMarker, placeBinItem, placeBlueprint, removeMarker, removeTransition, setTransitionKind, splitAtPlayhead } from "../edits";
 import { showMenu } from "../menu";
 import { icon } from "../icons";
 import { animationOf, keysOf } from "../keyframes";
+import { keysFor } from "../shortcuts";
 import { store } from "../store";
-import type { Clip, Marker, PatchOp, Project, Track, TrackKind } from "../types";
-import { binItem, clipKind, isOverlaySource, isSequenceSource, isTimedMedia, seqDuration } from "../types";
+import type { Clip, Marker, PatchOp, Project, Track, TrackKind, Transition } from "../types";
+import { binItem, clipKind, hasAudio, isFileSource, isOverlaySource, isSequenceSource, isTimedMedia, seqDuration } from "../types";
+import { drawStrip, drawWave } from "./clipmedia";
 
 const HEAD = 136;
+
+/** Track heights, by kind, until one is dragged; a folded track is one line. */
+const TRACK_H: Record<TrackKind, number> = { video: 64, overlay: 40, audio: 44 };
+const FOLDED_H = 22;
+const MIN_H = 30;
+const MAX_H = 240;
+/** Where heights and folds are kept: view state, this browser's, by track id (ids are
+ *  unique across the project). Never the document — how tall a track is drawn is not
+ *  something an agent or a render reads. */
+const ROWS_KEY = "kuma.timeline.rows";
+interface Rows { h: Record<string, number>; folded: string[] }
 
 /** One clip travelling with a drag: where it started, and the ghost showing where it
  *  would land. */
@@ -42,6 +56,17 @@ export class Timeline {
     keep: boolean;
   } = null;
 
+  private rows: Rows = (() => {
+    try { return { h: {}, folded: [], ...JSON.parse(localStorage.getItem(ROWS_KEY) ?? "{}") }; } catch { return { h: {}, folded: [] }; }
+  })();
+
+  private saveRows() {
+    try { localStorage.setItem(ROWS_KEY, JSON.stringify(this.rows)); } catch { /* this session only */ }
+  }
+
+  private folded(t: Track) { return this.rows.folded.includes(t.id); }
+  private heightOf(t: Track) { return this.folded(t) ? FOLDED_H : this.rows.h[t.id] ?? TRACK_H[t.kind]; }
+
   constructor(private host: HTMLElement) {
     this.root = el("div", "tl");
     host.appendChild(this.root);
@@ -61,8 +86,12 @@ export class Timeline {
     host.addEventListener("wheel", (e) => {
       if (e.ctrlKey || e.metaKey) {
         e.preventDefault();
+        // Around the pointer: the moment under it stays under it, as in every editor.
+        const t = Math.max(0, this.t(e.clientX - this.root.getBoundingClientRect().left));
+        const at = e.clientX - host.getBoundingClientRect().left;
         const z = Math.min(600, Math.max(8, store.state.zoom * (e.deltaY < 0 ? 1.15 : 1 / 1.15)));
         store.set({ zoom: z });
+        host.scrollLeft = this.x(t) - at;
       }
     }, { passive: false });
     // Files from the desktop are left to the bin (`Library`).
@@ -94,7 +123,15 @@ export class Timeline {
       tick.style.left = `${this.x(t)}px`;
       ruler.appendChild(tick);
     }
-    ruler.addEventListener("pointerdown", (e) => this.scrub(e));
+    ruler.addEventListener("pointerdown", (e) => { if (e.button === 0) this.scrub(e); });
+    ruler.addEventListener("contextmenu", (e) => {
+      e.preventDefault();
+      const at = store.snap(Math.max(0, this.t(e.clientX - this.root.getBoundingClientRect().left)));
+      showMenu([
+        { label: "Add marker here…", keys: keysFor(Cmd.addMarker), run: () => void addMarker(at), title: "A comment on this moment, for you or an agent reading the project" },
+        { label: "Move the playhead here", run: () => store.seek(at) },
+      ], e.clientX, e.clientY);
+    });
     this.root.appendChild(ruler);
     // A marker's flag, the part you hold, is in the ruler; its line runs down the tracks,
     // drawn after them so it lies over the clips.
@@ -174,15 +211,18 @@ export class Timeline {
   }
 
   private trackEl(p: Project, t: Track, ti: number): HTMLDivElement {
-    const row = el("div", `tl-track ${t.kind}${store.state.track === t.id ? " focus" : ""}`);
+    const folded = this.folded(t);
+    const row = el("div", `tl-track ${t.kind}${store.state.track === t.id ? " focus" : ""}${folded ? " folded" : ""}`);
     row.dataset.ti = String(ti);
     row.dataset.tid = t.id;
+    row.style.height = `${this.heightOf(t)}px`;
     const head = el("div", "tl-head");
     head.title = `${t.name || t.id} — click a track to paste onto it (Ctrl/Cmd+V pastes at the playhead)`;
     // Anywhere on the head, buttons included: clicking a track is how a paste is aimed.
     head.addEventListener("pointerdown", () => store.focusTrack(t.id));
     const label = el("div", "label");
-    label.append(el("div", "kind", t.kind), el("div", "tname", t.name || t.id));
+    const fold = button(folded ? "▸" : "▾", () => this.setFold(t, !folded), folded ? "Unfold this track" : "Fold this track to one line", "fold");
+    label.append(fold, el("div", "kind", t.kind), el("div", "tname", t.name || t.id));
     const toggles = el("div", "toggles");
     const toggle = (text: string, on: boolean, field: "muted" | "hidden") => {
       const b = button(text, () => store.patch([{ op: "replace", path: `${store.seqPath}/tracks/${ti}/${field}`, value: !on }], `${field} ${t.id}`), field === "muted" ? "Mute" : "Hide");
@@ -192,24 +232,143 @@ export class Timeline {
     if (t.kind !== "overlay") toggles.appendChild(toggle("M", t.muted, "muted"));
     if (t.kind !== "audio") toggles.appendChild(toggle("H", t.hidden, "hidden"));
     if (!t.clips.length) toggles.appendChild(button("×", () => store.patch([{ op: "remove", path: `${store.seqPath}/tracks/${ti}` }], `remove track ${t.id}`), "Remove this empty track"));
-    head.append(label, toggles);
+    head.append(label, toggles, this.resizer(row, t));
     row.appendChild(head);
 
     const lane = el("div", "tl-lane");
     // An empty lane says "this track, this moment": both halves of where a paste goes.
-    lane.addEventListener("pointerdown", (e) => { if (e.target === lane) { store.selectClips([], t.id); this.scrub(e); } });
+    lane.addEventListener("pointerdown", (e) => { if (e.target === lane && e.button === 0) { store.selectClips([], t.id); this.scrub(e); } });
     for (const c of t.clips) lane.appendChild(this.clipEl(p, t, ti, c));
     for (const x of t.transitions) {
       const b = t.clips.find((c) => c.id === x.to);
       if (!b || !t.clips.some((c) => c.id === x.from)) continue;
-      const xf = el("div", "tl-xfade");
-      xf.style.left = `${this.x(b.start - x.duration / 2) - HEAD}px`;
-      xf.style.width = `${x.duration * store.state.zoom}px`;
-      xf.title = `${x.kind} ${x.duration}s`;
-      lane.appendChild(xf);
+      lane.appendChild(this.transitionEl(ti, x, b));
     }
     row.appendChild(lane);
     return row;
+  }
+
+  private setFold(t: Track, fold: boolean) {
+    this.rows.folded = this.rows.folded.filter((id) => id !== t.id).concat(fold ? [t.id] : []);
+    this.saveRows();
+    this.render();
+  }
+
+  /** The bottom edge of a track's head: drag it for a taller or shorter track, below the
+   *  least that still shows a clip's name and picture and it folds; double-click resets. */
+  private resizer(row: HTMLElement, t: Track): HTMLDivElement {
+    const grip = el("div", "tl-resize");
+    grip.title = "Drag to resize this track — double-click to reset";
+    grip.addEventListener("pointerdown", (e) => {
+      e.stopPropagation();
+      if (e.button !== 0) return;
+      const from = this.heightOf(t);
+      let h = from;
+      dragPointer(e, {
+        axes: "xy",
+        move: (_dx, dy) => {
+          h = Math.min(MAX_H, Math.max(FOLDED_H, from + dy));
+          row.style.height = `${h}px`;
+        },
+        end: (moved) => {
+          if (!moved) return;
+          this.rows.folded = this.rows.folded.filter((id) => id !== t.id);
+          if (h < MIN_H) this.rows.folded.push(t.id);
+          else this.rows.h[t.id] = Math.round(h);
+          this.saveRows();
+          // Redrawn at the new size: the pictures in the clips are drawn for their height.
+          this.render();
+        },
+      });
+    });
+    grip.addEventListener("dblclick", () => {
+      delete this.rows.h[t.id];
+      this.setFold(t, false);
+    });
+    return grip;
+  }
+
+  /**
+   * A transition, over the cut it joins: click-through to nothing, but a double-click
+   * sets its length and a right-click offers the rest. Made from a clip's right-click
+   * ("Transition into the next clip"), which is the one place a person looks for it.
+   */
+  private transitionEl(ti: number, x: Transition, b: Clip): HTMLDivElement {
+    const xf = el("div", `tl-xfade ${x.kind}`);
+    xf.style.left = `${this.x(b.start - x.duration / 2) - HEAD}px`;
+    xf.style.width = `${x.duration * store.state.zoom}px`;
+    xf.title = `${x.kind} ${+x.duration.toFixed(3)}s — double-click for its length, right-click for more`;
+    xf.addEventListener("pointerdown", (e) => e.stopPropagation());
+    xf.addEventListener("dblclick", (e) => { e.stopPropagation(); void editTransitionDuration(ti, x); });
+    xf.addEventListener("contextmenu", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      showMenu([
+        { heading: `${x.kind === "wipe" ? "Wipe" : "Dissolve"} · ${+x.duration.toFixed(3)}s` },
+        { label: "Length…", run: () => void editTransitionDuration(ti, x) },
+        x.kind === "wipe"
+          ? { label: "Make it a dissolve", run: () => void setTransitionKind(ti, x, "dissolve") }
+          : { label: "Make it a wipe", run: () => void setTransitionKind(ti, x, "wipe"), title: "A wipe's pattern and softness are in the project file (`luma`, `softness`)" },
+        "separator",
+        { label: "Remove transition", run: () => void removeTransition(ti, x) },
+      ], e.clientX, e.clientY);
+    });
+    return xf;
+  }
+
+  /** A clip's right-click: what can be done to it, at the moment under the pointer. */
+  private clipMenu(e: MouseEvent, t: Track, c: Clip) {
+    e.preventDefault();
+    e.stopPropagation();
+    // Right-clicking one of several selected acts on them all, as a key would; one outside
+    // the selection is selected first.
+    if (!store.selectedClips.includes(c.id)) store.selectClips([c.id], t.id);
+    const at = store.snap(this.t(e.clientX - this.root.getBoundingClientRect().left));
+    const next = joinedAfter(t, c);
+    const prev = t.clips.find((a) => joinedAfter(t, a)?.id === c.id);
+    const has = (a: Clip, b: Clip) => t.transitions.some((x) => x.from === a.id && x.to === b.id);
+    const why = t.kind === "overlay" ? "Overlays take no transitions yet: their bakes carry no handles"
+      : "A transition joins clips that touch: move the next clip against this one first";
+    const n = store.selectedClips.length;
+    const grouped = store.selectedFound.some((f) => f.clip.group);
+    showMenu([
+      { label: n > 1 ? `Split ${n} clips here` : "Split here", keys: keysFor(Cmd.split), run: () => void splitAtPlayhead(at), disabled: !(at > c.start && at < c.end) },
+      "separator",
+      { label: "Transition into the next clip", run: () => void addTransition(c.id), disabled: !next || t.kind === "overlay" || has(c, next), title: next && t.kind !== "overlay" ? "A one-second dissolve across the cut, or as long as the clips allow" : why },
+      { label: "Transition from the previous clip", run: () => void addTransition(prev!.id), disabled: !prev || t.kind === "overlay" || has(prev, c), title: prev && t.kind !== "overlay" ? "A one-second dissolve across the cut, or as long as the clips allow" : why },
+      "separator",
+      { label: "Copy", keys: "Ctrl+C", run: () => run(Cmd.copyClip) },
+      { label: "Cut", keys: "Ctrl+X", run: () => run(Cmd.cutClip) },
+      grouped ? { label: "Ungroup", keys: "Ctrl+Shift+G", run: () => run(Cmd.ungroup) } : { label: "Group", keys: "Ctrl+G", run: () => run(Cmd.group), disabled: n < 2 },
+      "separator",
+      { label: n > 1 ? `Delete ${n} clips` : "Delete", keys: "Del", run: () => run(Cmd.deleteClip) },
+    ], e.clientX, e.clientY);
+  }
+
+  /** A media clip's pictures: frames above, the waveform below (or alone, for sound). */
+  private mediaEl(p: Project, t: Track, c: Clip, w: number): HTMLDivElement | null {
+    const item = binItem(p, c);
+    if (!item || !isFileSource(item.source) || this.folded(t)) return null;
+    const { path, kind } = item.source;
+    // The clip's box inside the row: 4px either side, and its border.
+    const h = this.heightOf(t) - 10;
+    const frames = kind !== "audio" && t.kind !== "audio";
+    const sound = isTimedMedia(item) && hasAudio(item) && h >= 24;
+    if (!frames && !sound) return null;
+    const media = el("div", `media${frames && sound ? " both" : ""}`);
+    const waveH = frames ? Math.round(h * 0.4) : h;
+    if (frames) {
+      const band = el("div", "strip");
+      drawStrip(band, c.bin, path, c, store.state.zoom, w, sound ? h - waveH : h);
+      media.appendChild(band);
+    }
+    if (sound) {
+      const wave = el("canvas", "wave");
+      wave.style.height = `${waveH}px`;
+      drawWave(wave, c.bin, path, c, store.state.zoom, w, waveH);
+      media.appendChild(wave);
+    }
+    return media;
   }
 
   private clipEl(p: Project, t: Track, ti: number, c: Clip): HTMLDivElement {
@@ -233,6 +392,8 @@ export class Timeline {
     // dragged one.
     if (c.group) title.appendChild(icon("link", 10));
     title.append(c.label || name);
+    const media = this.mediaEl(p, t, c, w);
+    if (media) box.appendChild(media);
     box.append(title, el("div", "sub", String(sub)), hl, hr);
     // Keyframed effects along the bottom of the clip, so an animated clip says so at a
     // glance. A key can be dragged to another time here, or clicked to go there; its
@@ -265,8 +426,12 @@ export class Timeline {
       });
       box.appendChild(lane);
     }
+    box.addEventListener("contextmenu", (e) => this.clipMenu(e, t, c));
     box.addEventListener("pointerdown", (e) => {
       e.stopPropagation();
+      // Right and middle buttons are not a press on the clip: a right-click keeps the
+      // selection its menu acts on.
+      if (e.button !== 0) return;
       // Ctrl/Cmd or Shift builds a selection and does not drag: a drag begun on the
       // modifier would pull one clip out of a group that looks joined. The track goes with
       // it, so a copy and a paste with nothing else clicked land back where they came from.

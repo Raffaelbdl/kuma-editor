@@ -45,10 +45,10 @@ h3 { margin: 12px 0 6px; font-size: 11px; letter-spacing: 0.08em; text-transform
 .muted { color: var(--fg-2); }
 .mono { font-family: var(--mono); }
 
-#app { height: 100%; display: grid; grid-template-rows: 40px 1fr 300px; }
+#app { height: 100%; display: grid; grid-template-rows: 40px minmax(0, 1fr) var(--bottom-h, 300px); position: relative; }
 /* The desktop shell's windows are frameless, so the page draws the title bar and the
    grid gains a row for it. A browser never sets this class and keeps the old layout. */
-body.has-titlebar #app { grid-template-rows: 32px 40px 1fr 300px; }
+body.has-titlebar #app { grid-template-rows: 32px 40px minmax(0, 1fr) var(--bottom-h, 300px); }
 
 #titlebar { display: none; }
 body.has-titlebar #titlebar {
@@ -81,8 +81,21 @@ body.has-titlebar #titlebar {
 #topbar .spacer { flex: 1; }
 #topbar .status { font-family: var(--mono); font-size: 12px; color: var(--fg-2); max-width: 40vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-#main { display: grid; grid-template-columns: 240px 1fr 300px; min-height: 0; }
+#main { display: grid; grid-template-columns: var(--lib-w, 240px) minmax(0, 1fr) var(--insp-w, 300px); min-height: 0; position: relative; }
+/* The seams between panels (`splitters.ts`): invisible until hovered or held. */
+.splitter { position: absolute; z-index: 6; }
+.splitter.x { top: 0; bottom: 0; width: 6px; cursor: col-resize; }
+.splitter.y { left: 0; right: 0; height: 6px; cursor: row-resize; }
+.splitter:hover, .splitter.on { background: color-mix(in srgb, var(--accent) 45%, transparent); }
 #library, #inspector { background: var(--bg-2); border-right: 1px solid var(--line); overflow: auto; padding: 8px 10px; }
+/* The library scrolls its list only: the tabs and the toolbar stay put above it. */
+#library { display: flex; flex-direction: column; overflow: hidden; padding: 0; min-width: 0; }
+.lib-head { flex: none; padding: 8px 10px 0; border-bottom: 1px solid var(--line); }
+.lib-head .tabs { margin: -2px -10px 0; }
+.lib-tools { display: flex; gap: 2px; padding: 4px 0; }
+button.tool { background: none; border-color: transparent; padding: 5px 7px; color: var(--fg-2); }
+button.tool:hover { background: var(--bg-3); color: var(--fg); }
+.lib-body { flex: 1; min-height: 0; overflow: auto; padding: 8px 10px; }
 #inspector { border-right: 0; border-left: 1px solid var(--line); }
 
 /* The centre is one editor at a time: the tab strip, then the editors stacked in one
@@ -158,9 +171,8 @@ body.has-titlebar #titlebar {
 .tl { position: relative; min-width: 100%; }
 .tl-ruler { position: sticky; top: 0; height: 22px; background: var(--bg-3); border-bottom: 1px solid var(--line); z-index: 3; }
 .tl-ruler .tick { position: absolute; top: 0; height: 100%; border-left: 1px solid var(--line); padding-left: 3px; font: 10px var(--mono); color: var(--fg-2); }
+/* The height is set per track (`timeline.ts`): view state, dragged at the head's edge. */
 .tl-track { position: relative; height: 48px; border-bottom: 1px solid var(--line); }
-.tl-track.overlay { height: 40px; }
-.tl-track.audio { height: 36px; }
 /* Kind and name stacked, toggles beside them — not underneath. Stacked all three, the
    buttons fell outside a 36px audio track and were clipped. Beside, the head needs the
    height of the label alone and fits every track kind. */
@@ -179,7 +191,18 @@ body.has-titlebar #titlebar {
    than a selection: it is a target, not a thing being edited. */
 .tl-track.focus .tl-head { background: var(--bg-3); }
 .tl-track.focus .tl-head .tname { color: var(--fg); }
-.tl-head .label { min-width: 0; }
+.tl-head .label { min-width: 0; display: grid; grid-template-columns: 14px minmax(0, 1fr); align-items: center; }
+.tl-head .label .fold { grid-row: span 2; width: 14px; padding: 0; border: 0; background: none; color: var(--fg-2); font-size: 10px; line-height: 1; }
+.tl-head .label .fold:hover { color: var(--fg); }
+.tl-resize { position: absolute; left: 0; right: 0; bottom: 0; height: 5px; cursor: row-resize; z-index: 1; }
+.tl-resize:hover { background: color-mix(in srgb, var(--accent) 45%, transparent); }
+/* Folded: one line — kind and name side by side, and clips that say only what they are. */
+.tl-track.folded .tl-head { padding-top: 0; padding-bottom: 0; }
+.tl-track.folded .tl-head .label { grid-template-columns: 14px auto minmax(0, 1fr); gap: 0 6px; }
+.tl-track.folded .tl-head .label .fold { grid-row: auto; }
+.tl-track.folded .tl-head .toggles button { line-height: 12px; }
+.tl-track.folded .clip { top: 2px; bottom: 2px; padding: 1px 6px; font-size: 10px; }
+.tl-track.folded .clip .sub, .tl-track.folded .clip .kf-lane { display: none; }
 .tl-head .kind { color: var(--kind, var(--fg-2)); text-transform: uppercase; font-size: 9px; letter-spacing: 0.06em; }
 .tl-head .tname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tl-head .toggles { display: flex; gap: 3px; }
@@ -197,6 +220,15 @@ body.has-titlebar #titlebar {
 .clip .handle.l { left: 0; } .clip .handle.r { right: 0; }
 .clip.tiny .handle { display: none; } /* too narrow to grab the body otherwise */
 .clip .sub { color: var(--clip-sub); font-size: 10px; }
+/* A media clip's pictures, behind its name: frames, then the waveform under them. The
+   name stays readable over a frame by its shadow, not by a box that hides the frame. */
+.clip .media { position: absolute; inset: 0; display: flex; flex-direction: column; pointer-events: none; }
+.clip .strip { position: relative; flex: 1; overflow: hidden; }
+.clip .strip > div { position: absolute; top: 0; height: 100%; background-repeat: no-repeat; opacity: 0.85; }
+.clip .wave { display: block; width: 100%; flex: none; color: var(--clip-sub); }
+.clip .media.both .wave { border-top: 1px solid var(--clip-edge); background: rgba(0, 0, 0, 0.18); }
+.clip .media:not(:has(.strip)) .wave { flex: 1; }
+.clip .cname, .clip .sub { position: relative; text-shadow: 0 1px 2px rgba(0, 0, 0, 0.85); }
 /* Grouped: a chain before the name, and a brighter edge so a block reads as one thing
    across the tracks it spans. Not the selection's outline — a group is what these clips
    *are*, the outline is what you have hold of. */
@@ -212,9 +244,7 @@ body.has-titlebar #titlebar {
 .clip .kf { position: absolute; top: 1px; width: 7px; height: 7px; margin-left: -3.5px; background: var(--sel); transform: rotate(45deg); pointer-events: auto; cursor: ew-resize; }
 .clip .kf:hover { background: var(--hot); }
 .clip .kf-lane.volume .kf { background: var(--fg); }
-/* Record mode: the button is red, and so is the top edge of the panel the recording
-   edits are made in — you should not have to look at the strip to know. */
-#transport button.rec.on { background: var(--rec); border-color: var(--rec); color: #fff; }
+/* Record mode (R): the top edge of the panel the recording edits are made in is red. */
 body.autokey #inspector { box-shadow: inset 0 3px 0 var(--rec); }
 /* A marker *at* a moment is centred on it — a 2px line straddles the position, a diamond's
    middle is the position — so the playhead and a keyframe at the same instant land on the
@@ -236,7 +266,12 @@ body.autokey #inspector { box-shadow: inset 0 3px 0 var(--rec); }
 }
 .tl-marker-flag:hover { max-width: 320px; z-index: 2; }
 textarea.comment { font-family: var(--sans); font-size: 13px; min-height: 96px; }
-.tl-xfade { position: absolute; top: 2px; height: 10px; background: repeating-linear-gradient(45deg, var(--sel), var(--sel) 2px, transparent 2px, transparent 5px); opacity: 0.8; border-radius: 3px; z-index: 1; }
+/* A transition across a cut: hatched, over the lower half of the two clips it joins (the
+   upper half keeps their trim handles), and a thing you can right-click. A wipe hatches
+   the other way. */
+.tl-xfade { position: absolute; top: 50%; bottom: 5px; min-width: 6px; background: repeating-linear-gradient(45deg, var(--sel) 0 2px, transparent 2px 6px); border: 1px solid var(--sel); opacity: 0.75; border-radius: 4px; z-index: 1; cursor: pointer; }
+.tl-xfade.wipe { background: repeating-linear-gradient(-45deg, var(--sel) 0 2px, transparent 2px 6px); }
+.tl-xfade:hover { opacity: 1; }
 
 /* The bin is a list, not a stack of cards: one line per entry, name and kind. Detail
    lives in the inspector, which is where selecting a row sends it. */
@@ -256,8 +291,6 @@ textarea.comment { font-family: var(--sans); font-size: 13px; min-height: 96px; 
 
 /* Panel tabs, Kdenlive's shape: the strip sits above the content it switches. */
 .tabs { display: flex; gap: 2px; margin: -2px -10px 10px; padding: 0 10px; border-bottom: 1px solid var(--line); }
-/* The Bin/Blueprints switch stays in view however far the panel scrolls. */
-#library > .tabs { position: sticky; top: -8px; z-index: 1; background: var(--bg-2); padding-top: 2px; }
 button.tab {
   background: none; border: 0; border-bottom: 2px solid transparent; border-radius: 0;
   padding: 5px 10px; color: var(--fg-2); font-size: 11px; letter-spacing: 0.08em;
@@ -290,7 +323,6 @@ button.linkish:hover { text-decoration: underline; }
 .bin-row.drop-after { box-shadow: 0 2px 0 0 var(--accent); }
 .lib-item.open { outline: 1px solid var(--sel); }
 .lib-item.selected { border-color: var(--sel); }
-.lib-add { display: flex; gap: 6px; margin-top: 6px; }
 /* Frames the bin while a file is dragged over the window. Lets the pointer through, so a
    folder row underneath can still take the drop. */
 .bin-drop-hint {
@@ -451,7 +483,7 @@ dialog.modal.render .field { grid-template-columns: 80px 1fr; }
 #topbar .status.link { cursor: pointer; }
 #topbar .status.link:hover { color: var(--fg); text-decoration: underline; }
 
-#toasts { position: fixed; right: 12px; bottom: 312px; display: flex; flex-direction: column; gap: 6px; z-index: 10; }
+#toasts { position: fixed; right: 12px; bottom: calc(var(--bottom-h, 300px) + 12px); display: flex; flex-direction: column; gap: 6px; z-index: 10; }
 .toast { background: var(--bg-3); border: 1px solid var(--line); border-left: 3px solid var(--accent); padding: 8px 10px; border-radius: 6px; max-width: 360px; font-size: 12px; }
 .toast.err { border-left-color: var(--danger); }
 .toast.ok { border-left-color: var(--audio); }
@@ -462,7 +494,7 @@ kbd { font: 10px var(--mono); border: 1px solid var(--line); border-radius: 3px;
   position: fixed; z-index: 1000; min-width: 180px; padding: 4px; display: flex; flex-direction: column;
   background: var(--bg-2); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
 }
-.popup-item { text-align: left; border: 0; background: none; border-radius: 5px; padding: 5px 10px; }
+.popup-item { display: flex; justify-content: space-between; gap: 16px; text-align: left; border: 0; background: none; border-radius: 5px; padding: 5px 10px; }
 .popup-item:hover:not(:disabled), .popup-item:focus-visible { background: var(--bg-3); outline: none; }
 .popup-item:disabled { opacity: 0.45; cursor: default; }
 .popup-sep { height: 1px; margin: 4px 6px; background: var(--line); }

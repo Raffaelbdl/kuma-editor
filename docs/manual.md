@@ -163,6 +163,25 @@ one you clicked.
 What travels is the placement — `in`, speed, volume, label, effects — never the bin entry:
 both clips play the same entry, which is what the model's split already means.
 
+**Right-click is where the timeline's actions are.** On a clip: split it at the pointer
+(`S` splits at the playhead), add a transition into the clip it touches, copy, cut, group,
+delete. On the ruler: a marker at that moment (`M` at the playhead). A **transition** joins
+two clips that touch on one track and is centred on the cut, so it needs *handles* —
+material after the first clip's out point and before the second's in point; "Transition
+into the next clip" makes a one-second dissolve, or as long as the handles allow, and says
+which clip to trim when there are none. It is drawn hatched across the cut: double-click
+it for its length, right-click to make it a wipe or remove it.
+
+**What a clip is shows on it.** A media clip carries frames of its file along the top and
+its waveform along the bottom — one clip, picture and sound, drawn in two bands rather than
+split into a video and an audio track, so it stays one thing to move for you and for an
+agent. Both are made by the daemon on first sight (`/api/bin/{id}/strip.json`,
+`peaks.json`) and cached in `.kuma/thumbs/`. A track's height is dragged at the bottom edge
+of its head, and its caret folds it to one line of kind and name; `Ctrl`+wheel zooms around
+the pointer. The bin, the inspector and the timeline are sized by dragging the seams
+between them (double-click one to reset). Heights, folds and sizes are this browser's view
+state, never the document. Tabs close with a middle click.
+
 **The inspector is a game engine's.** Every number in it is a field you **drag**: press and
 pull sideways to change it, `Shift` for a tenth of a step, `Alt` for ten, or click once and
 type. A drag is one edit — the field moves while you hold it and the document changes when
@@ -191,9 +210,9 @@ add), `‹ ›` step between them, `+ key` / `− key` add and remove one where 
 the diamond, filled **◆** now, stops animating while keeping the value you are looking at. The same keys are
 drawn along the bottom of the clip in the timeline, so an animated clip says so at a glance
 and you watch them go past while scrubbing — and can be dragged there too, or clicked to
-jump to. **● Auto-key** in the transport strip is record mode: while it is on, changing
-any animatable value writes a key at the playhead, starting the animation if there was
-none. **curve** in the keys row opens a graph of one parameter over the clip, the shape
+jump to. **Auto-key** (`R`, a red edge on the inspector while it is on) is record mode:
+while it is on, changing any animatable value writes a key at the playhead, starting the
+animation if there was none. **curve** in the keys row opens a graph of one parameter over the clip, the shape
 between keys drawn as the render will produce it, with the keys as points you drag in both
 axes at once. With the playhead outside the clip there is no
 "now" to write to, so the fields read the nearest end and say so rather than pretending.

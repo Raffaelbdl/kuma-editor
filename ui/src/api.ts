@@ -90,7 +90,10 @@ export const api = {
   cache: () => json<CacheUsage>("/api/cache"),
   /** A job: delete what `.kuma/` holds that the project no longer uses. */
   pruneCache: () => json<{ job: number }>("/api/cache/prune", { method: "POST", body: "{}" }),
-  previewReload: (scale?: number) => json<{ mlt: string; scale: number }>("/api/preview/reload", { method: "POST", body: JSON.stringify(scale === undefined ? {} : { scale }) }),
+  /** Compile the open sequence for the engine; `force` hands it over even unchanged. Says
+   *  what it did: which halves the engine took, and the nested overlays it baked or not. */
+  previewReload: (opts: { scale?: number; force?: boolean } = {}) =>
+    json<{ mlt: string; scale: number; changed: boolean; baked: number; failed: string[] }>("/api/preview/reload", { method: "POST", body: JSON.stringify(opts) }),
   /** The live document for an overlay **bin entry**, at the length and in the frame the
    *  workbench is looking at. No clip: an entry is editable before anything places it.
    *  `rev` only defeats the browser cache when the iframe is recreated. */

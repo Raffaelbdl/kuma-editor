@@ -905,14 +905,18 @@ struct PreviewReload {
     /// Preview resolution as a fraction of the project size (0.25..=1).
     #[serde(default)]
     scale: Option<f64>,
+    /// Hand the engine the timeline even when it is unchanged (the Reload button).
+    #[serde(default)]
+    force: bool,
 }
 
 async fn preview_reload(State(st): S, body: Option<Json<PreviewReload>>) -> ApiResult {
-    if let Some(s) = body.and_then(|b| b.0.scale) {
+    let body = body.map(|b| b.0);
+    if let Some(s) = body.as_ref().and_then(|b| b.scale) {
         *lock(&st.preview.scale) = s.clamp(0.25, 1.0);
     }
-    let r = preview::reload(&st).await?;
-    Ok(Json(json!({ "mlt": r.path, "changed": r.changed, "video": r.video, "audio": r.audio, "scale": *lock(&st.preview.scale) })))
+    let r = if body.is_some_and(|b| b.force) { preview::reload_forced(&st).await? } else { preview::reload(&st).await? };
+    Ok(Json(json!({ "mlt": r.path, "changed": r.changed, "video": r.video, "audio": r.audio, "baked": r.baked, "failed": r.failed, "scale": *lock(&st.preview.scale) })))
 }
 
 // ---------- overlay preview (live DOM) ----------

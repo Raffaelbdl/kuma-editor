@@ -53,6 +53,8 @@ export interface State {
   /** Record mode: while on, changing an animatable parameter writes a key at the playhead
    *  instead of the static value. View state — it is about how the next edit is made. */
   autoKey: boolean;
+  /** An asked-for preview reload is in flight: it can bake, which takes seconds. */
+  reloading: boolean;
   playhead: number;
   playing: boolean;
   /** pixels per second */
@@ -72,7 +74,7 @@ export interface State {
 type Listener = (s: State) => void;
 
 class Store {
-  state: State = { project: null, blueprints: [], manifests: {}, fonts: [], previewStamp: 0, sequence: "", selection: null, track: null, clipboard: null, autoKey: false, playhead: 0, playing: false, zoom: 60, tab: SEQUENCE_TAB, sequences: [], overlays: [], connected: false, jobs: {} };
+  state: State = { project: null, blueprints: [], manifests: {}, fonts: [], previewStamp: 0, sequence: "", selection: null, track: null, clipboard: null, autoKey: false, reloading: false, playhead: 0, playing: false, zoom: 60, tab: SEQUENCE_TAB, sequences: [], overlays: [], connected: false, jobs: {} };
   private listeners = new Set<Listener>();
   private refreshing: Promise<void> | null = null;
   private refreshAgain = false;

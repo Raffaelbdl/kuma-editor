@@ -15,7 +15,6 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use crate::jobs::OverlayScope;
 use kuma_mlt::Streams;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, Command};
@@ -107,6 +106,10 @@ pub struct Reloaded {
     pub changed: bool,
     pub video: bool,
     pub audio: bool,
+    /// Overlays of nested sequences baked into the picture (from the cache or fresh).
+    pub baked: usize,
+    /// Why the others were not: each one costs that overlay, never the preview.
+    pub failed: Vec<String>,
 }
 
 pub struct Engine {
@@ -263,21 +266,33 @@ pub async fn reload(state: &Arc<AppState>) -> anyhow::Result<Reloaded> {
     let before = count();
     state.preview.pending.store(true, Ordering::SeqCst);
     let _guard = state.preview.compiling.lock().await;
+    let mut bakes = (0, Vec::new());
     while state.preview.pending.swap(false, Ordering::SeqCst) {
-        compile_and_load(state).await?;
+        bakes = compile_and_load(state).await?;
     }
     let after = count();
     let [video, audio] = [0, 1].map(|i| after[i] != before[i]);
     let path = state.config.cache_dir().join(format!("{}.mlt", state.preview.halves[0].name));
-    Ok(Reloaded { path, changed: video || audio, video, audio })
+    let (baked, failed) = bakes;
+    Ok(Reloaded { path, changed: video || audio, video, audio, baked, failed })
+}
+
+/// [`reload`], handing the engine both graphs whether or not they changed: what a person
+/// asks for with the Reload button, when something the document does not name — a media
+/// file replaced on disk — has changed under the engine.
+pub async fn reload_forced(state: &Arc<AppState>) -> anyhow::Result<Reloaded> {
+    for half in &state.preview.halves {
+        *lock(&half.loaded) = None;
+    }
+    reload(state).await
 }
 
 /// Compile the open sequence (at the preview scale) as two graphs, the picture and the
 /// sound, and hand the engine each one it is not already holding exactly.
-/// [`OverlayScope::Nested`] is what makes the overlays of the sequences it nests appear at
+/// [`crate::jobs::OverlayScope::Nested`] is what makes the overlays of the sequences it nests appear at
 /// all; its own are left unbaked, and therefore skipped, for the UI's live DOM. The sound
 /// needs no bakes at all.
-async fn compile_and_load(state: &Arc<AppState>) -> anyhow::Result<()> {
+async fn compile_and_load(state: &Arc<AppState>) -> anyhow::Result<(usize, Vec<String>)> {
     // First, because starting an engine clears what it is holding.
     let engine = state.preview.ensure(state).await?;
     let st = state.clone();
@@ -295,10 +310,13 @@ async fn compile_and_load(state: &Arc<AppState>) -> anyhow::Result<()> {
         st.preview.compiles.fetch_add(1, Ordering::SeqCst);
         // Each graph is written, and later sent, only when it differs from the one held.
         let mut fresh = Vec::new();
+        let mut report = (0, Vec::new());
         for (i, half) in st.preview.halves.iter().enumerate() {
             opts.streams = half.stream;
             opts.bakes = if half.stream.video() {
-                crate::jobs::bake_for(&st, &project, &sequence, OverlayScope::Nested, None, &|_, _| {}, None)?
+                let (bakes, errs) = crate::jobs::bake_nested(&st, &project, &sequence);
+                report = (bakes.len(), errs.iter().map(|e| format!("{e:#}")).collect());
+                bakes
             } else {
                 Default::default()
             };
@@ -312,9 +330,10 @@ async fn compile_and_load(state: &Arc<AppState>) -> anyhow::Result<()> {
                 fresh.push((i, crate::jobs::write_compiled(&st, &xml, half.name)?, stamp));
             }
         }
-        Ok::<_, anyhow::Error>(fresh)
+        Ok::<_, anyhow::Error>((fresh, report))
     })
     .await??;
+    let (fresh, report) = fresh;
     // Only once the engine has actually been told, so a failed send does not leave us
     // believing it holds something it never received.
     for (i, path, stamp) in fresh {
@@ -323,7 +342,7 @@ async fn compile_and_load(state: &Arc<AppState>) -> anyhow::Result<()> {
         *lock(&half.loaded) = Some(stamp);
         half.loads.fetch_add(1, Ordering::SeqCst);
     }
-    Ok(())
+    Ok(report)
 }
 
 fn stamp(xml: &str) -> u64 {

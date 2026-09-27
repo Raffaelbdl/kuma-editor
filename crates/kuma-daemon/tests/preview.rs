@@ -101,6 +101,11 @@ async fn the_engine_is_reloaded_only_when_the_compiled_document_changes() {
     patch(&state, &format!("{clip}/end"), json!(3.0));
     assert!(preview::reload(&state).await.unwrap().changed, "the clip's out point moved");
     assert!(!preview::reload(&state).await.unwrap().changed, "and then settles");
+
+    // The Reload button hands it over anyway: a file replaced on disk is not in the document.
+    let forced = preview::reload_forced(&state).await.unwrap();
+    assert!(forced.video && forced.audio, "both halves, unchanged or not");
+    assert_eq!((forced.baked, forced.failed.len()), (0, 0), "nothing nested, nothing to bake");
 }
 
 /// The picture and the sound are two graphs, and an edit reloads only the one it reaches:

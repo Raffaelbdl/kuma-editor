@@ -9,6 +9,7 @@
 // playhead frame by frame. It does no DOM rebuilding on that path.
 
 import { api } from "../api";
+import { plural } from "../dom";
 import { Cmd, command } from "../commands";
 import { seekOverlay } from "../overlay";
 import { SEQUENCE_TAB, store, toast } from "../store";
@@ -72,7 +73,7 @@ export class Preview {
     // The engine socket lives here, so the transport actions do too. Anything that wants
     // them — the strip under the stage, a key, the application menu — asks by id.
     command(Cmd.togglePlay, "Play/Pause", () => this.togglePlay());
-    command(Cmd.reloadPreview, "Reload Preview", () => this.reload());
+    command(Cmd.reloadPreview, "Reload Preview", () => this.reloadNow());
     command(Cmd.previewScale, "Preview Resolution", (scale) => this.setScale(Number(scale)));
     this.connect();
   }
@@ -240,8 +241,35 @@ export class Preview {
   /** Change the engine's preview resolution (fraction of the project size). */
   setScale(scale: number) {
     if (this.wsOk) this.send(`scale ${scale}`);
-    else api.previewReload(scale).catch(() => {});
+    else api.previewReload({ scale }).catch(() => {});
     setTimeout(() => this.sendSeek(store.state.playhead, true), 400);
+  }
+
+  /**
+   * The Reload button: the timeline handed to the engine again whether or not it changed —
+   * a media file replaced on disk is a change the document cannot see — and what came of
+   * it said. It bakes the overlays of nested sequences, which can take seconds, so the
+   * button spins meanwhile (`reloading`), and one that would not bake is named with why.
+   */
+  private async reloadNow() {
+    if (store.state.reloading) return;
+    store.set({ reloading: true });
+    try {
+      const r = await api.previewReload({ force: true });
+      this.resetSeeks();
+      if (!store.state.playing) this.sendSeek(store.state.playhead, true);
+      const live = store.tracks.filter((t) => t.kind === "overlay").reduce((n, t) => n + t.clips.length, 0);
+      const said = [
+        live ? `${plural(live, "overlay")} drawn live` : "",
+        r.baked ? `${plural(r.baked, "overlay")} of nested sequences baked` : "",
+      ].filter(Boolean);
+      toast(`Preview reloaded${said.length ? ` — ${said.join(", ")}` : ""}`, "ok");
+      for (const f of r.failed) toast(`An overlay did not bake, so the preview shows it missing: ${f}`, "err", 10000);
+    } catch (e) {
+      toast(`The preview did not reload: ${(e as Error).message}`, "err", 10000);
+    } finally {
+      store.set({ reloading: false });
+    }
   }
 
   /** Called after edits so the engine reloads the compiled timeline. */

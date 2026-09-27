@@ -512,6 +512,14 @@ pub fn bake_for(
     Ok(out)
 }
 
+/// The preview's half of [`bake_for`]: the overlays of the sequences `root` nests, and why
+/// any would not bake — logged, and said to whoever asked for the reload.
+pub fn bake_nested(state: &AppState, project: &Project, root: &str) -> (Bakes, Vec<anyhow::Error>) {
+    let (out, errs) = bake_clips(state, project, &overlay_clips(project, root, true, None), &|_, _| {}, None, &|r, key| state.baker.bake_keyed(r, key).map(Some));
+    errs.iter().for_each(|e| tracing::warn!("preview: {e:#}"));
+    (out, errs)
+}
+
 /// Bake the named overlay clips, or every one in the project when none are named. This is
 /// the explicit `bake` command, where "all" means the whole bin rather than what some
 /// timeline reaches — warming the cache for an entry you have not placed yet is the point.

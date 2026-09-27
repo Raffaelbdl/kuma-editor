@@ -399,9 +399,9 @@ export async function addTrack(kind: TrackKind) {
  *  fade-in, the right its fade-out, and keyframes are re-based on the new start. */
 /** Split the selected clips at `t` — the playhead for S, the pointer for a clip's
  *  right-click. */
-export async function splitAtPlayhead(t = store.state.playhead) {
+export async function splitAt(t: number) {
   const cutting = store.selectedFound.filter((f) => t > f.clip.start && t < f.clip.end);
-  if (!cutting.length) { toast("Select a clip under the playhead to split", ""); return; }
+  if (!cutting.length) { toast("Select a clip that runs across that moment to split it", ""); return; }
   const ops: PatchOp[] = [];
   const minted: string[] = [];
   /** The right half's id, by the clip it was cut from: a transition leaving the clip now
@@ -702,38 +702,33 @@ export const removeMarker = (i: number) => patchMarker(i, null, `remove marker a
 export const joinedAfter = (track: Track, c: Clip): Clip | undefined =>
   track.clips.find((b) => b.id !== c.id && Math.abs(b.start - c.end) < 1e-6);
 
-/** How long a transition `a → b` may be, and when that is nothing, why. Other transitions
- *  on either clip already use some of it. */
-function transitionRoom(track: Track, a: Clip, b: Clip): { max: number; why: string } {
-  const p = store.state.project!;
-  const used = (c: Clip) => track.transitions.filter((x) => x.from === c.id || x.to === c.id).reduce((n, x) => n + x.duration / 2, 0);
-  let half = Math.min(a.end - a.start - used(a), b.end - b.start - used(b));
-  let why = "the clips are too short";
-  const ib = binItem(p, b);
-  if (isTimedMedia(ib)) {
-    const room = (b.in ?? 0) / Math.abs(b.speed || 1);
-    if (room < half) { half = room; why = `“${b.label || ib?.name || b.id}” starts at the very beginning of its source: trim its start so there is material to fade in from`; }
-  }
-  const ia = binItem(p, a);
-  const total = ia?.meta?.duration ?? (ia && itemKind(ia) === "sequence" ? seqDuration(p, a.bin) : undefined);
-  if (isTimedMedia(ia) && total !== undefined) {
-    const speed = Math.abs(a.speed || 1);
-    const room = (total - (a.in ?? 0)) / speed - (a.end - a.start);
-    if (room < half) { half = Math.max(0, room); why = `“${a.label || ia?.name || a.id}” ends at the very end of its source: trim its end so there is material to fade out from`; }
-  }
-  return { max: 2 * half, why };
+/** Why `a` cannot take a transition into the clip it touches, or null when it can: what
+ *  the clip menu disables, and what `addTransition` says if asked anyway. */
+export function transitionBlocked(track: Track, a: Clip): string | null {
+  const b = joinedAfter(track, a);
+  if (!b) return "A transition joins two clips that touch: move one against the other first";
+  if (track.kind === "overlay") return "Overlays take no transitions yet: their bakes carry no handles";
+  if (track.transitions.some((x) => x.from === a.id && x.to === b.id)) return "These clips already have a transition — right-click it to change it";
+  return null;
 }
 
-/** A dissolve between `from` and the clip joined after it: a second, or as much as the
- *  handles allow. */
+/** A dissolve from `from` into the clip it touches: a second, or as much as the clips and
+ *  the handle before the second one's in point allow — the validator's one hard rule on
+ *  handles. A short tail after the first is its warning to give, not a refusal here. */
 export async function addTransition(from: string) {
   const f = store.findClip(from);
-  const b = f && joinedAfter(f.track, f.clip);
-  if (!f || !b) { toast("A transition joins two clips that touch: move one against the other first", ""); return; }
-  if (f.track.kind === "overlay") { toast("Overlays cannot take a transition yet: their bakes carry no handles. Animate the overlay's own entrance instead", ""); return; }
-  if (f.track.transitions.some((x) => x.from === from && x.to === b.id)) { toast("These two clips already have a transition — right-click it to change it", ""); return; }
-  const { max, why } = transitionRoom(f.track, f.clip, b);
-  const frames = Math.floor(Math.min(1, max) * store.fps + 1e-6);
+  if (!f) return;
+  const blocked = transitionBlocked(f.track, f.clip);
+  const b = joinedAfter(f.track, f.clip);
+  if (blocked || !b) { toast(blocked ?? "", ""); return; }
+  const used = (c: Clip) => f.track.transitions.filter((x) => x.from === c.id || x.to === c.id).reduce((n, x) => n + x.duration / 2, 0);
+  let half = Math.min(f.clip.end - f.clip.start - used(f.clip), b.end - b.start - used(b));
+  let why = "the clips are too short";
+  if (isTimedMedia(binItem(store.state.project!, b))) {
+    const room = (b.in ?? 0) / Math.abs(b.speed || 1);
+    if (room < half) { half = room; why = `“${b.label || b.bin}” starts at the very beginning of its source: trim its start so there is material to fade in from`; }
+  }
+  const frames = Math.floor(Math.min(0.5, half) * 2 * store.fps + 1e-6);
   if (frames < 2) { toast(`No room for a transition: ${why}`, "err", 8000); return; }
   const value: Transition = { from, to: b.id, kind: "dissolve", duration: frames / store.fps };
   await store.patch([{ op: "add", path: `${trackPathOf(f)}/transitions/-`, value }], `dissolve ${from} → ${b.id}`);

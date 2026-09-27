@@ -2,7 +2,7 @@
 
 import { Cmd, run } from "../commands";
 import { button, dragPayload, dragPointer, el, isFileDrag } from "../dom";
-import { addMarker, addTransition, editMarker, editTransitionDuration, joinedAfter, moveMarker, placeBinItem, placeBlueprint, removeMarker, removeTransition, setTransitionKind, splitAtPlayhead } from "../edits";
+import { addMarker, addTransition, editMarker, editTransitionDuration, joinedAfter, moveMarker, placeBinItem, placeBlueprint, removeMarker, removeTransition, setTransitionKind, splitAt, transitionBlocked } from "../edits";
 import { showMenu } from "../menu";
 import { icon } from "../icons";
 import { animationOf, keysOf } from "../keyframes";
@@ -19,6 +19,9 @@ const TRACK_H: Record<TrackKind, number> = { video: 64, overlay: 40, audio: 44 }
 const FOLDED_H = 22;
 const MIN_H = 30;
 const MAX_H = 240;
+/** What a clip's box takes of its row's height: `.clip`'s 4px top and bottom, and its
+ *  1px border — the pictures inside are drawn for what is left. */
+const CLIP_CHROME = 10;
 /** Where heights and folds are kept: view state, this browser's, by track id (ids are
  *  unique across the project). Never the document — how tall a track is drawn is not
  *  something an agent or a render reads. */
@@ -63,6 +66,9 @@ export class Timeline {
   private saveRows() {
     try { localStorage.setItem(ROWS_KEY, JSON.stringify(this.rows)); } catch { /* this session only */ }
   }
+
+  /** The waveform's colour, the theme's, read once a render rather than once a clip. */
+  private waveColor = "";
 
   private folded(t: Track) { return this.rows.folded.includes(t.id); }
   private heightOf(t: Track) { return this.folded(t) ? FOLDED_H : this.rows.h[t.id] ?? TRACK_H[t.kind]; }
@@ -112,6 +118,7 @@ export class Timeline {
     const width = Math.max(this.host.clientWidth, this.x(store.duration + 10));
     this.root.style.width = `${width}px`;
     this.root.innerHTML = "";
+    this.waveColor = getComputedStyle(document.documentElement).getPropertyValue("--clip-sub").trim() || "#fffb";
 
     // Ruler
     const ruler = el("div", "tl-ruler");
@@ -270,14 +277,12 @@ export class Timeline {
           h = Math.min(MAX_H, Math.max(FOLDED_H, from + dy));
           row.style.height = `${h}px`;
         },
+        // Redrawn at the new size (`setFold` renders): the clips' pictures are drawn for
+        // their height.
         end: (moved) => {
           if (!moved) return;
-          this.rows.folded = this.rows.folded.filter((id) => id !== t.id);
-          if (h < MIN_H) this.rows.folded.push(t.id);
-          else this.rows.h[t.id] = Math.round(h);
-          this.saveRows();
-          // Redrawn at the new size: the pictures in the clips are drawn for their height.
-          this.render();
+          if (h >= MIN_H) this.rows.h[t.id] = Math.round(h);
+          this.setFold(t, h < MIN_H);
         },
       });
     });
@@ -297,14 +302,15 @@ export class Timeline {
     const xf = el("div", `tl-xfade ${x.kind}`);
     xf.style.left = `${this.x(b.start - x.duration / 2) - HEAD}px`;
     xf.style.width = `${x.duration * store.state.zoom}px`;
-    xf.title = `${x.kind} ${+x.duration.toFixed(3)}s — double-click for its length, right-click for more`;
+    const secs = +x.duration.toFixed(3);
+    xf.title = `${x.kind} ${secs}s — double-click for its length, right-click for more`;
     xf.addEventListener("pointerdown", (e) => e.stopPropagation());
     xf.addEventListener("dblclick", (e) => { e.stopPropagation(); void editTransitionDuration(ti, x); });
     xf.addEventListener("contextmenu", (e) => {
       e.preventDefault();
       e.stopPropagation();
       showMenu([
-        { heading: `${x.kind === "wipe" ? "Wipe" : "Dissolve"} · ${+x.duration.toFixed(3)}s` },
+        { heading: `${x.kind === "wipe" ? "Wipe" : "Dissolve"} · ${secs}s` },
         { label: "Length…", run: () => void editTransitionDuration(ti, x) },
         x.kind === "wipe"
           ? { label: "Make it a dissolve", run: () => void setTransitionKind(ti, x, "dissolve") }
@@ -324,24 +330,25 @@ export class Timeline {
     // the selection is selected first.
     if (!store.selectedClips.includes(c.id)) store.selectClips([c.id], t.id);
     const at = store.snap(this.t(e.clientX - this.root.getBoundingClientRect().left));
-    const next = joinedAfter(t, c);
     const prev = t.clips.find((a) => joinedAfter(t, a)?.id === c.id);
-    const has = (a: Clip, b: Clip) => t.transitions.some((x) => x.from === a.id && x.to === b.id);
-    const why = t.kind === "overlay" ? "Overlays take no transitions yet: their bakes carry no handles"
-      : "A transition joins clips that touch: move the next clip against this one first";
+    /** A transition leaving `a`: offered when `transitionBlocked` has nothing to say. */
+    const transition = (label: string, a: Clip | undefined) => {
+      const blocked = a ? transitionBlocked(t, a) : "No clip ends where this one starts";
+      return { label, run: () => void addTransition(a!.id), disabled: !!blocked, title: blocked ?? "A one-second dissolve across the cut, or as long as the clips allow" };
+    };
     const n = store.selectedClips.length;
     const grouped = store.selectedFound.some((f) => f.clip.group);
     showMenu([
-      { label: n > 1 ? `Split ${n} clips here` : "Split here", keys: keysFor(Cmd.split), run: () => void splitAtPlayhead(at), disabled: !(at > c.start && at < c.end) },
+      { label: n > 1 ? `Split ${n} clips here` : "Split here", keys: keysFor(Cmd.split), run: () => void splitAt(at), disabled: !(at > c.start && at < c.end) },
       "separator",
-      { label: "Transition into the next clip", run: () => void addTransition(c.id), disabled: !next || t.kind === "overlay" || has(c, next), title: next && t.kind !== "overlay" ? "A one-second dissolve across the cut, or as long as the clips allow" : why },
-      { label: "Transition from the previous clip", run: () => void addTransition(prev!.id), disabled: !prev || t.kind === "overlay" || has(prev, c), title: prev && t.kind !== "overlay" ? "A one-second dissolve across the cut, or as long as the clips allow" : why },
+      transition("Transition into the next clip", c),
+      transition("Transition from the previous clip", prev),
       "separator",
-      { label: "Copy", keys: "Ctrl+C", run: () => run(Cmd.copyClip) },
-      { label: "Cut", keys: "Ctrl+X", run: () => run(Cmd.cutClip) },
-      grouped ? { label: "Ungroup", keys: "Ctrl+Shift+G", run: () => run(Cmd.ungroup) } : { label: "Group", keys: "Ctrl+G", run: () => run(Cmd.group), disabled: n < 2 },
+      { label: "Copy", keys: "Ctrl + C", run: () => run(Cmd.copyClip) },
+      { label: "Cut", keys: "Ctrl + X", run: () => run(Cmd.cutClip) },
+      grouped ? { label: "Ungroup", keys: keysFor(Cmd.ungroup), run: () => run(Cmd.ungroup) } : { label: "Group", keys: keysFor(Cmd.group), run: () => run(Cmd.group), disabled: n < 2 },
       "separator",
-      { label: n > 1 ? `Delete ${n} clips` : "Delete", keys: "Del", run: () => run(Cmd.deleteClip) },
+      { label: n > 1 ? `Delete ${n} clips` : "Delete", keys: keysFor(Cmd.deleteClip), run: () => run(Cmd.deleteClip) },
     ], e.clientX, e.clientY);
   }
 
@@ -350,8 +357,7 @@ export class Timeline {
     const item = binItem(p, c);
     if (!item || !isFileSource(item.source) || this.folded(t)) return null;
     const { path, kind } = item.source;
-    // The clip's box inside the row: 4px either side, and its border.
-    const h = this.heightOf(t) - 10;
+    const h = this.heightOf(t) - CLIP_CHROME;
     const frames = kind !== "audio" && t.kind !== "audio";
     const sound = isTimedMedia(item) && hasAudio(item) && h >= 24;
     if (!frames && !sound) return null;
@@ -365,7 +371,7 @@ export class Timeline {
     if (sound) {
       const wave = el("canvas", "wave");
       wave.style.height = `${waveH}px`;
-      drawWave(wave, c.bin, path, c, store.state.zoom, w, waveH);
+      drawWave(wave, c.bin, path, c, store.state.zoom, w, waveH, this.waveColor);
       media.appendChild(wave);
     }
     return media;

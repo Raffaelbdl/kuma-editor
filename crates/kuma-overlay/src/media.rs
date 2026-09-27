@@ -129,7 +129,8 @@ pub fn peaks(src: &Path) -> Result<Vec<u8>, String> {
         .stderr(std::process::Stdio::piped())
         .spawn()
         .map_err(|e| format!("ffmpeg: {e}"))?;
-    let mut stdout = child.stdout.take().expect("piped");
+    // Buffered: a read is one bucket, a few hundred bytes, far too small for a syscall each.
+    let mut stdout = std::io::BufReader::with_capacity(1 << 16, child.stdout.take().expect("piped"));
     let mut buf = vec![0u8; (RATE / PEAK_RATE) as usize * 2];
     let mut out = Vec::new();
     loop {

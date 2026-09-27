@@ -10,11 +10,11 @@
 // the first out of sight as soon as a project had more than a few entries.
 
 import { api } from "../api";
-import { desktop, dropMedia, pickAndAddMedia } from "../desktop";
+import { addMediaPaths, desktop, dropMedia, pickAndAddMedia } from "../desktop";
 import { button, dragPayload, el, isFileDrag, row, setDragPayload } from "../dom";
 import { icon, type IconName } from "../icons";
 import { askText } from "../modal";
-import { store, toast } from "../store";
+import { store } from "../store";
 import { blueprintActions, moveBinItem, newItems, promptNewFolder } from "../edits";
 import { menuBelow, showMenu } from "../menu";
 import type { BinItem, Project } from "../types";
@@ -124,7 +124,7 @@ export class Library {
     // In the desktop shell the native picker is the obvious way in; the typed path is for
     // both, because it is the only way to reference a file outside the project.
     if (desktop()) tools.appendChild(tool("import", "Import media files…", () => void pickAndAddMedia()));
-    tools.appendChild(tool("path", "Add media by path (relative to the project, or absolute)…", () => void addByPath(p.revision)));
+    tools.appendChild(tool("path", "Add media by path (relative to the project, or absolute)…", () => void addByPath()));
 
     if (!Object.keys(p.bin).length) this.body.appendChild(el("p", "muted", "Empty. Add media or a title with the buttons above, or drop files here."));
     const list = el("div", "bin-list");
@@ -175,16 +175,9 @@ function tool(name: IconName, title: string, run: () => void): HTMLButtonElement
 }
 
 /** Add a media file by its path, as typed. */
-async function addByPath(revision: number) {
+async function addByPath() {
   const path = await askText({ title: "Add media by path", label: "Path", placeholder: "media/clip.mp4", ok: "Add" });
-  if (!path) return;
-  try {
-    const r = await api.addMedia(path, revision);
-    toast(`Added ${r.id} to the bin`, "ok");
-    await store.refresh();
-  } catch (e) {
-    toast((e as Error).message, "err");
-  }
+  if (path) await addMediaPaths([path], null);
 }
 
 /**

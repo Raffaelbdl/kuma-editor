@@ -172,7 +172,7 @@ button.tool:hover { background: var(--bg-3); color: var(--fg); }
 .tl-ruler { position: sticky; top: 0; height: 22px; background: var(--bg-3); border-bottom: 1px solid var(--line); z-index: 3; }
 .tl-ruler .tick { position: absolute; top: 0; height: 100%; border-left: 1px solid var(--line); padding-left: 3px; font: 10px var(--mono); color: var(--fg-2); }
 /* The height is set per track (`timeline.ts`): view state, dragged at the head's edge. */
-.tl-track { position: relative; height: 48px; border-bottom: 1px solid var(--line); }
+.tl-track { position: relative; border-bottom: 1px solid var(--line); }
 /* Kind and name stacked, toggles beside them — not underneath. Stacked all three, the
    buttons fell outside a 36px audio track and were clipped. Beside, the head needs the
    height of the label alone and fits every track kind. */
@@ -225,9 +225,8 @@ button.tool:hover { background: var(--bg-3); color: var(--fg); }
 .clip .media { position: absolute; inset: 0; display: flex; flex-direction: column; pointer-events: none; }
 .clip .strip { position: relative; flex: 1; overflow: hidden; }
 .clip .strip > div { position: absolute; top: 0; height: 100%; background-repeat: no-repeat; opacity: 0.85; }
-.clip .wave { display: block; width: 100%; flex: none; color: var(--clip-sub); }
+.clip .wave { display: block; width: 100%; flex: none; }
 .clip .media.both .wave { border-top: 1px solid var(--clip-edge); background: rgba(0, 0, 0, 0.18); }
-.clip .media:not(:has(.strip)) .wave { flex: 1; }
 .clip .cname, .clip .sub { position: relative; text-shadow: 0 1px 2px rgba(0, 0, 0, 0.85); }
 /* Grouped: a chain before the name, and a brighter edge so a block reads as one thing
    across the tracks it spans. Not the selection's outline — a group is what these clips

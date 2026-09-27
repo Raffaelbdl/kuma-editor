@@ -20,15 +20,13 @@ const strips = new Map<string, Loaded<Strip>>();
 const waves = new Map<string, Loaded<Peaks>>();
 
 function load<T>(cache: Map<string, Loaded<T>>, key: string, get: () => Promise<T>): Loaded<T> {
-  let l = cache.get(key);
-  if (!l) {
-    // A failure (no ffmpeg, a missing file) draws nothing rather than toasting once per
-    // clip: the bin and validation already say what is wrong with the entry.
-    const entry: Loaded<T> = { wait: get().catch(() => null).then((v) => (entry.value = v)) };
-    cache.set(key, entry);
-    l = entry;
-  }
-  return l;
+  const hit = cache.get(key);
+  if (hit) return hit;
+  // A failure (no ffmpeg, a missing file) draws nothing rather than toasting once per
+  // clip: the bin and validation already say what is wrong with the entry.
+  const entry: Loaded<T> = { wait: get().catch(() => null).then((v) => (entry.value = v)) };
+  cache.set(key, entry);
+  return entry;
 }
 
 /** Draw `draw` now if the data is here, else when it arrives and the node is still up. */
@@ -63,16 +61,11 @@ export function drawStrip(band: HTMLElement, bin: string, path: string, c: Clip,
 }
 
 /** The waveform on `canvas`: the loudest moment under each pixel column, mirrored. */
-export function drawWave(canvas: HTMLCanvasElement, bin: string, path: string, c: Clip, zoom: number, width: number, height: number) {
-  whenLoaded(load(waves, `${bin}\n${path}`, () => api.peaks(bin)), canvas, (w) => {
-    // Its colour is the theme's, read off the page, so a canvas still being built — the
-    // timeline assembles a row before attaching it — is painted once it is attached.
-    if (!canvas.isConnected) { queueMicrotask(() => { if (canvas.isConnected) paint(canvas, w, c, zoom, width, height); }); return; }
-    paint(canvas, w, c, zoom, width, height);
-  });
+export function drawWave(canvas: HTMLCanvasElement, bin: string, path: string, c: Clip, zoom: number, width: number, height: number, color: string) {
+  whenLoaded(load(waves, `${bin}\n${path}`, () => api.peaks(bin)), canvas, (w) => paint(canvas, w, c, zoom, width, height, color));
 }
 
-function paint(canvas: HTMLCanvasElement, w: Peaks, c: Clip, zoom: number, width: number, height: number) {
+function paint(canvas: HTMLCanvasElement, w: Peaks, c: Clip, zoom: number, width: number, height: number, color: string) {
   // A canvas has a size limit; past it the wave is stretched, which a wave survives.
   const dpr = window.devicePixelRatio || 1;
   const cw = Math.max(1, Math.min(8192, Math.round(width * dpr)));
@@ -81,7 +74,7 @@ function paint(canvas: HTMLCanvasElement, w: Peaks, c: Clip, zoom: number, width
   canvas.height = ch;
   const g = canvas.getContext("2d");
   if (!g) return;
-  g.fillStyle = getComputedStyle(canvas).color;
+  g.fillStyle = color;
   const mid = ch / 2;
   for (let x = 0; x < cw; x++) {
     const a = Math.floor(sourceAt(c, zoom, (x / cw) * width) * w.rate);

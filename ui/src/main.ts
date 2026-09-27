@@ -3,7 +3,7 @@
 
 import { Cmd, command } from "./commands";
 import { desktop, initDesktop, pickAndAddMedia } from "./desktop";
-import { addMarker, addTrack, copySelection, createFromBlueprint, creatable, cutSelection, deleteSelectedClips, groupSelection, pasteClipboard, promptNewOverlay, promptNewSequence, splitAtPlayhead, swapOrientation, transcribe, ungroupSelection } from "./edits";
+import { addMarker, addTrack, copySelection, createFromBlueprint, creatable, cutSelection, deleteSelectedClips, groupSelection, pasteClipboard, promptNewOverlay, promptNewSequence, splitAt, swapOrientation, transcribe, ungroupSelection } from "./edits";
 import { Inspector } from "./panels/inspector";
 import { Library } from "./panels/library";
 import { Preview } from "./panels/preview";
@@ -34,7 +34,7 @@ function projectCommands() {
   command(Cmd.swapOrientation, "Switch Orientation", () => swapOrientation());
   command(Cmd.transcribe, "Transcribe → Subtitles", () => transcribe());
   command(Cmd.addMedia, "Add Media…", () => pickAndAddMedia());
-  command(Cmd.split, "Split at Playhead", () => splitAtPlayhead());
+  command(Cmd.split, "Split at Playhead", () => splitAt(store.state.playhead));
   command(Cmd.seekEdge, "Go to Clip Edge", (dir) => store.seekEdge(Number(dir) < 0 ? -1 : 1));
   command(Cmd.deleteClip, "Delete Clips", () => deleteSelectedClips());
   command(Cmd.addMarker, "Add Marker…", () => addMarker());
@@ -47,13 +47,12 @@ function projectCommands() {
   // Record mode lost its button (see *Auto-key* in `docs/decisions.md`); a key keeps it
   // reachable until it has a better home. The whole page says it is on: a red edge on the
   // panel where the recording edits are made.
-  command(Cmd.autoKey, "Toggle Auto-key", () => store.set({ autoKey: !store.state.autoKey }));
-  let was = store.state.autoKey;
-  store.select((s) => [s.autoKey], (s) => {
-    document.body.classList.toggle("autokey", s.autoKey);
-    if (s.autoKey !== was) toast(s.autoKey ? "Auto-key on: changing an effect's value writes a keyframe at the playhead" : "Auto-key off", "");
-    was = s.autoKey;
+  command(Cmd.autoKey, "Toggle Auto-key", () => {
+    const on = !store.state.autoKey;
+    store.set({ autoKey: on });
+    toast(on ? "Auto-key on: changing an effect's value writes a keyframe at the playhead" : "Auto-key off", "");
   });
+  store.select((s) => [s.autoKey], (s) => document.body.classList.toggle("autokey", s.autoKey));
 }
 
 async function main() {

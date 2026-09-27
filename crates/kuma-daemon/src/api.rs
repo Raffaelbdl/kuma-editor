@@ -574,34 +574,49 @@ async fn media_view(st: Arc<AppState>, id: String, file: String) -> Result<Respo
     };
     let src = jobs::resolve_path(&st, std::path::Path::new(&path));
     let out = bin_asset_path(&st, &id, &file);
-    let made = blocking(move || -> Result<Value, String> {
-        let _cache = read(&st.cache_users);
-        let _one = MEDIA_VIEWS.lock().unwrap_or_else(|p| p.into_inner());
+    let target = out.clone();
+    blocking(move || -> Result<(), String> {
         let source = src.to_string_lossy().into_owned();
         let stamp = std::fs::metadata(&src).and_then(|m| m.modified()).map_err(|e| format!("{path}: {e}"))?;
-        let current = |v: &Value| v["source"] == source.as_str() && std::fs::metadata(&out).and_then(|m| m.modified()).is_ok_and(|t| t >= stamp);
-        if let Some(v) = std::fs::read(&out).ok().and_then(|b| serde_json::from_slice::<Value>(&b).ok()).filter(|v| current(v)) {
-            return Ok(v);
+        // Current views are answered without waiting on one being made.
+        if current(&out, &source, stamp) {
+            return Ok(());
+        }
+        let _one = MEDIA_VIEWS.lock().unwrap_or_else(|p| p.into_inner());
+        let _cache = read(&st.cache_users);
+        if current(&out, &source, stamp) {
+            return Ok(());
         }
         let dir = st.config.thumbs_dir();
         std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        // Scratch is `.tmp-…` beside its target until persisted, and gone on any error.
+        let scratch = |suffix: &str| tempfile::Builder::new().prefix(".tmp-").suffix(suffix).tempfile_in(&dir).map_err(|e| e.to_string());
         let v = if file == "peaks.json" {
             json!({ "source": source, "rate": kuma_overlay::PEAK_RATE, "peaks": kuma_overlay::peaks(&src)? })
         } else {
-            let jpg = bin_asset_path(&st, &id, "strip.jpg");
-            let tmp = dir.join(format!("{id}.strip.tmp-{}.jpg", std::process::id()));
-            let strip = kuma_overlay::filmstrip(&src, &meta, kind == kuma_core::MediaKind::Image, &tmp);
-            let strip = strip.and_then(|s| std::fs::rename(&tmp, &jpg).map(|_| s).map_err(|e| e.to_string()));
-            let _ = std::fs::remove_file(&tmp);
-            json!({ "source": source, "strip": strip? })
+            let jpg = scratch(".jpg")?;
+            let strip = kuma_overlay::filmstrip(&src, &meta, kind == kuma_core::MediaKind::Image, jpg.path())?;
+            jpg.persist(bin_asset_path(&st, &id, "strip.jpg")).map_err(|e| e.to_string())?;
+            json!({ "source": source, "strip": strip })
         };
-        let tmp = dir.join(format!("{id}.{file}.tmp-{}", std::process::id()));
-        std::fs::write(&tmp, v.to_string()).and_then(|_| std::fs::rename(&tmp, &out)).map_err(|e| e.to_string())?;
-        Ok(v)
+        let tmp = scratch(".json")?;
+        std::fs::write(tmp.path(), v.to_string()).map_err(|e| e.to_string())?;
+        tmp.persist(&out).map_err(|e| e.to_string())?;
+        Ok(())
     })
     .await?
     .map_err(ApiError::bad_request)?;
-    Ok(Json(made).into_response())
+    file_response(&target)
+}
+
+/// Whether the view at `out` was made from `source` since it last changed.
+fn current(out: &std::path::Path, source: &str, stamp: std::time::SystemTime) -> bool {
+    #[derive(Deserialize)]
+    struct Made {
+        source: String,
+    }
+    std::fs::metadata(out).and_then(|m| m.modified()).is_ok_and(|t| t >= stamp)
+        && std::fs::read(out).ok().and_then(|b| serde_json::from_slice::<Made>(&b).ok()).is_some_and(|m| m.source == source)
 }
 
 // ---------- assets ----------

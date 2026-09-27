@@ -6,7 +6,7 @@
 // the panels themselves know nothing of this: the preview and the workbench already
 // re-fit on their own `ResizeObserver`.
 
-import { el } from "./dom";
+import { dragPointer, el } from "./dom";
 
 interface Seam {
   /** The CSS variable, and the `localStorage` key under `kuma.layout.`. */
@@ -47,19 +47,13 @@ export function installSplitters(): void {
     const keep = () => { try { localStorage.setItem(KEY + s.name, String(size())); } catch { /* this session only */ } };
     handle.addEventListener("pointerdown", (e) => {
       if (e.button !== 0) return;
-      e.preventDefault();
       const from = size();
-      const start = s.axis === "x" ? e.clientX : e.clientY;
       handle.classList.add("on");
-      const move = (ev: PointerEvent) => set(s, from + s.grow * ((s.axis === "x" ? ev.clientX : ev.clientY) - start));
-      const up = () => {
-        handle.classList.remove("on");
-        removeEventListener("pointermove", move);
-        removeEventListener("pointerup", up);
-        keep();
-      };
-      addEventListener("pointermove", move);
-      addEventListener("pointerup", up);
+      dragPointer(e, {
+        axes: "xy",
+        move: (dx, dy) => set(s, from + s.grow * (s.axis === "x" ? dx : dy)),
+        end: (moved) => { handle.classList.remove("on"); if (moved) keep(); },
+      });
     });
     handle.addEventListener("dblclick", () => { set(s, s.fallback); keep(); });
     // Columns are seams of `#main`, the row one of `#app`: each is positioned against the

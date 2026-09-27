@@ -12,6 +12,7 @@
 
 import { Cmd, run } from "../commands";
 import { button, el } from "../dom";
+import { icon } from "../icons";
 import { SEQUENCE_TAB, store } from "../store";
 
 interface Tab {
@@ -63,7 +64,7 @@ export function mountTabs(host: HTMLElement): void {
         close: { run: () => store.closeOverlay(id), title: "Close this tab — or middle-click it (the entry stays in the bin)" },
       }));
     }
-    host.appendChild(button("+ overlay", () => run(Cmd.newOverlay), "Create an overlay from a blueprint and open it here", "etab-add"));
+    host.appendChild(button(icon("plus"), () => run(Cmd.newOverlay), "New overlay — create one from a blueprint and open it here", "icon etab-add"));
   };
   store.select((s) => [s.project, s.sequence, s.sequences, s.tab, s.overlays], render);
 }

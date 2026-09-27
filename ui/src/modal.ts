@@ -80,7 +80,11 @@ export function askForm(opts: AskFormOptions): Promise<boolean> {
     actions.append(cancel, ok);
 
     form.appendChild(el("h3", "", opts.title));
-    if (opts.note) form.appendChild(el("p", "muted tiny", opts.note));
+    // Enter in a textarea is a new line, so a form holding one sends on Ctrl+Enter — and
+    // says so, since nothing else would tell you.
+    const multiline = opts.rows.some((r) => r.input instanceof HTMLTextAreaElement);
+    const note = [opts.note, multiline ? "Ctrl+Enter to save" : ""].filter(Boolean).join(" · ");
+    if (note) form.appendChild(el("p", "muted tiny", note));
     for (const r of opts.rows) {
       const row = el("div", "field");
       row.append(el("label", "", r.label), r.input);
@@ -92,10 +96,13 @@ export function askForm(opts: AskFormOptions): Promise<boolean> {
     // Submitting is the only path that accepts; Escape and the backdrop cancel, which the
     // shell already does.
     form.onsubmit = (e) => { e.preventDefault(); done(true); };
+    form.onkeydown = (e) => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); form.requestSubmit(); } };
 
     dlg.showModal();
     const first = opts.rows[0]?.input;
     if (first instanceof HTMLInputElement) { first.focus(); first.select(); }
+    // Text already written is added to, not replaced: the caret goes at its end.
+    else if (first instanceof HTMLTextAreaElement) { first.focus(); first.setSelectionRange(first.value.length, first.value.length); }
     else if (first instanceof HTMLSelectElement) first.focus();
   });
 }

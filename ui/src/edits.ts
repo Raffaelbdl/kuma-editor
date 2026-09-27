@@ -9,7 +9,7 @@ import { askForm, askText } from "./modal";
 import { startJob, store, toast } from "./store";
 import type { ClipboardEntry, Found } from "./store";
 import type { MenuItem } from "./menu";
-import type { BinItem, BinSource, Clip, OverlayManifest, OverlaySource, PatchOp, Project, Track, TrackKind } from "./types";
+import type { BinItem, BinSource, Clip, Marker, OverlayManifest, OverlaySource, PatchOp, Project, Track, TrackKind } from "./types";
 import { binItem, binPath, childrenOf, clipPathOf, hasAudio, isFileSource, isOverlaySource, isTimedMedia, itemKind, orientation, parentOf, seqDuration, shiftEffect, trackFor, trackPathOf, trimEffect, wouldNest, wouldRecurse } from "./types";
 
 /** Clip ids are minted by kind: `o1` for an overlay, `c1` for anything else. */
@@ -630,3 +630,62 @@ export async function deleteSelectedClips() {
   for (const f of [...found].sort((a, b) => b.ci - a.ci)) ops.push({ op: "remove", path: clipPathOf(f) });
   await store.patch(ops, `delete ${[...removed].join(", ")}`);
 }
+
+// ---- markers ---------------------------------------------------------------------------
+
+/** How a marker's moment is written in a title or an undo note. */
+const at = (t: number) => `${t.toFixed(2)}s`;
+
+/**
+ * Write the open sequence's markers whole, sorted by time so the file reads the way the
+ * timeline does. Whole rather than one op per marker because a move reorders them: the
+ * index a marker was drawn with names it only until the next edit. `add` rather than
+ * `replace`, since a sequence written without the field is valid and `replace` would
+ * refuse it.
+ */
+async function writeMarkers(ms: Marker[], note: string) {
+  await store.patch([{ op: "add", path: `${store.seqPath}/markers`, value: [...ms].sort((a, b) => a.t - b.t) }], note);
+}
+
+/** Change marker `i` of the open sequence, or remove it when `change` is null. */
+async function patchMarker(i: number, change: Partial<Marker> | null, note: string) {
+  const ms = store.markers;
+  if (!ms[i]) return;
+  await writeMarkers(change ? ms.map((x, k) => (k === i ? { ...x, ...change } : x)) : ms.filter((_, k) => k !== i), note);
+}
+
+/** Ask for the comment of the marker at `t`. Null only when cancelled: an empty comment
+ *  still marks a place. A textarea, since a note on a cut is a sentence or two. */
+async function askComment(t: number, value: string, ok: string): Promise<string | null> {
+  const input = el("textarea", "comment");
+  input.value = value;
+  input.placeholder = "What should change here? An agent reading the project sees this.";
+  const sent = await askForm({ title: `Marker at ${at(t)}`, rows: [{ label: "Comment", input }], ok });
+  return sent ? input.value.trim() : null;
+}
+
+/** Add a marker at the playhead with a comment — or, when one is already on that frame,
+ *  edit that one's: two markers on one frame are one note written twice. */
+export async function addMarker() {
+  const t = store.state.playhead;
+  const there = store.markers.findIndex((m) => Math.abs(m.t - t) < store.halfFrame);
+  if (there >= 0) return editMarker(there);
+  const label = await askComment(t, "", "Add");
+  if (label === null) return;
+  await writeMarkers([...store.markers, { t, label }], `marker at ${at(t)}`);
+}
+
+export async function editMarker(i: number) {
+  const m = store.markers[i];
+  if (!m) return;
+  const label = await askComment(m.t, m.label, "Save");
+  if (label === null || label === m.label) return;
+  // Found again: the dialog was up for as long as the person was typing.
+  const j = store.markers.findIndex((x) => x.t === m.t && x.label === m.label);
+  if (j < 0) { toast("That marker changed while you were writing — try again", "err"); return; }
+  await patchMarker(j, { label }, `edit marker at ${at(m.t)}`);
+}
+
+export const moveMarker = (i: number, t: number) => patchMarker(i, { t }, `move marker to ${at(t)}`);
+
+export const removeMarker = (i: number) => patchMarker(i, null, `remove marker at ${at(store.markers[i]?.t ?? 0)}`);

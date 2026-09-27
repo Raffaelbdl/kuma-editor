@@ -1,5 +1,5 @@
 import { api, subscribeEvents } from "./api";
-import type { BlueprintInfo, Clip, DaemonEvent, FontFamily, Job, OverlayInfo, PatchOp, Project, Track, TrackKind } from "./types";
+import type { BlueprintInfo, Clip, DaemonEvent, FontFamily, Job, Marker, OverlayInfo, PatchOp, Project, Track, TrackKind } from "./types";
 import { allClips, clipPathOf, fpsValue, freeId, isOverlaySource, nearest, seqDuration, seqPath, sequenceIds, sequenceOf } from "./types";
 
 /** A clip found in the project: where it is, as the record every edit of it starts from. */
@@ -357,6 +357,12 @@ class Store {
   get tracks(): Track[] {
     const p = this.state.project;
     return (p && sequenceOf(p, this.state.sequence)?.tracks) ?? [];
+  }
+
+  /** The markers on screen: those of the open sequence. */
+  get markers(): Marker[] {
+    const p = this.state.project;
+    return (p && sequenceOf(p, this.state.sequence)?.markers) ?? [];
   }
 
   /** JSON pointer to the open sequence's timeline — the prefix for every track edit. */

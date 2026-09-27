@@ -1,12 +1,13 @@
 // Timeline: tracks, clips (move/trim), transitions, playhead, zoom.
 
 import { button, dragPayload, dragPointer, el, isFileDrag } from "../dom";
-import { placeBinItem, placeBlueprint } from "../edits";
+import { editMarker, moveMarker, placeBinItem, placeBlueprint, removeMarker } from "../edits";
+import { showMenu } from "../menu";
 import { icon } from "../icons";
 import { animationOf, keysOf } from "../keyframes";
 import { store } from "../store";
-import type { Clip, PatchOp, Project, Track, TrackKind } from "../types";
-import { binItem, clipKind, isOverlaySource, isSequenceSource, isTimedMedia, seqDuration, sequenceOf } from "../types";
+import type { Clip, Marker, PatchOp, Project, Track, TrackKind } from "../types";
+import { binItem, clipKind, isOverlaySource, isSequenceSource, isTimedMedia, seqDuration } from "../types";
 
 const HEAD = 136;
 
@@ -95,6 +96,13 @@ export class Timeline {
     }
     ruler.addEventListener("pointerdown", (e) => this.scrub(e));
     this.root.appendChild(ruler);
+    // A marker's flag, the part you hold, is in the ruler; its line runs down the tracks,
+    // drawn after them so it lies over the clips.
+    const lines = store.markers.map((m, i) => {
+      const [flag, line] = this.markerEl(m, i);
+      ruler.appendChild(flag);
+      return line;
+    });
 
     // Overlays, then video, then audio: the order they composite in, top down, with audio
     // — which composites in no order — out of the way at the bottom. Within a kind the
@@ -108,16 +116,57 @@ export class Timeline {
       this.root.appendChild(hint);
     }
 
-    // Markers and playhead
-    for (const m of sequenceOf(p, s.sequence)?.markers ?? []) {
-      const mk = el("div", "tl-marker");
-      mk.style.left = `${this.x(m.t)}px`;
-      mk.title = m.label;
-      this.root.appendChild(mk);
-    }
+    this.root.append(...lines);
     this.playhead = el("div", "tl-playhead");
     this.root.appendChild(this.playhead);
     this.movePlayhead(s.playhead);
+  }
+
+  /**
+   * A marker's flag and line. The flag is its comment, cut short, where the ruler can show it. Click goes there,
+   * a drag moves it, a double-click edits the comment and a right-click offers the rest.
+   * The comment is written for whoever reads the project next — an agent told "see the
+   * markers" reads exactly this text.
+   */
+  private markerEl(m: Marker, i: number): [HTMLDivElement, HTMLDivElement] {
+    const flag = el("div", "tl-marker-flag", m.label.split("\n")[0]);
+    const line = el("div", "tl-marker");
+    flag.dataset.i = String(i);
+    const place = (t: number) => { flag.style.left = line.style.left = `${this.x(t)}px`; };
+    place(m.t);
+    if (m.color) for (const n of [flag, line]) n.style.setProperty("--c", m.color);
+    flag.title = `${m.label || "(no comment)"}\n\n${m.t.toFixed(2)}s — drag to move, double-click to edit, right-click for more`;
+    flag.addEventListener("pointerdown", (e) => {
+      // The flag's press, not the ruler's scrub.
+      e.stopPropagation();
+      if (e.button !== 0) return;
+      const zoom = store.state.zoom;
+      // Snaps as a clip does: to 0, the playhead or a cut, else to the frame.
+      const cuts = store.tracks.flatMap((tr) => tr.clips.flatMap((c) => [c.start, c.end]));
+      let at = m.t;
+      dragPointer(e, {
+        move: (dx) => {
+          at = this.snapT(m.t + dx / zoom, cuts);
+          place(at);
+        },
+        end: (moved) => {
+          if (moved) void moveMarker(i, at);
+          else store.seek(m.t);
+        },
+      });
+    });
+    flag.addEventListener("dblclick", (e) => { e.stopPropagation(); void editMarker(i); });
+    flag.addEventListener("contextmenu", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      showMenu([
+        { label: "Edit comment…", run: () => void editMarker(i) },
+        { label: "Go to marker", run: () => store.seek(m.t) },
+        "separator",
+        { label: "Delete marker", run: () => void removeMarker(i) },
+      ], e.clientX, e.clientY);
+    });
+    return [flag, line];
   }
 
   private movePlayhead(t: number) {

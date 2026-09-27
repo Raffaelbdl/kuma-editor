@@ -134,6 +134,12 @@ export async function driver(url) {
     dragFiles(type, x, y, files) {
       return send("Input.dispatchDragEvent", { type, x, y, data: { items: [], files, dragOperationsMask: 1 } });
     },
+    /** A real mouse event through the browser's input pipeline — `type` is mousePressed,
+     *  mouseReleased or mouseMoved, at viewport `x`, `y` — for a gesture a synthetic event
+     *  cannot prove: a drag, or a double-click the page's pointer handlers might swallow. */
+    mouse(type, x, y, opts = {}) {
+      return send("Input.dispatchMouseEvent", { type, x, y, button: type === "mouseMoved" && !opts.held ? "none" : "left", buttons: opts.held || type === "mousePressed" ? 1 : 0, clickCount: opts.clickCount ?? 1 });
+    },
     /** A PNG of the viewport, written to `file` — for looking at a page while writing a
      *  test, not for asserting on. */
     async screenshot(file) {

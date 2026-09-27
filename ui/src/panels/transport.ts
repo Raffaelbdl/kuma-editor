@@ -51,6 +51,7 @@ export function mountTransport(host: HTMLElement): void {
     button(icon("skip-back"), () => store.seek(0), "Back to the start (Home)", "icon"),
     play, time,
     button("Split (S)", () => run(Cmd.split)),
+    button("Marker (M)", () => run(Cmd.addMarker), "Add a marker at the playhead with a comment — an agent reading the project sees it"),
     rec, selected,
     addTrackSel, quality,
     el("span", "muted", "zoom"), zoom,

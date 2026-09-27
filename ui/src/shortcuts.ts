@@ -58,6 +58,10 @@ const BINDINGS: Binding[] = [
   { when: (e) => e.key === "End", action: () => store.seek(store.duration), preventDefault: true },
   { when: (e) => e.key.toLowerCase() === "s" && !mod(e) && !e.altKey, action: Cmd.split,
     list: { where: "Editing", keys: "S", what: "Split the selected clips at the playhead" } },
+  // A marker is a note on the timeline you are looking at, so the workbench, which has
+  // none, leaves M alone.
+  { when: (e) => e.key.toLowerCase() === "m" && !mod(e) && !e.altKey && !onOverlay(), action: Cmd.addMarker,
+    list: { where: "Editing", keys: "M", what: "Add a marker at the playhead, with a comment for you or an agent (on a marker already there: edit it)" } },
   { when: (e) => e.key === "Delete" || e.key === "Backspace", action: Cmd.deleteClip,
     list: { where: "Editing", keys: "Del", what: "Delete the selected clips" } },
   // The clipboard is the timeline's, so it is bound off the workbench only: the workbench
@@ -96,6 +100,8 @@ const GESTURES: { section: Section; does: string; what: string }[] = [
   { section: "Editing", does: "Drag a clip's edge", what: "Trim it. One clip's own, never the block's" },
   { section: "Editing", does: "Drag a number", what: "Change it (Shift: fine, Alt: coarse); click to type in it instead" },
   { section: "Editing", does: "Double-click a keyframe strip", what: "Add a keyframe there" },
+  { section: "Editing", does: "Drag a marker's flag", what: "Move it; click it to go there" },
+  { section: "Editing", does: "Double-click a marker's flag", what: "Edit its comment (right-click: delete it)" },
   { section: "Transport", does: "Ctrl + wheel", what: "Zoom the timeline" },
   { section: "Transport", does: "Click a track's head", what: "Aim the next paste at that track" },
 ];

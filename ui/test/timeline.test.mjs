@@ -108,6 +108,83 @@ describe("the timeline's tracks", { skip: why ? `skipping: ${why}` : false }, ()
     }
   });
 
+  it("adds a marker with a comment on M, into the document an agent reads", async () => {
+    const MARKERS = `fetch("/api/project").then(r => r.json()).then(p => JSON.stringify(p.bin.main.source.markers))`;
+    const FLAGS = `[...document.querySelectorAll("#timeline .tl-marker-flag")].map(f => f.textContent).join("|")`;
+    const DIALOG = `document.querySelector("dialog.modal textarea.comment")`;
+    /** Type into the open comment dialog and send it with Ctrl+Enter, as a person would. */
+    const answer = (text) => `(() => {
+      const t = ${DIALOG};
+      t.value = ${JSON.stringify(text)};
+      t.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", ctrlKey: true, bubbles: true, cancelable: true }));
+      return true;
+    })()`;
+
+    await page.eval(key("Home"));
+    await page.eval(key("ArrowRight", { shiftKey: true }));
+    await page.eval(key("ArrowRight", { shiftKey: true }));
+    await page.eval(key("m"));
+    await page.until(DIALOG);
+    await page.eval(answer("the title comes in too early\nwait for the beat"));
+    await page.until(`${FLAGS} === "the title comes in too early"`);
+    assert.deepEqual(JSON.parse(await page.eval(MARKERS)), [{ t: 2, label: "the title comes in too early\nwait for the beat", color: null }],
+      "the comment is in the project file, whole, at the playhead's time");
+
+    // A second one earlier on stays in time order in the document, whatever order they came in.
+    await page.eval(key("Home"));
+    await page.eval(key("m"));
+    await page.until(DIALOG);
+    await page.eval(answer("cold open"));
+    await page.until(`${FLAGS} === "cold open|the title comes in too early"`);
+
+    // M on a frame that has one edits it rather than stacking a second note on the same frame.
+    await page.eval(key("m"));
+    await page.until(DIALOG);
+    assert.equal(await page.eval(`${DIALOG}.value`), "cold open");
+    await page.eval(answer("cold open: cut the first second"));
+    await page.until(`${FLAGS} === "cold open: cut the first second|the title comes in too early"`);
+    assert.equal(JSON.parse(await page.eval(MARKERS)).length, 2);
+
+    // Right-click → Delete marker.
+    await page.eval(`(() => {
+      const f = document.querySelector('#timeline .tl-marker-flag[data-i="0"]');
+      f.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 10, clientY: 10 }));
+      [...document.querySelectorAll(".popup-menu .popup-item")].find(b => b.textContent === "Delete marker").click();
+      return true;
+    })()`);
+    await page.until(`${FLAGS} === "the title comes in too early"`);
+    assert.equal(await page.eval(`document.querySelectorAll("#timeline .tl-marker").length`), 1, "the line goes with its flag");
+    // Every marker edit is one undoable patch.
+    await page.eval(`(${key("z", { ctrlKey: true })})`);
+    await page.until(`${FLAGS} === "cold open: cut the first second|the title comes in too early"`);
+  });
+
+  it("moves a marker by its flag, and edits it on a double-click", async () => {
+    const MARKERS = `fetch("/api/project").then(r => r.json()).then(p => p.bin.main.source.markers.map(m => m.t).join(" "))`;
+    const flagAt = (i) => page.eval(`(() => { const r = document.querySelector('#timeline .tl-marker-flag[data-i="${i}"]').getBoundingClientRect(); return [r.left + 6, r.top + r.height / 2]; })()`);
+    const pxPerSecond = await page.eval(`Number(document.querySelector("#transport input[type=range]").value)`);
+    assert.equal(await page.eval(MARKERS), "0 2");
+
+    // Drag the marker at 2s one second right: the document moves it, and nothing else.
+    const [x, y] = await flagAt(1);
+    await page.mouse("mousePressed", x, y);
+    for (let k = 1; k <= 5; k++) await page.mouse("mouseMoved", x + (pxPerSecond * k) / 5, y, { held: true });
+    await page.mouse("mouseReleased", x + pxPerSecond, y);
+    await page.until(`document.querySelector('#timeline .tl-marker-flag[data-i="1"]').title.includes("3.00s")`);
+    assert.equal(await page.eval(MARKERS), "0 3");
+
+    // A double-click on a flag opens its comment — the flag's own pointer handling must
+    // not swallow it.
+    const [x2, y2] = await flagAt(1);
+    for (const clickCount of [1, 2]) {
+      await page.mouse("mousePressed", x2, y2, { clickCount });
+      await page.mouse("mouseReleased", x2, y2, { clickCount });
+    }
+    await page.until(`document.querySelector("dialog.modal textarea.comment")?.value === "the title comes in too early\\nwait for the beat"`);
+    await page.eval(`(document.querySelector("dialog.modal .modal-actions button").click(), true)`);
+    assert.equal(await page.eval(MARKERS), "0 3", "a double-click is not a drag");
+  });
+
   it("puts a new track in its lane, wherever the patch adds it", async () => {
     // A video track is stored below the first overlay one (so it composites under it) and
     // is drawn at the top of the video group: one rule, seen from the two ends.

@@ -13,14 +13,14 @@ import { keysFor } from "../shortcuts";
 import { desktop } from "../desktop";
 import { askForm } from "../modal";
 import { store, toast } from "../store";
-import type { BinItem, Clip, Cue, Ease, Effect, FontFamily, PatchOp, Project, Streams, VarSpec } from "../types";
-import { blueprintActions, makeOverlayUnique, manifestOf, moveBinItem, overlayError, placeBinItem, previewImg, renderPreview, saveAsBlueprint, sharersOf } from "../edits";
+import type { BinItem, Clip, Cue, Ease, Effect, FontFamily, PatchOp, Project, Streams, Transition, VarSpec } from "../types";
+import { blueprintActions, makeOverlayUnique, removeTransition, setTransitionDuration, setTransitionKind, updateTransition, manifestOf, moveBinItem, overlayError, placeBinItem, previewImg, renderPreview, saveAsBlueprint, sharersOf } from "../edits";
 import type { Animation } from "../keyframes";
 import { animationOf } from "../keyframes";
 import { icon, svgEl } from "../icons";
 import type { NumberOpts } from "../props";
 import { keyStrip, numberField, showNumber, sliderField, vectorField } from "../props";
-import { actsOn, ANIMATABLE, binItem, binPath, canPlace, canTimeWarp, childrenOf, clipStreams, covers, expandPreset, fpsValue, hasAudio, isColorSource, isFileSource, isFolderSource, isOverlaySource, isSequenceSource, isTimedMedia, placementsOf, seqDuration, streamsOf, wouldNest } from "../types";
+import { LUMAS, sourceAfter, actsOn, ANIMATABLE, binItem, binPath, canPlace, canTimeWarp, childrenOf, clipStreams, covers, expandPreset, fpsValue, hasAudio, isColorSource, isFileSource, isFolderSource, isOverlaySource, isSequenceSource, isTimedMedia, placementsOf, seqDuration, streamsOf, wouldNest } from "../types";
 
 const presetsPromise = api.effectPresets().catch(() => []);
 
@@ -364,6 +364,7 @@ export class Inspector {
     this.host.innerHTML = "";
     if (sel?.kind === "bin") return this.renderBinEntry(sel.id);
     if (sel?.kind === "blueprint") return this.renderBlueprint(sel.id);
+    if (sel?.kind === "transition") return this.renderTransition(sel);
     const f = store.findClip(store.selectedClip);
     if (!f) {
       this.host.innerHTML = `<h3>Inspector</h3>
@@ -428,6 +429,55 @@ export class Inspector {
       actions.appendChild(button("Group", () => run(Cmd.group), `Hold these clips together: selecting one selects them all, and a drag moves the block (${keysFor(Cmd.group)})`));
     }
     actions.appendChild(button("Delete clip", () => store.patch([{ op: "remove", path }], `delete ${clip.id}`)));
+    this.host.appendChild(actions);
+  }
+
+  /**
+   * A transition: its kind, length and a wipe's pattern, and the handles it plays — the
+   * footage beyond the two clips' edit points, which is what the clips being end to end
+   * in the document costs, and so what is worth being told about.
+   */
+  private renderTransition(sel: { track: string; from: string; to: string }) {
+    const p = store.state.project!;
+    const found = store.findTransition(p, sel);
+    const a = found?.track.clips.find((c) => c.id === sel.from);
+    const b = found?.track.clips.find((c) => c.id === sel.to);
+    if (!found || !a || !b) return;
+    const { ti, x } = found;
+    const frame = 1 / store.fps;
+    const name = (c: Clip) => c.label || binItem(p, c)?.name || c.bin;
+
+    this.host.appendChild(el("h3", "", x.kind === "wipe" ? "Wipe" : "Dissolve"));
+    this.host.appendChild(el("p", "muted tiny", `From “${name(a)}” into “${name(b)}”, centred on the cut at ${b.start.toFixed(2)}s. The clips stay end to end; the transition plays the footage beyond their edit points.`));
+    this.host.appendChild(field("Kind", selectInput([{ value: "dissolve" }, { value: "wipe" }], x.kind, (v) => void setTransitionKind(ti, x, v as Transition["kind"]))));
+    this.host.appendChild(field("Length", numberField(x.duration, (v) => void setTransitionDuration(ti, x, v), { step: frame, min: frame, suffix: "s" })));
+    if (x.kind === "wipe") {
+      // A pattern file under the project is kept and shown, though not offered.
+      const lumas = [...LUMAS, ...(x.luma && !LUMAS.includes(x.luma) ? [x.luma] : [])];
+      this.host.appendChild(field("Pattern", selectInput(lumas.map((value) => ({ value, label: value.replace(/_/g, " ") })), x.luma ?? LUMAS[0], (v) => void updateTransition(ti, x, { luma: v }, `pattern ${v}`))));
+      this.host.appendChild(field("Softness", sliderField(x.softness ?? 0, (v) => void updateTransition(ti, x, { softness: v }, `softness ${v}`), { min: 0, max: 1, step: 0.01, title: "How soft the wipe's edge is: 0 is a hard line" })));
+    }
+
+    // Each side's handle: what it needs (half the length, in source time) and what it has.
+    this.host.appendChild(el("h3", "", "Handles"));
+    const half = x.duration / 2;
+    const handle = (label: string, c: Clip, has: number | undefined, fix: string) => {
+      const need = half * Math.abs(c.speed || 1);
+      const short = has !== undefined && has < need - 1e-6;
+      const text = has === undefined ? "any length — made to measure" : `needs ${need.toFixed(2)}s, has ${Math.max(0, has).toFixed(2)}s${short ? ` — ${fix}` : ""}`;
+      const line = el("div", "field");
+      const say = el("span", short ? "warn" : "muted", text);
+      line.append(linkButton(`${label} “${name(c)}”`, () => store.selectClips([c.id], sel.track), "Select this clip"), say);
+      this.host.appendChild(line);
+    };
+    handle("Before", b, isTimedMedia(binItem(p, b)) ? b.in ?? 0 : undefined, "trim its start, or shorten the transition");
+    handle("After", a, sourceAfter(p, a), "its end will be black: trim it, or shorten the transition");
+
+    const actions = el("div", "insp-actions");
+    actions.append(
+      button("Go to the cut", () => store.seek(b.start)),
+      button("Remove transition", () => void removeTransition(ti, x)),
+    );
     this.host.appendChild(actions);
   }
 

@@ -1,5 +1,5 @@
 import { api, subscribeEvents } from "./api";
-import type { BlueprintInfo, Clip, DaemonEvent, FontFamily, Job, Marker, OverlayInfo, PatchOp, Project, Track, TrackKind } from "./types";
+import type { BlueprintInfo, Clip, DaemonEvent, FontFamily, Job, Marker, OverlayInfo, PatchOp, Project, Track, TrackKind, Transition } from "./types";
 import { allClips, clipPathOf, fpsValue, freeId, isOverlaySource, nearest, seqDuration, seqPath, sequenceIds, sequenceOf } from "./types";
 
 /** A clip found in the project: where it is, as the record every edit of it starts from. */
@@ -12,7 +12,9 @@ export interface Found { seq: string; track: Track; ti: number; clip: Clip; ci: 
  * is about *that* entry. The list is in click order, so its last member is the one a
  * single-clip action means.
  */
-export type Selection = { kind: "clip"; ids: string[] } | { kind: "bin"; id: string } | { kind: "blueprint"; id: string } | null;
+export type Selection = { kind: "clip"; ids: string[] } | { kind: "bin"; id: string } | { kind: "blueprint"; id: string }
+  /** A transition, by its track and the two clips it joins: it has no id of its own. */
+  | { kind: "transition"; track: string; from: string; to: string } | null;
 
 /** A clip waiting to be pasted, with the track it came off. The *kind* travels rather than
  *  being derived from the entry — a video file on an audio track is an audio clip — and
@@ -237,6 +239,7 @@ class Store {
     if (!sel) return null;
     if (sel.kind === "bin") return sel.id in project.bin ? sel : null;
     if (sel.kind === "blueprint") return this.state.blueprints.some((b) => b.id === sel.id) ? sel : null;
+    if (sel.kind === "transition") return this.findTransition(project, sel) ? sel : null;
     const live = new Set(allClips(project).map((c) => c.id));
     const ids = sel.ids.filter((id) => live.has(id));
     return ids.length ? { kind: "clip", ids } : null;
@@ -269,6 +272,19 @@ class Store {
    *  (`select` above is the subscription helper; these are deliberately not the same word.) */
   selectItem(kind: "clip" | "bin" | "blueprint", id: string) {
     this.set({ selection: kind === "clip" ? { kind: "clip", ids: [id] } : { kind, id } });
+  }
+
+  selectTransition(track: string, from: string, to: string) {
+    this.set({ selection: { kind: "transition", track, from, to } });
+  }
+
+  /** The selected transition's track and where it is — in the open sequence, since that
+   *  is the only one a transition can be clicked on. */
+  findTransition(project: Project | null, sel: { track: string; from: string; to: string }): { ti: number; track: Track; x: Transition } | null {
+    const tracks = project ? sequenceOf(project, this.state.sequence)?.tracks ?? [] : [];
+    const ti = tracks.findIndex((t) => t.id === sel.track);
+    const x = tracks[ti]?.transitions.find((y) => y.from === sel.from && y.to === sel.to);
+    return x ? { ti, track: tracks[ti], x } : null;
   }
 
   /** Point the inspector at several clips, and aim the next paste at a track in the same

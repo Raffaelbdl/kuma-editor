@@ -9,7 +9,7 @@ import { animationOf, keysOf } from "../keyframes";
 import { keysFor } from "../shortcuts";
 import { store } from "../store";
 import type { Clip, Marker, PatchOp, Project, Track, TrackKind, Transition } from "../types";
-import { binItem, clipKind, hasAudio, isFileSource, isOverlaySource, isSequenceSource, isTimedMedia, seqDuration } from "../types";
+import { binItem, clipKind, hasAudio, isFileSource, isOverlaySource, isSequenceSource, isTimedMedia, seqDuration, sourceAfter } from "../types";
 import { drawStrip, drawWave } from "./clipmedia";
 
 const HEAD = 136;
@@ -82,6 +82,7 @@ export class Timeline {
     store.select((s) => [s.selection], () => {
       const sel = new Set(store.selectedClips);
       for (const c of this.root.querySelectorAll<HTMLElement>(".clip:not(.ghost)")) c.classList.toggle("selected", sel.has(c.dataset.id!));
+      for (const x of this.root.querySelectorAll<HTMLElement>(".tl-xfade")) x.classList.toggle("selected", this.isSelected(x.dataset.track!, x.dataset.from!, x.dataset.to!));
     });
     store.select((s) => [s.playhead], (s) => this.movePlayhead(s.playhead));
     // Toggled rather than rebuilt, like the selection: which track a paste lands on is a
@@ -305,16 +306,22 @@ export class Timeline {
    * as the overlap it is. Red when `from` runs out of source (the tail is black): the
    * validator's warning, said where it happens.
    */
+  private isSelected(track: string, from: string, to: string) {
+    const s = store.state.selection;
+    return s?.kind === "transition" && s.track === track && s.from === from && s.to === to;
+  }
+
   private transitionEl(p: Project, t: Track, ti: number, x: Transition, a: Clip, b: Clip): HTMLDivElement {
     const half = x.duration / 2;
     const zoom = store.state.zoom;
-    const tail = sourceLeft(p, a);
+    const tail = sourceAfter(p, a);
     const short = tail !== undefined && tail < half * Math.abs(a.speed || 1) - 1e-6;
-    const xf = el("div", `tl-xfade ${x.kind}${short ? " short" : ""}`);
+    const xf = el("div", `tl-xfade ${x.kind}${short ? " short" : ""}${this.isSelected(t.id, x.from, x.to) ? " selected" : ""}`);
+    Object.assign(xf.dataset, { track: t.id, from: x.from, to: x.to });
     xf.style.left = `${this.x(b.start - half) - HEAD}px`;
     xf.style.width = `${x.duration * zoom}px`;
     const secs = +x.duration.toFixed(3);
-    xf.title = `${x.kind} ${secs}s — the two clips overlap here: “${b.label || b.bin}” starts early and “${a.label || a.bin}” plays on past its end, using the footage beyond their edit points`
+    xf.title = `${x.kind} ${secs}s — click to inspect. The two clips overlap here: “${b.label || b.bin}” starts early and “${a.label || a.bin}” plays on past its end, using the footage beyond their edit points`
       + (short ? `\n\n“${a.label || a.bin}” has only ${tail!.toFixed(2)}s of source after its out point: the end of the transition will be black. Trim its end, or shorten the transition.` : "")
       + "\n\nDouble-click for its length, right-click for more";
     if (!this.folded(t)) {
@@ -333,7 +340,8 @@ export class Timeline {
       handle(b, (b.in ?? 0) - half * speed(b), "in", w);
       handle(a, (a.in ?? 0) + (a.end - a.start) * speed(a), "out", short ? Math.max(0, (tail! / speed(a)) * zoom) : w);
     }
-    xf.addEventListener("pointerdown", (e) => e.stopPropagation());
+    // A click selects it, for the inspector: its kind, length, pattern and handles.
+    xf.addEventListener("pointerdown", (e) => { e.stopPropagation(); if (e.button === 0) store.selectTransition(t.id, x.from, x.to); });
     xf.addEventListener("dblclick", (e) => { e.stopPropagation(); void editTransitionDuration(ti, x); });
     xf.addEventListener("contextmenu", (e) => {
       e.preventDefault();
@@ -671,11 +679,3 @@ function niceStep(zoom: number): number {
   return steps.find((s) => s >= target) ?? 60;
 }
 
-/** Seconds of source a clip's entry has after the clip's out point, when that is knowable:
- *  a probed file or a sequence. A still, a colour or an overlay is made to any length. */
-function sourceLeft(p: Project, c: Clip): number | undefined {
-  const item = binItem(p, c);
-  if (!isTimedMedia(item)) return undefined;
-  const total = item && isSequenceSource(item.source) ? seqDuration(p, c.bin) : item?.meta?.duration;
-  return total === undefined || total === null ? undefined : total - (c.in ?? 0) - (c.end - c.start) * Math.abs(c.speed || 1);
-}

@@ -114,7 +114,7 @@ export class Library {
 
   private markSelected() {
     const sel = store.state.selection;
-    const key = sel && sel.kind !== "clip" ? `${sel.kind}:${sel.id}` : "";
+    const key = sel && (sel.kind === "bin" || sel.kind === "blueprint") ? `${sel.kind}:${sel.id}` : "";
     for (const n of this.host.querySelectorAll<HTMLElement>("[data-sel]")) n.classList.toggle("selected", n.dataset.sel === key);
   }
 

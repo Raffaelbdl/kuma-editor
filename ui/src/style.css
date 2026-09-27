@@ -271,7 +271,9 @@ textarea.comment { font-family: var(--sans); font-size: 13px; min-height: 96px; 
 .tl-xfade { position: absolute; top: 50%; bottom: 5px; min-width: 6px; border: 1px solid var(--sel); opacity: 0.8; border-radius: 4px; z-index: 1; cursor: pointer; overflow: hidden; }
 .tl-xfade::after { content: ""; position: absolute; inset: 0; background: repeating-linear-gradient(45deg, var(--sel) 0 2px, transparent 2px 6px); }
 .tl-xfade.wipe::after { background: repeating-linear-gradient(-45deg, var(--sel) 0 2px, transparent 2px 6px); }
-.tl-xfade:hover { opacity: 1; }
+.tl-xfade:hover, .tl-xfade.selected { opacity: 1; }
+.tl-xfade.selected { outline: 2px solid var(--sel); outline-offset: 1px; }
+#inspector .warn { color: var(--danger); }
 /* The handles a transition plays — footage beyond the clips' edit points — ghosted under
    the hatching: the incoming clip's left of the cut, the outgoing clip's right of it. */
 .tl-xfade .xf-handle { position: absolute; top: 0; bottom: 0; width: 50%; overflow: hidden; opacity: 0.6; pointer-events: none; }

@@ -10,7 +10,7 @@ import { startJob, store, toast } from "./store";
 import type { ClipboardEntry, Found } from "./store";
 import type { MenuItem } from "./menu";
 import type { BinItem, BinSource, Clip, Marker, OverlayManifest, OverlaySource, PatchOp, Project, Track, TrackKind, Transition } from "./types";
-import { binItem, binPath, childrenOf, clipPathOf, hasAudio, isFileSource, isOverlaySource, isTimedMedia, itemKind, orientation, parentOf, seqDuration, shiftEffect, trackFor, trackPathOf, trimEffect, wouldNest, wouldRecurse } from "./types";
+import { LUMAS, binItem, binPath, childrenOf, clipPathOf, hasAudio, isFileSource, isOverlaySource, isTimedMedia, itemKind, orientation, parentOf, seqDuration, shiftEffect, trackFor, trackPathOf, trimEffect, wouldNest, wouldRecurse } from "./types";
 
 /** Clip ids are minted by kind: `o1` for an overlay, `c1` for anything else. */
 const clipPrefix = (kind: TrackKind) => (kind === "overlay" ? "o" : "c");
@@ -740,18 +740,25 @@ const transitionPath = (ti: number, x: Transition): string | null => {
   return i < 0 ? null : `${store.seqPath}/tracks/${ti}/transitions/${i}`;
 };
 
+/** Change a transition's fields, as one edit. */
+export async function updateTransition(ti: number, x: Transition, changes: Partial<Transition>, note: string) {
+  const path = transitionPath(ti, x);
+  if (path) await store.patch([{ op: "replace", path, value: { ...x, ...changes } }], `transition ${x.from} → ${x.to}: ${note}`);
+}
+
+/** A length, snapped to the frame and never less than one. */
+export const setTransitionDuration = (ti: number, x: Transition, d: number) =>
+  updateTransition(ti, x, { duration: Math.max(1 / store.fps, store.snap(d)) }, `${d}s`);
+
 export async function editTransitionDuration(ti: number, x: Transition) {
   const text = await askText({ title: "Transition length", label: "Seconds", value: String(+x.duration.toFixed(3)), ok: "Set" });
   const d = Number(text);
-  if (text === null || !(d > 0)) return;
-  const path = transitionPath(ti, x);
-  if (path) await store.patch([{ op: "replace", path: `${path}/duration`, value: store.snap(d) || 1 / store.fps }], `transition ${x.from} → ${x.to} ${d}s`);
+  if (text !== null && d > 0) await setTransitionDuration(ti, x, d);
 }
 
-export async function setTransitionKind(ti: number, x: Transition, kind: Transition["kind"]) {
-  const path = transitionPath(ti, x);
-  if (path) await store.patch([{ op: "replace", path, value: { ...x, kind, luma: kind === "wipe" ? x.luma ?? "wipe_left" : null } }], `transition ${x.from} → ${x.to}: ${kind}`);
-}
+/** A wipe needs a pattern; a dissolve carries none. */
+export const setTransitionKind = (ti: number, x: Transition, kind: Transition["kind"]) =>
+  updateTransition(ti, x, { kind, luma: kind === "wipe" ? x.luma ?? LUMAS[0] : null }, kind);
 
 export async function removeTransition(ti: number, x: Transition) {
   const path = transitionPath(ti, x);

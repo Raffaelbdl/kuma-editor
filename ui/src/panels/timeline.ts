@@ -247,9 +247,9 @@ export class Timeline {
     lane.addEventListener("pointerdown", (e) => { if (e.target === lane && e.button === 0) { store.selectClips([], t.id); this.scrub(e); } });
     for (const c of t.clips) lane.appendChild(this.clipEl(p, t, ti, c));
     for (const x of t.transitions) {
+      const a = t.clips.find((c) => c.id === x.from);
       const b = t.clips.find((c) => c.id === x.to);
-      if (!b || !t.clips.some((c) => c.id === x.from)) continue;
-      lane.appendChild(this.transitionEl(ti, x, b));
+      if (a && b) lane.appendChild(this.transitionEl(p, t, ti, x, a, b));
     }
     row.appendChild(lane);
     return row;
@@ -294,16 +294,45 @@ export class Timeline {
   }
 
   /**
-   * A transition, over the cut it joins: click-through to nothing, but a double-click
-   * sets its length and a right-click offers the rest. Made from a clip's right-click
-   * ("Transition into the next clip"), which is the one place a person looks for it.
+   * A transition, over the cut it joins: a double-click sets its length and a right-click
+   * offers the rest. Made from a clip's right-click ("Transition into the next clip").
+   *
+   * The clips stay butt-joined in the document — that is what keeps a transition one
+   * field for an agent — and the compiler overlaps them by reaching past their edit points
+   * into the *handles*: `from` plays on past its out point, `to` starts before its in
+   * point. Those frames are nowhere else on screen, so the transition draws them, faintly:
+   * the incoming clip's handle left of the cut, the outgoing clip's right of it. It reads
+   * as the overlap it is. Red when `from` runs out of source (the tail is black): the
+   * validator's warning, said where it happens.
    */
-  private transitionEl(ti: number, x: Transition, b: Clip): HTMLDivElement {
-    const xf = el("div", `tl-xfade ${x.kind}`);
-    xf.style.left = `${this.x(b.start - x.duration / 2) - HEAD}px`;
-    xf.style.width = `${x.duration * store.state.zoom}px`;
+  private transitionEl(p: Project, t: Track, ti: number, x: Transition, a: Clip, b: Clip): HTMLDivElement {
+    const half = x.duration / 2;
+    const zoom = store.state.zoom;
+    const tail = sourceLeft(p, a);
+    const short = tail !== undefined && tail < half * Math.abs(a.speed || 1) - 1e-6;
+    const xf = el("div", `tl-xfade ${x.kind}${short ? " short" : ""}`);
+    xf.style.left = `${this.x(b.start - half) - HEAD}px`;
+    xf.style.width = `${x.duration * zoom}px`;
     const secs = +x.duration.toFixed(3);
-    xf.title = `${x.kind} ${secs}s — double-click for its length, right-click for more`;
+    xf.title = `${x.kind} ${secs}s — the two clips overlap here: “${b.label || b.bin}” starts early and “${a.label || a.bin}” plays on past its end, using the footage beyond their edit points`
+      + (short ? `\n\n“${a.label || a.bin}” has only ${tail!.toFixed(2)}s of source after its out point: the end of the transition will be black. Trim its end, or shorten the transition.` : "")
+      + "\n\nDouble-click for its length, right-click for more";
+    if (!this.folded(t)) {
+      const h = Math.round((this.heightOf(t) - CLIP_CHROME) / 2);
+      const w = half * zoom;
+      /** `c`'s handle from source second `from`, `width` px of it — the rest is black,
+       *  as it will render. */
+      const handle = (c: Clip, from: number, side: "in" | "out", width: number) => {
+        const item = binItem(p, c);
+        if (!item || !isFileSource(item.source) || item.source.kind === "audio" || t.kind === "audio") return;
+        const band = el("div", `xf-handle ${side}`);
+        drawStrip(band, c.bin, item.source.path, { ...c, in: from }, zoom, width, h);
+        xf.appendChild(band);
+      };
+      const speed = (c: Clip) => Math.abs(c.speed || 1);
+      handle(b, (b.in ?? 0) - half * speed(b), "in", w);
+      handle(a, (a.in ?? 0) + (a.end - a.start) * speed(a), "out", short ? Math.max(0, (tail! / speed(a)) * zoom) : w);
+    }
     xf.addEventListener("pointerdown", (e) => e.stopPropagation());
     xf.addEventListener("dblclick", (e) => { e.stopPropagation(); void editTransitionDuration(ti, x); });
     xf.addEventListener("contextmenu", (e) => {
@@ -640,4 +669,13 @@ function niceStep(zoom: number): number {
   const target = 80 / zoom; // seconds per ~80px
   const steps = [0.1, 0.25, 0.5, 1, 2, 5, 10, 15, 30, 60];
   return steps.find((s) => s >= target) ?? 60;
+}
+
+/** Seconds of source a clip's entry has after the clip's out point, when that is knowable:
+ *  a probed file or a sequence. A still, a colour or an overlay is made to any length. */
+function sourceLeft(p: Project, c: Clip): number | undefined {
+  const item = binItem(p, c);
+  if (!isTimedMedia(item)) return undefined;
+  const total = item && isSequenceSource(item.source) ? seqDuration(p, c.bin) : item?.meta?.duration;
+  return total === undefined || total === null ? undefined : total - (c.in ?? 0) - (c.end - c.start) * Math.abs(c.speed || 1);
 }

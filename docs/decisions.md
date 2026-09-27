@@ -2602,6 +2602,18 @@ guesses, so when there is no room the toast says which clip to trim and which en
 length are the transition's own right-click; a wipe's pattern and softness are left to the
 file until someone asks for them in the editor.
 
+**Clips stay butt-joined; the transition draws the overlap** — adopted, after the first
+person to use one read two touching clips as "no transition". Kdenlive makes a transition
+by overlapping clips on two tracks, so what you see is what renders — and adding one moves
+clips, changes the sequence's length and turns "clips on a track never overlap" into "never,
+unless a transition covers exactly this overlap", a pair of facts an agent editing JSON
+would keep out of step. Here a transition is `{from, to, duration}` on a cut, and the
+compiler makes the overlap from the handles (`from` plays on past its out point, `to` starts
+before its in point). So the timeline draws those handle frames, ghosted under the hatching —
+the incoming clip's left of the cut, the outgoing clip's right of it — and turns the
+transition red, with the tail black, when `from` runs out of source: the validator's warning,
+shown where it happens.
+
 ## Still open
 
 Nested sequences are done and the editor is an application now, so this list is the whole

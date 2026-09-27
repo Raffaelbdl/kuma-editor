@@ -10,10 +10,9 @@
 // the first out of sight as soon as a project had more than a few entries.
 
 import { api } from "../api";
-import { addMediaPaths, desktop, dropMedia, pickAndAddMedia } from "../desktop";
+import { desktop, dropMedia, pickAndAddMedia } from "../desktop";
 import { button, dragPayload, el, isFileDrag, row, setDragPayload } from "../dom";
 import { icon, type IconName } from "../icons";
-import { askText } from "../modal";
 import { store } from "../store";
 import { blueprintActions, moveBinItem, newItems, promptNewFolder } from "../edits";
 import { menuBelow, showMenu } from "../menu";
@@ -121,10 +120,9 @@ export class Library {
   private renderBin(p: Project, tools: HTMLElement) {
     const create = tool("plus", "New — a title, an overlay from a blueprint, a sequence or a folder (or right-click in the bin)", () => menuBelow(create, newItems(null)));
     tools.append(create, tool("folder-plus", "New folder", () => void promptNewFolder(null)));
-    // In the desktop shell the native picker is the obvious way in; the typed path is for
-    // both, because it is the only way to reference a file outside the project.
+    // The shell's picker is the way in; a browser tab has none (see *Adding media by path*
+    // in `docs/decisions.md`).
     if (desktop()) tools.appendChild(tool("import", "Import media files…", () => void pickAndAddMedia()));
-    tools.appendChild(tool("path", "Add media by path (relative to the project, or absolute)…", () => void addByPath()));
 
     if (!Object.keys(p.bin).length) this.body.appendChild(el("p", "muted", "Empty. Add media or a title with the buttons above, or drop files here."));
     const list = el("div", "bin-list");
@@ -172,12 +170,6 @@ export class Library {
 /** One button of the toolbar: an icon, and what it does in its tooltip. */
 function tool(name: IconName, title: string, run: () => void): HTMLButtonElement {
   return button(icon(name, 15), run, title, "icon tool");
-}
-
-/** Add a media file by its path, as typed. */
-async function addByPath() {
-  const path = await askText({ title: "Add media by path", label: "Path", placeholder: "media/clip.mp4", ok: "Add" });
-  if (path) await addMediaPaths([path], null);
 }
 
 /**

@@ -97,7 +97,7 @@ export async function dropMedia(files: FileList, parent: string | null): Promise
 }
 
 /** Add each path to the bin, stopping at the first that fails. */
-export async function addMediaPaths(paths: string[], parent: string | null): Promise<void> {
+async function addMediaPaths(paths: string[], parent: string | null): Promise<void> {
   if (!paths.length) return;
   // One at a time, against the revision each previous add produced: the daemon refuses a
   // patch built on a stale revision, and a multi-select would hit that on the second file.

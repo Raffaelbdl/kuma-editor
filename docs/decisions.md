@@ -2614,6 +2614,21 @@ the incoming clip's left of the cut, the outgoing clip's right of it — and tur
 transition red, with the tail black, when `from` runs out of source: the validator's warning,
 shown where it happens.
 
+## Adding media by path
+
+**The bin's "add media by path" button is gone** — adopted. It was the typed-path field
+under the bin, then an icon in its toolbar, and its `>_` icon is wanted for an integrated
+terminal the toolbar will open. The terminal is the better home for what the field did:
+anything a path can say — a file outside the project, a folder of them, a glob — is a
+`kuma add-media` away there, and an agent does it over MCP (`add_media`) or the API
+(`POST /api/bin`) as before; only the button is gone, not the route.
+
+What it costs: a browser tab now has no way to add media at all — the file picker and
+dropped files are the desktop shell's, since only the shell knows a file's path. That is
+accepted because the browser tab is the second-class surface (the app is where people
+edit), and it lasts until the terminal lands. If a browser-only workflow turns up first,
+the answer is the terminal in the browser too, not the field back.
+
 ## Still open
 
 Nested sequences are done and the editor is an application now, so this list is the whole

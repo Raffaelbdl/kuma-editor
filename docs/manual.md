@@ -177,7 +177,7 @@ its waveform along the bottom — one clip, picture and sound, drawn in two band
 split into a video and an audio track, so it stays one thing to move for you and for an
 agent. Both are made by the daemon on first sight (`/api/bin/{id}/strip.json`,
 `peaks.json`) and cached in `.kuma/thumbs/`. A track's height is dragged at the bottom edge
-of its head, and its caret folds it to one line of kind and name; `Ctrl`+wheel zooms around
+of its head, and its caret folds it to one line of kind and name; double-click a track's name (or right-click its head) to rename it; `Ctrl`+wheel zooms around
 the pointer. The bin, the inspector and the timeline are sized by dragging the seams
 between them (double-click one to reset). Heights, folds and sizes are this browser's view
 state, never the document. Tabs close with a middle click.

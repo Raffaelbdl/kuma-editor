@@ -106,6 +106,7 @@ const GESTURES: { section: Section; does: string; what: string }[] = [
   { section: "Editing", does: "Double-click a marker's flag", what: "Edit its comment (right-click: delete it)" },
   { section: "Editing", does: "Right-click a clip", what: "Split it there, add a transition, copy, group, delete" },
   { section: "Editing", does: "Right-click the ruler", what: "Add a marker there" },
+  { section: "Editing", does: "Double-click a track's name", what: "Rename it (or right-click its head)" },
   { section: "Editing", does: "Drag a track's bottom edge", what: "Make it taller or shorter; its caret folds it to a line" },
   { section: "Transport", does: "Ctrl + wheel", what: "Zoom the timeline around the pointer" },
   { section: "Transport", does: "Middle-click a tab", what: "Close it" },

@@ -764,3 +764,15 @@ export async function removeTransition(ti: number, x: Transition) {
   const path = transitionPath(ti, x);
   if (path) await store.patch([{ op: "remove", path }], `remove transition ${x.from} → ${x.to}`);
 }
+
+/** Rename a track of the open sequence. A name is the track's label and nothing else —
+ *  edits address it by index, pastes match it by id — so any text will do. */
+export async function renameTrack(id: string) {
+  const t = store.tracks.find((x) => x.id === id);
+  if (!t) return;
+  const name = await askText({ title: "Rename track", label: "Name", value: t.name, ok: "Rename" });
+  // Found again: the dialog was up for as long as the person was typing.
+  const ti = store.tracks.findIndex((x) => x.id === id);
+  if (name === null || ti < 0 || name === store.tracks[ti].name) return;
+  await store.patch([{ op: "replace", path: `${store.seqPath}/tracks/${ti}/name`, value: name }], `rename track ${id}`);
+}

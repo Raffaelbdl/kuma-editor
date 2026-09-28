@@ -2,7 +2,7 @@
 
 import { Cmd, run } from "../commands";
 import { button, dragPayload, dragPointer, el, isFileDrag } from "../dom";
-import { addMarker, addTransition, editMarker, editTransitionDuration, joinedAfter, moveMarker, placeBinItem, placeBlueprint, removeMarker, removeTransition, setTransitionKind, splitAt, transitionBlocked } from "../edits";
+import { addMarker, addTransition, renameTrack, editMarker, editTransitionDuration, joinedAfter, moveMarker, placeBinItem, placeBlueprint, removeMarker, removeTransition, setTransitionKind, splitAt, transitionBlocked } from "../edits";
 import { showMenu } from "../menu";
 import { icon } from "../icons";
 import { animationOf, keysOf } from "../keyframes";
@@ -230,7 +230,20 @@ export class Timeline {
     head.addEventListener("pointerdown", () => store.focusTrack(t.id));
     const label = el("div", "label");
     const fold = button(folded ? "▸" : "▾", () => this.setFold(t, !folded), folded ? "Unfold this track" : "Fold this track to one line", "fold");
-    label.append(fold, el("div", "kind", t.kind), el("div", "tname", t.name || t.id));
+    const tname = el("div", "tname", t.name || t.id);
+    tname.title = "Double-click to rename";
+    tname.addEventListener("dblclick", () => void renameTrack(t.id));
+    label.append(fold, el("div", "kind", t.kind), tname);
+    head.addEventListener("contextmenu", (e) => {
+      e.preventDefault();
+      showMenu([
+        { heading: t.name || t.id },
+        { label: "Rename…", run: () => void renameTrack(t.id) },
+        { label: folded ? "Unfold" : "Fold to one line", run: () => this.setFold(t, !folded) },
+        "separator",
+        { label: "Remove track", run: () => void store.patch([{ op: "remove", path: `${store.seqPath}/tracks/${ti}` }], `remove track ${t.id}`), disabled: t.clips.length > 0, title: t.clips.length ? "Only an empty track can be removed" : undefined },
+      ], e.clientX, e.clientY);
+    });
     const toggles = el("div", "toggles");
     const toggle = (text: string, on: boolean, field: "muted" | "hidden") => {
       const b = button(text, () => store.patch([{ op: "replace", path: `${store.seqPath}/tracks/${ti}/${field}`, value: !on }], `${field} ${t.id}`), field === "muted" ? "Mute" : "Hide");

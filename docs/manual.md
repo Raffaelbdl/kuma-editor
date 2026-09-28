@@ -523,11 +523,11 @@ and the values live with the rest of the project's decisions.
 
 - **The preview looks stale or an overlay is missing from it?** Press the top bar's reload
   button (the circular arrow). It hands the engine the timeline again even if nothing in
-  the project changed (a media file replaced on disk, say). It spins while it works, since
-  baking the overlays of nested sequences can take seconds. When it finishes it says how
-  many overlays are drawn live and how many were baked, and names each overlay that would
-  not bake, with the reason. If the preview engine is not built, it says that instead.
-
+  the project changed (a media file replaced on disk, say), then says how many overlays are
+  drawn live and how many were baked. Overlays of nested sequences that have not been baked
+  yet are left out at first and baked by a `preview-bake` job in the job queue; the preview
+  picks them up when it ends, and an overlay that would not bake is named with the reason.
+  If the preview engine is not built, the button says that instead.
 - **Just pulled? Run `npm run rebuild`.** The binary, `ui/dist` and `app/dist` are not in
   git, so a pull leaves them behind, and each fails in a way that does not name the build
   step: `kuma init` writing a project the editor refuses to open, or the editor window

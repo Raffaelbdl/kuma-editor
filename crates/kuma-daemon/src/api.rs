@@ -550,9 +550,73 @@ async fn bin_asset(State(st): S, Path((id, file)): Path<(String, String)>) -> Re
     let ext = match file.as_str() {
         "thumb.png" => "png",
         "preview.webp" => "webp",
+        // Written with `strip.json`, which is what says it is current.
+        "strip.jpg" => "strip.jpg",
+        "peaks.json" | "strip.json" => return media_view(st, id, file).await,
         _ => return Err(ApiError::not_found("not found")),
     };
     file_response(&bin_asset_path(&st, &id, ext))
+}
+
+/// One media view generated at a time: a timeline full of new clips asks for all of theirs
+/// at once, and ffmpeg per clip in parallel only makes every one of them late.
+static MEDIA_VIEWS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// What the timeline draws on a media entry's clips, made on first request and kept in
+/// `.kuma/thumbs/` beside the overlay stills (so a prune drops them with the entry):
+/// `peaks.json`, its waveform, and `strip.json`, the index of its filmstrip `strip.jpg`.
+/// Each names the file it was made from, so a relinked entry is made again. Looking, not
+/// editing: nothing here touches the document.
+async fn media_view(st: Arc<AppState>, id: String, file: String) -> Result<Response, ApiError> {
+    let (path, kind, meta) = match read(&st.project).bin.get(&id) {
+        Some(kuma_core::BinItem { source: BinSource::File { path, kind, .. }, meta, .. }) => (path.clone(), *kind, meta.clone().unwrap_or_default()),
+        _ => return Err(ApiError::not_found("not a media entry")),
+    };
+    let src = jobs::resolve_path(&st, std::path::Path::new(&path));
+    let out = bin_asset_path(&st, &id, &file);
+    let target = out.clone();
+    blocking(move || -> Result<(), String> {
+        let source = src.to_string_lossy().into_owned();
+        let stamp = std::fs::metadata(&src).and_then(|m| m.modified()).map_err(|e| format!("{path}: {e}"))?;
+        // Current views are answered without waiting on one being made.
+        if current(&out, &source, stamp) {
+            return Ok(());
+        }
+        let _one = MEDIA_VIEWS.lock().unwrap_or_else(|p| p.into_inner());
+        let _cache = read(&st.cache_users);
+        if current(&out, &source, stamp) {
+            return Ok(());
+        }
+        let dir = st.config.thumbs_dir();
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        // Scratch is `.tmp-…` beside its target until persisted, and gone on any error.
+        let scratch = |suffix: &str| tempfile::Builder::new().prefix(".tmp-").suffix(suffix).tempfile_in(&dir).map_err(|e| e.to_string());
+        let v = if file == "peaks.json" {
+            json!({ "source": source, "rate": kuma_overlay::PEAK_RATE, "peaks": kuma_overlay::peaks(&src)? })
+        } else {
+            let jpg = scratch(".jpg")?;
+            let strip = kuma_overlay::filmstrip(&src, &meta, kind == kuma_core::MediaKind::Image, jpg.path())?;
+            jpg.persist(bin_asset_path(&st, &id, "strip.jpg")).map_err(|e| e.to_string())?;
+            json!({ "source": source, "strip": strip })
+        };
+        let tmp = scratch(".json")?;
+        std::fs::write(tmp.path(), v.to_string()).map_err(|e| e.to_string())?;
+        tmp.persist(&out).map_err(|e| e.to_string())?;
+        Ok(())
+    })
+    .await?
+    .map_err(ApiError::bad_request)?;
+    file_response(&target)
+}
+
+/// Whether the view at `out` was made from `source` since it last changed.
+fn current(out: &std::path::Path, source: &str, stamp: std::time::SystemTime) -> bool {
+    #[derive(Deserialize)]
+    struct Made {
+        source: String,
+    }
+    std::fs::metadata(out).and_then(|m| m.modified()).is_ok_and(|t| t >= stamp)
+        && std::fs::read(out).ok().and_then(|b| serde_json::from_slice::<Made>(&b).ok()).is_some_and(|m| m.source == source)
 }
 
 // ---------- assets ----------
@@ -841,14 +905,18 @@ struct PreviewReload {
     /// Preview resolution as a fraction of the project size (0.25..=1).
     #[serde(default)]
     scale: Option<f64>,
+    /// Hand the engine the timeline even when it is unchanged (the Reload button).
+    #[serde(default)]
+    force: bool,
 }
 
 async fn preview_reload(State(st): S, body: Option<Json<PreviewReload>>) -> ApiResult {
-    if let Some(s) = body.and_then(|b| b.0.scale) {
+    let body = body.map(|b| b.0);
+    if let Some(s) = body.as_ref().and_then(|b| b.scale) {
         *lock(&st.preview.scale) = s.clamp(0.25, 1.0);
     }
-    let r = preview::reload(&st).await?;
-    Ok(Json(json!({ "mlt": r.path, "changed": r.changed, "video": r.video, "audio": r.audio, "scale": *lock(&st.preview.scale) })))
+    let r = if body.is_some_and(|b| b.force) { preview::reload_forced(&st).await? } else { preview::reload(&st).await? };
+    Ok(Json(json!({ "mlt": r.path, "changed": r.changed, "video": r.video, "audio": r.audio, "baked": r.baked, "baking": r.baking, "scale": *lock(&st.preview.scale) })))
 }
 
 // ---------- overlay preview (live DOM) ----------

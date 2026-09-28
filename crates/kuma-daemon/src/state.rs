@@ -40,7 +40,8 @@ impl Config {
     pub fn thumbs_dir(&self) -> PathBuf {
         self.cache_dir().join("thumbs")
     }
-    /// Where a bin entry's still (`png`) or moving preview (`webp`) lives.
+    /// Where a bin entry's generated files live: its still (`png`), moving preview
+    /// (`webp`), or a media entry's waveform and filmstrip (`peaks.json`, `strip.…`).
     pub fn thumb_path(&self, bin_id: &str, ext: &str) -> PathBuf {
         self.thumbs_dir().join(format!("{bin_id}.{ext}"))
     }

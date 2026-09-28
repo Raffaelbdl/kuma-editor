@@ -53,6 +53,10 @@ export const api = {
   effectPresets: () => json<EffectPreset[]>("/api/presets/effects"),
   /** Render previews of the given blueprints and overlay entries. */
   thumbs: (which: { blueprints?: string[]; bins?: string[] }) => json<{ job: number }>("/api/blueprints/thumbs", { method: "POST", body: JSON.stringify(which) }),
+  /** What the timeline draws on a media entry's clips, made on first asking: its waveform,
+   *  and the index of its filmstrip (`/api/bin/{id}/strip.jpg`). Looking, not an edit. */
+  peaks: (bin: string) => json<{ rate: number; peaks: number[] }>(`/api/bin/${encodeURIComponent(bin)}/peaks.json`),
+  strip: (bin: string) => json<{ strip: { count: number; step: number; width: number; height: number } }>(`/api/bin/${encodeURIComponent(bin)}/strip.json`),
   /** Check an overlay folder against the authoring contract. Reads only. */
   lintOverlay: (path: string) => json<LintReport>(`/api/overlays/lint?${new URLSearchParams({ path })}`),
   /** Add a media file, or an overlay folder of the project (or its `overlay.json`). */
@@ -86,7 +90,10 @@ export const api = {
   cache: () => json<CacheUsage>("/api/cache"),
   /** A job: delete what `.kuma/` holds that the project no longer uses. */
   pruneCache: () => json<{ job: number }>("/api/cache/prune", { method: "POST", body: "{}" }),
-  previewReload: (scale?: number) => json<{ mlt: string; scale: number }>("/api/preview/reload", { method: "POST", body: JSON.stringify(scale === undefined ? {} : { scale }) }),
+  /** Compile the open sequence for the engine; `force` hands it over even unchanged. Says
+   *  what it did: which halves the engine took, and the nested overlays it baked or not. */
+  previewReload: (opts: { scale?: number; force?: boolean } = {}) =>
+    json<{ mlt: string; scale: number; changed: boolean; baked: number; baking: string[] }>("/api/preview/reload", { method: "POST", body: JSON.stringify(opts) }),
   /** The live document for an overlay **bin entry**, at the length and in the frame the
    *  workbench is looking at. No clip: an entry is editable before anything places it.
    *  `rev` only defeats the browser cache when the iframe is recreated. */

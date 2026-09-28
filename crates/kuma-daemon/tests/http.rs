@@ -315,6 +315,56 @@ async fn media_is_added_into_a_folder_in_one_edit() {
     assert!(!state.project.read().unwrap().bin.contains_key("boop"));
 }
 
+/// What the timeline draws on a media clip: a waveform at `PEAK_RATE` per second and a
+/// filmstrip with one frame per stretch of the file, made on first asking, kept, and made
+/// again when the entry points at another file. Looking at them is not an edit.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_media_entry_has_a_waveform_and_a_filmstrip() {
+    if !kuma_overlay::media::ffprobe_available() {
+        eprintln!("ffmpeg unavailable; skipping media view test");
+        return;
+    }
+    let (state, addr, dir) = daemon().await;
+    let clip = dir.path().join("clip.mp4");
+    let args = "-f lavfi -i testsrc=size=160x90:rate=10:duration=6 -f lavfi -i sine=duration=6 -shortest -pix_fmt yuv420p";
+    let mut args: Vec<String> = args.split(' ').map(String::from).collect();
+    args.push(clip.to_string_lossy().into_owned());
+    kuma_overlay::media::ffmpeg(&args).unwrap();
+    let (status, _, reply) = request(&addr, "POST", "/api/bin", &format!(r#"{{ "path": {:?}, "id": "clip" }}"#, clip.to_string_lossy()));
+    assert!(status.contains("200"), "{status}: {reply}");
+    let revision = state.project.read().unwrap().revision;
+
+    let (status, body) = get_body(&addr, "/api/bin/clip/peaks.json");
+    assert!(status.contains("200"), "{status}: {body}");
+    let peaks: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(peaks["rate"], kuma_overlay::PEAK_RATE);
+    let n = peaks["peaks"].as_array().unwrap().len() as i64;
+    assert!((n - 600).abs() <= 2, "six seconds at 100 a second, not {n}");
+    // lavfi's sine is at an eighth of full scale.
+    assert!(peaks["peaks"][300].as_u64().is_some_and(|p| (28..=36).contains(&p)), "{}", peaks["peaks"][300]);
+
+    let (status, body) = get_body(&addr, "/api/bin/clip/strip.json");
+    assert!(status.contains("200"), "{status}: {body}");
+    let strip: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(strip["strip"]["count"], 3);
+    assert_eq!(strip["strip"]["step"], 2.0);
+    assert_eq!((strip["strip"]["width"].as_u64(), strip["strip"]["height"].as_u64()), (Some(96), Some(54)));
+    let (status, headers) = get(&addr, "/api/bin/clip/strip.jpg");
+    assert!(status.contains("200"), "{status}");
+    assert_eq!(headers.get("content-type").map(String::as_str), Some("image/jpeg"));
+
+    // Kept: asked again, the same file answers, untouched.
+    let kept = state.config.thumb_path("clip", "strip.json");
+    let made = std::fs::metadata(&kept).unwrap().modified().unwrap();
+    get_body(&addr, "/api/bin/clip/strip.json");
+    assert_eq!(std::fs::metadata(&kept).unwrap().modified().unwrap(), made);
+    assert_eq!(state.project.read().unwrap().revision, revision, "looking is not an edit");
+
+    // Not every entry has them: an overlay has neither.
+    let (status, _) = get_body(&addr, "/api/bin/tag/peaks.json");
+    assert!(status.starts_with("HTTP/1.1 404"), "{status}");
+}
+
 /// The queue's routes: a listing a fresh window can rebuild from, and a cancel that tells
 /// an unknown job from one that can no longer be stopped. A bad preset is refused when
 /// the render is asked for, not discovered as a failed job.

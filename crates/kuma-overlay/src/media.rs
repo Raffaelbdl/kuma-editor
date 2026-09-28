@@ -113,6 +113,98 @@ pub fn ffmpeg(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
+/// Peaks per second of source in a [`peaks`] waveform.
+pub const PEAK_RATE: u32 = 100;
+
+/// A waveform for the timeline: the loudest sample in each `1 / PEAK_RATE` s of `src`,
+/// mixed to mono, scaled to `0..=255`. Streamed, so an hour of audio is not held in memory.
+pub fn peaks(src: &Path) -> Result<Vec<u8>, String> {
+    use std::io::Read;
+    const RATE: u32 = 8000;
+    let mut child = Command::new("ffmpeg")
+        .args(["-v", "error", "-i"])
+        .arg(src)
+        .args(["-vn", "-ac", "1", "-ar", &RATE.to_string(), "-f", "s16le", "-"])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("ffmpeg: {e}"))?;
+    // Buffered: a read is one bucket, a few hundred bytes, far too small for a syscall each.
+    let mut stdout = std::io::BufReader::with_capacity(1 << 16, child.stdout.take().expect("piped"));
+    let mut buf = vec![0u8; (RATE / PEAK_RATE) as usize * 2];
+    let mut out = Vec::new();
+    loop {
+        // One bucket per read, the last one short.
+        let mut n = 0;
+        while n < buf.len() {
+            match stdout.read(&mut buf[n..]).map_err(|e| e.to_string())? {
+                0 => break,
+                k => n += k,
+            }
+        }
+        if n < 2 {
+            break;
+        }
+        let loudest = buf[..n].chunks_exact(2).map(|b| i16::from_le_bytes([b[0], b[1]]).unsigned_abs()).max().unwrap_or(0);
+        out.push(((u32::from(loudest) * 255 + 16384) / 32768) as u8);
+    }
+    let done = child.wait_with_output().map_err(|e| e.to_string())?;
+    if !done.status.success() {
+        return Err(String::from_utf8_lossy(&done.stderr).trim().to_string());
+    }
+    Ok(out)
+}
+
+/// A [`filmstrip`]: `count` frames `width`×`height` side by side, the i-th taken from
+/// `(i + 0.5) * step` seconds into the source. A still is one frame and `step` 0.
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize)]
+pub struct Strip {
+    pub count: u32,
+    pub step: f64,
+    pub width: u32,
+    pub height: u32,
+}
+
+/// Frames along a video (or the one frame of a still) in one JPEG at `out`, for drawing
+/// the timeline's clips. About one frame every two seconds, at most 120.
+pub fn filmstrip(src: &Path, meta: &MediaMeta, still: bool, out: &Path) -> Result<Strip, String> {
+    const HEIGHT: u32 = 54;
+    let aspect = match (meta.width, meta.height) {
+        (Some(w), Some(h)) if w > 0 && h > 0 => f64::from(w) / f64::from(h),
+        _ => 16.0 / 9.0,
+    };
+    // Even, for the encoder's chroma subsampling.
+    let width = (((f64::from(HEIGHT) * aspect) / 2.0).round() as u32).max(1) * 2;
+    let duration = meta.duration.filter(|d| *d > 0.0 && !still);
+    let (count, step) = match duration {
+        Some(d) => {
+            let count = ((d / 2.0).ceil() as u32).clamp(1, 120);
+            (count, d / f64::from(count))
+        }
+        None => (1, 0.0),
+    };
+    let mut args: Vec<String> = Vec::new();
+    // A long file is read keyframes only: the strip is a sketch, and decoding an hour of
+    // footage to draw sixty stamps is the difference between a second and a minute.
+    if duration.is_some_and(|d| d > 120.0) {
+        args.extend(["-skip_frame", "nokey"].map(String::from));
+    }
+    args.extend(["-i".to_string(), src.to_string_lossy().into_owned()]);
+    let scale = format!("scale={width}:{HEIGHT}");
+    // The first frame at or after the middle of each `step`-long stretch. `select` rather
+    // than `fps`, whose rounding drops the last one at the end of the file.
+    let vf = if count > 1 {
+        let (o, s) = (step / 2.0, step);
+        format!("select='gte(t,{o:.6})*(isnan(prev_selected_t)+gte(floor((t-{o:.6})/{s:.6}),floor((prev_selected_t-{o:.6})/{s:.6})+1))',{scale},tile={count}x1")
+    } else {
+        scale
+    };
+    args.extend(["-an", "-vf", &vf, "-frames:v", "1", "-q:v", "5"].map(String::from));
+    args.push(out.to_string_lossy().into_owned());
+    ffmpeg(&args)?;
+    Ok(Strip { count, step, width, height: HEIGHT })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

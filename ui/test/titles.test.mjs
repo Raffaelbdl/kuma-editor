@@ -51,7 +51,7 @@ describe("titles from the bin", { skip: why ? `skipping: ${why}` : false }, () =
   });
 
   it("offers the blueprints that say `create`, then the other things a bin makes", async () => {
-    await page.eval(`[...document.querySelectorAll("#library button")].find(b => b.textContent === "+ New").click()`);
+    await page.eval(`document.querySelector('#library .lib-tools button[title^="New —"]').click()`);
     await page.until(`document.querySelector(".popup-menu")`);
     const items = await page.eval(menuItems);
     assert.deepEqual(items.slice(0, 2), ["Title", "Title + subtitle"]);
@@ -107,7 +107,7 @@ describe("titles from the bin", { skip: why ? `skipping: ${why}` : false }, () =
   });
 
   it("names the next one after it, in a folder of its own", async () => {
-    await page.eval(`[...document.querySelectorAll("#library button")].find(b => b.textContent === "+ New").click()`);
+    await page.eval(`document.querySelector('#library .lib-tools button[title^="New —"]').click()`);
     await page.until(`document.querySelector(".popup-menu")`);
     await page.eval(`${menuItem("Title")}.click()`);
     const p = await page.until(`${PROJECT_NOW}.then(p => p.bin["title-2"] ? p : null)`);

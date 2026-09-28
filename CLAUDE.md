@@ -101,7 +101,8 @@ Chrome headless shell if hyperframes should not download one.
 - Overlays are live DOM on the sequence you have open and **baked** in the sequences it
   nests, which is what puts them in the preview at all; the two sets are disjoint, so none
   is drawn twice. Preview bakes are best effort — an overlay that will not bake costs that
-  overlay, never the preview.
+  overlay, never the preview — and run behind the compile (`preview-bake`), so opening a
+  sequence never waits on hyperframes.
 - An **overlay** is a folder the project owns (`overlays/<name>/`: `overlay.json` +
   `index.html`) and a bin entry names it (`"overlay": "overlays/<name>"`), always relative
   and inside the project. A **blueprint** is the same shape in the user's library,

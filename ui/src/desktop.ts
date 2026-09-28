@@ -86,7 +86,7 @@ export async function pickAndAddMedia(): Promise<void> {
 export async function dropMedia(files: FileList, parent: string | null): Promise<void> {
   const app = desktop();
   if (!files.length) {
-    toast("The drop arrived without its files. Drag it again, or use Browse…", "err", 8000);
+    toast("The drop arrived without its files. Drag it again, or use the bin's Import button", "err", 8000);
     return;
   }
   if (!app) {

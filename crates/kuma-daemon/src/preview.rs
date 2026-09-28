@@ -15,7 +15,6 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use crate::jobs::OverlayScope;
 use kuma_mlt::Streams;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, Command};
@@ -57,6 +56,19 @@ pub struct PreviewHandle {
     /// that arrived mid-compile asks for one more pass.
     compiling: AsyncMutex<()>,
     pending: AtomicBool,
+    /// The background bake of nested overlays the cache did not have.
+    behind: Mutex<Behind>,
+}
+
+/// A compile never waits on hyperframes: it uses the bakes the cache holds and hands the
+/// missing ones to one background job at a time (`preview-bake`), which clients hear end and
+/// answer with a reload, as they answer an edit. `tried` keeps an overlay that will not bake
+/// from being retried on every compile; an edit or a forced reload clears it.
+#[derive(Default)]
+struct Behind {
+    running: bool,
+    revision: u64,
+    tried: std::collections::HashSet<String>,
 }
 
 impl Default for PreviewHandle {
@@ -70,6 +82,7 @@ impl Default for PreviewHandle {
             compiles: AtomicU64::new(0),
             compiling: AsyncMutex::new(()),
             pending: AtomicBool::new(false),
+            behind: Mutex::new(Behind::default()),
         }
     }
 }
@@ -107,6 +120,11 @@ pub struct Reloaded {
     pub changed: bool,
     pub video: bool,
     pub audio: bool,
+    /// Overlays of nested sequences in the picture, from the cache.
+    pub baked: usize,
+    /// Overlay clips of nested sequences still to bake: missing from the picture until the
+    /// background bake (a `preview-bake` job) is done.
+    pub baking: Vec<String>,
 }
 
 pub struct Engine {
@@ -263,21 +281,34 @@ pub async fn reload(state: &Arc<AppState>) -> anyhow::Result<Reloaded> {
     let before = count();
     state.preview.pending.store(true, Ordering::SeqCst);
     let _guard = state.preview.compiling.lock().await;
+    let mut bakes = (0, Vec::new());
     while state.preview.pending.swap(false, Ordering::SeqCst) {
-        compile_and_load(state).await?;
+        bakes = compile_and_load(state).await?;
     }
     let after = count();
     let [video, audio] = [0, 1].map(|i| after[i] != before[i]);
     let path = state.config.cache_dir().join(format!("{}.mlt", state.preview.halves[0].name));
-    Ok(Reloaded { path, changed: video || audio, video, audio })
+    let (baked, baking) = bakes;
+    Ok(Reloaded { path, changed: video || audio, video, audio, baked, baking })
+}
+
+/// [`reload`], handing the engine both graphs whether or not they changed: what a person
+/// asks for with the Reload button, when something the document does not name — a media
+/// file replaced on disk — has changed under the engine.
+pub async fn reload_forced(state: &Arc<AppState>) -> anyhow::Result<Reloaded> {
+    for half in &state.preview.halves {
+        *lock(&half.loaded) = None;
+    }
+    lock(&state.preview.behind).tried.clear();
+    reload(state).await
 }
 
 /// Compile the open sequence (at the preview scale) as two graphs, the picture and the
 /// sound, and hand the engine each one it is not already holding exactly.
-/// [`OverlayScope::Nested`] is what makes the overlays of the sequences it nests appear at
-/// all; its own are left unbaked, and therefore skipped, for the UI's live DOM. The sound
-/// needs no bakes at all.
-async fn compile_and_load(state: &Arc<AppState>) -> anyhow::Result<()> {
+/// The overlays of the sequences it nests appear baked, from the cache — the missing ones
+/// are left out and baked behind (`bake_behind`); its own are left unbaked, and therefore
+/// skipped, for the UI's live DOM. The sound needs no bakes at all.
+async fn compile_and_load(state: &Arc<AppState>) -> anyhow::Result<(usize, Vec<String>)> {
     // First, because starting an engine clears what it is holding.
     let engine = state.preview.ensure(state).await?;
     let st = state.clone();
@@ -295,10 +326,13 @@ async fn compile_and_load(state: &Arc<AppState>) -> anyhow::Result<()> {
         st.preview.compiles.fetch_add(1, Ordering::SeqCst);
         // Each graph is written, and later sent, only when it differs from the one held.
         let mut fresh = Vec::new();
+        let mut report = (0, Vec::new());
         for (i, half) in st.preview.halves.iter().enumerate() {
             opts.streams = half.stream;
             opts.bakes = if half.stream.video() {
-                crate::jobs::bake_for(&st, &project, &sequence, OverlayScope::Nested, None, &|_, _| {}, None)?
+                let (bakes, missing) = crate::jobs::cached_nested(&st, &project, &sequence);
+                report = (bakes.len(), missing);
+                bakes
             } else {
                 Default::default()
             };
@@ -312,9 +346,10 @@ async fn compile_and_load(state: &Arc<AppState>) -> anyhow::Result<()> {
                 fresh.push((i, crate::jobs::write_compiled(&st, &xml, half.name)?, stamp));
             }
         }
-        Ok::<_, anyhow::Error>(fresh)
+        Ok::<_, anyhow::Error>((fresh, report))
     })
     .await??;
+    let (fresh, report) = fresh;
     // Only once the engine has actually been told, so a failed send does not leave us
     // believing it holds something it never received.
     for (i, path, stamp) in fresh {
@@ -323,7 +358,41 @@ async fn compile_and_load(state: &Arc<AppState>) -> anyhow::Result<()> {
         *lock(&half.loaded) = Some(stamp);
         half.loads.fetch_add(1, Ordering::SeqCst);
     }
-    Ok(())
+    bake_behind(state, &report.1);
+    Ok(report)
+}
+
+/// Bake the nested overlays a compile found missing, in one background job at a time. Not
+/// awaited: opening a sequence whose nested overlays were never baked used to wait on
+/// hyperframes for every one of them, which is minutes, with the request hanging.
+fn bake_behind(state: &Arc<AppState>, missing: &[String]) {
+    let revision = read(&state.project).revision;
+    let todo: Vec<String> = {
+        let mut b = lock(&state.preview.behind);
+        if b.revision != revision {
+            b.revision = revision;
+            b.tried.clear();
+        }
+        let todo: Vec<String> = missing.iter().filter(|id| !b.tried.contains(*id)).cloned().collect();
+        // One job at a time; the reload its end causes finds whatever it did not cover.
+        if todo.is_empty() || b.running {
+            return;
+        }
+        b.running = true;
+        b.tried.extend(todo.iter().cloned());
+        todo
+    };
+    let st = state.clone();
+    crate::jobs::spawn(state.clone(), "preview-bake", move |progress| {
+        let project = read(&st.project).clone();
+        let (out, errs) = crate::jobs::bake_ids(&st, &project, &todo, progress);
+        lock(&st.preview.behind).running = false;
+        errs.iter().for_each(|e| tracing::warn!("preview: {e:#}"));
+        match errs.is_empty() {
+            true => Ok(serde_json::json!({ "baked": out.len() })),
+            false => Err(anyhow::anyhow!("{} baked, {} would not: {}", out.len(), errs.len(), errs.iter().map(|e| format!("{e:#}")).collect::<Vec<_>>().join("; "))),
+        }
+    });
 }
 
 fn stamp(xml: &str) -> u64 {

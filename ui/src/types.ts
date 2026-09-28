@@ -135,6 +135,9 @@ export interface Clip {
 }
 
 export interface Transition { from: string; to: string; kind: "dissolve" | "wipe"; duration: number; luma?: string | null; softness?: number }
+/** The wipe patterns the compiler draws itself — `kuma_core::LUMAS`. A `luma` may also be a
+ *  PGM/PNG under the project, which the inspector keeps but does not offer. */
+export const LUMAS = ["wipe_left", "wipe_right", "wipe_up", "wipe_down", "iris", "diagonal"];
 
 export interface Marker { t: number; label: string; color?: string | null }
 
@@ -540,4 +543,14 @@ export function trimEffect(e: Effect, cut: number): Effect {
   const kfs = keyframesOf(e);
   if (!kfs.some((k) => k.t > cut)) return e;
   return { ...e, keyframes: [...kfs.filter((k) => k.t <= cut), sampleEffect(e, cut)] } as Effect;
+}
+
+/** Seconds of source a clip's entry has after the clip's out point, when that is knowable —
+ *  a probed file or a sequence, as the validator's `source_duration` reads it. A still, a
+ *  colour or an overlay is made to any length. What a transition out of it can play. */
+export function sourceAfter(p: Project, c: Clip): number | undefined {
+  const item = binItem(p, c);
+  if (!isTimedMedia(item)) return undefined;
+  const total = item && isSequenceSource(item.source) ? seqDuration(p, c.bin) : item?.meta?.duration;
+  return total === undefined || total === null ? undefined : total - (c.in ?? 0) - (c.end - c.start) * Math.abs(c.speed || 1);
 }

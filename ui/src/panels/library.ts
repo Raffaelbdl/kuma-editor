@@ -12,8 +12,9 @@
 import { api } from "../api";
 import { desktop, dropMedia, pickAndAddMedia } from "../desktop";
 import { button, dragPayload, el, isFileDrag, row, setDragPayload } from "../dom";
-import { store, toast } from "../store";
-import { blueprintActions, moveBinItem, newItems } from "../edits";
+import { icon, type IconName } from "../icons";
+import { store } from "../store";
+import { blueprintActions, moveBinItem, newItems, promptNewFolder } from "../edits";
 import { menuBelow, showMenu } from "../menu";
 import type { BinItem, Project } from "../types";
 import { childrenMap, isFolderSource, isOverlaySource, isSequenceSource, itemKind, parentOf } from "../types";
@@ -83,30 +84,47 @@ export class Library {
   private tab: "bin" | "blueprints" = "bin";
   private collapsed = new Set<string>();
 
+  /** The list, which scrolls under the tabs and the toolbar. Kept across a rebuild with
+   *  where it was scrolled to, or every agent edit would throw you back to the top. */
+  private body: HTMLDivElement = el("div", "lib-body");
+
   private render() {
     const s = store.state;
     const p = s.project;
-    this.host.innerHTML = "";
+    const scrolled = this.tab === this.body.dataset.tab ? this.body.scrollTop : 0;
+    this.host.replaceChildren();
+    this.body.replaceChildren();
     if (!p) return;
 
+    // The tabs and what you can do in the one showing, fixed above the list: the tools
+    // used to be buttons under the last entry, and scrolled away with it.
     const tabs = el("div", "tabs");
     for (const [id, label] of [["bin", "Bin"], ["blueprints", "Blueprints"]] as const) {
       tabs.appendChild(button(label, () => { this.tab = id; this.render(); }, "", `tab${this.tab === id ? " on" : ""}`));
     }
-    this.host.appendChild(tabs);
-    if (this.tab === "bin") this.renderBin(p);
-    else this.renderBlueprints();
+    const tools = el("div", "lib-tools");
+    this.host.append(row("lib-head", tabs, tools), this.body);
+    this.body.dataset.tab = this.tab;
+    if (this.tab === "bin") this.renderBin(p, tools);
+    else this.renderBlueprints(tools);
+    this.body.scrollTop = scrolled;
     this.markSelected();
   }
 
   private markSelected() {
     const sel = store.state.selection;
-    const key = sel && sel.kind !== "clip" ? `${sel.kind}:${sel.id}` : "";
+    const key = sel && (sel.kind === "bin" || sel.kind === "blueprint") ? `${sel.kind}:${sel.id}` : "";
     for (const n of this.host.querySelectorAll<HTMLElement>("[data-sel]")) n.classList.toggle("selected", n.dataset.sel === key);
   }
 
-  private renderBin(p: Project) {
-    if (!Object.keys(p.bin).length) this.host.appendChild(el("p", "muted", "Empty. Add media below, or a title from + New."));
+  private renderBin(p: Project, tools: HTMLElement) {
+    const create = tool("plus", "New — a title, an overlay from a blueprint, a sequence or a folder (or right-click in the bin)", () => menuBelow(create, newItems(null)));
+    tools.append(create, tool("folder-plus", "New folder", () => void promptNewFolder(null)));
+    // The shell's picker is the way in; a browser tab has none (see *Adding media by path*
+    // in `docs/decisions.md`).
+    if (desktop()) tools.appendChild(tool("import", "Import media files…", () => void pickAndAddMedia()));
+
+    if (!Object.keys(p.bin).length) this.body.appendChild(el("p", "muted", "Empty. Add media or a title with the buttons above, or drop files here."));
     const list = el("div", "bin-list");
     // One grouping pass, then a walk: an entry's children (a transcript under its media,
     // a folder's contents) sit under it, indented, behind a caret. Cycle-safe because
@@ -129,51 +147,29 @@ export class Library {
     walk(null, 0);
     // Dropping a row on the list's empty space lists it last at the top level.
     dropTarget(list, undefined, () => ({ parent: null, before: null }));
-    this.host.appendChild(list);
-    const create = button("+ New", () => menuBelow(create, newItems(null)), "Create a title, an overlay from a blueprint, a sequence or a folder (or right-click in the bin)");
-    this.host.appendChild(row("lib-add", create));
-
-    const input = el("input");
-    input.placeholder = "media/clip.mp4";
-    const add = button("Add", async () => {
-      if (!input.value) return;
-      try {
-        const r = await api.addMedia(input.value, p.revision);
-        toast(`Added ${r.id} to the bin`, "ok");
-        input.value = "";
-        await store.refresh();
-      } catch (e) {
-        toast((e as Error).message, "err");
-      }
-    });
-    // In the desktop shell the native picker is the obvious way in, so it gets its own
-    // full-width row; the typed path stays for both, because it is the only way to
-    // reference a file outside the project.
-    if (desktop()) {
-      const browse = button("Browse…", () => void pickAndAddMedia(), "Add media files with the system file picker");
-      browse.style.flex = "1";
-      this.host.appendChild(row("lib-add", browse));
-    }
-    this.host.appendChild(row("lib-add", input, add));
+    this.body.appendChild(list);
   }
 
-  private renderBlueprints() {
-    this.host.appendChild(row("lib-add",
-      button("⟳ rescan", async () => { store.set({ blueprints: await api.reloadBlueprints() }); }, "Rescan the blueprint libraries"),
-    ));
+  private renderBlueprints(tools: HTMLElement) {
+    tools.appendChild(tool("refresh", "Rescan the blueprint libraries", async () => { store.set({ blueprints: await api.reloadBlueprints() }); }));
 
     const blueprints = store.state.blueprints;
     if (!blueprints.length) {
-      this.host.appendChild(el("p", "muted", "No blueprints found. Run `kuma library` to install the starter set, point KUMA_LIBRARY at a folder of them, or save an overlay from the bin as one."));
+      this.body.appendChild(el("p", "muted", "No blueprints found. Run `kuma library` to install the starter set, point KUMA_LIBRARY at a folder of them, or save an overlay from the bin as one."));
       return;
     }
     // Name, kind and the two ways in; clicking shows the details in the inspector.
     for (const t of blueprints) {
       const card = blueprintCard(t.manifest.name || t.id, t.id);
       card.appendChild(blueprintActions(t.id));
-      this.host.appendChild(card);
+      this.body.appendChild(card);
     }
   }
+}
+
+/** One button of the toolbar: an icon, and what it does in its tooltip. */
+function tool(name: IconName, title: string, run: () => void): HTMLButtonElement {
+  return button(icon(name, 15), run, title, "icon tool");
 }
 
 /**

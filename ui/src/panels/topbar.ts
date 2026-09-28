@@ -33,6 +33,14 @@ export function mountTopbar(host: HTMLElement): void {
 
   command(Cmd.render, "Render…", () => openRenderDialog("render"));
 
+  // Spins while the reload it asked for is in flight: it can bake, and a button that does
+  // nothing visible for five seconds reads as a button that did nothing.
+  const reload = button(icon("refresh"), () => run(Cmd.reloadPreview), "Reload the preview: recompile the timeline, bake the overlays of nested sequences, and say how it went", "icon reload");
+  store.select((s) => [s.reloading], (s) => {
+    reload.classList.toggle("busy", s.reloading);
+    reload.disabled = s.reloading;
+  });
+
   const render = button("Render…", () => run(Cmd.render), "Render a sequence, and see the queue of renders", "primary");
   // What is running, and the way to the queue: a click on it is a click on the queue tab.
   const status = el("span", "status");
@@ -40,11 +48,13 @@ export function mountTopbar(host: HTMLElement): void {
   status.title = "Open the job queue";
   host.append(
     name, seqSel, rev, size,
-    button("Undo", () => run(Cmd.undo)),
-    button("Redo", () => run(Cmd.redo)),
+    // Icons where the tooltip says it all: the bar is for what you reach for, and these
+    // are reached for by their keys.
+    button(icon("undo"), () => run(Cmd.undo), `Undo (${keysFor(Cmd.undo)})`, "icon"),
+    button(icon("redo"), () => run(Cmd.redo), `Redo (${keysFor(Cmd.redo)})`, "icon"),
     el("span", "spacer"),
     render,
-    button("Reload preview", () => run(Cmd.reloadPreview)),
+    reload,
     // Chosen once and then left alone, so it is an icon rather than a word: the bar is
     // for what you reach for while editing. The desktop shell's View menu names the same
     // command, and a browser has only this.

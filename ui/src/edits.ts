@@ -9,8 +9,8 @@ import { askForm, askText } from "./modal";
 import { startJob, store, toast } from "./store";
 import type { ClipboardEntry, Found } from "./store";
 import type { MenuItem } from "./menu";
-import type { BinItem, BinSource, Clip, Marker, OverlayManifest, OverlaySource, PatchOp, Project, Track, TrackKind } from "./types";
-import { binItem, binPath, childrenOf, clipPathOf, hasAudio, isFileSource, isOverlaySource, isTimedMedia, itemKind, orientation, parentOf, seqDuration, shiftEffect, trackFor, trackPathOf, trimEffect, wouldNest, wouldRecurse } from "./types";
+import type { BinItem, BinSource, Clip, Marker, OverlayManifest, OverlaySource, PatchOp, Project, Track, TrackKind, Transition } from "./types";
+import { LUMAS, binItem, binPath, childrenOf, clipPathOf, hasAudio, isFileSource, isOverlaySource, isTimedMedia, itemKind, orientation, parentOf, seqDuration, shiftEffect, trackFor, trackPathOf, trimEffect, wouldNest, wouldRecurse } from "./types";
 
 /** Clip ids are minted by kind: `o1` for an overlay, `c1` for anything else. */
 const clipPrefix = (kind: TrackKind) => (kind === "overlay" ? "o" : "c");
@@ -397,10 +397,11 @@ export async function addTrack(kind: TrackKind) {
 /** Split every selected clip the playhead crosses, in one patch — half a cut applying is
  *  not an outcome anyone wants. Time-relative effects follow: the left half keeps its
  *  fade-in, the right its fade-out, and keyframes are re-based on the new start. */
-export async function splitAtPlayhead() {
-  const t = store.state.playhead;
+/** Split the selected clips at `t` — the playhead for S, the pointer for a clip's
+ *  right-click. */
+export async function splitAt(t: number) {
   const cutting = store.selectedFound.filter((f) => t > f.clip.start && t < f.clip.end);
-  if (!cutting.length) { toast("Select a clip under the playhead to split", ""); return; }
+  if (!cutting.length) { toast("Select a clip that runs across that moment to split it", ""); return; }
   const ops: PatchOp[] = [];
   const minted: string[] = [];
   /** The right half's id, by the clip it was cut from: a transition leaving the clip now
@@ -666,8 +667,8 @@ async function askComment(t: number, value: string, ok: string): Promise<string 
 
 /** Add a marker at the playhead with a comment — or, when one is already on that frame,
  *  edit that one's: two markers on one frame are one note written twice. */
-export async function addMarker() {
-  const t = store.state.playhead;
+/** A marker at `t` — the playhead for M, the pointer for the ruler's right-click. */
+export async function addMarker(t = store.state.playhead) {
   const there = store.markers.findIndex((m) => Math.abs(m.t - t) < store.halfFrame);
   if (there >= 0) return editMarker(there);
   const label = await askComment(t, "", "Add");
@@ -689,3 +690,89 @@ export async function editMarker(i: number) {
 export const moveMarker = (i: number, t: number) => patchMarker(i, { t }, `move marker to ${at(t)}`);
 
 export const removeMarker = (i: number) => patchMarker(i, null, `remove marker at ${at(store.markers[i]?.t ?? 0)}`);
+
+// ---------- transitions ----------
+//
+// A transition joins two clips that touch on one track, `from` → `to`, and is centred on
+// the cut: half its length is drawn from after `from`'s out point and half from before
+// `to`'s in point. Those are the *handles*, and the validator refuses a transition that has
+// none — which is the one thing about them nobody guesses, so the editor says it in words.
+
+/** The clip that starts where `c` ends on its track: the one a transition from it goes to. */
+export const joinedAfter = (track: Track, c: Clip): Clip | undefined =>
+  track.clips.find((b) => b.id !== c.id && Math.abs(b.start - c.end) < 1e-6);
+
+/** Why `a` cannot take a transition into the clip it touches, or null when it can: what
+ *  the clip menu disables, and what `addTransition` says if asked anyway. */
+export function transitionBlocked(track: Track, a: Clip): string | null {
+  const b = joinedAfter(track, a);
+  if (!b) return "A transition joins two clips that touch: move one against the other first";
+  if (track.kind === "overlay") return "Overlays take no transitions yet: their bakes carry no handles";
+  if (track.transitions.some((x) => x.from === a.id && x.to === b.id)) return "These clips already have a transition — right-click it to change it";
+  return null;
+}
+
+/** A dissolve from `from` into the clip it touches: a second, or as much as the clips and
+ *  the handle before the second one's in point allow — the validator's one hard rule on
+ *  handles. A short tail after the first is its warning to give, not a refusal here. */
+export async function addTransition(from: string) {
+  const f = store.findClip(from);
+  if (!f) return;
+  const blocked = transitionBlocked(f.track, f.clip);
+  const b = joinedAfter(f.track, f.clip);
+  if (blocked || !b) { toast(blocked ?? "", ""); return; }
+  const used = (c: Clip) => f.track.transitions.filter((x) => x.from === c.id || x.to === c.id).reduce((n, x) => n + x.duration / 2, 0);
+  let half = Math.min(f.clip.end - f.clip.start - used(f.clip), b.end - b.start - used(b));
+  let why = "the clips are too short";
+  if (isTimedMedia(binItem(store.state.project!, b))) {
+    const room = (b.in ?? 0) / Math.abs(b.speed || 1);
+    if (room < half) { half = room; why = `“${b.label || b.bin}” starts at the very beginning of its source: trim its start so there is material to fade in from`; }
+  }
+  const frames = Math.floor(Math.min(0.5, half) * 2 * store.fps + 1e-6);
+  if (frames < 2) { toast(`No room for a transition: ${why}`, "err", 8000); return; }
+  const value: Transition = { from, to: b.id, kind: "dissolve", duration: frames / store.fps };
+  await store.patch([{ op: "add", path: `${trackPathOf(f)}/transitions/-`, value }], `dissolve ${from} → ${b.id}`);
+}
+
+/** Where transition `i` of track `ti` (on the open sequence) is, if it is still there. */
+const transitionPath = (ti: number, x: Transition): string | null => {
+  const i = store.tracks[ti]?.transitions.findIndex((y) => y.from === x.from && y.to === x.to) ?? -1;
+  return i < 0 ? null : `${store.seqPath}/tracks/${ti}/transitions/${i}`;
+};
+
+/** Change a transition's fields, as one edit. */
+export async function updateTransition(ti: number, x: Transition, changes: Partial<Transition>, note: string) {
+  const path = transitionPath(ti, x);
+  if (path) await store.patch([{ op: "replace", path, value: { ...x, ...changes } }], `transition ${x.from} → ${x.to}: ${note}`);
+}
+
+/** A length, snapped to the frame and never less than one. */
+export const setTransitionDuration = (ti: number, x: Transition, d: number) =>
+  updateTransition(ti, x, { duration: Math.max(1 / store.fps, store.snap(d)) }, `${d}s`);
+
+export async function editTransitionDuration(ti: number, x: Transition) {
+  const text = await askText({ title: "Transition length", label: "Seconds", value: String(+x.duration.toFixed(3)), ok: "Set" });
+  const d = Number(text);
+  if (text !== null && d > 0) await setTransitionDuration(ti, x, d);
+}
+
+/** A wipe needs a pattern; a dissolve carries none. */
+export const setTransitionKind = (ti: number, x: Transition, kind: Transition["kind"]) =>
+  updateTransition(ti, x, { kind, luma: kind === "wipe" ? x.luma ?? LUMAS[0] : null }, kind);
+
+export async function removeTransition(ti: number, x: Transition) {
+  const path = transitionPath(ti, x);
+  if (path) await store.patch([{ op: "remove", path }], `remove transition ${x.from} → ${x.to}`);
+}
+
+/** Rename a track of the open sequence. A name is the track's label and nothing else —
+ *  edits address it by index, pastes match it by id — so any text will do. */
+export async function renameTrack(id: string) {
+  const t = store.tracks.find((x) => x.id === id);
+  if (!t) return;
+  const name = await askText({ title: "Rename track", label: "Name", value: t.name, ok: "Rename" });
+  // Found again: the dialog was up for as long as the person was typing.
+  const ti = store.tracks.findIndex((x) => x.id === id);
+  if (name === null || ti < 0 || name === store.tracks[ti].name) return;
+  await store.patch([{ op: "replace", path: `${store.seqPath}/tracks/${ti}/name`, value: name }], `rename track ${id}`);
+}

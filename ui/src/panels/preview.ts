@@ -74,6 +74,7 @@ export class Preview {
     // them — the strip under the stage, a key, the application menu — asks by id.
     command(Cmd.togglePlay, "Play/Pause", () => this.togglePlay());
     command(Cmd.reloadPreview, "Reload Preview", () => this.reloadNow());
+    this.watchBakes();
     command(Cmd.previewScale, "Preview Resolution", (scale) => this.setScale(Number(scale)));
     this.connect();
   }
@@ -248,8 +249,7 @@ export class Preview {
   /**
    * The Reload button: the timeline handed to the engine again whether or not it changed —
    * a media file replaced on disk is a change the document cannot see — and what came of
-   * it said. It bakes the overlays of nested sequences, which can take seconds, so the
-   * button spins meanwhile (`reloading`), and one that would not bake is named with why.
+   * it said, including the nested overlays still baking behind it (`watchBakes`).
    */
   private async reloadNow() {
     if (store.state.reloading) return;
@@ -262,14 +262,31 @@ export class Preview {
       const said = [
         live ? `${plural(live, "overlay")} drawn live` : "",
         r.baked ? `${plural(r.baked, "overlay")} of nested sequences baked` : "",
+        r.baking.length ? `${plural(r.baking.length, "more")} baking — the preview shows ${r.baking.length === 1 ? "it" : "them"} when that is done` : "",
       ].filter(Boolean);
-      toast(`Preview reloaded${said.length ? ` — ${said.join(", ")}` : ""}`, "ok");
-      for (const f of r.failed) toast(`An overlay did not bake, so the preview shows it missing: ${f}`, "err", 10000);
+      toast(`Preview reloaded${said.length ? ` — ${said.join(", ")}` : ""}`, "ok", r.baking.length ? 6000 : undefined);
     } catch (e) {
       toast(`The preview did not reload: ${(e as Error).message}`, "err", 10000);
     } finally {
       store.set({ reloading: false });
     }
+  }
+
+  /**
+   * The daemon never makes a compile wait on hyperframes: nested overlays the cache lacks
+   * are baked by a `preview-bake` job, and when one ends the preview asks for a reload — as
+   * it does after an edit — so they appear. One that would not bake is said once, with why.
+   */
+  private watchBakes() {
+    const seen = new Set<number>();
+    store.select((s) => [s.jobs], (s) => {
+      for (const j of Object.values(s.jobs)) {
+        if (j.kind !== "preview-bake" || seen.has(j.id) || (j.state !== "done" && j.state !== "failed")) continue;
+        seen.add(j.id);
+        this.reload();
+        if (j.state === "failed") toast(`Some nested overlays would not bake, so the preview leaves them out: ${j.message}`, "err", 10000);
+      }
+    });
   }
 
   /** Called after edits so the engine reloads the compiled timeline. */

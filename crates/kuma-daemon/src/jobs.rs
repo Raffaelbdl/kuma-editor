@@ -512,12 +512,11 @@ pub fn bake_for(
     Ok(out)
 }
 
-/// The preview's half of [`bake_for`]: the overlays of the sequences `root` nests, and why
-/// any would not bake — logged, and said to whoever asked for the reload.
-pub fn bake_nested(state: &AppState, project: &Project, root: &str) -> (Bakes, Vec<anyhow::Error>) {
-    let (out, errs) = bake_clips(state, project, &overlay_clips(project, root, true, None), &|_, _| {}, None, &|r, key| state.baker.bake_keyed(r, key).map(Some));
-    errs.iter().for_each(|e| tracing::warn!("preview: {e:#}"));
-    (out, errs)
+/// Bake these overlay clips, best effort: what baked, and why the rest did not. The
+/// preview's background bake, which must not fail for one broken overlay.
+pub fn bake_ids(state: &AppState, project: &Project, ids: &[String], progress: &dyn Fn(u8, &str)) -> (Bakes, Vec<anyhow::Error>) {
+    let _cache = read(&state.cache_users);
+    bake_clips(state, project, ids, progress, None, &|r, key| state.baker.bake_keyed(r, key).map(Some))
 }
 
 /// Bake the named overlay clips, or every one in the project when none are named. This is
@@ -536,7 +535,16 @@ pub fn bake_all(state: &AppState, project: &Project, only: Option<&[String]>, pr
 /// rendering none; and the clips left out because theirs is not there (or cannot be
 /// keyed). What `kuma compile` includes without waiting on hyperframes.
 pub fn cached_bakes(state: &AppState, project: &Project, root: &str) -> (Bakes, Vec<String>) {
-    let ids = overlay_clips(project, root, false, None);
+    cached(state, project, overlay_clips(project, root, false, None))
+}
+
+/// [`cached_bakes`] for the overlays of the sequences `root` nests only — what the preview
+/// bakes, its own being drawn live.
+pub fn cached_nested(state: &AppState, project: &Project, root: &str) -> (Bakes, Vec<String>) {
+    cached(state, project, overlay_clips(project, root, true, None))
+}
+
+fn cached(state: &AppState, project: &Project, ids: Vec<String>) -> (Bakes, Vec<String>) {
     let (out, _) = bake_clips(state, project, &ids, &|_, _| {}, None, &|r, key| state.baker.cached_keyed(r, key));
     let missing = ids.into_iter().filter(|id| !out.contains_key(id)).collect();
     (out, missing)

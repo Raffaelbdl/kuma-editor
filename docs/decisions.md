@@ -2614,6 +2614,24 @@ the incoming clip's left of the cut, the outgoing clip's right of it — and tur
 transition red, with the tail black, when `from` runs out of source: the validator's warning,
 shown where it happens.
 
+## Preview bakes run behind the compile
+
+**A preview compile never waits on hyperframes** — adopted, after opening a sequence hung
+in a project whose cache had nothing baked: `POST /api/sequence` compiles for the engine,
+and that compile baked every overlay of every nested sequence before answering — seconds
+each, one after another in the worst case — while every further click queued another
+request behind it. The editor looked dead.
+
+The compile now uses the bakes the cache already holds, leaves the missing overlays out of
+the picture, and hands them to one background `preview-bake` job, visible in the job queue
+like any other. When it ends, the client asks for a reload, exactly as it does after an
+edit (`preview.ts`, `watchBakes`), and the overlays appear. An overlay that will not bake
+fails that job with its reason, which the editor says once. It is not retried on every
+compile, only after an edit or a forced reload. This is the same bargain as before — a
+preview bake costs that overlay, never the preview — extended to time: it costs that
+overlay *for now*, never the request. Renders and `sample_frames` still bake everything
+before they start, because what they produce must be complete.
+
 ## Adding media by path
 
 **The bin's "add media by path" button is gone** — adopted. It was the typed-path field

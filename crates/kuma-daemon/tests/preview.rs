@@ -105,7 +105,7 @@ async fn the_engine_is_reloaded_only_when_the_compiled_document_changes() {
     // The Reload button hands it over anyway: a file replaced on disk is not in the document.
     let forced = preview::reload_forced(&state).await.unwrap();
     assert!(forced.video && forced.audio, "both halves, unchanged or not");
-    assert_eq!((forced.baked, forced.failed.len()), (0, 0), "nothing nested, nothing to bake");
+    assert_eq!((forced.baked, forced.baking.len()), (0, 0), "nothing nested, nothing to bake");
 }
 
 /// The picture and the sound are two graphs, and an edit reloads only the one it reaches:
@@ -163,4 +163,33 @@ async fn a_restarted_engine_is_given_the_timeline_again() {
     // Drop the engine the way its process dying does: the next `ensure` starts a new one.
     state.preview.forget();
     assert!(preview::reload(&state).await.unwrap().changed, "the new process was never given a timeline");
+}
+
+/// A reload never waits on hyperframes. Opening a sequence whose nested overlays were never
+/// baked used to hang the request for as long as baking every one of them took; now the
+/// compile leaves them out, says so, and hands them to one background `preview-bake` job,
+/// whose end the client answers with another reload.
+#[tokio::test]
+async fn a_reload_leaves_unbaked_nested_overlays_to_a_background_job() {
+    let Some((state, dir)) = fixture() else { return };
+    let folder = dir.path().join("overlays/tag");
+    std::fs::create_dir_all(&folder).unwrap();
+    std::fs::write(folder.join("overlay.json"), r#"{ "name": "Tag" }"#).unwrap();
+    std::fs::write(folder.join("index.html"), "<html><body data-composition-id=\"root\" data-no-timeline></body></html>").unwrap();
+    let ops: json_patch::Patch = serde_json::from_value(json!([
+        { "op": "add", "path": "/bin/tag", "value": { "name": "Tag", "source": { "overlay": "overlays/tag", "vars": {} } } },
+        { "op": "add", "path": "/bin/inner", "value": { "name": "Inner", "source": { "tracks": [
+            { "id": "o1", "kind": "overlay", "name": "O", "muted": false, "hidden": false, "transitions": [],
+              "clips": [ { "id": "tag1", "start": 0, "end": 1, "bin": "tag" } ] } ], "markers": [] } } },
+        { "op": "add", "path": "/bin/main/source/tracks/0/clips/-", "value": { "id": "nest", "start": 2, "end": 3, "bin": "inner" } }
+    ]))
+    .unwrap();
+    state.apply_patch(&ops.0, None, "test").expect("patch accepted");
+
+    let r = preview::reload(&state).await.unwrap();
+    assert_eq!(r.baking, vec!["tag1".to_string()], "left out of the picture, and said");
+    let bakes = || state.jobs.list(Some("preview-bake")).len();
+    assert_eq!(bakes(), 1, "handed to a background job");
+    preview::reload(&state).await.unwrap();
+    assert_eq!(bakes(), 1, "one job at a time, and not one per compile");
 }

@@ -916,7 +916,7 @@ async fn preview_reload(State(st): S, body: Option<Json<PreviewReload>>) -> ApiR
         *lock(&st.preview.scale) = s.clamp(0.25, 1.0);
     }
     let r = if body.is_some_and(|b| b.force) { preview::reload_forced(&st).await? } else { preview::reload(&st).await? };
-    Ok(Json(json!({ "mlt": r.path, "changed": r.changed, "video": r.video, "audio": r.audio, "baked": r.baked, "failed": r.failed, "scale": *lock(&st.preview.scale) })))
+    Ok(Json(json!({ "mlt": r.path, "changed": r.changed, "video": r.video, "audio": r.audio, "baked": r.baked, "baking": r.baking, "scale": *lock(&st.preview.scale) })))
 }
 
 // ---------- overlay preview (live DOM) ----------

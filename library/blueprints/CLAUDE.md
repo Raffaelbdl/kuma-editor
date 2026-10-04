@@ -84,6 +84,10 @@ overlays/<name>`) does, optionally with `vars`, once it checks clean.
 - At the end of `<head>` (so they win over the overlay's own `:root` fallbacks): CSS
   custom properties `--var-<name>` on `:root` for every scalar var, and
   `--var-<name>-x` / `--var-<name>-y` for `point` vars.
+- On `<html>`: `lang`, from the entry's `lang` var when the manifest declares one and it is
+  not empty; otherwise the page keeps the `lang` it is written with. It decides the forms
+  han characters are drawn in and which font a missing character falls back to, so one
+  folder serves a Japanese entry and an English one.
 - The root `[data-composition-id]` element's `data-duration` (and `data-width`/`data-height`)
   are **rewritten in the markup** to the clip's real length before the renderer sees the
   file — hyperframes sizes the render from the attribute as written, before any script runs.
@@ -165,6 +169,7 @@ Transitions (dissolve/wipe) are refused on overlay clips: bakes carry no handle 
     "anchor": { "type": "point",  "default": { "x": 0.68, "y": 0.28 } },
     "on":     { "type": "boolean", "default": true },
     "note":   { "type": "text",   "default": "multi-line" },
+    "lang":   { "type": "lang",   "default": "", "label": "Language" },
     "cues":   { "type": "cues",   "default": [ { "start": 0, "end": 1.5, "text": "line" } ] }
   },
   "tags": ["label"]
@@ -174,8 +179,11 @@ Transitions (dissolve/wipe) are refused on overlay clips: bakes carry no handle 
 Var types → UI controls: `string` input, `text` textarea, `number` slider (min/max/step),
 `color` picker, `boolean` checkbox, `enum` select, `point` x/y (fraction of frame), `cues`
 one editable row per `{start, end, text}` (seconds; `end` after `start`), `font` a family
-picker (its `--var-<name>` is the quoted family name). A `cues` value
-reaches the overlay only through `window.kuma.vars` — a list has no CSS property.
+picker (its `--var-<name>` is the quoted family name), `lang` a language tag (`ja`,
+`zh-Hant`, `ko`, `en`, or empty for the page's own) that kuma writes onto `<html lang>` —
+the markup need not read it, and a manifest has at most one. Give an overlay that may show
+CJK text a `lang` var rather than copying its folder to change the page's language. A
+`cues` value reaches the overlay only through `window.kuma.vars` — a list has no CSS property.
 
 The inspector lists vars **in the order the manifest writes them**. `group` puts a var in a
 foldable section of that name (sections in the order their first var appears, ungrouped

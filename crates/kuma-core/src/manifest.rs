@@ -69,6 +69,11 @@ pub enum VarType {
     /// A font family by name (`"Inter"`), from the project's `fonts/` or a library's. kuma
     /// supplies the `@font-face` rules; the overlay writes `font-family: var(--var-<name>)`.
     Font,
+    /// The language of the overlay's text, a BCP 47 tag (`ja`, `zh-Hant`, `en`), or empty
+    /// for the page's own. kuma writes it onto the page's `<html lang>`, which decides the
+    /// glyph forms of han characters and the fallback font, so one folder serves entries
+    /// in several languages. The overlay need not read it. At most one per manifest.
+    Lang,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -136,6 +141,9 @@ impl OverlayManifest {
             if let Some(p) = spec.check(&spec.default) {
                 return Some(format!("var `{k}`: default {p}"));
             }
+            if spec.ty == VarType::Lang && self.vars.iter().take_while(|(other, _)| *other != k).any(|(_, s)| s.ty == VarType::Lang) {
+                return Some(format!("var `{k}`: a page has one language, and another `lang` var already sets it"));
+            }
             for (other, allowed) in &spec.when {
                 let Some(target) = self.vars.get(other).filter(|_| other != k) else {
                     return Some(format!("var `{k}`: `when` names `{other}`, which is not another var"));
@@ -184,6 +192,13 @@ impl OverlayManifest {
         out
     }
 
+    /// The page language these (resolved) vars set: the `lang` var's value, unless it is
+    /// empty or there is none, when the page keeps the `lang` it is written with.
+    pub fn lang<'v>(&self, vars: &'v Map<String, Value>) -> Option<&'v str> {
+        let (k, _) = self.vars.iter().find(|(_, s)| s.ty == VarType::Lang)?;
+        vars.get(k)?.as_str().map(str::trim).filter(|l| !l.is_empty())
+    }
+
     /// Validate overrides against the manifest. Returns human-readable problems.
     pub fn check_vars(&self, overrides: &Map<String, Value>) -> Vec<String> {
         let mut problems = Vec::new();
@@ -211,6 +226,15 @@ impl VarSpec {
             VarType::Font => {
                 if !v.as_str().is_some_and(|s| !s.trim().is_empty()) {
                     return Some("expected a font family name".into());
+                }
+            }
+            VarType::Lang => {
+                let Some(s) = v.as_str() else { return Some("expected a language tag such as `ja`, or empty".into()) };
+                // BCP 47's shape, not its registry: letters first, then dash-separated parts.
+                let parts: Vec<&str> = s.trim().split('-').collect();
+                let shaped = parts[0].len() >= 2 && parts[0].len() <= 8 && parts[0].chars().all(|c| c.is_ascii_alphabetic()) && parts[1..].iter().all(|p| (1..=8).contains(&p.len()) && p.chars().all(|c| c.is_ascii_alphanumeric()));
+                if !s.trim().is_empty() && !shaped {
+                    return Some(format!("`{s}` is not a language tag (`ja`, `zh-Hant`, `en-GB`), nor empty for the page's own"));
                 }
             }
             VarType::Color => {
@@ -359,6 +383,26 @@ mod tests {
         let spec: VarSpec = serde_json::from_value(json!({ "type": "font", "default": "Inter" })).unwrap();
         assert!(spec.check(&json!("Playfair Display")).is_none());
         assert!(spec.check(&json!("")).is_some() && spec.check(&json!(3)).is_some());
+    }
+
+    /// A `lang` var is a language tag or empty, the page has one, and empty leaves the
+    /// page's own `lang` in place.
+    #[test]
+    fn a_lang_is_a_language_tag_or_nothing() {
+        let spec: VarSpec = serde_json::from_value(json!({ "type": "lang", "default": "" })).unwrap();
+        for ok in ["", "ja", "zh-Hant", "en-GB", "ja-JP-u-ca-japanese"] {
+            assert!(spec.check(&json!(ok)).is_none(), "{ok}");
+        }
+        for bad in [json!("j"), json!("ja_JP"), json!("日本語"), json!("ja-"), json!(3)] {
+            assert!(spec.check(&bad).is_some(), "{bad}");
+        }
+        let m: OverlayManifest = serde_json::from_value(json!({ "vars": { "label": { "type": "string", "default": "x" }, "lang": { "type": "lang", "default": "" } } })).unwrap();
+        assert!(m.check().is_none());
+        assert_eq!(m.lang(&m.resolve_vars(&Map::new())), None);
+        let ja = json!({ "lang": "ja" });
+        assert_eq!(m.lang(&m.resolve_vars(ja.as_object().unwrap())), Some("ja"));
+        let two: OverlayManifest = serde_json::from_value(json!({ "vars": { "a": { "type": "lang", "default": "" }, "b": { "type": "lang", "default": "ja" } } })).unwrap();
+        assert!(two.check().unwrap().contains("var `b`"), "{:?}", two.check());
     }
 
     #[test]

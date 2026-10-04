@@ -1011,6 +1011,7 @@ fn overlay_document(
         clip,
         head_extra: &head_extra,
         fonts: kuma_overlay::FontCss { faces: &faces, vars: &fonts.vars },
+        lang: manifest.lang(&vars),
     }
     .apply(&html);
     Ok(([(header::CONTENT_TYPE, "text/html; charset=utf-8"), (header::CACHE_CONTROL, "no-store")], out).into_response())

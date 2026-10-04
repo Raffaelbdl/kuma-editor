@@ -399,7 +399,7 @@ impl Baker {
         }
         let faces = fonts.css(STAGED_FONTS);
         let fonts = FontCss { faces: &faces, vars: &fonts.vars };
-        let contract = Contract { vars: &vars, fps: req.fps, width: req.width, height: req.height, duration: internal_duration, speed: req.speed, bake: true, clip: None, head_extra: "", fonts };
+        let contract = Contract { vars: &vars, fps: req.fps, width: req.width, height: req.height, duration: internal_duration, speed: req.speed, bake: true, clip: None, head_extra: "", fonts, lang: req.manifest.lang(&vars) };
         std::fs::write(&entry, contract.apply(&html))?;
         Ok(Staged { dir: src.to_path_buf(), entry, is_still, speed })
     }
@@ -831,6 +831,27 @@ mod tests {
         assert_eq!(baker.vendor_file(&overlay, ".notes"), None, "what is not staged is not served");
         assert_eq!(baker.vendor_file(&overlay, "../title/index.html"), None);
         assert_eq!(baker.vendor_file(&overlay, "nope.js"), None);
+    }
+
+    /// What is staged carries the entry's language on `<html lang>`, so the bake and the
+    /// lint read the page the preview shows. The key moves with it, since the vars are hashed.
+    #[test]
+    fn an_entry_stages_its_own_page_language() {
+        let (_tmp, baker, overlay) = vendor_fixture();
+        std::fs::write(overlay.join("index.html"), r#"<!doctype html><html lang="en"><body><div data-composition-id="main" data-no-timeline></div></body></html>"#).unwrap();
+        let manifest: OverlayManifest = serde_json::from_str(r#"{ "vars": { "lang": { "type": "lang", "default": "" } } }"#).unwrap();
+        let stage = |vars: serde_json::Value| {
+            let vars = vars.as_object().unwrap().clone();
+            let req = BakeRequest { overlay_dir: &overlay, manifest: &manifest, vars: &vars, fps: Fps::new(30, 1), width: 320, height: 240, duration: 1.0, frames: 30, speed: 1.0 };
+            let staged = tempfile::tempdir().unwrap();
+            baker.stage(&req, staged.path()).unwrap();
+            (std::fs::read_to_string(staged.path().join("index.html")).unwrap(), baker.key(&req).unwrap())
+        };
+        let (ja, ja_key) = stage(serde_json::json!({ "lang": "ja" }));
+        let (own, own_key) = stage(serde_json::json!({}));
+        assert!(ja.starts_with(r#"<!doctype html><html lang="ja">"#), "{ja}");
+        assert!(own.starts_with(r#"<!doctype html><html lang="en">"#), "{own}");
+        assert_ne!(ja_key, own_key);
     }
 
     /// The key hashes the `_vendor/` that is staged. Where that is the folder that used to

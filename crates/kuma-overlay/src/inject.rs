@@ -10,7 +10,8 @@
 //!   markup** (hyperframes sizes the render from the attribute as written, before any
 //!   script runs, and mounts children by their own `data-duration`);
 //! * the `@font-face` rules for the families `font` vars name, and those vars' custom
-//!   properties as quoted family names.
+//!   properties as quoted family names;
+//! * the page's `<html lang>`, when a `lang` var sets one.
 
 use kuma_core::Fps;
 use serde_json::{json, Map, Value};
@@ -30,6 +31,9 @@ pub struct Contract<'a> {
     /// hyperframes runtime here).
     pub head_extra: &'a str,
     pub fonts: FontCss<'a>,
+    /// The page language a `lang` var sets (`OverlayManifest::lang`), written onto
+    /// `<html lang>`; `None` leaves the page's own.
+    pub lang: Option<&'a str>,
 }
 
 /// What the `font` vars bring: their faces' `@font-face` rules, and which vars they are,
@@ -43,6 +47,10 @@ pub struct FontCss<'a> {
 impl Contract<'_> {
     pub fn apply(&self, html: &str) -> String {
         let html = stamp_root(html, self.duration, self.width, self.height);
+        let html = match self.lang {
+            Some(lang) => set_page_lang(&html, lang),
+            None => html,
+        };
         // One custom property per scalar var; a point becomes `--var-<name>-x`/`-y`.
         let css = |name: &str, v: &Value| {
             if let (Some(family), true) = (v.as_str(), self.fonts.vars.iter().any(|f| f == name)) {
@@ -258,6 +266,18 @@ pub fn stamp_root(html: &str, duration: f64, width: u32, height: u32) -> String 
     out
 }
 
+/// The page's `<html lang>` set to `lang`: the attribute replaced or added, or, on a page
+/// that never opens `<html>`, an `<html lang>` opened after the doctype, which is where the
+/// parser would have put the one it implies. Only a tag's characters are written.
+pub fn set_page_lang(html: &str, lang: &str) -> String {
+    let lang: String = lang.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-').collect();
+    if let Some(t) = tags(html).find(|t| t.name.eq_ignore_ascii_case("html")) {
+        return format!("{}{}{}", &html[..t.start], set_attr(t.text, "lang", &lang), &html[t.end..]);
+    }
+    let at = tags(html).find(|t| t.name.eq_ignore_ascii_case("!doctype")).map_or(0, |t| t.end);
+    format!("{}<html lang=\"{lang}\">{}", &html[..at], &html[at..])
+}
+
 /// Seconds as a compact decimal (`32.633`, `4`), never exponent notation.
 pub fn fmt_secs(v: f64) -> String {
     let s = format!("{v:.4}");
@@ -338,7 +358,7 @@ mod tests {
         let mut vars = Map::new();
         vars.insert("label".into(), json!("hi"));
         vars.insert("at".into(), json!({ "x": 0.5, "y": 0.25 }));
-        let c = Contract { vars: &vars, fps: Fps::new(30, 1), width: 1920, height: 1080, duration: 2.0, speed: 1.0, bake: true, clip: None, head_extra: "<base href=\"/x/\">\n", fonts: FontCss::default() };
+        let c = Contract { vars: &vars, fps: Fps::new(30, 1), width: 1920, height: 1080, duration: 2.0, speed: 1.0, bake: true, clip: None, head_extra: "<base href=\"/x/\">\n", fonts: FontCss::default(), lang: None };
         let html = c.apply("<html><head><title>x</title></head><body><div data-composition-id=\"main\" data-duration=\"4\"></div></body></html>");
         assert!(html.find("<base").unwrap() < html.find("kuma-inject").unwrap());
         assert!(html.find("kuma-inject").unwrap() < html.find("<title>").unwrap());
@@ -358,7 +378,7 @@ mod tests {
         vars.insert("label".into(), json!("Playfair Display"));
         let font_vars = vec!["font".to_string()];
         let faces = "@font-face { font-family: \"Playfair Display\"; src: url(\"_fonts/playfair-display/0.ttf\"); }\n";
-        let c = Contract { vars: &vars, fps: Fps::new(30, 1), width: 1920, height: 1080, duration: 2.0, speed: 1.0, bake: true, clip: None, head_extra: "", fonts: FontCss { faces, vars: &font_vars } };
+        let c = Contract { vars: &vars, fps: Fps::new(30, 1), width: 1920, height: 1080, duration: 2.0, speed: 1.0, bake: true, clip: None, head_extra: "", fonts: FontCss { faces, vars: &font_vars }, lang: None };
         let html = c.apply("<html><head></head><body><div data-composition-id=\"main\"></div></body></html>");
         assert!(html.contains("--var-font: \"Playfair Display\";"), "{html}");
         assert!(html.contains("--var-label: Playfair Display;"), "only font vars are quoted: {html}");
@@ -381,7 +401,7 @@ mod tests {
 
     #[test]
     fn injection_lands_inside_head_or_after_the_doctype() {
-        let c = Contract { vars: &Map::new(), fps: Fps::new(30, 1), width: 1920, height: 1080, duration: 2.0, speed: 1.0, bake: true, clip: None, head_extra: "", fonts: FontCss::default() };
+        let c = Contract { vars: &Map::new(), fps: Fps::new(30, 1), width: 1920, height: 1080, duration: 2.0, speed: 1.0, bake: true, clip: None, head_extra: "", fonts: FontCss::default(), lang: None };
         let a = c.apply("<!DOCTYPE html><html lang=\"en\"><head lang=\"en\"><title>x</title></head><body></body></html>");
         assert!(a.find("<head lang=\"en\">").unwrap() < a.find("kuma-inject").unwrap() && a.find("kuma-inject").unwrap() < a.find("<title>").unwrap(), "{a}");
         let b = c.apply("<!DOCTYPE html><div data-composition-id=\"main\"></div>");
@@ -394,7 +414,7 @@ mod tests {
         let mut vars = Map::new();
         vars.insert("label".into(), json!("</script><script>alert(1)</script>"));
         vars.insert("sub".into(), json!("x; } body { display:none"));
-        let c = Contract { vars: &vars, fps: Fps::new(30, 1), width: 1920, height: 1080, duration: 2.0, speed: 1.0, bake: false, clip: Some("c1"), head_extra: "", fonts: FontCss::default() };
+        let c = Contract { vars: &vars, fps: Fps::new(30, 1), width: 1920, height: 1080, duration: 2.0, speed: 1.0, bake: false, clip: Some("c1"), head_extra: "", fonts: FontCss::default(), lang: None };
         let html = c.apply("<html><head></head><body><div data-composition-id=\"main\"></div></body></html>");
         assert!(!html.contains("</script><script>alert"), "{html}");
         assert!(html.contains("<\\/script>"), "{html}");
@@ -427,9 +447,25 @@ mod tests {
         let mut vars = Map::new();
         vars.insert("a_title".into(), json!("Let's go"));
         vars.insert("b_color".into(), json!("#ff0000"));
-        let c = Contract { vars: &vars, fps: Fps::new(30, 1), width: 1920, height: 1080, duration: 2.0, speed: 1.0, bake: true, clip: None, head_extra: "", fonts: FontCss::default() };
+        let c = Contract { vars: &vars, fps: Fps::new(30, 1), width: 1920, height: 1080, duration: 2.0, speed: 1.0, bake: true, clip: None, head_extra: "", fonts: FontCss::default(), lang: None };
         let html = c.apply("<html><head></head><body><div data-composition-id=\"main\"></div></body></html>");
         assert!(html.contains(r"--var-a_title: Let\'s go; --var-b_color: #ff0000;"), "{html}");
+    }
+
+    /// A `lang` var's value lands on `<html lang>`, replacing the page's own, or on an
+    /// `<html>` opened where the parser would have implied one; without one the page keeps
+    /// what it was written with.
+    #[test]
+    fn a_lang_var_is_the_pages_language() {
+        assert_eq!(set_page_lang(r#"<!doctype html><html lang="en"><head>"#, "ja"), r#"<!doctype html><html lang="ja"><head>"#);
+        assert_eq!(set_page_lang(r#"<HTML class="x" xml:lang="en">"#, "zh-Hant"), r#"<HTML class="x" xml:lang="en" lang="zh-Hant">"#);
+        assert_eq!(set_page_lang("<!DOCTYPE html><div>", "ko"), r#"<!DOCTYPE html><html lang="ko"><div>"#);
+        assert_eq!(set_page_lang("<div>", "ja\"><script>"), r#"<html lang="jascript"><div>"#, "only a tag's characters");
+        let page = "<!doctype html><html lang=\"en\"><head></head><body><div data-composition-id=\"main\"></div></body></html>";
+        let none = Map::new();
+        let c = |lang| Contract { vars: &none, fps: Fps::new(30, 1), width: 1920, height: 1080, duration: 2.0, speed: 1.0, bake: true, clip: None, head_extra: "", fonts: FontCss::default(), lang };
+        assert!(c(Some("ja")).apply(page).starts_with("<!doctype html><html lang=\"ja\"><head>"));
+        assert!(c(None).apply(page).starts_with("<!doctype html><html lang=\"en\"><head>"));
     }
 
     /// Only a var the repair changed moves its bake key; every other bake is the same

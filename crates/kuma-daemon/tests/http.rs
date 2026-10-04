@@ -567,6 +567,33 @@ async fn validation_names_text_the_fonts_will_not_draw() {
     assert!(issues.as_array().unwrap().iter().all(|i| i["severity"] == "warning" && !i["path"].as_str().unwrap().starts_with("/bin/fine")), "{issues}");
 }
 
+/// Two entries of one folder in two languages: each previews with its own `<html lang>`,
+/// and validation reads the language the entry sets rather than the one the page is
+/// written with, so only the entry left in English is told its kana want `ja`.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_entry_sets_its_page_language_with_a_lang_var() {
+    let (state, addr, _dir) = daemon().await;
+    let label = state.config.project_root().join("overlays/caption");
+    std::fs::create_dir_all(&label).unwrap();
+    std::fs::write(label.join("overlay.json"), r#"{ "name": "Caption", "vars": { "label": { "type": "text", "default": "ありがとう" }, "lang": { "type": "lang", "default": "" } } }"#).unwrap();
+    std::fs::write(label.join("index.html"), "<!doctype html><html lang=\"en\"><head></head><body data-composition-id=\"root\"></body></html>").unwrap();
+    for (id, vars) in [("ja", r#"{ "lang": "ja" }"#), ("en", "{}")] {
+        let (status, body) = post(&addr, "/api/overlays/import", &format!(r#"{{ "path": "overlays/caption", "id": "{id}", "vars": {vars} }}"#));
+        assert!(status.contains("200"), "{status}: {body}");
+    }
+    let (status, body) = post(&addr, "/api/overlays/import", r#"{ "path": "overlays/caption", "id": "bad", "vars": { "lang": "Japanese please" } }"#);
+    assert!(status.contains("400"), "not a language tag: {status} {body}");
+    let (_, doc) = get_body(&addr, "/overlay-entry/ja");
+    assert!(doc.starts_with("<!doctype html><html lang=\"ja\">"), "{doc}");
+    let (_, doc) = get_body(&addr, "/overlay-entry/en");
+    assert!(doc.starts_with("<!doctype html><html lang=\"en\">"), "{doc}");
+
+    let (_, body) = get_body(&addr, "/api/project/validate");
+    let issues = serde_json::from_str::<serde_json::Value>(&body).unwrap()["issues"].clone();
+    let cjk: Vec<&str> = issues.as_array().unwrap().iter().filter(|i| i["message"].as_str().unwrap().contains("CJK")).map(|i| i["path"].as_str().unwrap()).collect();
+    assert_eq!(cjk, ["/bin/en/source/vars/label"], "{issues}");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn the_cache_is_measured_and_pruned_over_http() {
     let (state, addr, dir) = daemon().await;

@@ -479,7 +479,11 @@ and a `.woff`/`.woff2` web font is unwrapped into the `.ttf`/`.otf` it holds (`w
 port of Google's decoder), so a font folder only ever holds those; one copied in by hand is not
 read, and `check_overlay` says so where the family is missing.
 Each family reports the writing systems it sets (`scripts`: latin, han, kana, hangul, …): text
-in any other is drawn by whatever fonts the baking machine has.
+in any other is drawn by whatever fonts the baking machine has. Which forms kanji take, and
+which font a missing character falls back to, follow the page's `lang`: an overlay that
+declares a `lang` var (the `title`, `title-subtitle` and `subtitles` blueprints do) gets the
+entry's value written onto `<html lang>` in the bake, the check and the preview alike, so one
+folder serves entries in several languages.
 
 Effect presets are `<library>/presets/*.json` (Ken Burns, zoom to region, vignette,
 picture-in-picture, dim) and expand to ordinary effects; `$expr` values may use the

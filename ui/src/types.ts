@@ -156,7 +156,7 @@ export interface SequenceState { current: string }
 export interface Cue { start: number; end: number; text: string }
 
 export interface VarSpec {
-  type: "string" | "text" | "number" | "color" | "boolean" | "enum" | "point" | "cues" | "font";
+  type: "string" | "text" | "number" | "color" | "boolean" | "enum" | "point" | "cues" | "font" | "lang";
   label?: string; description?: string; default: unknown; min?: number; max?: number; step?: number; options?: string[];
   /** The inspector section it is listed under. */
   group?: string;

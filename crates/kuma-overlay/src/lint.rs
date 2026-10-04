@@ -259,15 +259,16 @@ impl Baker {
 
         // Han characters are drawn in the regional forms the page's language picks, and a
         // fallback is chosen by it too: under `lang="en"` a Linux machine draws kanji from its
-        // Simplified Chinese face.
-        let lang = page_lang(html);
-        let wanted = |s: &str| {
+        // Simplified Chinese face. A `lang` var's value is what the contract writes there, so
+        // it is the page's language whether `html` is the staged page or the one written.
+        let lang = manifest.lang(vars).map(str::to_string).or_else(|| page_lang(html));
+        let wanted = |s: &str| -> Option<&[&str]> {
             if s.chars().any(is_kana) {
-                Some("`lang=\"ja\"`")
+                Some(&["ja"])
             } else if s.chars().any(is_hangul) {
-                Some("`lang=\"ko\"`")
+                Some(&["ko"])
             } else if s.chars().any(is_han) {
-                Some("`lang=\"ja\"` or `lang=\"zh\"`")
+                Some(&["ja", "zh"])
             } else {
                 None
             }
@@ -275,11 +276,20 @@ impl Baker {
         let cjk_page = lang.as_deref().and_then(|l| l.split('-').next()).is_some_and(|p| ["ja", "zh", "ko"].iter().any(|c| p.eq_ignore_ascii_case(c)));
         if let Some((var, want)) = text.iter().find_map(|(var, s)| wanted(s).map(|w| (var, w))).filter(|_| !cjk_page) {
             let is = lang.map(|l| format!("`lang=\"{l}\"`")).unwrap_or_else(|| "no `lang`".into());
+            let either = |f: &dyn Fn(&str) -> String| want.iter().map(|w| f(w)).collect::<Vec<_>>().join(" or ");
+            // An overlay with a `lang` var says it per entry; one without says it in its markup.
+            let fix = match manifest.vars.iter().find(|(_, s)| s.ty == kuma_core::VarType::Lang) {
+                Some((k, _)) => format!("set `{k}` to {}, whichever is the language of its text", either(&|w| format!("`{w}`"))),
+                None => format!(
+                    "put {} on the overlay's `<html>`, whichever is the language of its text, or declare a `lang` var so each entry can say its own",
+                    either(&|w| format!("`lang=\"{w}\"`"))
+                ),
+            };
             out.push(
                 Finding::warn(
                     "cjk_lang",
                     format!("`{var}` shows CJK text and the page has {is}: which glyph forms are drawn, and which font falls back, follow the page's language"),
-                    &format!("put {want} on the overlay's `<html>`, whichever is the language of its text"),
+                    &fix,
                 )
                 .about(var),
             );
@@ -399,7 +409,8 @@ fn contract_findings(html: &str, manifest: &OverlayManifest, dir: &Path) -> Vec<
         out.push(Finding::error("unknown_var", format!("`{name}` is read but not declared in overlay.json"), "declare it under `vars` with a type and a default, or stop reading it"));
     }
     let used_by_vendor = used_vars(&vendor);
-    for name in manifest.vars.keys() {
+    // A `lang` var is read by the contract, which writes it onto `<html lang>`.
+    for (name, _) in manifest.vars.iter().filter(|(_, s)| s.ty != kuma_core::VarType::Lang) {
         if !used.contains(name) && !used_by_vendor.contains(name) {
             out.push(Finding::warn("unused_var", format!("`{name}` is declared in overlay.json but never read"), "read it as `vars.<name>` or `var(--var-<name>)`, or remove it from the manifest"));
         }
@@ -943,6 +954,28 @@ mod tests {
         assert!(baker.font_findings(&m, &vars(serde_json::json!({ "font": "Inter", "label": "take it up" })), ja, &nowhere()).is_empty());
         let found = baker.font_findings(&m, &vars(serde_json::json!({ "font": "Inter", "label": "承" })), ja, &nowhere());
         assert_eq!(found.iter().map(|f| f.code.as_str()).collect::<Vec<_>>(), ["glyphs_missing"], "{found:?}");
+    }
+
+    /// A `lang` var is the page's language, whether the page is the staged one carrying it
+    /// or the one as written; the fix for CJK text on a page in another language is then to
+    /// set the var, and the var is not unused for not being read by the markup.
+    #[test]
+    fn a_lang_var_decides_the_language_the_check_reads() {
+        let (baker, _) = with_fonts();
+        let m: OverlayManifest = serde_json::from_value(serde_json::json!({ "vars": {
+            "font": { "type": "font", "default": "Inter" }, "label": { "type": "text", "default": "" }, "lang": { "type": "lang", "default": "" } } }))
+        .unwrap();
+        let en = r#"<html lang="en"><body></body></html>"#;
+        let codes = |v: serde_json::Value| baker.font_findings(&m, &vars(v), en, &nowhere()).into_iter().map(|f| (f.code, f.fix.unwrap_or_default())).collect::<Vec<_>>();
+        let found = codes(serde_json::json!({ "font": "Inter", "label": "ありがとう", "lang": "" }));
+        assert_eq!(found.iter().map(|(c, _)| c.as_str()).collect::<Vec<_>>(), ["glyphs_missing", "cjk_lang"]);
+        assert!(found[1].1.starts_with("set `lang` to `ja`"), "{}", found[1].1);
+        let found = codes(serde_json::json!({ "font": "Inter", "label": "ありがとう", "lang": "ja" }));
+        assert_eq!(found.iter().map(|(c, _)| c.as_str()).collect::<Vec<_>>(), ["glyphs_missing"]);
+
+        let dir = tempfile::tempdir().unwrap();
+        let html = r#"<div data-composition-id="main" data-no-timeline style="font-family: var(--var-font)"></div><script>vars.label</script>"#;
+        assert!(contract_findings(html, &m, dir.path()).is_empty(), "{:?}", contract_findings(html, &m, dir.path()));
     }
 
     /// A family that is not installed is `font_missing`, and there is then nothing to check

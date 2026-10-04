@@ -499,6 +499,30 @@ async fn a_patch_is_applied_from_a_file_in_the_project() {
     assert_eq!(state.project.read().unwrap().revision, rev + 1, "nothing refused was applied");
 }
 
+/// A script's own document comes back in the form the daemon stores one, as the text of
+/// the file: the same bytes an edit writes, so the two can be diffed. Nothing is edited.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_document_is_canonicalised_as_the_daemon_stores_it() {
+    let (state, addr, _dir) = daemon().await;
+    // The project as a script would write it: an old version, and a default spelled out.
+    let script = PROJECT.replace(r#""version": 7"#, r#""version": 1"#).replace(r#""label": """#, r#""label": "", "group": """#);
+    let rev = state.project.read().unwrap().revision;
+    let (status, _, body) = request(&addr, "POST", "/api/project/canonical", &script);
+    assert!(status.contains("200"), "{status}: {body}");
+    assert_eq!(body, kuma_core::canonical(&script).unwrap());
+    assert!(!body.contains("\"group\""), "an empty group is not stored: {body}");
+
+    // An edit writes the file in exactly that form.
+    let (status, _) = post(&addr, "/api/project/patch", &format!(r#"{{ "patch": [{{ "op": "replace", "path": "/name", "value": "t" }}], "base_revision": {rev} }}"#));
+    assert!(status.contains("200"), "{status}");
+    let stored = std::fs::read_to_string(&state.config.project_file).unwrap();
+    assert_eq!(kuma_core::canonical(&stored).unwrap(), stored, "the file is its own canonical form");
+    assert_eq!(body.replace(r#""revision": 0"#, r#""revision": 1"#), stored, "only the revision differs");
+
+    let (status, answer) = post(&addr, "/api/project/canonical", r#"{ "fps": "fast" }"#);
+    assert!(status.contains("400") && answer["error"].is_string(), "{status} {answer}");
+}
+
 /// `validate_project` says what an entry will not be drawn in, pointing at the var: a font
 /// that is not installed, and text its fonts cannot set on a page in another language.
 /// `check_overlay` only ever saw a folder's defaults, and a render fell back quietly.

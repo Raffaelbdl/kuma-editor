@@ -116,6 +116,14 @@ enum Cmd {
     },
     /// Validate the project and print issues (exit 1 on errors).
     Validate,
+    /// Print a project document in the form kuma stores it: upgraded, with every field at
+    /// its default left out. A script that builds a project canonicalises its own document
+    /// before diffing it against the stored one, so only real differences show.
+    Canonical {
+        /// The document to read; `-` (the default) is stdin.
+        #[arg(default_value = "-")]
+        file: PathBuf,
+    },
     /// Check the installation: repo, tools, engine, library, daemon, MCP config.
     Doctor,
     /// Scaffold a contract-abiding overlay folder in the project's `overlays/`. It is not
@@ -402,6 +410,11 @@ async fn main() -> anyhow::Result<()> {
                 std::process::exit(1);
             }
         }
+        Cmd::Canonical { file } => {
+            // A document, not the project: no repository, no daemon, nothing loaded.
+            let text = if file.as_os_str() == "-" { std::io::read_to_string(std::io::stdin())? } else { std::fs::read_to_string(file)? };
+            println!("{}", kuma_core::canonical(&text).map_err(|e| anyhow::anyhow!("{}: {e}", file.display()))?);
+        }
         Cmd::NewOverlay { id, name, description, blueprint } => {
             let state = open(&cli)?;
             let dir = if *blueprint { state.config.user_blueprint_dir() } else { state.config.overlays_dir() };
@@ -551,7 +564,7 @@ async fn main() -> anyhow::Result<()> {
             };
             let p = kuma_core::Project::new_default(kuma_core::Project::name_from_path(&path), *width, *height, fps);
             std::fs::create_dir_all(path.parent().unwrap())?;
-            std::fs::write(&path, serde_json::to_string_pretty(&p)?)?;
+            std::fs::write(&path, kuma_core::project_text(&p)?)?;
             println!("created {}", path.display());
             let library = default_library_dirs().remove(0);
             if !library.join("blueprints").is_dir() {

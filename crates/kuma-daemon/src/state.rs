@@ -353,7 +353,7 @@ impl AppState {
 
     fn write_file(&self, p: &Project) -> anyhow::Result<()> {
         let tmp = self.config.project_file.with_extension("json.tmp");
-        std::fs::write(&tmp, serde_json::to_string_pretty(p)?)?;
+        std::fs::write(&tmp, kuma_core::project_text(p)?)?;
         std::fs::rename(&tmp, &self.config.project_file)?;
         Ok(())
     }

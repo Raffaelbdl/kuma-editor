@@ -284,8 +284,8 @@ to 1.
 
 whisper's word cues are contiguous: a pause is absorbed into the word beside it, and a word
 boundary near a pause can be a third of a second off. So once the words are in, the job finds
-the pauses in the sound (ffmpeg's `silencedetect`: under -35 dB for 0.15 s, `pause_db` and
-`pause_min` to change it) and moves every cue edge within 0.4 s of one onto it: a word that
+the pauses in the sound (ffmpeg's `silencedetect`: under -35 dB for 0.15 s, `silence_db` and
+`silence_min` to change it) and moves every cue edge within 0.4 s of one onto it: a word that
 runs into a pause ends where it starts, one that starts in or just after it starts where it
 ends. `snap: false` (`--no-snap`) keeps whisper's times. A long recording is not one entry:
 the transcript is cut at the best pause near every minute (`split`, in seconds; 0 for one

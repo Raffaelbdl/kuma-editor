@@ -81,7 +81,7 @@ pub fn check(state: &AppState, project: &kuma_core::Project, ids: &[&str]) -> Ve
             Some((r, html))
         });
         let Some((r, html)) = folder else { continue };
-        for f in state.baker.font_findings(&r.manifest, &r.manifest.resolve_vars(vars), html) {
+        for f in state.baker.font_findings(&r.manifest, &r.manifest.resolve_vars(vars), html, &r.dir) {
             let path = match &f.var {
                 Some(var) => format!("/bin/{id}/source/vars/{var}"),
                 None => format!("/bin/{id}"),

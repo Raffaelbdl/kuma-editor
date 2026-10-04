@@ -128,8 +128,12 @@ overlays/<name>`) does, optionally with `vars`, once it checks clean.
 7. Take a font as a `font` var and write `font-family: var(--var-<name>), <fallback stack>`:
    kuma supplies the `@font-face` rules for the family it names and stages the files, in
    the bake and the live preview alike. `list_fonts` says which families exist. A fixed
-   font can also be bundled in the folder (`@font-face` with a relative `src`), or left to
-   a system stack. No Google Fonts links: the bake is headless and must be deterministic.
+   font can also be bundled in the folder (`@font-face` with a relative `src`, in the
+   overlay's own CSS or a stylesheet it links, `_vendor/` included), or left to a system
+   stack. The check counts a bundled face's characters with the `font` vars' when it says
+   which text no font can set; put the readable file first in `src` (a `local()` first, or
+   a file it cannot read, and it claims nothing). No Google Fonts links: the bake is
+   headless and must be deterministic.
 8. **Re-measure rather than measure once.** Prefer CSS that needs no measuring at all; if
    the page must measure itself — fitting a line of text to its box is the usual reason —
    run it again on `resize` (a `ResizeObserver` on the element is the reliable one) and

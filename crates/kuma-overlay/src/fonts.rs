@@ -382,6 +382,12 @@ impl FontLibrary {
         v
     }
 
+    /// A font file anywhere, web fonts included, read through the same cache: what an
+    /// overlay's own `@font-face` rules point at. `None` when it is not a font kuma can read.
+    pub fn read(&self, path: &Path) -> Option<(String, Face)> {
+        self.face(path)
+    }
+
     /// Every family, by name; a later folder's family replaces an earlier one's whole.
     /// Within a family, upright before italic and light before heavy: a stable order,
     /// since `Family::files` numbers them.

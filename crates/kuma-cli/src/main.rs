@@ -86,6 +86,9 @@ enum Cmd {
         /// Columns of the sheet (about square by default).
         #[arg(long)]
         columns: Option<u32>,
+        /// Footage only: leave the overlays out, so nothing is baked first.
+        #[arg(long, conflicts_with = "overlay")]
+        no_overlays: bool,
     },
     /// Measure how loud a sequence is (EBU R128): overall, per chapter, its loudest moments
     /// and its silences. Renders the sound only, so no overlay is baked.
@@ -295,7 +298,7 @@ async fn main() -> anyhow::Result<()> {
                 println!("{k}\t{}", b.resource.display());
             }
         }
-        Cmd::Sample { t0, t1, count, rect, width, sequence, overlay, duration, backdrop, frame, times, tile, columns } => {
+        Cmd::Sample { t0, t1, count, rect, width, sequence, overlay, duration, backdrop, frame, times, tile, columns, no_overlays } => {
             let state = open(&cli)?;
             let rect = rect
                 .as_deref()
@@ -327,6 +330,7 @@ async fn main() -> anyhow::Result<()> {
                 times: times.clone(),
                 tile: *tile,
                 columns: *columns,
+                overlays: (!*no_overlays).into(),
                 ..Default::default()
             };
             let out = tokio::task::spawn_blocking(move || kuma_daemon::jobs::sample(&state, &req, &|_, _| {})).await??;
@@ -714,4 +718,19 @@ async fn resolve_daemon(cli: &Cli) -> anyhow::Result<(String, Option<String>)> {
 
 fn port_busy(addr: SocketAddr) -> bool {
     std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_millis(500)).is_ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `--no-overlays` is the MCP tool's `overlays: false`: footage only, nothing baked.
+    #[test]
+    fn sample_can_leave_the_overlays_out() {
+        let Cmd::Sample { no_overlays, .. } = Cli::try_parse_from(["kuma", "sample", "1.5", "--no-overlays"]).unwrap().cmd else { panic!("a sample") };
+        assert!(no_overlays);
+        let Cmd::Sample { no_overlays, .. } = Cli::try_parse_from(["kuma", "sample", "1.5"]).unwrap().cmd else { panic!("a sample") };
+        assert!(!no_overlays, "overlays are in by default");
+        assert!(Cli::try_parse_from(["kuma", "sample", "--overlay", "title", "--no-overlays"]).is_err(), "an overlay without overlays is a picture of the backdrop");
+    }
 }

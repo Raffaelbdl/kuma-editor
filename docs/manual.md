@@ -374,6 +374,7 @@ kuma render --preset youtube-1080p         # bakes overlays, compiles, renders w
 kuma sample 12.0 14.0 --count 4 --rect 400,300,800,400
 kuma sample 0 3 --count 6 --overlay paris          # one overlay entry on its own, no placement (--backdrop, --duration, --frame 1080x1920)
 kuma sample --times 3.2,3.8,41.7,42.3 --tile      # chosen moments, and one captioned contact sheet of them
+kuma sample 0 60 --count 12 --no-overlays          # footage only: no overlay is baked first
 kuma measure-audio                         # loudness (LUFS), true peak, per chapter, loudest moments, silences
 kuma bake                                  # bake all overlay clips (cached by content)
 kuma cache                                 # how big .kuma/ is: bakes, sampled frames, thumbnails

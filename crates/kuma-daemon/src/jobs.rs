@@ -1288,6 +1288,7 @@ pub fn overlay_project(state: &AppState, doc: &Project, id: &str, req: &SampleRe
             track(&format!("{seq_id}-o"), kuma_core::TrackKind::Overlay, clip(&format!("{seq_id}-oc"), id)),
         ],
         markers: Vec::new(),
+        effects: Vec::new(),
     };
     // The rate and the revision are the real project's — an overlay is sampled as the
     // video it is going into would show it, and the revision keeps the frame cache honest

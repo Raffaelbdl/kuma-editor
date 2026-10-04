@@ -1,5 +1,5 @@
 {
-  "version": 7,
+  "version": 8,
   "name": "reference",
   "master": "main",
   "fps": { "num": 30, "den": 1 },
@@ -34,7 +34,8 @@
             ]
           }
         ],
-        "markers": [ { "t": 3.0, "label": "cut to camera" } ]
+        "markers": [ { "t": 3.0, "label": "cut to camera" } ],
+        "effects": [ { "type": "volume", "gain": 0.7 }, { "type": "limiter", "ceiling": -9 } ]
       }
     },
 
@@ -87,6 +88,24 @@
             ]
           },
           {
+            "id": "v4", "kind": "video", "name": "Held",
+            "clips": [
+              { "id": "h1", "start": 0.0, "end": 3.0, "bin": "intro", "in": 1.0, "muted": true,
+                "effects": [ { "type": "freeze", "t": 1.0 }, { "type": "transform", "x": -760, "y": -400, "scale": 0.2 } ] },
+              { "id": "h2", "start": 3.0, "end": 6.0, "bin": "cam", "in": 1.0, "muted": true,
+                "effects": [
+                  { "type": "transform", "keyframes": [ { "t": 0, "x": 760, "y": -400, "scale": 0.2 }, { "t": 3, "x": 760, "y": -400, "scale": 0.1 } ] },
+                  { "type": "freeze", "t": 0.5 } ] }
+            ]
+          },
+          {
+            "id": "mus", "kind": "audio", "name": "Music",
+            "clips": [
+              { "id": "lvl", "start": 0.0, "end": 9.0, "bin": "screen", "in": 1.0,
+                "effects": [ { "type": "auto_level", "target": -20, "window": 2 }, { "type": "limiter", "ceiling": -6 } ] }
+            ]
+          },
+          {
             "id": "o1", "kind": "overlay", "name": "Overlays",
             "clips": [
               { "id": "o_c1", "start": 2.0, "end": 5.0, "bin": "paris" },
@@ -94,7 +113,11 @@
             ]
           }
         ],
-        "markers": [ { "t": 4.0, "label": "zoom done" } ]
+        "markers": [ { "t": 4.0, "label": "zoom done" } ],
+        "effects": [
+          { "type": "volume", "gain": 1.2, "keyframes": [ { "t": 0, "gain": 1.2 }, { "t": 14, "gain": 0.8 } ] },
+          { "type": "limiter", "ceiling": -3 }
+        ]
       }
     }
   }

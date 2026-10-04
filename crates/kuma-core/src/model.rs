@@ -104,6 +104,7 @@ impl Project {
                     track("a1", TrackKind::Audio, "Audio"),
                 ],
                 markers: Vec::new(),
+                effects: Vec::new(),
             }),
             meta: None,
             parent: None,
@@ -251,6 +252,26 @@ impl Project {
             })
         }
         walk(self, id, &mut HashSet::new())
+    }
+
+    /// How many frames the producer behind `clip` has, counted the way MLT counts them: a
+    /// sequence's own length, or a probed file's duration at the project rate and the
+    /// clip's speed, rounded (measured: a 10.4-frame file plays 10 frames, a 10.6-frame one
+    /// 11, and at half speed 20.8 plays 21). `None` where that is not known — an unprobed
+    /// file — and for a still, a colour or an overlay, which are made to any length.
+    ///
+    /// MLT cuts a playlist entry that asks for more than this down to what there is, which
+    /// shortens the track and pulls every later clip on it earlier; so the compiler pads the
+    /// difference rather than asking for it, and the validator warns about it.
+    pub fn source_frames(&self, clip: &Clip) -> Option<i64> {
+        let item = self.item(clip)?;
+        if item.is_sequence() {
+            Some(self.fps.length(self.seq_duration(&clip.bin)))
+        } else if item.is_timed_media() {
+            item.meta.as_ref()?.duration.map(|d| self.fps.frame(d / clip.speed.abs()))
+        } else {
+            None
+        }
     }
 
     /// The bin entry a clip plays, if it resolves.
@@ -424,6 +445,13 @@ pub struct Sequence {
     /// rendered).
     #[serde(default)]
     pub markers: Vec<Marker>,
+    /// Effects on what the sequence sounds like as a whole — its mix — in order: a gain, a
+    /// limiter, an auto-level ([`Effect::fits_a_sequence`]). Keyframe times count from the
+    /// sequence's own start, which is unambiguous however often it is placed. They act on
+    /// every placement and on the sequence rendered as the root, so the master's are the
+    /// render's master stage. Always written, so a patch can append to it.
+    #[serde(default)]
+    pub effects: Vec<Effect>,
 }
 
 impl Sequence {
@@ -590,9 +618,39 @@ fn is_one(v: &f64) -> bool {
     *v == 1.0
 }
 
+fn default_ceiling() -> f64 {
+    -1.0
+}
+fn default_attack() -> f64 {
+    5.0
+}
+fn default_release() -> f64 {
+    50.0
+}
+fn default_target() -> f64 {
+    -23.0
+}
+fn default_window() -> f64 {
+    3.0
+}
+fn default_max_gain() -> f64 {
+    15.0
+}
+fn default_min_gain() -> f64 {
+    -15.0
+}
+
 impl Clip {
     pub fn duration(&self) -> f64 {
         self.end - self.start
+    }
+
+    /// The producer frames this clip plays, `[first, end)`: where `in` lands, and as many
+    /// frames as the clip lasts. The compiler cuts exactly these (plus any dissolve
+    /// handles), so the validator reads the same span it does.
+    pub fn source_span(&self, fps: Fps) -> (i64, i64) {
+        let first = fps.frame(self.source_in / self.speed.abs());
+        (first, first + fps.clip_frames(self.start, self.end).len())
     }
 }
 
@@ -701,7 +759,10 @@ pub enum Effect {
         top: f64,
         #[serde(default)]
         bottom: f64,
-        /// Corner radius as a fraction of the shorter side (0..1).
+        /// Corner radius as a fraction of *half* the shorter side of the rectangle left after
+        /// cropping (0..1): 1 rounds a square into a circle, 0.5 rounds each corner by a
+        /// quarter of the side. The rectangle is the clip's whole frame less the edges, so
+        /// a still letterboxed inside the frame needs its edges cropped to it first.
         #[serde(default)]
         radius: f64,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -753,6 +814,54 @@ pub enum Effect {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         keyframes: Vec<Keyframe>,
     },
+    /// A peak limiter: the sound's sample peaks are held at or under `ceiling` dBFS, by
+    /// turning the gain down ahead of each one and letting it back up over `release`. It
+    /// does not raise anything (no auto level): a gain stage before it, `volume`, is what
+    /// makes the sound louder. It limits *samples*, not true peaks, so a true-peak target
+    /// wants a ceiling about a dB under it. It looks ahead `attack` milliseconds, so the
+    /// sound it limits comes out that much later — 5 ms by default, a sixth of a frame.
+    Limiter {
+        /// dBFS, -24..0.
+        #[serde(default = "default_ceiling")]
+        ceiling: f64,
+        /// Lookahead in milliseconds, 0.1..80.
+        #[serde(default = "default_attack")]
+        attack: f64,
+        /// Milliseconds for the gain to recover, 1..8000.
+        #[serde(default = "default_release")]
+        release: f64,
+    },
+    /// Rides the gain so the sound's loudness, measured over the last `window` seconds,
+    /// stays at `target` LUFS: a source that drifts (a music bed that swells and falls) is
+    /// levelled without keyframes. It never moves the gain by more than `max_gain` up or
+    /// `min_gain` down. It follows rather than anticipates, so a sudden change is heard
+    /// for about a window before the gain catches it, and after a seek it starts measuring
+    /// afresh, settling within a window.
+    AutoLevel {
+        /// LUFS, -50..-10.
+        #[serde(default = "default_target")]
+        target: f64,
+        /// Seconds of sound the loudness is measured over, 1..60.
+        #[serde(default = "default_window")]
+        window: f64,
+        /// The most it raises the gain, dB, 0..30.
+        #[serde(default = "default_max_gain")]
+        max_gain: f64,
+        /// The most it lowers the gain, dB, -30..0.
+        #[serde(default = "default_min_gain")]
+        min_gain: f64,
+    },
+    /// Holds one frame of whatever the clip places — a file, a still, an overlay, a
+    /// sequence — for the clip's whole length: the frame it would show `t` seconds from its
+    /// start. Picture only: the sound runs on underneath; mute the clip to silence it. It
+    /// replaces the source, so the clip's other effects act on the held frame and still
+    /// move, whatever their place in the list. Split the clip to play, then hold.
+    Freeze {
+        /// Seconds from the clip's start, like a keyframe's `t`. May be negative, or past
+        /// the clip's end, where the source has the frame.
+        #[serde(default)]
+        t: f64,
+    },
     /// Escape hatch: any MLT filter by service name with raw properties.
     Mlt {
         service: String,
@@ -799,12 +908,30 @@ impl Effect {
     /// image filter nobody asks for an image from costs nothing.
     pub fn streams(&self) -> Streams {
         match self {
-            Effect::Volume { .. } | Effect::AudioFade { .. } => Streams::Audio,
+            Effect::Volume { .. } | Effect::AudioFade { .. } | Effect::Limiter { .. } | Effect::AutoLevel { .. } => Streams::Audio,
             Effect::Mlt { .. } => Streams::Both,
-            Effect::Transform { .. } | Effect::Crop { .. } | Effect::Blur { .. } | Effect::Color { .. } | Effect::Fade { .. } | Effect::Blend { .. } => {
-                Streams::Video
-            }
+            Effect::Transform { .. }
+            | Effect::Crop { .. }
+            | Effect::Blur { .. }
+            | Effect::Color { .. }
+            | Effect::Fade { .. }
+            | Effect::Blend { .. }
+            | Effect::Freeze { .. } => Streams::Video,
         }
+    }
+
+    /// Whether a sequence may carry this kind: the ones that act on a mix as a whole and
+    /// read no clip's edges — a gain, a limiter, an auto-level. A picture effect on a whole
+    /// sequence belongs on the clips that place it, where it already acts per placement; a
+    /// fade is about a placement's edges; and `mlt` is opaque, so nothing can say it is
+    /// one of these.
+    pub fn fits_a_sequence(&self) -> bool {
+        matches!(self, Effect::Volume { .. } | Effect::Limiter { .. } | Effect::AutoLevel { .. })
+    }
+
+    /// The `type` this effect is written with — `audio_fade`, `limiter` — for messages.
+    pub fn kind(&self) -> String {
+        serde_json::to_value(self).ok().and_then(|v| v["type"].as_str().map(String::from)).unwrap_or_default()
     }
 
     /// Whether this effect does anything to a clip carrying `clip` — see
@@ -818,10 +945,12 @@ impl Effect {
     /// have. One table, so the validator, the compiler and the editor cannot disagree.
     ///
     /// Every kind with a quantity to move is here, static until it is given keys. The
-    /// three that are not have nothing a key could mean: a fade's numbers are lengths of
+    /// ones that are not have nothing a key could mean: a fade's numbers are lengths of
     /// time, so it is an animation already; a blend mode is a choice, and changing it
-    /// mid-clip is a cut; and `mlt` properties are strings MLT reads, where an animation
-    /// string can be written directly.
+    /// mid-clip is a cut; `mlt` properties are strings MLT reads, where an animation
+    /// string can be written directly; a limiter's and an auto-level's settings say how
+    /// they follow the sound, which moves already; and a freeze's `t` says which frame,
+    /// where a moving one is the clip playing.
     pub fn animatable(&self) -> &'static [&'static str] {
         match self {
             Effect::Transform { .. } => &["x", "y", "scale", "rotation", "opacity"],
@@ -829,7 +958,13 @@ impl Effect {
             Effect::Blur { .. } => &["radius"],
             Effect::Color { .. } => &["brightness", "contrast", "saturation", "gamma"],
             Effect::Volume { .. } => &["gain"],
-            Effect::Blend { .. } | Effect::Fade { .. } | Effect::AudioFade { .. } | Effect::Mlt { .. } => &[],
+            Effect::Blend { .. }
+            | Effect::Fade { .. }
+            | Effect::AudioFade { .. }
+            | Effect::Mlt { .. }
+            | Effect::Limiter { .. }
+            | Effect::AutoLevel { .. }
+            | Effect::Freeze { .. } => &[],
         }
     }
 
@@ -841,7 +976,13 @@ impl Effect {
             | Effect::Blur { keyframes, .. }
             | Effect::Color { keyframes, .. }
             | Effect::Volume { keyframes, .. } => keyframes,
-            Effect::Blend { .. } | Effect::Fade { .. } | Effect::AudioFade { .. } | Effect::Mlt { .. } => &[],
+            Effect::Blend { .. }
+            | Effect::Fade { .. }
+            | Effect::AudioFade { .. }
+            | Effect::Mlt { .. }
+            | Effect::Limiter { .. }
+            | Effect::AutoLevel { .. }
+            | Effect::Freeze { .. } => &[],
         }
     }
 }
@@ -965,6 +1106,24 @@ mod tests {
         let fade: Effect = serde_json::from_value(json!({ "type": "audio_fade", "in": 1, "out": 2 })).unwrap();
         assert_eq!(fade.streams(), Streams::Audio);
         assert!(fade.animatable().is_empty(), "a fade's numbers are lengths of time");
+    }
+
+    /// The limiter, the auto-level and the freeze take their defaults, move nothing over
+    /// time, and say which stream they act on; a sequence takes the sound ones, and always
+    /// writes the list, so a patch can append to it.
+    #[test]
+    fn the_new_kinds_default_and_a_sequence_writes_its_effects() {
+        let lim: Effect = serde_json::from_value(json!({ "type": "limiter" })).unwrap();
+        assert_eq!(serde_json::to_value(&lim).unwrap(), json!({ "type": "limiter", "ceiling": -1.0, "attack": 5.0, "release": 50.0 }));
+        let level: Effect = serde_json::from_value(json!({ "type": "auto_level", "target": -30 })).unwrap();
+        assert_eq!(serde_json::to_value(&level).unwrap(), json!({ "type": "auto_level", "target": -30.0, "window": 3.0, "max_gain": 15.0, "min_gain": -15.0 }));
+        let freeze: Effect = serde_json::from_value(json!({ "type": "freeze", "t": 1.5 })).unwrap();
+        assert_eq!((lim.streams(), level.streams(), freeze.streams()), (Streams::Audio, Streams::Audio, Streams::Video));
+        assert!(lim.animatable().is_empty() && level.animatable().is_empty() && freeze.animatable().is_empty());
+        assert!(lim.fits_a_sequence() && level.fits_a_sequence() && !freeze.fits_a_sequence());
+        assert_eq!(freeze.kind(), "freeze");
+        let s: Sequence = serde_json::from_value(json!({ "tracks": [] })).unwrap();
+        assert_eq!(serde_json::to_value(&s).unwrap()["effects"], json!([]));
     }
 
     /// Which effects can act on a clip: picture where the track draws one and the source

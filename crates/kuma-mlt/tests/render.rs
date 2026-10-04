@@ -381,3 +381,201 @@ fn a_blend_mode_changes_the_pixels() {
         }
     }
 }
+
+/// A project document of the current version from its bin, at a small frame size.
+fn small_project(bin: serde_json::Value) -> kuma_core::Project {
+    kuma_core::parse_project(&serde_json::json!({
+        "version": kuma_core::PROJECT_VERSION, "name": "t", "master": "main",
+        "fps": { "num": 30, "den": 1 }, "width": 64, "height": 36, "sample_rate": 48000,
+        "bin": bin
+    }).to_string()).unwrap()
+}
+
+/// The sound of `p`'s master through its own audio graph, as a measurement renders it:
+/// float, so nothing over full scale is clipped before it is read. Both channels,
+/// interleaved.
+fn sound(root: &Path, p: &kuma_core::Project, name: &str) -> Vec<f32> {
+    let mut opts = CompileOptions::new(root);
+    opts.streams = Streams::Audio;
+    let mlt = root.join(format!("{name}.mlt"));
+    std::fs::write(&mlt, compile(p, &opts).unwrap()).unwrap();
+    let wav = root.join(format!("{name}.wav"));
+    let job = RenderJob { mlt_file: mlt, output: wav.clone(), preset: &presets::AUDIO_ONLY, range: None, tuning: Tuning { threads: Some(1), ..Tuning::default() }, extra: vec![] };
+    render(&job, &std::sync::atomic::AtomicBool::new(false), |_| {}).expect("melt render");
+    let raw = Command::new("ffmpeg").args(["-v", "error", "-i"]).arg(&wav).args(["-f", "f32le", "-"]).output().unwrap().stdout;
+    raw.chunks_exact(4).map(|s| f32::from_le_bytes([s[0], s[1], s[2], s[3]])).collect()
+}
+
+fn peak(s: &[f32]) -> f32 {
+    s.iter().fold(0.0, |m, x| m.max(x.abs()))
+}
+
+/// A master stage is the document's: a gain in front of a limiter, on the master's mix.
+/// The limiter holds every sample at the ceiling it is given, where the same gain without
+/// it goes well over. And a sequence's stage acts on each placement on its own: two
+/// placements playing at once sound exactly as the two do one at a time, added — which a
+/// limiter on the one shared tractor would not, since it keeps state from frame to frame.
+#[test]
+fn a_limiter_holds_its_ceiling_on_the_master_and_on_each_placement() {
+    if !have("ffmpeg") || !have("melt") {
+        eprintln!("ffmpeg/melt not available; skipping");
+        return;
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    ffmpeg(&["-f", "lavfi", "-i", "anoisesrc=color=pink:amplitude=0.3:duration=4:sample_rate=48000", "-c:a", "pcm_s16le", &root.join("noise.wav").to_string_lossy()]);
+    let master = |effects: serde_json::Value| small_project(serde_json::json!({
+        "noise": { "source": { "path": "noise.wav", "kind": "audio" } },
+        "main": { "source": { "effects": effects, "tracks": [
+            { "id": "a1", "kind": "audio", "clips": [ { "id": "n1", "start": 0, "end": 4, "bin": "noise", "volume": 2.5 } ] }
+        ] } }
+    }));
+    let loud = sound(root, &master(serde_json::json!([ { "type": "volume", "gain": 2 } ])), "loud");
+    let held = sound(root, &master(serde_json::json!([ { "type": "volume", "gain": 2 }, { "type": "limiter", "ceiling": -6 } ])), "held");
+    let ceiling = 10f32.powf(-6.0 / 20.0);
+    assert!(peak(&loud) > 1.4 * ceiling, "the gain alone must go over, or the limiter has nothing to do: {}", peak(&loud));
+    assert!(peak(&held) <= ceiling + 1e-4, "peak {} over the ceiling {ceiling}", peak(&held));
+    assert_eq!(held.len(), loud.len());
+
+    // A sequence with a limiter, placed twice at once with different cuts.
+    let placed = |a: bool, b: bool| small_project(serde_json::json!({
+        "noise": { "source": { "path": "noise.wav", "kind": "audio" } },
+        "bed": { "source": { "effects": [ { "type": "volume", "gain": 5 }, { "type": "limiter", "ceiling": -12 } ], "tracks": [
+            { "id": "ba", "kind": "audio", "clips": [ { "id": "b1", "start": 0, "end": 4, "bin": "noise" } ] }
+        ] } },
+        "main": { "source": { "tracks": [
+            { "id": "a1", "kind": "audio", "muted": !a, "clips": [ { "id": "p1", "start": 0, "end": 2, "bin": "bed" } ] },
+            { "id": "a2", "kind": "audio", "muted": !b, "clips": [ { "id": "p2", "start": 0, "end": 2, "bin": "bed", "in": 1.5 } ] }
+        ] } }
+    }));
+    let (one, two, both) = (sound(root, &placed(true, false), "one"), sound(root, &placed(false, true), "two"), sound(root, &placed(true, true), "both"));
+    assert!(peak(&one) <= 10f32.powf(-12.0 / 20.0) + 1e-4, "{}", peak(&one));
+    assert_eq!((one.len(), two.len()), (both.len(), both.len()));
+    // Within two steps of 16-bit sound (6e-5 measured), which is how MLT mixes; the same
+    // stage moved onto the shared tractor measured 0.47.
+    let worst = both.iter().zip(one.iter().zip(&two)).map(|(s, (a, b))| (s - (a + b)).abs()).fold(0.0, f32::max);
+    assert!(worst < 1e-3, "two placements at once differ from the two alone, added, by {worst}");
+}
+
+/// A clip asking for more frames than its source has used to have its entry cut short by
+/// MLT, which pulled every later clip on the track earlier — here by two frames. The
+/// compiler pads instead: the frames the source lacks show the track below, and the clip
+/// after it starts where it is placed.
+#[test]
+fn a_clip_past_its_sources_end_leaves_the_clips_after_it_in_place() {
+    if !have("ffmpeg") || !have("melt") {
+        eprintln!("ffmpeg/melt not available; skipping");
+        return;
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    ffmpeg(&["-f", "lavfi", "-i", "color=c=0x00ff00:size=64x36:rate=30", "-frames:v", "10", "-c:v", "libx264", "-pix_fmt", "yuv420p", &root.join("short.mp4").to_string_lossy()]);
+    let p = small_project(serde_json::json!({
+        "short": { "source": { "path": "short.mp4", "kind": "video" }, "meta": { "duration": 0.333333, "has_audio": false } },
+        "red": { "source": { "color": "#ff0000" } },
+        "blue": { "source": { "color": "#0000ff" } },
+        "main": { "source": { "tracks": [
+            { "id": "v1", "clips": [ { "id": "under", "start": 0, "end": 1, "bin": "red" } ] },
+            { "id": "v2", "clips": [
+                { "id": "s", "start": 0, "end": 0.4, "bin": "short" },
+                { "id": "b", "start": 0.4, "end": 1, "bin": "blue" }
+            ] }
+        ] } }
+    }));
+    let issues = kuma_core::validate(&p, &Default::default());
+    assert!(issues.iter().any(|i| i.message.contains("last 2 frames")), "{issues:?}");
+    let mlt = root.join("short.mlt");
+    std::fs::write(&mlt, compile(&p, &CompileOptions::new(root)).unwrap()).unwrap();
+    let near = |got: &[u8], want: [u8; 3]| got.iter().zip(want).all(|(g, w)| (*g as i32 - w as i32).abs() <= 24);
+    for (frame, want) in [(9, [0, 255, 0]), (10, [255, 0, 0]), (11, [255, 0, 0]), (12, [0, 0, 255])] {
+        let png = root.join(format!("short{frame}.png"));
+        snapshot(&mlt, frame, &png).expect("snapshot");
+        let got = pixel(&png, 32, 18);
+        assert!(near(&got, want), "frame {frame}: {got:?}, expected ≈{want:?}");
+    }
+}
+
+/// A freeze holds the frame its clip shows `t` seconds in — of a file, a still and a
+/// placed sequence alike, each with a cut into it — for the whole clip. Frame k of the
+/// source is grey level 2k, and the held picture is compared with the same clip unfrozen
+/// at `t`, so the test reads which frame was held rather than trusting a colour mapping.
+#[test]
+fn a_freeze_holds_the_frame_its_clip_shows_at_t() {
+    if !have("ffmpeg") || !have("melt") {
+        eprintln!("ffmpeg/melt not available; skipping");
+        return;
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    ffmpeg(&["-f", "lavfi", "-i", "color=c=black:size=64x36:rate=30:duration=4,format=gray,geq=lum='N*2',format=yuv420p",
+        "-c:v", "libx264", "-qp", "0", "-preset", "ultrafast", &root.join("ramp.mp4").to_string_lossy()]);
+    ffmpeg(&["-f", "lavfi", "-i", "color=c=0x406080:size=64x36", "-frames:v", "1", &root.join("still.png").to_string_lossy()]);
+    let doc = |frozen: bool| {
+        let fx = |t: f64| if frozen { serde_json::json!([ { "type": "freeze", "t": t } ]) } else { serde_json::json!([]) };
+        small_project(serde_json::json!({
+            "ramp": { "source": { "path": "ramp.mp4", "kind": "video" } },
+            "still": { "source": { "path": "still.png", "kind": "image" } },
+            "part": { "source": { "tracks": [ { "id": "pv", "clips": [ { "id": "p1", "start": 0, "end": 3, "bin": "ramp", "in": 0.5 } ] } ] } },
+            "main": { "source": { "tracks": [ { "id": "v1", "clips": [
+                { "id": "file", "start": 0, "end": 1, "bin": "ramp", "in": 1, "effects": fx(0.5) },
+                { "id": "pic", "start": 1, "end": 2, "bin": "still", "effects": fx(0.2) },
+                { "id": "seq", "start": 2, "end": 3, "bin": "part", "in": 1, "effects": fx(0.3) }
+            ] } ] } }
+        }))
+    };
+    let write = |name: &str, p: &kuma_core::Project| {
+        let mlt = root.join(format!("{name}.mlt"));
+        std::fs::write(&mlt, compile(p, &CompileOptions::new(root)).unwrap()).unwrap();
+        mlt
+    };
+    let (frozen, plain) = (write("frozen", &doc(true)), write("plain", &doc(false)));
+    let grey = |mlt: &Path, frame: i64| {
+        let png = root.join(format!("{}-{frame}.png", mlt.file_stem().unwrap().to_string_lossy()));
+        snapshot(mlt, frame, &png).expect("snapshot");
+        pixel(&png, 32, 18)
+    };
+    // (what, the clip's first frame, `t` in frames)
+    for (name, start, t) in [("file", 0, 15), ("still", 30, 6), ("sequence", 60, 9)] {
+        let want = grey(&plain, start + t);
+        for at in [start, start + 20, start + 29] {
+            assert_eq!(grey(&frozen, at), want, "{name}: frame {at} should hold what frame {} shows unfrozen", start + t);
+        }
+        if name != "still" {
+            assert_ne!(grey(&plain, start), want, "{name}: the source must move, or holding proves nothing");
+        }
+    }
+}
+
+/// An auto-level follows a source that drifts by 25 dB over twenty seconds and keeps it
+/// within a couple of dB, once its window has filled.
+#[test]
+fn an_auto_level_keeps_a_drifting_source_level() {
+    if !have("ffmpeg") || !have("melt") {
+        eprintln!("ffmpeg/melt not available; skipping");
+        return;
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    ffmpeg(&["-f", "lavfi", "-i", "sine=frequency=330:duration=20:sample_rate=48000", "-af", "volume='0.05+0.9*(t/20)':eval=frame", "-c:a", "pcm_s16le", &root.join("drift.wav").to_string_lossy()]);
+    let doc = |effects: serde_json::Value| small_project(serde_json::json!({
+        "drift": { "source": { "path": "drift.wav", "kind": "audio" } },
+        "main": { "source": { "tracks": [
+            { "id": "a1", "kind": "audio", "clips": [ { "id": "d", "start": 0, "end": 20, "bin": "drift", "effects": effects } ] }
+        ] } }
+    }));
+    // Each second's level in dB, from 4 s on, when the window has filled; two channels
+    // interleaved at 48 kHz are 96 000 samples a second.
+    let spread = |s: &[f32]| {
+        let db: Vec<f32> = (4..19)
+            .map(|sec| {
+                let x = &s[sec * 96000..(sec + 1) * 96000];
+                10.0 * (x.iter().map(|v| v * v).sum::<f32>() / x.len() as f32).log10()
+            })
+            .collect();
+        db.iter().cloned().fold(f32::MIN, f32::max) - db.iter().cloned().fold(f32::MAX, f32::min)
+    };
+    let raw = spread(&sound(root, &doc(serde_json::json!([])), "raw"));
+    let level = spread(&sound(root, &doc(serde_json::json!([ { "type": "auto_level", "target": -20, "window": 3 } ])), "level"));
+    assert!(raw > 10.0, "the source must drift: {raw} dB");
+    assert!(level < 2.0, "levelled, it still moves by {level} dB (from {raw})");
+}

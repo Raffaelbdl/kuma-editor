@@ -63,6 +63,11 @@ fn upgrade(v: &mut Value) -> Result<(), String> {
         }
         version = 7;
     }
+    if version == 7 {
+        // 7 → 8: a sequence may carry `effects`, defaulting to none, and `limiter`,
+        // `auto_level` and `freeze` are new kinds, so no older document has one. A stamp.
+        version = 8;
+    }
     v["version"] = Value::from(version);
     Ok(())
 }
@@ -96,7 +101,7 @@ mod tests {
     /// the current version too, not on 3-as-of-when-it-was-written.
     #[test]
     fn every_older_version_climbs_to_the_current_one() {
-        for from in [1, 2, 3, 4, 5, 6] {
+        for from in [1, 2, 3, 4, 5, 6, 7] {
             let text = V1.replace("\"version\": 1", &format!("\"version\": {from}"));
             assert_eq!(parse_project(&text).expect("parse").version, crate::PROJECT_VERSION, "from {from}");
         }

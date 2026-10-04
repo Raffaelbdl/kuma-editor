@@ -103,6 +103,28 @@ enum Cmd {
         #[arg(long, value_delimiter = ',')]
         solo: Vec<String>,
     },
+    /// How loud one source is (LUFS, range, true peak, over time) and where it is quiet.
+    MeasureMedia {
+        /// Bin id of a media entry, or with --path a file in the project.
+        bin: Option<String>,
+        #[arg(long, conflicts_with = "bin")]
+        path: Option<String>,
+        /// Only `start,end` source seconds of it.
+        #[arg(long, value_delimiter = ',', num_args = 2)]
+        range: Option<Vec<f64>>,
+        /// `short_term` (default), `momentary` or `none`.
+        #[arg(long)]
+        curve: Option<String>,
+        /// Seconds between curve values (default: about 120 values).
+        #[arg(long)]
+        step: Option<f64>,
+        /// Quiet is every sample under this many dBFS (default -35).
+        #[arg(long, allow_hyphen_values = true)]
+        silence_db: Option<f64>,
+        /// …for at least this many seconds (default 0.15).
+        #[arg(long)]
+        silence_min: Option<f64>,
+    },
     /// Show how big the project's `.kuma/` cache is, or prune it.
     Cache {
         #[command(subcommand)]
@@ -344,6 +366,20 @@ async fn main() -> anyhow::Result<()> {
             let state = open(&cli)?;
             let req = kuma_daemon::jobs::MeasureRequest { sequence: sequence.clone(), range: range.as_deref().map(|r| (r[0], r[1])), sections: None, mute: mute.clone(), solo: solo.clone() };
             let out = tokio::task::spawn_blocking(move || kuma_daemon::jobs::measure_audio(&state, &req, &|p, m| eprintln!("[{p:3}%] {m}"), &Default::default())).await??;
+            println!("{}", serde_json::to_string_pretty(&out)?);
+        }
+        Cmd::MeasureMedia { bin, path, range, curve, step, silence_db, silence_min } => {
+            let state = open(&cli)?;
+            let req = kuma_daemon::jobs::MediaMeasureRequest {
+                bin: bin.clone(),
+                path: path.clone(),
+                range: range.as_deref().map(|r| (r[0], r[1])),
+                curve: curve.clone(),
+                step: *step,
+                silence_db: *silence_db,
+                silence_min: *silence_min,
+            };
+            let out = tokio::task::spawn_blocking(move || kuma_daemon::jobs::measure_media(&state, &req, &|p, m| eprintln!("[{p:3}%] {m}"), &Default::default())).await??;
             println!("{}", serde_json::to_string_pretty(&out)?);
         }
         Cmd::Cache { action } => {

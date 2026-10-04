@@ -397,6 +397,37 @@ pub struct MeasureAudio {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct MeasureMedia {
+    /// Bin id of a media entry (audio or video) to measure.
+    #[serde(default)]
+    pub bin: Option<String>,
+    /// Or a file in the project (relative to it). One of the two.
+    #[serde(default)]
+    pub path: Option<String>,
+    /// Optional `[start, end]` source seconds to measure only that stretch.
+    #[serde(default)]
+    pub range: Option<(f64, f64)>,
+    /// Loudness over time: `short_term` (3 s windows, default), `momentary` (400 ms) or `none`.
+    #[serde(default)]
+    pub curve: Option<String>,
+    /// Seconds between curve values (a multiple of 0.1). Default: 0.1, 0.2, 0.5, 1, 2, 5,
+    /// 10… whichever keeps the curve to about 120 values; at most 1200 values.
+    #[serde(default)]
+    pub step: Option<f64>,
+    /// Quiet means every sample under this many dBFS. Default -35 (speech pauses); lower
+    /// it (-50, -60) to find only near-silence, e.g. before a sound effect's onset.
+    #[serde(default)]
+    pub silence_db: Option<f64>,
+    /// …for at least this many seconds. Default 0.15 (a pause between sentences); 1 or
+    /// more to find the gaps between takes.
+    #[serde(default)]
+    pub silence_min: Option<f64>,
+    /// Seconds to wait before returning the job id instead (default 600).
+    #[serde(default)]
+    pub wait_seconds: Option<u64>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct AddMedia {
     /// Media path relative to the project directory (or absolute).
     pub path: String,
@@ -652,6 +683,12 @@ impl KumaServer {
         self.job("/api/audio/measure", &body, Duration::from_secs(p.wait_seconds.unwrap_or(600))).await
     }
 
+    #[tool(description = "Measure one source, a media entry (`bin`) or a file in the project (`path`), optionally over a `range` of it, in its own seconds: integrated loudness (LUFS), loudness range and true peak (dBTP); its loudness over time (`curve`: short-term by default, about 120 values unless `step` says, at most 1200); and its quiet stretches as `[start, end]` pairs (every sample under `silence_db`, default -35 dB, for `silence_min`, default 0.15 s; at most 500 listed). A silence's end is where sound starts: a take, a sentence or a sound effect's onset. For a level a volume keyframe can follow, a pause to cut at, or a take to place. Nothing is stored.")]
+    async fn measure_media(&self, Parameters(p): Parameters<MeasureMedia>) -> Result<CallToolResult, McpError> {
+        let body = json!({ "bin": p.bin, "path": p.path, "range": p.range, "curve": p.curve, "step": p.step, "silence_db": p.silence_db, "silence_min": p.silence_min });
+        self.job("/api/media/measure", &body, Duration::from_secs(p.wait_seconds.unwrap_or(600))).await
+    }
+
     #[tool(description = "Delete what the project's `.kuma/` cache no longer uses: superseded bakes, sampled frames, thumbnails of removed entries. sample_frames leaves PNGs behind, so prune after a long session. Returns what was freed and what is left.")]
     async fn prune_cache(&self, Parameters(p): Parameters<PruneCache>) -> Result<CallToolResult, McpError> {
         self.job("/api/cache/prune", &json!({ "all": p.all }), Duration::from_secs(3600)).await
@@ -662,7 +699,7 @@ impl KumaServer {
         self.get(&format!("/api/jobs/{}", p.id)).await
     }
 
-    #[tool(description = "Cancel a render job, whether it is queued or encoding, or an audio measurement. melt is stopped, the partial file is removed, and the job ends in state `cancelled`. Refused for a job that has finished or cannot be stopped.")]
+    #[tool(description = "Cancel a render job, whether it is queued or encoding, or an audio or media measurement. melt is stopped, the partial file is removed, and the job ends in state `cancelled`. Refused for a job that has finished or cannot be stopped.")]
     async fn cancel_job(&self, Parameters(p): Parameters<JobArg>) -> Result<CallToolResult, McpError> {
         self.post(&format!("/api/jobs/{}/cancel", p.id), &json!({})).await
     }

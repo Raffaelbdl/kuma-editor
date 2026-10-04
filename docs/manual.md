@@ -347,7 +347,7 @@ claude mcp add --scope user    kuma -- kuma mcp --project /abs/path.kuma.json  #
 `kuma mcp` starts the daemon in-process if none is running on the port, so the browser UI
 and the agent always share one state. Tools: `timeline_guide`, `get_project`, `get_schema`, `apply_edits`,
 `undo`, `redo`, `validate_project`, `list_presets`, `add_media`, `probe_media`,
-`transcribe`, **`sample_frames`**, `measure_audio`, `bake_overlay`, `render`, `job_status`, `cancel_job`,
+`transcribe`, **`sample_frames`**, `measure_audio`, `measure_media`, `bake_overlay`, `render`, `job_status`, `cancel_job`,
 `prune_cache`, `health`, and for overlays `overlay_guide`, `new_overlay`, `check_overlay`,
 `import_overlay`, `make_overlay_unique`, `list_blueprints`, `add_blueprint`,
 `save_blueprint`. An agent scaffolds an overlay with `new_overlay`, checks it with
@@ -357,7 +357,10 @@ shows one entry on its own, and with `times` and `tile` a contact sheet of chose
 script's patch of any size is one exact edit. `measure_audio` meters a sequence's sound (EBU
 R128, per chapter, loudest moments, silences), rendered through the real graph without
 baking anything; `solo` and `mute` (track ids, nested ones too) hear one part alone for that
-measurement, on the copy that is compiled and never on the project. A server that outlives a rebuild of `kuma` says so on every call, since its
+measurement, on the copy that is compiled and never on the project. `measure_media` meters
+one source instead, a media entry or a file in the project: loudness, range and true peak, a
+loudness curve over time and its quiet stretches (pauses, gaps between takes, the onset of a
+sound), in the file's own seconds; nothing is stored. A server that outlives a rebuild of `kuma` says so on every call, since its
 tools are the old build's. `overlay_guide` returns `library/blueprints/CLAUDE.md`, and
 `timeline_guide` returns `crates/kuma-mcp/src/timeline_guide.md`: the server's own
 instructions are kept under the 2048 characters a client shows and point at both.
@@ -371,6 +374,7 @@ kuma sample 0 3 --count 6 --overlay paris          # one overlay entry on its ow
 kuma sample --times 3.2,3.8,41.7,42.3 --tile      # chosen moments, and one captioned contact sheet of them
 kuma measure-audio                         # loudness (LUFS), true peak, per chapter, loudest moments, silences
 kuma measure-audio --solo va,vb            # the same with only those tracks heard (nested ones too); --mute bed leaves one out
+kuma measure-media voice --range 0,60      # one source: LUFS, range, true peak, a loudness curve, pauses (--silence-db -35 --silence-min 0.15)
 kuma bake                                  # bake all overlay clips (cached by content)
 kuma cache                                 # how big .kuma/ is: bakes, sampled frames, thumbnails
 kuma cache prune                           # delete what the project no longer uses (--all: every bake and frame)

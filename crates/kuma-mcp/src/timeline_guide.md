@@ -94,6 +94,14 @@ alone, pass track ids as `solo` (the voice, the music bed) or `mute`: they apply
 measurement only, never to the project. A soloed track inside a nested sequence is heard through
 the clips placing it, and everything else on the way is silenced.
 
+`measure_media` measures one source instead (a media `bin` entry or a `path` in the project, whole or
+a `range`, in its own seconds), with no ffmpeg by hand: loudness, range and true peak; a loudness
+`curve` to key a music bed's volume by (short-term every `step` seconds, about 120 values by
+default); and its quiet stretches as `[start, end]` pairs. Quiet is every sample under `silence_db`
+(-35) for `silence_min` (0.15 s): speech pauses to cut a voice-over at. Raise `silence_min` to 1 s
+to find the gaps between takes; lower `silence_db` to -50 to find where a sound effect starts (the
+end of the silence before it).
+
 Subtitles: `transcribe` runs a local speech-to-text model (whisper.cpp) and adds a `subtitles`
 overlay entry whose `cues` var is `[{start, end, text}, …]` in source seconds, one cue per word (the
 overlay groups them by its `words_per_line` var and can stress the word being said), listed under the media

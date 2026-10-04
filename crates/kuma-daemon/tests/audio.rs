@@ -3,7 +3,8 @@
 
 use std::sync::Arc;
 
-use kuma_daemon::jobs::{measure_audio, MeasureRequest};
+use kuma_daemon::jobs::{measure_audio, measure_media, MeasureRequest};
+use serde_json::json;
 use kuma_daemon::{AppState, Config};
 
 /// Two chapters of the same tone, the second 6 dB down (`volume` 0.5), with two seconds of
@@ -84,6 +85,60 @@ fn a_sequence_is_measured_whole_by_chapter_and_where_it_is_silent() {
     assert!((f(&s[0]["integrated"]) - two).abs() < 0.2, "{part:#}");
     let quiet = part["silences"].as_array().unwrap();
     assert!(quiet.len() == 1 && (f(&quiet[0]["start"]) - 5.0).abs() < 0.15 && (f(&quiet[0]["end"]) - 6.0).abs() < 0.15, "{part:#}");
+}
+
+/// One source, measured where it is rather than through a timeline: by bin entry or by
+/// path, whole or a stretch, in its own seconds, and nothing written to the document.
+#[test]
+fn a_source_is_measured_in_its_own_seconds() {
+    if !kuma_overlay::media::ffprobe_available() {
+        eprintln!("ffmpeg not available; skipping");
+        return;
+    }
+    let (state, dir) = fixture();
+    let make = |name: &str, lavfi: &str| {
+        let out = dir.path().join(name).to_string_lossy().into_owned();
+        kuma_overlay::media::ffmpeg(&["-f", "lavfi", "-i", lavfi, &out].map(String::from)).unwrap();
+    };
+    // Pauses at 2–2.5 s and 5–5.2 s, 6 dB down after the first.
+    make("talk.wav", "sine=frequency=440:duration=8:sample_rate=48000:samples_per_frame=48,volume='if(between(t,2,2.5)+between(t,5,5.2),0,if(gt(t,2.5),0.5,1))':eval=frame");
+    make("room.wav", "anullsrc=channel_layout=mono:sample_rate=8000:duration=130");
+    kuma_daemon::jobs::add_media(&state, std::path::Path::new("talk.wav"), None, None, None, "test").unwrap();
+    let before = serde_json::to_value(&*state.project.read().unwrap()).unwrap();
+    let measure = |req: serde_json::Value| measure_media(&state, &serde_json::from_value(req).unwrap(), &|_, _| {}, &Default::default());
+    let pairs = |v: &serde_json::Value| -> Vec<(f64, f64)> { v["silences"].as_array().unwrap().iter().map(|p| (p[0].as_f64().unwrap(), p[1].as_f64().unwrap())).collect() };
+    let near = |a: &[(f64, f64)], b: &[(f64, f64)]| a.len() == b.len() && a.iter().zip(b).all(|(x, y)| (x.0 - y.0).abs() < 0.03 && (x.1 - y.1).abs() < 0.03);
+
+    let whole = measure(json!({ "bin": "talk" })).unwrap();
+    assert!(near(&pairs(&whole), &[(2.0, 2.5), (5.0, 5.2)]), "{whole:#}");
+    assert!(whole["integrated"].is_f64() && whole["true_peak"].is_f64() && whole["range"].is_f64(), "{whole:#}");
+    assert_eq!((&whole["curve"]["of"], &whole["curve"]["step"], whole["curve"]["lufs"].as_array().unwrap().len()), (&json!("short_term"), &json!(0.1), 80), "8 s at the finest step stays under the default size: {whole:#}");
+
+    // A stretch, by path, at a chosen step: the pause in it, still in the file's seconds.
+    let part = measure(json!({ "path": "talk.wav", "range": [3.0, 7.0], "curve": "momentary", "step": 1.0 })).unwrap();
+    assert!(near(&pairs(&part), &[(5.0, 5.2)]), "{part:#}");
+    assert_eq!((&part["start"], &part["end"], &part["curve"]["start"], &part["curve"]["window"]), (&json!(3.0), &json!(7.0), &json!(4.0), &json!(0.4)), "{part:#}");
+    let lufs: Vec<f64> = part["curve"]["lufs"].as_array().unwrap().iter().map(|v| v.as_f64().unwrap()).collect();
+    assert_eq!(lufs.len(), 4, "{part:#}");
+    assert!((lufs[0] - lufs[3]).abs() < 0.3, "the same level either side of the short pause: {lufs:?}");
+    // A longer minimum skips the short pause, and a higher threshold is still the same tone.
+    let gaps = measure(json!({ "bin": "talk", "silence_min": 0.3, "curve": "none" })).unwrap();
+    assert!(near(&pairs(&gaps), &[(2.0, 2.5)]) && gaps["curve"].is_null(), "{gaps:#}");
+
+    // Over two minutes the default step widens, and a curve too long to read is refused.
+    let room = measure(json!({ "path": "room.wav" })).unwrap();
+    assert_eq!((&room["curve"]["step"], room["curve"]["lufs"].as_array().unwrap().len()), (&json!(2.0), 65), "{room:#}");
+    assert!(room["integrated"].is_null() && room["curve"]["lufs"][0].is_null(), "digital silence: {room:#}");
+    assert!(near(&pairs(&room), &[(0.0, 130.0)]), "{room:#}");
+    let refused = |req: serde_json::Value| measure(req).unwrap_err().to_string();
+    assert!(refused(json!({ "path": "room.wav", "step": 0.1 })).contains("the most is 1200"));
+    assert!(refused(json!({ "path": "../elsewhere.wav" })).contains("cannot read"));
+    assert!(refused(json!({ "path": "/etc/hostname" })).contains("not inside the project"));
+    assert!(refused(json!({ "bin": "talk", "path": "talk.wav" })).contains("exactly one"));
+    assert!(refused(json!({ "bin": "talk", "range": [9.0, 12.0] })).contains("nothing after 9"));
+    assert!(refused(json!({ "bin": "talk", "curve": "loud" })).contains("`curve` is"));
+
+    assert_eq!(serde_json::to_value(&*state.project.read().unwrap()).unwrap(), before, "nothing is stored");
 }
 
 /// A master whose picture track places two scenes, each with its own voice track, and a

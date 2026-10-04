@@ -1019,6 +1019,141 @@ pub fn audition(project: &mut Project, root: &str, mute: &[String], solo: &[Stri
     Ok(silenced)
 }
 
+/// What to measure of one source, and how finely.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct MediaMeasureRequest {
+    /// A media entry of the bin.
+    #[serde(default)]
+    pub bin: Option<String>,
+    /// Or a file in the project: relative to it, or absolute under it.
+    #[serde(default)]
+    pub path: Option<String>,
+    /// `[start, end]` source seconds; all of it when absent.
+    #[serde(default)]
+    pub range: Option<(f64, f64)>,
+    /// The loudness over time: `short_term` (3 s windows, the default), `momentary` (400 ms)
+    /// or `none`.
+    #[serde(default)]
+    pub curve: Option<String>,
+    /// Seconds between the curve's values, a multiple of 0.1. By default the step of
+    /// 0.1, 0.2, 0.5, 1, 2, 5, 10, 15, 30 or 60 s that keeps it to [`CURVE_POINTS`] values.
+    #[serde(default)]
+    pub step: Option<f64>,
+    /// What counts as quiet: every sample under this many dBFS (default -35)…
+    #[serde(default)]
+    pub silence_db: Option<f64>,
+    /// …for at least this many seconds (default 0.15).
+    #[serde(default)]
+    pub silence_min: Option<f64>,
+}
+
+/// About how many values a curve has when no step is asked for: one screen of numbers.
+pub const CURVE_POINTS: f64 = 120.0;
+/// The most a curve may have: a 20-minute file at 1 s.
+pub const MAX_CURVE_POINTS: usize = 1200;
+/// The most quiet stretches a result lists; the rest are counted.
+pub const MAX_SILENCES: usize = 500;
+
+/// How loud one source is, and where it is quiet: a media entry or a file in the project,
+/// read by ffmpeg in one pass (`kuma_overlay::loudness::measure`), in the file's own
+/// seconds. What is otherwise `ffmpeg -af ebur128` and `silencedetect` by hand: a take's
+/// level, a music bed's level over time to key a volume by, the pauses of a voice, and the
+/// onset of a sound effect, which is where a silence ends.
+///
+/// Measured, never stored: the result depends on the stretch and the threshold asked for,
+/// and the bin's probed metadata is already a copy of the file that can go stale.
+pub fn measure_media(state: &AppState, req: &MediaMeasureRequest, progress: &dyn Fn(u8, &str), cancel: &AtomicBool) -> anyhow::Result<serde_json::Value> {
+    let project = read(&state.project).clone();
+    let file = match (&req.bin, &req.path) {
+        (Some(id), None) => {
+            let item = project.bin.get(id).ok_or_else(|| anyhow::anyhow!("no bin entry `{id}`"))?;
+            let BinSource::File { path, kind, .. } = &item.source else { anyhow::bail!("`{id}` is not a media file") };
+            anyhow::ensure!(*kind != kuma_core::MediaKind::Image, "`{id}` is a still image, which makes no sound");
+            resolve_path(state, Path::new(path))
+        }
+        (None, Some(path)) => {
+            let file = resolve_path(state, Path::new(path)).canonicalize().map_err(|e| anyhow::anyhow!("cannot read `{path}`: {e}"))?;
+            anyhow::ensure!(file.starts_with(state.config.project_root().canonicalize()?), "`{path}` is not inside the project");
+            file
+        }
+        _ => anyhow::bail!("pass exactly one of `bin` or `path`"),
+    };
+    let name = req.bin.clone().or_else(|| req.path.clone()).unwrap_or_default();
+    // Probed now rather than read from the bin: what is measured is the file as it is.
+    let probe = kuma_overlay::probe(&file).map_err(|e| anyhow::anyhow!(e))?;
+    anyhow::ensure!(probe.meta.has_audio, "`{name}` has no sound");
+    let duration = probe.meta.duration.ok_or_else(|| anyhow::anyhow!("cannot tell how long `{name}` is"))?;
+    let (from, to) = req.range.unwrap_or((0.0, duration));
+    anyhow::ensure!(from.is_finite() && to.is_finite() && from >= 0.0 && to > from, "the range must be `[start, end]` with 0 ≤ start < end");
+    let to = to.min(duration);
+    anyhow::ensure!(to > from, "`{name}` is {duration:.2} s long, so there is nothing after {from} s to measure");
+    let length = to - from;
+
+    let momentary = match req.curve.as_deref().unwrap_or("short_term") {
+        "short_term" => Some(false),
+        "momentary" => Some(true),
+        "none" => None,
+        other => anyhow::bail!("`curve` is `short_term`, `momentary` or `none`, not `{other}`"),
+    };
+    let step = match req.step {
+        Some(s) => {
+            anyhow::ensure!(s.is_finite() && s >= 0.1, "`step` is seconds, 0.1 or more");
+            (s * 10.0).round() / 10.0
+        }
+        None => [0.1, 0.2, 0.5, 1.0, 2.0, 5.0, 10.0, 15.0, 30.0, 60.0].into_iter().find(|s| length / s <= CURVE_POINTS).unwrap_or_else(|| (length / CURVE_POINTS / 60.0).ceil() * 60.0),
+    };
+    let points = (length / step).floor() as usize;
+    if momentary.is_some() && points > MAX_CURVE_POINTS {
+        let least = (length / MAX_CURVE_POINTS as f64 * 10.0).ceil() / 10.0;
+        anyhow::bail!("a curve every {step} s over {length:.0} s is {points} values, and the most is {MAX_CURVE_POINTS}: pass a `step` of {least} s or more, a shorter `range`, or `curve: none`");
+    }
+    let quiet = kuma_overlay::loudness::Quiet { db: req.silence_db.unwrap_or(-35.0), min: req.silence_min.unwrap_or(0.15) };
+    anyhow::ensure!(quiet.db.is_finite() && (-120.0..0.0).contains(&quiet.db), "`silence_db` is dBFS, under 0 (speech pauses are about -35)");
+    anyhow::ensure!(quiet.min.is_finite() && quiet.min > 0.0 && quiet.min <= 60.0, "`silence_min` is seconds, more than 0");
+
+    progress(0, "reading the sound");
+    let report = |t: f64| progress((t / length * 100.0).clamp(0.0, 99.0) as u8, &format!("metering {t:.0} of {length:.0} s"));
+    let m = kuma_overlay::loudness::measure(&file, req.range.map(|_| (from, to)), quiet, cancel, &report).map_err(|e| anyhow::anyhow!(e))?;
+
+    let db = |v: f64| v.is_finite().then(|| (v * 10.0).round() / 10.0);
+    let secs = |v: f64| (v * 100.0).round() / 100.0 + 0.0;
+    let curve = momentary.map(|momentary| {
+        let values: Vec<Option<f64>> = m.scan.curve(step, momentary).into_iter().map(|v| db(v).filter(|&v| v > kuma_overlay::loudness::SILENT_LUFS)).collect();
+        serde_json::json!({
+            "of": if momentary { "momentary" } else { "short_term" },
+            "window": if momentary { 0.4 } else { 3.0 },
+            "start": secs(from + step),
+            "step": step,
+            "lufs": values,
+        })
+    });
+    let silences: Vec<[f64; 2]> = m.silences.iter().take(MAX_SILENCES).map(|&(a, b)| [secs(a), secs(b)]).collect();
+    let mut out = serde_json::json!({
+        "bin": req.bin,
+        "path": project_relative_to(state, &file),
+        "start": secs(from),
+        "end": secs(to),
+        "integrated": m.scan.integrated.and_then(db),
+        "range": db(m.scan.range),
+        "true_peak": db(m.scan.true_peak),
+        "curve": curve,
+        "silence": { "db": quiet.db, "min": quiet.min },
+        "silences": silences,
+        "note": "Seconds are the file's own. `curve.lufs[i]` is the loudness of the `window` seconds ending at `curve.start + i·step`, null under -70 LUFS. `silences` are [start, end] pairs: where sound stops, and where it starts again (an onset).",
+    });
+    if m.silences.len() > MAX_SILENCES {
+        out["silences_total"] = m.silences.len().into();
+    }
+    Ok(out)
+}
+
+/// `p` relative to the project when it is inside it.
+fn project_relative_to(state: &AppState, p: &Path) -> PathBuf {
+    let root = state.config.project_root();
+    let real = root.canonicalize().unwrap_or_else(|_| root.clone());
+    p.strip_prefix(&root).or_else(|_| p.strip_prefix(&real)).map(Path::to_path_buf).unwrap_or_else(|_| p.to_path_buf())
+}
+
 /// A sequence's chapters: its clips that place another sequence, in time order.
 fn chapters(project: &Project, sequence: &str) -> Vec<Section> {
     let Some(seq) = project.seq(sequence) else { return Vec::new() };

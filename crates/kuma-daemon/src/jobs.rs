@@ -278,6 +278,14 @@ pub struct TranscribeRequest {
     /// Without it, naming an entry that exists is refused rather than overwritten.
     #[serde(default)]
     pub replace: bool,
+    /// Cut the transcript at pauses into entries of about this many seconds, each its own
+    /// `subtitles` entry with its own cues and `offset` (`kuma_overlay::split_at_pauses`):
+    /// one long entry bakes as one long clip, and again after every correction. Default
+    /// [`SPLIT_SECONDS`]; 0 keeps one entry. Several pieces are `<id>-1`, `<id>-2`…, and
+    /// from a clip, the pieces it plays, each placed over its stretch. `replace` overwrites
+    /// one entry's words, so with it the default is 0 and a split is refused.
+    #[serde(default)]
+    pub split: Option<f64>,
     #[serde(flatten)]
     pub options: TranscribeOptions,
     #[serde(default = "default_origin")]
@@ -287,10 +295,15 @@ fn default_origin() -> String {
     "ui".into()
 }
 
-/// Transcribe a media entry's audio and add the result to the bin as a `subtitles`
-/// overlay entry under that media, cues in source seconds. From a clip, also place it
-/// over the clip. With `replace`, an entry that is already there keeps everything but its
-/// words. One patch either way, so it is revision-checked and one undo step.
+/// How long a transcript entry is by default, in seconds: past about a minute, a bake is
+/// long enough to wait on.
+pub const SPLIT_SECONDS: f64 = 60.0;
+
+/// Transcribe a media entry's audio and add the result to the bin as `subtitles` overlay
+/// entries under that media, cues in source seconds: one per stretch of about a minute,
+/// cut at pauses (`split`). From a clip, also place them over the clip. With `replace`, an
+/// entry that is already there keeps everything but its words. One patch either way, so it
+/// is revision-checked and one undo step.
 ///
 /// The model runs for minutes, and the document is edited while it does. So nothing about
 /// *where the words go* is decided until they exist: the id, the entry to replace, the
@@ -322,6 +335,15 @@ pub fn transcribe(state: &AppState, req: &TranscribeRequest, progress: &dyn Fn(u
     if let Some(id) = req.id.as_ref().filter(|_| !req.replace) {
         anyhow::ensure!(!project.bin.contains_key(id), "`{id}` already exists; pass `replace` to overwrite its transcript, or a different `id`");
     }
+    let reversed = clip.as_ref().and_then(|(_, id)| project.find_clip(id)).is_some_and(|(_, _, c)| c.speed < 0.0);
+    let split = match req.split {
+        Some(s) if !(s == 0.0 || (s.is_finite() && s >= 5.0)) => anyhow::bail!("`split` is the seconds of transcript per entry, 5 or more, or 0 for one entry"),
+        Some(s) if s > 0.0 && req.replace => anyhow::bail!("`replace` overwrites the words of one entry and `split` makes several: pass `split: 0` with `replace`, or remove the old transcript and transcribe again to split it"),
+        Some(s) if s > 0.0 && reversed => anyhow::bail!("a reversed clip's transcript cannot be split: pass `split: 0`"),
+        Some(s) => s,
+        None if req.replace || reversed => 0.0,
+        None => SPLIT_SECONDS,
+    };
 
     progress(2, "extracting audio");
     let media = resolve_path(state, Path::new(path));
@@ -330,12 +352,12 @@ pub fn transcribe(state: &AppState, req: &TranscribeRequest, progress: &dyn Fn(u
     let cues = state.transcriber.transcribe(&media, &state.config.cache_dir().join("transcripts"), &req.options, &report).map_err(|e| anyhow::anyhow!(e))?;
     progress(90, "adding to the bin");
 
-    let cues_value = serde_json::to_value(&cues)?;
     // Copied outside the edit lock, and only once the words are in.
     let overlay = match existing {
         Some(folder) => folder,
         None => crate::overlays::copy_blueprint(state, SUBTITLES_BLUEPRINT, None)?,
     };
+    let pieces = kuma_overlay::split_at_pauses(&cues, split);
     let (outcome, rev, warnings) = state.apply_built(&req.origin, None, |p| {
         // Everything below reads `p`, the project as it is now — never the snapshot above.
         let media_item = p.bin.get(&bin).ok_or_else(|| anyhow::anyhow!("`{bin}` is gone"))?;
@@ -348,68 +370,137 @@ pub fn transcribe(state: &AppState, req: &TranscribeRequest, progress: &dyn Fn(u
                 Some((seq.clone(), c.clone()))
             }
         };
+        // The pieces this run makes, and where each goes on the clip's sequence: `(start,
+        // end, offset)`. One piece is the clip's whole length, as an unsplit transcript always
+        // was. Of several, a clip makes those it plays a word of, each over the stretch of it
+        // that it plays, its `offset` the source second there; a bin entry makes them all,
+        // unplaced, each `offset` its own start.
+        let made: Vec<(&kuma_overlay::Piece, Option<(f64, f64, f64)>)> = match &placement {
+            None => pieces.iter().map(|piece| (piece, None)).collect(),
+            Some((_, c)) if pieces.len() == 1 => vec![(&pieces[0], Some((c.start, c.end, c.source_in)))],
+            Some((_, c)) => {
+                let (from, to) = (c.source_in, c.source_in + c.duration() * c.speed);
+                let at = |s: f64| c.start + (s - from) / c.speed;
+                let made: Vec<_> = pieces
+                    .iter()
+                    .filter(|piece| cues[piece.cues.clone()].iter().any(|q| q.end > from && q.start < to))
+                    .map(|piece| {
+                        let (a, b) = (piece.start.max(from), piece.end.min(to));
+                        (piece, Some((if a <= from { c.start } else { at(a) }, if b >= to { c.end } else { at(b) }, a)))
+                    })
+                    .collect();
+                anyhow::ensure!(!made.is_empty(), "clip `{}` plays none of the words", c.id);
+                made
+            }
+        };
+        let several = made.len() > 1;
         // Where the words go, decided here and nowhere earlier: the entry named, else the
         // one `replace` means, else a free name minted with the words already in hand.
-        let target = req.id.clone().or_else(|| req.replace.then(|| format!("{bin}-subs")));
-        let (id, replacing) = match target {
-            Some(id) => match p.bin.get(&id) {
-                Some(existing) => {
-                    anyhow::ensure!(req.replace, "`{id}` already exists; pass `replace` to overwrite its transcript, or a different `id`");
-                    anyhow::ensure!(existing.is_overlay(), "`{id}` is not an overlay entry");
-                    (id, true)
+        // Several pieces are `<id>-1`, `<id>-2`…, all of them free.
+        let ids: Vec<(String, bool)> = if several {
+            let names = |base: &str| (1..=made.len()).map(|k| format!("{base}-{k}")).collect::<Vec<_>>();
+            let free = |base: &str| names(base).iter().all(|id| !p.bin.contains_key(id));
+            let base = match &req.id {
+                Some(id) => {
+                    anyhow::ensure!(free(id), "`{id}-1` to `{id}-{}` must all be free to split the transcript under `{id}`; pass a different `id`", made.len());
+                    id.clone()
                 }
-                // Named, or asked to replace, something that is not there: make it.
-                None => (id, false),
-            },
-            None => (p.free_bin_id(&format!("{bin}-subs")), false),
+                None => std::iter::once(format!("{bin}-subs")).chain((2..).map(|n| format!("{bin}-subs-{n}"))).find(|b| free(b)).unwrap_or_default(),
+            };
+            names(&base).into_iter().map(|id| (id, false)).collect()
+        } else {
+            let target = req.id.clone().or_else(|| req.replace.then(|| format!("{bin}-subs")));
+            vec![match target {
+                Some(id) => match p.bin.get(&id) {
+                    Some(existing) => {
+                        anyhow::ensure!(req.replace, "`{id}` already exists; pass `replace` to overwrite its transcript, or a different `id`");
+                        anyhow::ensure!(existing.is_overlay(), "`{id}` is not an overlay entry");
+                        (id, true)
+                    }
+                    // Named, or asked to replace, something that is not there: make it.
+                    None => (id, false),
+                },
+                None => (p.free_bin_id(&format!("{bin}-subs")), false),
+            }]
         };
 
         let mut ops = Vec::new();
-        if replacing {
-            // Only the vars the transcript owns: the entry's own styling stays as it is.
-            ops.push(bin_op(&id, "/source/vars/cues", cues_value.clone())?);
-            if let Some((_, c)) = &placement {
-                ops.push(bin_op(&id, "/source/vars/offset", c.source_in.into())?);
-            }
-        } else {
-            let mut vars = serde_json::Map::from_iter([("cues".to_string(), cues_value.clone())]);
-            if let Some((_, c)) = &placement {
-                vars.insert("offset".into(), c.source_in.into());
-            }
-            let entry = kuma_core::BinItem {
-                name: format!("Subtitles: {}", media_item.display_name(&bin)),
-                source: BinSource::Overlay { overlay: overlay.clone(), vars },
-                meta: None,
-                parent: Some(bin.clone()),
-                order: None,
-                volume: 1.0,
-            };
-            // The entry first: the clip that places it must find it.
-            ops.push(bin_op(&id, "", serde_json::to_value(entry)?)?);
-        }
-        // Place it, unless it is on a timeline already — a re-run must not stack a second
-        // clip on the one the first run put there.
-        let place = placement.as_ref().filter(|_| !p.all_clips().any(|(_, _, c)| c.bin == id));
-        if let Some((seq, c)) = place {
-            // The overlay clip copies the media clip's start, end and speed, so at every
-            // timeline instant the overlay's own time is `source − in`: the cues line up.
-            let tracks = &p.seq(seq).ok_or_else(|| anyhow::anyhow!("`{seq}` is not a sequence"))?.tracks;
-            let free = |t: &kuma_core::Track| t.kind == kuma_core::TrackKind::Overlay && !t.clips.iter().any(|x| x.start < c.end && x.end > c.start);
-            let ti = match tracks.iter().position(free) {
-                Some(ti) => ti,
-                None => {
-                    let track = kuma_core::Track { id: p.free_track_or_clip_id("o"), kind: kuma_core::TrackKind::Overlay, name: "Subtitles".into(), muted: false, hidden: false, clips: vec![], transitions: vec![] };
-                    ops.push(add_op(&format!("/bin/{seq}/source/tracks/-"), serde_json::to_value(track)?)?);
-                    tracks.len()
+        // The overlay track the clips go on, found once: they are side by side within the
+        // media clip's range.
+        let mut track: Option<(String, usize)> = None;
+        let mut clip_ids = std::collections::HashSet::new();
+        let mut report = Vec::new();
+        for ((piece, place), (id, replacing)) in made.iter().zip(&ids) {
+            let place = *place;
+            let words = serde_json::to_value(&cues[piece.cues.clone()])?;
+            // A piece's `offset` is where its stretch starts, placed or not; an unsplit
+            // transcript has one only when placed, as it always had.
+            let offset = place.map(|(_, _, o)| o).or_else(|| several.then_some(piece.start));
+            if *replacing {
+                // Only the vars the transcript owns: the entry's own styling stays as it is.
+                ops.push(bin_op(id, "/source/vars/cues", words)?);
+                if let Some(o) = offset {
+                    ops.push(bin_op(id, "/source/vars/offset", o.into())?);
                 }
-            };
-            let placed = kuma_core::Clip { id: p.free_track_or_clip_id("subs"), start: c.start, end: c.end, bin: id.clone(), source_in: 0.0, speed: c.speed, volume: 1.0, muted: false, effects: vec![], label: String::new(), group: String::new() };
-            ops.push(add_op(&format!("/bin/{seq}/source/tracks/{ti}/clips/-"), serde_json::to_value(placed)?)?);
+            } else {
+                let mut vars = serde_json::Map::from_iter([("cues".to_string(), words)]);
+                if let Some(o) = offset {
+                    vars.insert("offset".into(), o.into());
+                }
+                let name = format!("Subtitles: {}", media_item.display_name(&bin));
+                let entry = kuma_core::BinItem {
+                    name: if several { format!("{name} ({}/{})", report.len() + 1, made.len()) } else { name },
+                    source: BinSource::Overlay { overlay: overlay.clone(), vars },
+                    meta: None,
+                    parent: Some(bin.clone()),
+                    order: None,
+                    volume: 1.0,
+                };
+                // The entry first: the clip that places it must find it.
+                ops.push(bin_op(id, "", serde_json::to_value(entry)?)?);
+            }
+            // Place it, unless it is on a timeline already — a re-run must not stack a second
+            // clip on the one the first run put there.
+            let place = place.zip(placement.as_ref()).filter(|_| !p.all_clips().any(|(_, _, c)| &c.bin == id));
+            if let Some(((start, end, _), (seq, c))) = place {
+                // The overlay clip has the media clip's speed, and starts where its stretch
+                // does, so at every timeline instant the overlay's own time is `source −
+                // offset`: the cues line up.
+                if track.is_none() {
+                    let tracks = &p.seq(seq).ok_or_else(|| anyhow::anyhow!("`{seq}` is not a sequence"))?.tracks;
+                    let free = |t: &kuma_core::Track| t.kind == kuma_core::TrackKind::Overlay && !t.clips.iter().any(|x| x.start < c.end && x.end > c.start);
+                    let ti = match tracks.iter().position(free) {
+                        Some(ti) => ti,
+                        None => {
+                            let new = kuma_core::Track { id: p.free_track_or_clip_id("o"), kind: kuma_core::TrackKind::Overlay, name: "Subtitles".into(), muted: false, hidden: false, clips: vec![], transitions: vec![] };
+                            ops.push(add_op(&format!("/bin/{seq}/source/tracks/-"), serde_json::to_value(new)?)?);
+                            tracks.len()
+                        }
+                    };
+                    track = Some((seq.clone(), ti));
+                }
+                let (seq, ti) = track.clone().unwrap_or_default();
+                // As `free_track_or_clip_id` would, but several, none of them the same.
+                let taken: std::collections::HashSet<&str> = p.sequences().flat_map(|(_, s)| s.tracks.iter().flat_map(|t| std::iter::once(t.id.as_str()).chain(t.clips.iter().map(|c| c.id.as_str())))).collect();
+                let clip_id = (1..).map(|n| format!("subs{n}")).find(|c| !taken.contains(c.as_str()) && !clip_ids.contains(c)).unwrap_or_default();
+                clip_ids.insert(clip_id.clone());
+                let placed = kuma_core::Clip { id: clip_id, start, end, bin: id.clone(), source_in: 0.0, speed: c.speed, volume: 1.0, muted: false, effects: vec![], label: String::new(), group: String::new() };
+                ops.push(add_op(&format!("/bin/{seq}/source/tracks/{ti}/clips/-"), serde_json::to_value(placed)?)?);
+            }
+            report.push((id.clone(), *replacing, place.is_some(), (*piece).clone()));
         }
-        Ok((ops, (id, replacing, place.is_some())))
+        Ok((ops, report))
     })?;
-    let (id, replaced, placed) = outcome;
-    Ok(serde_json::json!({ "bin": id, "cues": cues.len(), "replaced": replaced, "placed": placed, "revision": rev, "warnings": warnings }))
+    let (id, replaced) = (outcome[0].0.clone(), outcome[0].1);
+    let placed = outcome.iter().any(|o| o.2);
+    let mut out = serde_json::json!({ "bin": id, "cues": cues.len(), "replaced": replaced, "placed": placed, "revision": rev, "warnings": warnings });
+    if outcome.len() > 1 {
+        // Seconds of the source each stands for; the last runs to the end of the words.
+        let last = cues.last().map_or(0.0, |c| c.end);
+        let secs = |v: f64| (v.min(last) * 100.0).round() / 100.0;
+        out["pieces"] = outcome.iter().map(|(id, _, placed, piece)| serde_json::json!({ "bin": id, "start": secs(piece.start), "end": secs(piece.end), "cues": piece.cues.len(), "placed": placed })).collect();
+    }
+    Ok(out)
 }
 
 fn add_op(pointer: &str, value: serde_json::Value) -> anyhow::Result<json_patch::PatchOperation> {

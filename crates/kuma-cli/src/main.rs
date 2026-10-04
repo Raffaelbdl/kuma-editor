@@ -211,6 +211,15 @@ enum Cmd {
         /// Longest cue in characters: 1 (the default) is one cue per word, 0 keeps whisper's own sentences.
         #[arg(long, default_value_t = 1)]
         max_chars: u32,
+        /// Model: a file in the models folder or its size (`large-v3`, `medium`); `kuma doctor` lists them.
+        #[arg(long)]
+        model: Option<String>,
+        /// Seconds of transcript per entry, cut at pauses (default 60; 0 for one entry).
+        #[arg(long)]
+        split: Option<f64>,
+        /// Keep whisper's word times rather than moving cue edges onto the pauses.
+        #[arg(long)]
+        no_snap: bool,
     },
     /// Create a new empty project file (and, for Claude Code, a project-scoped `.mcp.json`
     /// and the `kuma-video` skill in `.claude/skills/`).
@@ -541,15 +550,15 @@ async fn main() -> anyhow::Result<()> {
             };
             println!("added bin entry `{id}` (revision {rev})");
         }
-        Cmd::Transcribe { bin, clip, id, replace, language, max_chars } => {
-            let options = kuma_overlay::TranscribeOptions { language: language.clone(), max_chars: Some(*max_chars) };
+        Cmd::Transcribe { bin, clip, id, replace, language, max_chars, model, split, no_snap } => {
+            let options = kuma_overlay::TranscribeOptions { language: language.clone(), max_chars: Some(*max_chars), model: model.clone(), snap: no_snap.then_some(false), ..Default::default() };
             let out = if let Some(url) = running_daemon(&cli).await {
-                let body = serde_json::json!({ "bin": bin, "clip": clip, "id": id, "replace": replace, "language": options.language, "max_chars": options.max_chars, "origin": "cli: transcribe" });
+                let body = serde_json::json!({ "bin": bin, "clip": clip, "id": id, "replace": replace, "split": split, "language": options.language, "max_chars": options.max_chars, "model": options.model, "snap": options.snap, "origin": "cli: transcribe" });
                 let v = kuma_mcp::client::Client::new(&url).post("/api/transcribe", &body).await?;
                 kuma_mcp::client::Client::new(&url).wait_job(v["job"].as_u64().unwrap_or_default(), std::time::Duration::from_secs(3600)).await?
             } else {
                 let state = open(&cli)?;
-                let req = kuma_daemon::jobs::TranscribeRequest { bin: bin.clone(), clip: clip.clone(), id: id.clone(), replace: *replace, options, origin: "cli".into() };
+                let req = kuma_daemon::jobs::TranscribeRequest { bin: bin.clone(), clip: clip.clone(), id: id.clone(), replace: *replace, split: *split, options, origin: "cli".into() };
                 tokio::task::spawn_blocking(move || kuma_daemon::jobs::transcribe(&state, &req, &|p, m| eprintln!("[{p:3}%] {m}"))).await??
             };
             println!("{}", serde_json::to_string_pretty(&out)?);
@@ -624,6 +633,7 @@ async fn doctor(cli: &Cli) -> anyhow::Result<()> {
     println!("hyperframes   {}", baker.available().map(|v| format!("{v} ({})", baker.hyperframes.display())).unwrap_or_else(|e| format!("MISSING — npm install at the repo root ({e})")));
     let stt = kuma_overlay::Transcriber::discover(&cfg.repo_root, default_library_dirs().remove(0).join("models"));
     println!("whisper       {}", stt.available().map(|m| format!("{} with {}", stt.cli.display(), m.display())).unwrap_or_else(|e| format!("MISSING — {e}")));
+    println!("whisper models {}", if stt.models().is_empty() { format!("none in {}", stt.model_dir.display()) } else { stt.models().join(", ") });
     println!("browser       {}", baker.browser.as_ref().map(|p| p.display().to_string()).unwrap_or("not set — hyperframes will download Chrome headless shell on first bake".into()));
     let display = std::env::var_os("DISPLAY").is_some() || std::env::var_os("WAYLAND_DISPLAY").is_some();
     println!("display       {}", if display { "yes" } else if kuma_daemon::preview::has_bin("xvfb-run") { "none; xvfb-run available" } else { "NONE and no xvfb-run — melt/engine will fail (apt install xvfb)" });

@@ -449,7 +449,7 @@ pub struct Transcribe {
     /// Or a clip id: transcribe what it plays and place the subtitles over it, aligned. One of the two.
     #[serde(default)]
     pub clip: Option<String>,
-    /// Bin id for the subtitles entry. Defaults to `<bin>-subs`.
+    /// Bin id for the subtitles entry (several pieces are `<id>-1`, `<id>-2`…). Defaults to `<bin>-subs`.
     #[serde(default)]
     pub id: Option<String>,
     /// Overwrite the transcript of an entry that already exists (keeping its styling and
@@ -462,6 +462,21 @@ pub struct Transcribe {
     /// Longest cue in characters. Default 1: one cue per word, which the `subtitles` overlay groups into lines itself; 0 keeps whisper's own sentences.
     #[serde(default)]
     pub max_chars: Option<u32>,
+    /// Model: a file in the models folder or its size (`large-v3`, `medium`, `small`); `health` lists `whisper_models`. The default model when omitted; a larger one is much better outside English.
+    #[serde(default)]
+    pub model: Option<String>,
+    /// Seconds of transcript per entry, cut at pauses (default 60; 0 for one entry). Several pieces are `<id>-1`, `<id>-2`…; refused with `replace`, which defaults it to 0.
+    #[serde(default)]
+    pub split: Option<f64>,
+    /// Move cue edges onto the pauses in the sound (default true): whisper's word cues are contiguous, so without it a pause is part of a word.
+    #[serde(default)]
+    pub snap: Option<bool>,
+    /// A pause, for snapping, is every sample under this many dBFS (default -35)…
+    #[serde(default)]
+    pub pause_db: Option<f64>,
+    /// …for at least this many seconds (default 0.15).
+    #[serde(default)]
+    pub pause_min: Option<f64>,
     /// Seconds to wait for the model before returning the job id (default 600).
     #[serde(default)]
     pub wait_seconds: Option<u64>,
@@ -575,9 +590,12 @@ impl KumaServer {
         self.post("/api/bin", &json!({ "path": p.path, "id": p.id, "parent": p.parent, "base_revision": p.base_revision, "origin": "claude: add media" })).await
     }
 
-    #[tool(description = "Transcribe media audio with a local whisper.cpp model into a `subtitles` overlay entry (cues in source seconds, editable as its `cues` var), listed under the media. Pass `clip` to place it over that clip, aligned, on an overlay track; pass `bin` for the entry alone. The new entry's id is minted when the words are in and returned as `bin`; it takes no base_revision, since the model runs for minutes and the patch is composed against the project as it is when it lands.")]
+    #[tool(description = "Transcribe media audio with a local whisper.cpp model into `subtitles` overlay entries (cues in source seconds, editable as their `cues` var), listed under the media: one per stretch of about `split` seconds (default 60), cut at pauses, each with its own cues and `offset`. Cue edges are moved onto the pauses in the sound, so sentence boundaries can be cut at. Pass `clip` to place them over that clip, aligned, on an overlay track (the pieces it plays, each over its stretch); pass `bin` for the entries alone. Ids are minted when the words are in and returned as `bin` and, for several, `pieces` (`bin`, source `start`/`end`, `cues`); it takes no base_revision, since the model runs for minutes and the patch is composed against the project as it is when it lands.")]
     async fn transcribe(&self, Parameters(p): Parameters<Transcribe>) -> Result<CallToolResult, McpError> {
-        let body = json!({ "bin": p.bin, "clip": p.clip, "id": p.id, "replace": p.replace.unwrap_or(false), "language": p.language, "max_chars": p.max_chars, "origin": "claude: transcribe" });
+        let body = json!({
+            "bin": p.bin, "clip": p.clip, "id": p.id, "replace": p.replace.unwrap_or(false), "language": p.language, "max_chars": p.max_chars,
+            "model": p.model, "split": p.split, "snap": p.snap, "pause_db": p.pause_db, "pause_min": p.pause_min, "origin": "claude: transcribe",
+        });
         self.job("/api/transcribe", &body, Duration::from_secs(p.wait_seconds.unwrap_or(600))).await
     }
 
@@ -704,7 +722,7 @@ impl KumaServer {
         self.post(&format!("/api/jobs/{}/cancel", p.id), &json!({})).await
     }
 
-    #[tool(description = "Daemon health: project path and revision, hyperframes/browser/preview-engine availability, blueprint library dirs and any blueprint manifest that failed to load.")]
+    #[tool(description = "Daemon health: project path and revision, hyperframes/browser/preview-engine availability, whisper and the models `transcribe` can name, blueprint library dirs and any blueprint manifest that failed to load.")]
     async fn health(&self) -> Result<CallToolResult, McpError> {
         let mut h = self.client.get("/api/health").await.map_err(err)?;
         if let Some(obj) = h.as_object_mut() {

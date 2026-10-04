@@ -22,4 +22,4 @@ pub use lint::{Finding, Level, LintReport};
 pub use inject::{Contract, FontCss};
 pub use media::{filmstrip, peaks, probe, Probe, Strip, PEAK_RATE};
 pub use scaffold::new_overlay;
-pub use transcribe::{Cue, TranscribeOptions, Transcriber};
+pub use transcribe::{split_at_pauses, Cue, Piece, TranscribeOptions, Transcriber};

@@ -31,6 +31,8 @@ fi
 # whisper reports its own progress on stderr as it works.
 printf 'whisper_print_progress_callback: progress =  40%%\n' >&2
 printf 'whisper_print_progress_callback: progress = 100%%\n' >&2
+# A transcript the test wrote beside the script, else a fixed one.
+if [ -f "$0.json" ]; then cp "$0.json" "$base.json"; exit 0; fi
 printf '%s' '{ "transcription": [
   { "offsets": { "from": 0, "to": 900 }, "text": " Hello" },
   { "offsets": { "from": 900, "to": 2000 }, "text": " [BLANK_AUDIO]" },
@@ -59,7 +61,7 @@ fn a_transcript_becomes_an_editable_subtitles_entry() {
     let state = Arc::new(AppState::load(config).unwrap());
     jobs::add_media(&state, &media, None, None, None, "test").unwrap();
 
-    let req = TranscribeRequest { bin: Some("talk".into()), clip: None, id: None, replace: false, options: Default::default(), origin: "test".into() };
+    let req = TranscribeRequest { bin: Some("talk".into()), clip: None, id: None, replace: false, split: None, options: Default::default(), origin: "test".into() };
     // Whisper is minutes of work on a real recording, so the job must report its
     // percentage while it runs rather than jumping from "started" to "done".
     let seen = std::sync::Mutex::new(Vec::<u8>::new());
@@ -181,4 +183,123 @@ fn a_transcript_becomes_an_editable_subtitles_entry() {
     assert_eq!(p.bin["talk"].name, "Renamed mid-transcription", "and the unrelated edit stands");
     assert_eq!(p.bin["talk-subs-4"].parent.as_deref(), Some("talk"));
     assert!(kuma_core::validate(&p, &state.validation_context()).is_empty());
+}
+
+/// Real pauses in real sound, and a transcript of contiguous words whose boundaries sit
+/// 0.3 s past each pause, as whisper's do: the cues come out with the pauses as gaps, cut
+/// into pieces of about a minute at the best of them, each its own entry; from a clip, the
+/// pieces it plays, each placed over its stretch. And the model is the one asked for.
+#[test]
+fn a_long_transcript_has_real_gaps_and_is_cut_into_pieces_of_about_a_minute() {
+    if !kuma_overlay::media::ffprobe_available() {
+        eprintln!("ffmpeg unavailable; skipping transcribe test");
+        return;
+    }
+    let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..").canonicalize().unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let pauses = [(10.0, 10.3), (30.0, 30.4), (61.0, 61.6), (90.0, 90.3), (121.0, 121.8)];
+    let quiet: Vec<String> = pauses.iter().map(|(a, b)| format!("between(t,{a},{b})")).collect();
+    let media = dir.path().join("talk.wav");
+    let tone = format!("sine=frequency=300:duration=150:sample_rate=16000:samples_per_frame=160,volume='if({},0,1)':eval=frame", quiet.join("+"));
+    kuma_overlay::media::ffmpeg(&["-f".into(), "lavfi".into(), "-i".into(), tone, media.to_string_lossy().into_owned()]).unwrap();
+
+    // Words every half second, and around each pause one boundary 0.3 s past its end: the
+    // word before runs over the pause, the word after starts late.
+    let mut bounds: Vec<f64> = (0..=300).map(|i| i as f64 * 0.5).filter(|t| pauses.iter().all(|(a, b)| *t < a - 0.25 || *t > b + 0.55)).collect();
+    bounds.extend(pauses.iter().map(|(_, b)| b + 0.3));
+    bounds.sort_by(f64::total_cmp);
+    let words: Vec<serde_json::Value> = bounds
+        .windows(2)
+        .map(|w| {
+            let ends_sentence = (w[1] - 61.9).abs() < 1e-9;
+            json!({ "offsets": { "from": (w[0] * 1000.0).round(), "to": (w[1] * 1000.0).round() }, "text": if ends_sentence { " fin." } else { " mot" } })
+        })
+        .collect();
+
+    let fake = dir.path().join("whisper-cli");
+    std::fs::write(&fake, FAKE_WHISPER).unwrap();
+    #[cfg(unix)]
+    std::fs::set_permissions(&fake, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    std::fs::write(fake.with_extension("json"), json!({ "transcription": words }).to_string()).unwrap();
+    let models = dir.path().join("models");
+    std::fs::create_dir_all(&models).unwrap();
+    for m in ["ggml-base.bin", "ggml-large-v3.bin"] {
+        std::fs::write(models.join(m), "").unwrap();
+    }
+    let config = Config { project_file: dir.path().join("t.kuma.json"), repo_root: repo.clone(), library_dirs: vec![repo.join("library")], bind: "127.0.0.1:0".parse().unwrap() };
+    let mut state = AppState::load(config).unwrap();
+    // Set here rather than through the environment, which the other test in this file owns.
+    state.transcriber = kuma_overlay::Transcriber { cli: fake.clone(), model: Some(models.join("ggml-base.bin")), model_dir: models.clone() };
+    let state = Arc::new(state);
+    jobs::add_media(&state, &media, None, None, None, "test").unwrap();
+
+    let req = TranscribeRequest {
+        bin: Some("talk".into()),
+        clip: None,
+        id: None,
+        replace: false,
+        split: None,
+        options: kuma_overlay::TranscribeOptions { model: Some("large-v3".into()), ..Default::default() },
+        origin: "test".into(),
+    };
+    let out = jobs::transcribe(&state, &req, &|_, _| {}).unwrap();
+    let args = std::fs::read_to_string(fake.with_extension("args")).unwrap();
+    assert!(args.contains(&format!("-m\n{}\n", models.join("ggml-large-v3.bin").display())), "the model asked for: {args}");
+
+    // Three pieces: cut at the sentence end after 61.6 s, then at the long pause at 121 s.
+    let pieces = out["pieces"].as_array().unwrap_or_else(|| panic!("{out:#}"));
+    let ids: Vec<&str> = pieces.iter().map(|p| p["bin"].as_str().unwrap()).collect();
+    assert_eq!((ids.as_slice(), &out["bin"]), (["talk-subs-1", "talk-subs-2", "talk-subs-3"].as_slice(), &json!("talk-subs-1")), "{out:#}");
+    let p = state.project.read().unwrap().clone();
+    let entry = |id: &str| serde_json::to_value(&p.bin[id]).unwrap();
+    let offsets: Vec<f64> = ids.iter().map(|id| entry(id)["source"]["vars"]["offset"].as_f64().unwrap()).collect();
+    // Pauses come out of the sound to within a hundredth.
+    let near = |a: f64, b: f64| (a - b).abs() < 0.02;
+    assert!(offsets.len() == 3 && near(offsets[0], 0.0) && near(offsets[1], 61.3) && near(offsets[2], 121.4), "each from the middle of the pause before it: {offsets:?}");
+    let cues: Vec<Vec<(f64, f64)>> = ids.iter().map(|id| entry(id)["source"]["vars"]["cues"].as_array().unwrap().iter().map(|c| (c["start"].as_f64().unwrap(), c["end"].as_f64().unwrap())).collect()).collect();
+    assert_eq!(cues.iter().map(Vec::len).sum::<usize>(), out["cues"].as_u64().unwrap() as usize, "every word in one piece");
+    assert!(cues[0].last().unwrap().1 <= 61.0 + 0.02 && cues[1][0].0 >= 61.6 - 0.02, "{:?} {:?}", cues[0].last(), cues[1][0]);
+    // Every pause is a gap between two cues now, where it is in the sound.
+    let all: Vec<(f64, f64)> = cues.concat();
+    for (a, b) in pauses {
+        let gap = all.windows(2).find(|w| w[0].1 <= a + 0.05 && w[1].0 >= b - 0.05 && w[1].0 - w[0].1 > 0.1).unwrap_or_else(|| panic!("no gap at {a}–{b}"));
+        assert!((gap[0].1 - a).abs() < 0.02 && (gap[1].0 - b).abs() < 0.02, "{a}–{b} came out {}–{}", gap[0].1, gap[1].0);
+    }
+    assert_eq!(p.bin["talk-subs-2"].parent.as_deref(), Some("talk"));
+    assert!(p.bin["talk-subs-2"].name.ends_with("(2/3)"), "{}", p.bin["talk-subs-2"].name);
+    assert!(!p.all_clips().any(|(_, _, c)| c.bin.starts_with("talk-subs")), "from a bin entry nothing is placed");
+    assert!(kuma_core::validate(&p, &state.validation_context()).is_empty());
+    state.undo().unwrap();
+
+    // From a clip playing 50–100 s of the source at 10–60 s: the two pieces it plays, side
+    // by side on one overlay track, each with the source second it starts at as `offset`.
+    let edit = |op: serde_json::Value| state.apply_patch(&serde_json::from_value::<Vec<json_patch::PatchOperation>>(json!([op])).unwrap(), None, "test");
+    edit(json!({ "op": "add", "path": "/bin/main/source/tracks/2/clips/-", "value": { "id": "c1", "start": 10.0, "end": 60.0, "bin": "talk", "in": 50.0 } })).unwrap();
+    let out = jobs::transcribe(&state, &TranscribeRequest { bin: None, clip: Some("c1".into()), ..req.clone() }, &|_, _| {}).unwrap();
+    let p = state.project.read().unwrap().clone();
+    let placed: Vec<(String, f64, f64, f64)> = p
+        .all_clips()
+        .filter(|(_, t, _)| t.kind == kuma_core::TrackKind::Overlay)
+        .map(|(_, _, c)| (c.bin.clone(), c.start, c.end, serde_json::to_value(&p.bin[&c.bin]).unwrap()["source"]["vars"]["offset"].as_f64().unwrap()))
+        .collect();
+    let cut = offsets[1];
+    assert_eq!(placed, [("talk-subs-1".to_string(), 10.0, 10.0 + cut - 50.0, 50.0), ("talk-subs-2".to_string(), 10.0 + cut - 50.0, 60.0, cut)], "{out:#}");
+    assert_eq!(out["pieces"].as_array().unwrap().len(), 2, "a piece the clip does not play is not made: {out:#}");
+    let issues = kuma_core::validate(&p, &state.validation_context());
+    assert!(issues.is_empty(), "{issues:?}");
+    state.undo().unwrap();
+
+    // One entry when asked; and what is not supported is refused before the model runs.
+    let one = jobs::transcribe(&state, &TranscribeRequest { split: Some(0.0), ..req.clone() }, &|_, _| {}).unwrap();
+    assert!(one.get("pieces").is_none() && one["bin"] == "talk-subs", "{one:#}");
+    let refused = |r: TranscribeRequest| jobs::transcribe(&state, &r, &|_, _| {}).unwrap_err().to_string();
+    assert!(refused(TranscribeRequest { split: Some(60.0), replace: true, ..req.clone() }).contains("`replace` overwrites"));
+    assert!(refused(TranscribeRequest { split: Some(2.0), ..req.clone() }).contains("5 or more"));
+    let other = TranscribeRequest { options: kuma_overlay::TranscribeOptions { model: Some("medium".into()), ..Default::default() }, ..req.clone() };
+    assert!(refused(other).contains("installed are ggml-base.bin, ggml-large-v3.bin"));
+    // `snap: false` keeps whisper's times, pause and all.
+    let raw = jobs::transcribe(&state, &TranscribeRequest { split: Some(0.0), options: kuma_overlay::TranscribeOptions { snap: Some(false), ..Default::default() }, ..req.clone() }, &|_, _| {}).unwrap();
+    let p = state.project.read().unwrap().clone();
+    let raw_cues = serde_json::to_value(&p.bin[raw["bin"].as_str().unwrap()]).unwrap()["source"]["vars"]["cues"].clone();
+    assert!(raw_cues.as_array().unwrap().windows(2).all(|w| w[0]["end"] == w[1]["start"]), "contiguous, as whisper wrote them");
 }

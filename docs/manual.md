@@ -67,7 +67,9 @@ Subtitles need a local speech-to-text model, [whisper.cpp](https://github.com/gg
 into `~/.local/share/kuma/models/` (`WHISPER_MODEL=small npm run rebuild` for another size;
 `base` is the default, `.en` variants are English-only). To use your own, put `whisper-cli`
 on `PATH` (or `KUMA_WHISPER_BIN`) and a model in that folder (or `KUMA_WHISPER_MODEL`).
-`kuma doctor` reports both.
+`kuma doctor` reports both. Several models can sit in the folder side by side: the first by
+name is the default, and `transcribe` takes `model` (`large-v3` for `ggml-large-v3.bin`) to use
+another; `base` is weak outside English.
 
 Build:
 
@@ -274,6 +276,18 @@ follows as you type. `max_chars` on the job asks whisper for lines of that many 
 instead, or 0 for its own sentences; those cues are already lines, so set `words_per_line`
 to 1.
 
+whisper's word cues are contiguous: a pause is absorbed into the word beside it, and a word
+boundary near a pause can be a third of a second off. So once the words are in, the job finds
+the pauses in the sound (ffmpeg's `silencedetect`: under -35 dB for 0.15 s, `pause_db` and
+`pause_min` to change it) and moves every cue edge within 0.4 s of one onto it: a word that
+runs into a pause ends where it starts, one that starts in or just after it starts where it
+ends. `snap: false` (`--no-snap`) keeps whisper's times. A long recording is not one entry:
+the transcript is cut at the best pause near every minute (`split`, in seconds; 0 for one
+entry) into entries `<id>-1`, `<id>-2`…, each with its own cues and `offset`, since an entry
+bakes as one clip and is baked again after every correction. From a clip, the pieces it plays
+are made and each is placed over its stretch. **Replace** overwrites one entry's words, so it
+is offered when the media has one transcript, and the job refuses `replace` with `split`.
+
 **Themes.** The palette button in the top bar (or *View → Theme…* in the app) swaps the
 editor's colours: **Kuma**, the default, and **Tokyo Night**, retro neon on deep indigo.
 The choice lives in the browser, not the project, and stops at the editor's chrome — no
@@ -382,6 +396,7 @@ kuma compile > timeline.mlt                # inspect the MLT graph (or open it i
 kuma render --sequence intro               # render one nested sequence instead of the master
 kuma transcribe --clip c1 --language fr    # whisper.cpp → `subtitles` entry under the media, placed over clip c1
 kuma transcribe screen --replace           # re-transcribe in place: same entry, styling and placement, new words
+kuma transcribe voice --model large-v3 --split 45   # a larger model; entries of about 45 s, cut at pauses
 kuma new-overlay my-tag                    # a contract-abiding skeleton in the project's overlays/ (--blueprint for the user library)
 kuma import-overlay overlays/my-tag        # add that folder to the bin (--id)
 kuma lint                                  # every blueprint and every folder the bin uses (exit 1 on errors); `kuma lint overlays/my-tag` or `kuma lint location-tag` for one
@@ -561,7 +576,8 @@ and the values live with the rest of the project's decisions.
 - **"Transcribe" fails with "is not runnable" or "no whisper model"** — `kuma doctor`
   shows what it looked for: `whisper-cli` on `PATH` (`KUMA_WHISPER_BIN`) and a ggml model in
   `~/.local/share/kuma/models` (`KUMA_WHISPER_MODEL`). `GET /api/health` has the same under
-  `whisper`.
+  `whisper`, and the models `model` can name under `whisper_models`; a `model` that is not
+  there is refused with the list.
 - **`.kuma/` keeps growing** — superseded bakes and sampled frames are never deleted on
   their own. `kuma cache prune` (or the job queue's button, or `prune_cache`) removes what
   the project no longer uses; `--all` empties bakes and frames.

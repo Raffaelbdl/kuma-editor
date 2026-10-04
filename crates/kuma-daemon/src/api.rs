@@ -185,6 +185,8 @@ async fn health(State(st): S) -> Json<Value> {
         "sequence": st.current_sequence(),
         "preview_error": lock(&st.preview.last_error).clone(),
         "whisper": st.transcriber.available().map(|m| json!(m)).unwrap_or_else(|e| json!({ "error": e })),
+        // What `transcribe` can name as its `model`.
+        "whisper_models": st.transcriber.models(),
     }))
 }
 

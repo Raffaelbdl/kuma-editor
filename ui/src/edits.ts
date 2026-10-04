@@ -356,8 +356,10 @@ export async function transcribe() {
   const binId = clip?.bin ?? (sel?.kind === "bin" ? sel.id : null);
   if (!binId || !hasAudio(p.bin[binId])) { toast("Select a clip or a media entry to transcribe", ""); return; }
   // An entry listed under this media that carries cues is already a transcript of it,
-  // whatever folder it has since been pointed at.
-  const existing = childrenOf(p, binId).find(([, i]) => isOverlaySource(i.source) && "cues" in (i.source.vars ?? {}));
+  // whatever folder it has since been pointed at. A transcript cut into pieces is several
+  // such entries, and replacing overwrites the words of one: offered only when there is one.
+  const transcripts = childrenOf(p, binId).filter(([, i]) => isOverlaySource(i.source) && "cues" in (i.source.vars ?? {}));
+  const existing = transcripts.length === 1 ? transcripts[0] : undefined;
 
   const language = selectInput(LANGUAGES.map(([value, label]) => ({ value, label })), savedLanguage(), () => {});
   const replace = checkbox(true);

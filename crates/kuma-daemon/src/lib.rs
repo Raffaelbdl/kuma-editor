@@ -13,7 +13,7 @@ pub mod preview;
 pub mod state;
 
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 pub use state::{add_missing, copy_tree, default_library_dirs, library_dirs, AppState, Config};
@@ -43,12 +43,86 @@ pub async fn serve(config: Config) -> anyhow::Result<(Arc<AppState>, SocketAddr)
 /// `KUMA_REPO`, else the nearest ancestor of the executable or the cwd that holds
 /// `node_modules/hyperframes`.
 pub fn find_repo_root() -> Option<PathBuf> {
-    if let Some(p) = std::env::var_os("KUMA_REPO").map(PathBuf::from).filter(|p| p.is_dir()) {
-        return Some(p);
+    locate_repo_root(None).map(|r| r.path)
+}
+
+/// A repository root, and where it was found, for `kuma doctor` to say.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RepoRoot {
+    pub path: PathBuf,
+    pub from: String,
+}
+
+/// The repository root as [`find_repo_root`] finds it, then, when that fails, as the
+/// project at `project_file` was set up to find it. A `kuma` copied or installed out of the
+/// checkout and run from the project's directory has neither the checkout above it nor
+/// above its cwd, while the MCP server beside it is told by `.mcp.json`; so the CLI reads
+/// the `KUMA_REPO` that `kuma mcp-config` wrote there. Last, the source tree this binary
+/// was built from, while it is still a checkout with its `node_modules`. What is asked for
+/// explicitly (`KUMA_REPO`, and `--repo` before it) always wins over what is found.
+pub fn locate_repo_root(project_file: Option<&Path>) -> Option<RepoRoot> {
+    let env = std::env::var_os("KUMA_REPO").map(PathBuf::from);
+    let starts = [(std::env::current_exe().ok(), "the executable's location"), (std::env::current_dir().ok(), "the working directory")];
+    let mcp_json = project_file.and_then(Path::parent).map(|d| d.join(".mcp.json"));
+    repo_root_from(env, &starts, mcp_json.as_deref(), Path::new(env!("CARGO_MANIFEST_DIR")))
+}
+
+/// [`locate_repo_root`] with its inputs given, so the order can be tested.
+fn repo_root_from(env: Option<PathBuf>, starts: &[(Option<PathBuf>, &str)], mcp_json: Option<&Path>, built_in: &Path) -> Option<RepoRoot> {
+    let found = |path: &Path, from: &str| Some(RepoRoot { path: path.to_path_buf(), from: from.to_string() });
+    if let Some(p) = env.filter(|p| p.is_dir()) {
+        return found(&p, "KUMA_REPO");
     }
-    let is_repo = |d: &std::path::Path| d.join("node_modules/hyperframes").is_dir();
-    [std::env::current_exe().ok(), std::env::current_dir().ok()]
-        .into_iter()
-        .flatten()
-        .find_map(|start| start.ancestors().find(|d| is_repo(d)).map(|d| d.to_path_buf()))
+    let is_repo = |d: &Path| d.join("node_modules/hyperframes").is_dir();
+    for (start, from) in starts {
+        if let Some(d) = start.as_deref().and_then(|s| s.ancestors().find(|d| is_repo(d))) {
+            return found(d, from);
+        }
+    }
+    if let Some(file) = mcp_json {
+        let named = std::fs::read_to_string(file).ok().and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok());
+        let named = named.as_ref().and_then(|v| v["mcpServers"]["kuma"]["env"]["KUMA_REPO"].as_str()).map(PathBuf::from);
+        if let Some(p) = named.filter(|p| p.is_dir()) {
+            return found(&p, &format!("KUMA_REPO in {}", file.display()));
+        }
+    }
+    built_in.ancestors().find(|d| is_repo(d)).and_then(|d| found(d, "the source tree it was built from"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A folder that looks like a checkout, under `root`.
+    fn checkout(root: &Path, name: &str) -> PathBuf {
+        let d = root.join(name);
+        std::fs::create_dir_all(d.join("node_modules/hyperframes")).unwrap();
+        d
+    }
+
+    /// Asked for wins; then a checkout above the executable or the cwd; then the one the
+    /// project's `.mcp.json` names; then the tree the binary was built in.
+    #[test]
+    fn the_repo_root_is_found_in_order() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (env, above, named, built) = (checkout(tmp.path(), "env"), checkout(tmp.path(), "above"), checkout(tmp.path(), "named"), checkout(tmp.path(), "built"));
+        let project = tmp.path().join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        let mcp = project.join(".mcp.json");
+        let config = serde_json::json!({ "mcpServers": { "kuma": { "command": "kuma", "env": { "KUMA_REPO": named } } } });
+        std::fs::write(&mcp, config.to_string()).unwrap();
+        let exe = above.join("target/release/kuma");
+        let nowhere = [(Some(tmp.path().join("bin/kuma")), "the executable's location"), (Some(project.clone()), "the working directory")];
+        let built_in = built.join("crates/kuma-daemon");
+        let from = |env: Option<PathBuf>, starts: &[(Option<PathBuf>, &str)], mcp: Option<&Path>| repo_root_from(env, starts, mcp, &built_in).map(|r| (r.path, r.from));
+
+        assert_eq!(from(Some(env.clone()), &[(Some(exe.clone()), "the executable's location")], Some(&mcp)), Some((env, "KUMA_REPO".into())));
+        assert_eq!(from(None, &[(Some(exe), "the executable's location")], Some(&mcp)), Some((above, "the executable's location".into())));
+        assert_eq!(from(None, &nowhere, Some(&mcp)), Some((named, format!("KUMA_REPO in {}", mcp.display()))));
+        assert_eq!(from(None, &nowhere, None), Some((built.clone(), "the source tree it was built from".into())));
+        // A `.mcp.json` naming a checkout that has gone is passed over, not trusted.
+        std::fs::write(&mcp, serde_json::json!({ "mcpServers": { "kuma": { "env": { "KUMA_REPO": tmp.path().join("gone") } } } }).to_string()).unwrap();
+        assert_eq!(from(None, &nowhere, Some(&mcp)), Some((built, "the source tree it was built from".into())));
+        assert_eq!(repo_root_from(None, &nowhere, Some(&mcp), tmp.path()), None);
+    }
 }

@@ -107,6 +107,11 @@ it into `~/.cargo/bin`, tell it where the repository is once:
 export KUMA_REPO=/path/to/kuma-editor        # or pass --repo <path> on each call
 ```
 
+Failing those, it reads the `KUMA_REPO` that `kuma mcp-config` (or `kuma init`) wrote into
+the `.mcp.json` beside the project file, so the CLI finds what the project's MCP server is
+told; and last, the source tree the binary was built from, while that still has its
+`node_modules`. `kuma doctor` says where it found it.
+
 Blueprints (reusable overlays), effect presets, design systems and fonts are **assets shared
 across projects**, not part of the codebase: they live in a user library at
 `~/.local/share/kuma/{blueprints,presets,design-systems,fonts}`

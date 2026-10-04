@@ -2,7 +2,7 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
 use clap::{Parser, Subcommand};
-use kuma_daemon::{default_library_dirs, find_repo_root, Config};
+use kuma_daemon::{default_library_dirs, locate_repo_root, Config, RepoRoot};
 
 mod skill;
 
@@ -226,7 +226,19 @@ fn absolute(path: &Path) -> anyhow::Result<PathBuf> {
 }
 
 fn repo_root(cli: &Cli) -> anyhow::Result<PathBuf> {
-    cli.repo.clone().or_else(find_repo_root).ok_or_else(|| anyhow::anyhow!("cannot find the kuma repository root (node_modules/hyperframes); pass --repo or set KUMA_REPO"))
+    Ok(repo_root_found(cli)?.path)
+}
+
+/// The repository root and where it came from: `--repo` (or `KUMA_REPO`, which clap reads
+/// into it) as given, else whatever `locate_repo_root` finds for this project.
+fn repo_root_found(cli: &Cli) -> anyhow::Result<RepoRoot> {
+    if let Some(path) = &cli.repo {
+        let from = if std::env::var_os("KUMA_REPO").is_some_and(|v| Path::new(&v) == path) { "KUMA_REPO" } else { "--repo" };
+        return Ok(RepoRoot { path: path.clone(), from: from.into() });
+    }
+    locate_repo_root(absolute(&cli.project).ok().as_deref()).ok_or_else(|| {
+        anyhow::anyhow!("cannot find the kuma repository root (the checkout holding node_modules/hyperframes): pass --repo or set KUMA_REPO, or run `kuma mcp-config` so the project's .mcp.json names it")
+    })
 }
 
 fn config(cli: &Cli) -> anyhow::Result<Config> {
@@ -566,7 +578,7 @@ async fn doctor(cli: &Cli) -> anyhow::Result<()> {
     let cfg = config(cli)?;
     let ok = |b: bool, yes: &str, no: &str| if b { yes.to_string() } else { format!("MISSING — {no}") };
     println!("binary        {} — version {VERSION}", std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_default());
-    println!("repo root     {}", cfg.repo_root.display());
+    println!("repo root     {} (from {})", cfg.repo_root.display(), repo_root_found(cli)?.from);
     println!("project       {} ({})", cfg.project_file.display(), if cfg.project_file.is_file() { "exists" } else { "will be created" });
     for d in cfg.blueprint_dirs() {
         let (loaded, errors) = kuma_core::OverlayManifest::load_all(&d);

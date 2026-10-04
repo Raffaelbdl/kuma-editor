@@ -18,6 +18,16 @@ contract does not say, or what bit anyway.
 - **Shared helpers** go in `overlays/_vendor/`: colour tokens and anchor classes (css), and
   `enter(tl, el, kind, at)` / `exit(tl, el, kind, duration)` so every component moves the
   same way. Changing them **re-bakes every overlay**, so settle motion and type early.
+  A file there is used where an overlay asks for `_vendor/<file>`, and anything it does
+  not hold still comes from the library's `_vendor/` (`kuma.js` and the rest), file by file.
+- **Pictures in an overlay** (a layer, a thumbnail, a map) are files the overlay's folder
+  holds: copy the media in (`overlays/timeline/thumb-03.jpg`) and reference it relatively. A
+  path out of the folder (`../../media/x.png`) does not bake, since the bake renders a copy
+  of the folder. A picture several overlays share can go in `overlays/_vendor/`, but every
+  file there is in every overlay's bake key: adding or replacing one re-bakes them all, so
+  keep that for small things that do not change. To choose the picture per entry, a string
+  var holds its file name. A copy does not follow the original: when a picture is replaced
+  on disk, copy it in again.
 - Anchor with normalised positions plus an `origin` (`top-left`, `center`, …), size in the
   unit kuma injects, and check an overlay in the other orientation (`frame: [1080, 1920]`).
 - **Static** things: a texture or a logo as image media; a persistent frame (a HUD, a

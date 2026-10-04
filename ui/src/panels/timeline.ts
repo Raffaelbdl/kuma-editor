@@ -429,7 +429,7 @@ export class Timeline {
 
   private clipEl(p: Project, t: Track, ti: number, c: Clip): HTMLDivElement {
     const w = Math.max(4, (c.end - c.start) * store.state.zoom);
-    const box = el("div", `clip ${clipKind(p, c, t)}${store.selectedClip === c.id ? " selected" : ""}${w < 24 ? " tiny" : ""}${c.group ? " grouped" : ""}`);
+    const box = el("div", `clip ${clipKind(p, c, t)}${store.selectedClip === c.id ? " selected" : ""}${w < 24 ? " tiny" : ""}${c.group ? " grouped" : ""}${c.muted ? " silenced" : ""}`);
     box.dataset.id = c.id;
     box.style.left = `${this.x(c.start) - HEAD}px`;
     box.style.width = `${w}px`;
@@ -440,13 +440,20 @@ export class Timeline {
     const overlay = folder !== name ? folder : "";
     const seq = item && isSequenceSource(item.source) ? `sequence · ${seqDuration(p, c.bin).toFixed(1)}s` : "";
     const sub = c.speed !== 1 ? `${c.speed}×` : overlay || seq;
-    box.title = `${c.id}  ${c.start.toFixed(2)}–${c.end.toFixed(2)}s${c.group ? ` · grouped (${c.group}) — selecting one selects them all, and a drag moves the block` : ""}`;
+    box.title = `${c.id}  ${c.start.toFixed(2)}–${c.end.toFixed(2)}s${c.group ? ` · grouped (${c.group}) — selecting one selects them all, and a drag moves the block` : ""}${c.muted ? " · muted — this clip only; its track's M is for the whole track" : ""}`;
     const hl = el("div", "handle l");
     const hr = el("div", "handle r");
     const title = el("div", "cname");
     // A chain before the name, or the first surprise is three clips moving when you
     // dragged one.
     if (c.group) title.appendChild(icon("link", 10));
+    // A clip muted on its own says so where its name is: the track's M is off, and a
+    // silent clip under an unlit M otherwise reads as a bug.
+    if (c.muted) {
+      const badge = icon("volume-off", 10);
+      badge.classList.add("mute-badge");
+      title.appendChild(badge);
+    }
     title.append(c.label || name);
     const media = this.mediaEl(p, t, c, w);
     if (media) box.appendChild(media);

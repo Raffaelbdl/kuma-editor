@@ -31,6 +31,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/project/undo", post(undo))
         .route("/api/project/redo", post(redo))
         .route("/api/project/validate", get(validate_project))
+        .route("/api/project/canonical", post(canonical_project))
         .route("/api/sequence", get(get_sequence).post(open_sequence))
         .route("/api/schema", get(schema))
         .route("/api/blueprints", get(blueprints).post(reload_blueprints))
@@ -273,6 +274,14 @@ async fn open_sequence(State(st): S, Json(req): Json<OpenSequence>) -> ApiResult
     // The engine holds one compiled timeline, so opening a sequence is a reload.
     let reloaded = preview::reload(&st).await.is_ok();
     Ok(Json(json!({ "current": current, "preview_reloaded": reloaded })))
+}
+
+/// A project document a client holds — a script's own, of any version — in the form this
+/// daemon stores one, so it can be diffed against `GET /api/project` without the noise of
+/// defaults one side spells out. The body is answered as text, exactly as the file holds it.
+async fn canonical_project(body: String) -> Result<Response, ApiError> {
+    let text = kuma_core::canonical(&body).map_err(ApiError::bad_request)?;
+    Ok(([(header::CONTENT_TYPE, "application/json")], text).into_response())
 }
 
 async fn schema() -> Json<Value> {

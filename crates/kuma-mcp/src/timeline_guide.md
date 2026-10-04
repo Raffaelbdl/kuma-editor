@@ -5,7 +5,9 @@ JSON Schema with `get_schema`). Times are seconds (f64); clip `end` is exclusive
 Tracks composite bottom-up. Edit with `apply_edits` (RFC 6902 JSON Patch) and pass the `base_revision`
 you read, so you never overwrite a human edit made meanwhile. Every edit is validated atomically and
 undoable; label your edits with `note`. A patch a script wrote goes in a file in the project, and
-`apply_edits` with `patch_path` applies it in one call, whatever its size.
+`apply_edits` with `patch_path` applies it in one call, whatever its size. kuma stores a document
+without its default-valued fields (a key's `ease: "linear"`), so a script diffing its own plan
+against `get_project` canonicalises it first: `kuma canonical plan.json`, or `POST /api/project/canonical`.
 
 Everything placeable lives in `bin`, keyed by a short id: media files (`{"source": {"path": …}}`),
 configured overlays (`{"source": {"overlay": "overlays/<name>", "vars": {…}}}`), colours, and *sequences*
@@ -72,7 +74,7 @@ legible over footage you have not seen. It is the same view the editor's overlay
 person, and `overlay_guide` ends with the checklist to run through. To look at chosen moments,
 pass `times` (`[3.5, 41.7, 42.3]`) instead of a range: each bakes only what it shows, and with
 `tile: true` they come back as one captioned contact sheet, so every cut and a moment either side
-of it is one image.
+of it is one image. One frame comes back 960 px wide, several 480 px each; `width` overrides.
 
 A sample is exact, so every overlay it shows is baked first, for its whole clip: a changed
 overlay costs about 0.1 s per frame at 1080p before the first frame comes back, while an
@@ -84,6 +86,11 @@ and sample the sequence once it looks right. A sample still baking after `wait_s
 its job id and what it is baking; call `sample_frames` with `job` set to that id to keep waiting.
 Asking again with the same arguments costs nothing extra either: an overlay already baking is
 waited for, not baked twice.
+
+Long jobs (`render`, `measure_audio`, `transcribe`, `bake_overlay`) likewise wait `wait_seconds`, then
+return the job still running with its id. Keep waiting with `job_status` (`id`, `wait_seconds` about
+100): a client may move a longer call to the background (Claude Code does at 120 s), where it still
+finishes. `job_status` without an id lists the jobs, to find one again.
 
 Sound: `measure_audio` renders a sequence's sound through the real graph (no overlay is baked) and
 meters it: integrated loudness (LUFS), range and true peak (dBTP), overall and per chapter (each

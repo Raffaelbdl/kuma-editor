@@ -107,6 +107,11 @@ it into `~/.cargo/bin`, tell it where the repository is once:
 export KUMA_REPO=/path/to/kuma-editor        # or pass --repo <path> on each call
 ```
 
+Failing those, it reads the `KUMA_REPO` that `kuma mcp-config` (or `kuma init`) wrote into
+the `.mcp.json` beside the project file, so the CLI finds what the project's MCP server is
+told; and last, the source tree the binary was built from, while that still has its
+`node_modules`. `kuma doctor` says where it found it.
+
 Blueprints (reusable overlays), effect presets, design systems and fonts are **assets shared
 across projects**, not part of the codebase: they live in a user library at
 `~/.local/share/kuma/{blueprints,presets,design-systems,fonts}`
@@ -354,9 +359,18 @@ and the agent always share one state. Tools: `timeline_guide`, `get_project`, `g
 `check_overlay` and adds it with `import_overlay`; `sample_frames` with `overlay` (a bin id)
 shows one entry on its own, and with `times` and `tile` a contact sheet of chosen moments.
 `apply_edits` takes a patch inline or, with `patch_path`, from a file in the project, so a
-script's patch of any size is one exact edit. `measure_audio` meters a sequence's sound (EBU
+script's patch of any size is one exact edit. A script that diffs its own document against
+the stored one puts its own in kuma's form first — `kuma canonical plan.json`, or
+`POST /api/project/canonical` to the daemon, which answers the text the file would hold —
+since kuma leaves out every field at its default (a keyframe's `ease: "linear"`). `measure_audio` meters a sequence's sound (EBU
 R128, per chapter, loudest moments, silences), rendered through the real graph without
-baking anything. A server that outlives a rebuild of `kuma` says so on every call, since its
+baking anything. The tools that start a job (`render`, `measure_audio`, `transcribe`,
+`bake_overlay`, `sample_frames`) wait `wait_seconds` and then return it still running, with
+its id; `job_status` with that id and its own `wait_seconds` waits again, in calls as short
+as the client needs (Claude Code moves a call that runs past 120 s to the background), and
+without an id lists the jobs. While a tool waits it sends MCP progress notifications when the
+call carries a progress token: the job's percent and message, and a heartbeat every 20 s, so
+a client that gives up on a silent call does not. A server that outlives a rebuild of `kuma` says so on every call, since its
 tools are the old build's. `overlay_guide` returns `library/blueprints/CLAUDE.md`, and
 `timeline_guide` returns `crates/kuma-mcp/src/timeline_guide.md`: the server's own
 instructions are kept under the 2048 characters a client shows and point at both.
@@ -368,6 +382,7 @@ kuma render --preset youtube-1080p         # bakes overlays, compiles, renders w
 kuma sample 12.0 14.0 --count 4 --rect 400,300,800,400
 kuma sample 0 3 --count 6 --overlay paris          # one overlay entry on its own, no placement (--backdrop, --duration, --frame 1080x1920)
 kuma sample --times 3.2,3.8,41.7,42.3 --tile      # chosen moments, and one captioned contact sheet of them
+kuma sample 0 60 --count 12 --no-overlays          # footage only: no overlay is baked first
 kuma measure-audio                         # loudness (LUFS), true peak, per chapter, loudest moments, silences
 kuma bake                                  # bake all overlay clips (cached by content)
 kuma cache                                 # how big .kuma/ is: bakes, sampled frames, thumbnails
@@ -380,6 +395,7 @@ kuma new-overlay my-tag                    # a contract-abiding skeleton in the 
 kuma import-overlay overlays/my-tag        # add that folder to the bin (--id)
 kuma lint                                  # every blueprint and every folder the bin uses (exit 1 on errors); `kuma lint overlays/my-tag` or `kuma lint location-tag` for one
 kuma validate | thumbs | library | doctor  # validate also names text the entries' fonts will not draw
+kuma canonical plan.json                   # a project document (any version; `-` for stdin) in the form kuma stores it, to diff against
 ```
 
 ## The project file

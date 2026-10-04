@@ -2,7 +2,7 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
 use clap::{Parser, Subcommand};
-use kuma_daemon::{default_library_dirs, find_repo_root, Config};
+use kuma_daemon::{default_library_dirs, locate_repo_root, Config, RepoRoot};
 
 mod skill;
 
@@ -86,6 +86,9 @@ enum Cmd {
         /// Columns of the sheet (about square by default).
         #[arg(long)]
         columns: Option<u32>,
+        /// Footage only: leave the overlays out, so nothing is baked first.
+        #[arg(long, conflicts_with = "overlay")]
+        no_overlays: bool,
     },
     /// Measure how loud a sequence is (EBU R128): overall, per chapter, its loudest moments
     /// and its silences. Renders the sound only, so no overlay is baked.
@@ -113,6 +116,14 @@ enum Cmd {
     },
     /// Validate the project and print issues (exit 1 on errors).
     Validate,
+    /// Print a project document in the form kuma stores it: upgraded, with every field at
+    /// its default left out. A script that builds a project canonicalises its own document
+    /// before diffing it against the stored one, so only real differences show.
+    Canonical {
+        /// The document to read; `-` (the default) is stdin.
+        #[arg(default_value = "-")]
+        file: PathBuf,
+    },
     /// Check the installation: repo, tools, engine, library, daemon, MCP config.
     Doctor,
     /// Scaffold a contract-abiding overlay folder in the project's `overlays/`. It is not
@@ -223,7 +234,19 @@ fn absolute(path: &Path) -> anyhow::Result<PathBuf> {
 }
 
 fn repo_root(cli: &Cli) -> anyhow::Result<PathBuf> {
-    cli.repo.clone().or_else(find_repo_root).ok_or_else(|| anyhow::anyhow!("cannot find the kuma repository root (node_modules/hyperframes); pass --repo or set KUMA_REPO"))
+    Ok(repo_root_found(cli)?.path)
+}
+
+/// The repository root and where it came from: `--repo` (or `KUMA_REPO`, which clap reads
+/// into it) as given, else whatever `locate_repo_root` finds for this project.
+fn repo_root_found(cli: &Cli) -> anyhow::Result<RepoRoot> {
+    if let Some(path) = &cli.repo {
+        let from = if std::env::var_os("KUMA_REPO").is_some_and(|v| Path::new(&v) == path) { "KUMA_REPO" } else { "--repo" };
+        return Ok(RepoRoot { path: path.clone(), from: from.into() });
+    }
+    locate_repo_root(absolute(&cli.project).ok().as_deref()).ok_or_else(|| {
+        anyhow::anyhow!("cannot find the kuma repository root (the checkout holding node_modules/hyperframes): pass --repo or set KUMA_REPO, or run `kuma mcp-config` so the project's .mcp.json names it")
+    })
 }
 
 fn config(cli: &Cli) -> anyhow::Result<Config> {
@@ -295,7 +318,7 @@ async fn main() -> anyhow::Result<()> {
                 println!("{k}\t{}", b.resource.display());
             }
         }
-        Cmd::Sample { t0, t1, count, rect, width, sequence, overlay, duration, backdrop, frame, times, tile, columns } => {
+        Cmd::Sample { t0, t1, count, rect, width, sequence, overlay, duration, backdrop, frame, times, tile, columns, no_overlays } => {
             let state = open(&cli)?;
             let rect = rect
                 .as_deref()
@@ -327,6 +350,7 @@ async fn main() -> anyhow::Result<()> {
                 times: times.clone(),
                 tile: *tile,
                 columns: *columns,
+                overlays: (!*no_overlays).into(),
                 ..Default::default()
             };
             let out = tokio::task::spawn_blocking(move || kuma_daemon::jobs::sample(&state, &req, &|_, _| {})).await??;
@@ -385,6 +409,11 @@ async fn main() -> anyhow::Result<()> {
             if kuma_core::validate::has_errors(&issues) {
                 std::process::exit(1);
             }
+        }
+        Cmd::Canonical { file } => {
+            // A document, not the project: no repository, no daemon, nothing loaded.
+            let text = if file.as_os_str() == "-" { std::io::read_to_string(std::io::stdin())? } else { std::fs::read_to_string(file)? };
+            println!("{}", kuma_core::canonical(&text).map_err(|e| anyhow::anyhow!("{}: {e}", file.display()))?);
         }
         Cmd::NewOverlay { id, name, description, blueprint } => {
             let state = open(&cli)?;
@@ -535,7 +564,7 @@ async fn main() -> anyhow::Result<()> {
             };
             let p = kuma_core::Project::new_default(kuma_core::Project::name_from_path(&path), *width, *height, fps);
             std::fs::create_dir_all(path.parent().unwrap())?;
-            std::fs::write(&path, serde_json::to_string_pretty(&p)?)?;
+            std::fs::write(&path, kuma_core::project_text(&p)?)?;
             println!("created {}", path.display());
             let library = default_library_dirs().remove(0);
             if !library.join("blueprints").is_dir() {
@@ -562,7 +591,7 @@ async fn doctor(cli: &Cli) -> anyhow::Result<()> {
     let cfg = config(cli)?;
     let ok = |b: bool, yes: &str, no: &str| if b { yes.to_string() } else { format!("MISSING — {no}") };
     println!("binary        {} — version {VERSION}", std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_default());
-    println!("repo root     {}", cfg.repo_root.display());
+    println!("repo root     {} (from {})", cfg.repo_root.display(), repo_root_found(cli)?.from);
     println!("project       {} ({})", cfg.project_file.display(), if cfg.project_file.is_file() { "exists" } else { "will be created" });
     for d in cfg.blueprint_dirs() {
         let (loaded, errors) = kuma_core::OverlayManifest::load_all(&d);
@@ -714,4 +743,19 @@ async fn resolve_daemon(cli: &Cli) -> anyhow::Result<(String, Option<String>)> {
 
 fn port_busy(addr: SocketAddr) -> bool {
     std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_millis(500)).is_ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `--no-overlays` is the MCP tool's `overlays: false`: footage only, nothing baked.
+    #[test]
+    fn sample_can_leave_the_overlays_out() {
+        let Cmd::Sample { no_overlays, .. } = Cli::try_parse_from(["kuma", "sample", "1.5", "--no-overlays"]).unwrap().cmd else { panic!("a sample") };
+        assert!(no_overlays);
+        let Cmd::Sample { no_overlays, .. } = Cli::try_parse_from(["kuma", "sample", "1.5"]).unwrap().cmd else { panic!("a sample") };
+        assert!(!no_overlays, "overlays are in by default");
+        assert!(Cli::try_parse_from(["kuma", "sample", "--overlay", "title", "--no-overlays"]).is_err(), "an overlay without overlays is a picture of the backdrop");
+    }
 }

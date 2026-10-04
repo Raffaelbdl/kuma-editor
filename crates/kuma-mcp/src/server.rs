@@ -2,15 +2,15 @@
 //! `sample_frames`, which returns rendered frames as image content so the agent can look
 //! at the actual composite.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use base64::Engine as _;
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::tool::ToolCallContext;
 use rmcp::handler::server::wrapper::Parameters;
-use rmcp::model::{CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, ServerCapabilities, ServerInfo};
+use rmcp::model::{CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, ProgressNotificationParam, ProgressToken, ServerCapabilities, ServerInfo};
 use rmcp::service::RequestContext;
-use rmcp::{schemars, tool, tool_handler, tool_router, ErrorData as McpError, RoleServer, ServerHandler};
+use rmcp::{schemars, tool, tool_handler, tool_router, ErrorData as McpError, Peer, RoleServer, ServerHandler};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
@@ -109,10 +109,35 @@ impl KumaServer {
     }
 
     /// Start a background job and wait for it (up to `timeout`).
-    async fn job(&self, path: &str, body: &Value, timeout: Duration) -> Result<CallToolResult, McpError> {
+    async fn job(&self, path: &str, body: &Value, timeout: Duration, ctx: &RequestContext<RoleServer>) -> Result<CallToolResult, McpError> {
         let v = self.client.post(path, body).await.map_err(err)?;
         let id = v["job"].as_u64().ok_or_else(|| err(anyhow::anyhow!("daemon did not return a job id: {v}")))?;
-        Ok(ok_json(&self.client.wait_job(id, timeout).await.map_err(err)?))
+        let j = self.wait(id, timeout, ctx).await.map_err(err)?;
+        if j["state"] == "failed" {
+            return Err(err(anyhow::anyhow!("job {id} failed: {}", j["message"].as_str().unwrap_or("?"))));
+        }
+        Ok(ok_json(&resumable(j)))
+    }
+
+    /// Wait up to `timeout` for job `id` to be final and return it as it then is, telling
+    /// the client how it is going on the way when the call asked for progress. Stops early
+    /// when the client cancels the call: the job itself runs on in the daemon.
+    async fn wait(&self, id: u64, timeout: Duration, ctx: &RequestContext<RoleServer>) -> anyhow::Result<Value> {
+        let mut progress = ctx.meta.get_progress_token().map(Progress::new);
+        let peer = ctx.peer.clone();
+        let poll = self.client.poll_job(id, timeout, |j| {
+            let note = progress.as_mut().and_then(|p| p.next(&j, Instant::now()));
+            let peer = peer.clone();
+            async move {
+                if let Some(n) = note {
+                    report(&peer, n).await;
+                }
+            }
+        });
+        tokio::select! {
+            j = poll => j,
+            _ = ctx.ct.cancelled() => anyhow::bail!("the call was cancelled; job {id} goes on in the daemon (`job_status` with id {id})"),
+        }
     }
 
     /// Undo/redo: the daemon answers `{"revision": null}` when there is nothing to do.
@@ -123,6 +148,68 @@ impl KumaServer {
         }
         Ok(ok_json(&v))
     }
+}
+
+/// What a waiting tool tells a client about a job, when the call carried a progress token.
+///
+/// Worth sending for two reasons beyond a progress bar. Claude Code moves a tool call that
+/// runs past 120 s to the background, where the latest of these is the task's status, so it
+/// names the job an agent can pick up with `job_status`. And it abandons a stdio call that
+/// has sent neither a result nor progress for 30 minutes, so a wait sends one at least every
+/// `HEARTBEAT` even when the job has not moved.
+struct Progress {
+    token: ProgressToken,
+    /// What was last sent: the progress value, and the message.
+    sent: Option<(f64, String)>,
+    at: Instant,
+}
+
+const HEARTBEAT: Duration = Duration::from_secs(20);
+
+impl Progress {
+    fn new(token: ProgressToken) -> Self {
+        Progress { token, sent: None, at: Instant::now() }
+    }
+
+    /// The notification to send for job `j` polled at `now`, if one is due: the first poll,
+    /// a change, or a heartbeat. Progress is the job's percent of 100, but MCP has it rise
+    /// with every notification, and a job's percent can fall back when it moves on to its
+    /// next stage (a sample bakes, then renders): such a notification, or a heartbeat,
+    /// nudges the value up by a hair instead.
+    fn next(&mut self, j: &Value, now: Instant) -> Option<ProgressNotificationParam> {
+        let percent = j["percent"].as_f64().unwrap_or(0.0);
+        let message = format!("job {} ({}), {}: {}", j["id"], j["kind"].as_str().unwrap_or("job"), j["state"].as_str().unwrap_or("?"), j["message"].as_str().unwrap_or(""));
+        let value = match &self.sent {
+            None => percent,
+            Some((last, _)) if percent > *last => percent,
+            Some((last, said)) if *said != message || now.duration_since(self.at) >= HEARTBEAT => last + 0.001,
+            Some(_) => return None,
+        };
+        self.sent = Some((value, message.clone()));
+        self.at = now;
+        Some(ProgressNotificationParam::new(self.token.clone(), value).with_total(100.0).with_message(message))
+    }
+}
+
+/// Best effort: a client that has gone away does not stop the wait, its cancel does.
+async fn report(peer: &Peer<RoleServer>, n: ProgressNotificationParam) {
+    if let Err(e) = peer.notify_progress(n).await {
+        tracing::debug!("progress notification not sent: {e}");
+    }
+}
+
+/// Every job without its result, which for a sample or a measurement is most of it.
+fn job_summaries(all: &[Value]) -> Value {
+    Value::Array(all.iter().map(|j| json!({ "id": j["id"], "kind": j["kind"], "state": j["state"], "percent": j["percent"], "message": j["message"], "params": j["params"] })).collect())
+}
+
+/// A job as a tool returns it, with how to keep waiting when it has not finished.
+fn resumable(mut j: Value) -> Value {
+    let running = !matches!(j["state"].as_str(), Some("done" | "failed" | "cancelled"));
+    if let (true, Some(id)) = (running, j["id"].as_u64()) {
+        j["next"] = json!(format!("still {}: call job_status with id {id} and wait_seconds (up to about 100) to keep waiting, or cancel_job", j["state"].as_str().unwrap_or("running")));
+    }
+    j
 }
 
 /// The daemon's `[{id, manifest}]` without what makes a library tens of thousands of tokens:
@@ -270,7 +357,8 @@ pub struct SampleFrames {
     /// Crop rectangle in composition pixels `{x, y, w, h}`.
     #[serde(default)]
     pub rect: Option<Rect>,
-    /// Output width in pixels (aspect kept). Default 960 for full frames.
+    /// Output width in pixels (aspect kept). Default 960 for one full frame and 480 each
+    /// for several, the size a sheet's frames are; a `rect` crop keeps its own pixels.
     #[serde(default)]
     pub width: Option<u32>,
     /// Include baked overlays (default true). Set false for a faster footage-only look.
@@ -307,6 +395,29 @@ pub struct SampleFrames {
     pub job: Option<u64>,
 }
 
+/// How wide one full frame comes back when no `width` is asked for, and each of several.
+const ONE_FRAME_WIDTH: u32 = 960;
+const FRAMES_WIDTH: u32 = 480;
+
+impl SampleFrames {
+    /// How many frames this asks for, by the daemon's rule: `times`, else `count`, else
+    /// one for a single time and five across a range.
+    fn frames(&self) -> usize {
+        self.times.as_ref().map(Vec::len).or(self.count).unwrap_or(if self.t1.is_some_and(|t1| t1 > self.t0) { 5 } else { 1 })
+    }
+
+    /// The width to ask the daemon for. Several frames are for comparing moments, which
+    /// 480 px shows as well as a sheet does — at a quarter of the image a full frame costs
+    /// the agent each; one frame is for looking closely. A sheet sizes its own frames (480)
+    /// and a crop keeps its pixels, and an explicit `width` wins over all of it.
+    fn width(&self) -> Option<u32> {
+        if self.width.is_some() || self.rect.is_some() || self.tile == Some(true) {
+            return self.width;
+        }
+        Some(if self.frames() > 1 { FRAMES_WIDTH } else { ONE_FRAME_WIDTH })
+    }
+}
+
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct Rect {
     pub x: u32,
@@ -327,6 +438,9 @@ pub struct BakeOverlay {
     /// Clip ids to bake; all overlay clips when omitted.
     #[serde(default)]
     pub clips: Option<Vec<String>>,
+    /// Seconds to wait before returning the job id instead (default 1800).
+    #[serde(default)]
+    pub wait_seconds: Option<u64>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -448,6 +562,18 @@ pub struct JobArg {
     pub id: u64,
 }
 
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct JobStatus {
+    /// The job's id. Every job the daemon remembers, briefly, when omitted.
+    #[serde(default)]
+    pub id: Option<u64>,
+    /// Wait up to this many seconds for the job to finish, then return it either way
+    /// (default 0: return it as it is now). Waiting in calls of about 100 s keeps each one
+    /// short of a client moving it to the background.
+    #[serde(default)]
+    pub wait_seconds: Option<u64>,
+}
+
 #[tool_router]
 impl KumaServer {
     #[tool(description = "Read the whole project document (bin, tracks, clips, effects) including its current revision.")]
@@ -536,10 +662,10 @@ impl KumaServer {
         self.post("/api/bin", &json!({ "path": p.path, "id": p.id, "parent": p.parent, "base_revision": p.base_revision, "origin": "claude: add media" })).await
     }
 
-    #[tool(description = "Transcribe media audio with a local whisper.cpp model into a `subtitles` overlay entry (cues in source seconds, editable as its `cues` var), listed under the media. Pass `clip` to place it over that clip, aligned, on an overlay track; pass `bin` for the entry alone. The new entry's id is minted when the words are in and returned as `bin`; it takes no base_revision, since the model runs for minutes and the patch is composed against the project as it is when it lands.")]
-    async fn transcribe(&self, Parameters(p): Parameters<Transcribe>) -> Result<CallToolResult, McpError> {
+    #[tool(description = "Transcribe media audio with a local whisper.cpp model into a `subtitles` overlay entry (cues in source seconds, editable as its `cues` var), listed under the media. Pass `clip` to place it over that clip, aligned, on an overlay track; pass `bin` for the entry alone. The new entry's id is minted when the words are in and returned as `bin`; it takes no base_revision, since the model runs for minutes and the patch is composed against the project as it is when it lands. A job still running after `wait_seconds` comes back with its id and `next`: `job_status` with that id and `wait_seconds` waits again, in calls short enough for your client (Claude Code moves a call past 120 s to the background, where it still finishes); `job_status` without an id lists jobs.")]
+    async fn transcribe(&self, Parameters(p): Parameters<Transcribe>, ctx: RequestContext<RoleServer>) -> Result<CallToolResult, McpError> {
         let body = json!({ "bin": p.bin, "clip": p.clip, "id": p.id, "replace": p.replace.unwrap_or(false), "language": p.language, "max_chars": p.max_chars, "origin": "claude: transcribe" });
-        self.job("/api/transcribe", &body, Duration::from_secs(p.wait_seconds.unwrap_or(600))).await
+        self.job("/api/transcribe", &body, Duration::from_secs(p.wait_seconds.unwrap_or(600)), &ctx).await
     }
 
     #[tool(description = "Scaffold `overlays/<id>/`, a contract-abiding skeleton to edit, and return its lint report. Does not touch the bin: `import_overlay` it when ready. Refuses an existing id.")]
@@ -569,8 +695,8 @@ impl KumaServer {
         self.post("/api/overlays/save-blueprint", &json!({ "bin": p.bin, "id": p.id, "force": p.force.unwrap_or(false) })).await
     }
 
-    #[tool(description = "Render exact composited frames (through the real MLT graph, overlays included) and return them as images: evenly over `t0`..`t1`, or at exactly the `times` given, and with `tile` as one captioned contact sheet (every cut ±0.3 s in one image). Use a rect to zoom into a region. Pass `sequence` to look at a nested sequence instead of the master, or `overlay` to look at one overlay bin entry on its own — no placement needed, times counted from the start of the overlay, which is how to check an animation you are authoring before it is in the cut. Frames are also written as PNGs whose paths are returned. An overlay changed since it was last baked is baked for its whole clip first, which can take a minute or more per overlay: after `wait_seconds` a sample still baking returns its job id and progress, and calling again with `job` set to that id picks it up.")]
-    async fn sample_frames(&self, Parameters(p): Parameters<SampleFrames>) -> Result<CallToolResult, McpError> {
+    #[tool(description = "Render exact composited frames (through the real MLT graph, overlays included) and return them as images: evenly over `t0`..`t1`, or at exactly the `times` given, and with `tile` as one captioned contact sheet (every cut ±0.3 s in one image). Use a rect to zoom into a region. Pass `sequence` to look at a nested sequence instead of the master, or `overlay` to look at one overlay bin entry on its own — no placement needed, times counted from the start of the overlay, which is how to check an animation you are authoring before it is in the cut. One frame comes back 960 px wide and several 480 px each unless `width` says. Frames are also written as PNGs whose paths are returned. An overlay changed since it was last baked is baked for its whole clip first, which can take a minute or more per overlay: after `wait_seconds` a sample still baking returns its job id and progress, and calling again with `job` set to that id picks it up.")]
+    async fn sample_frames(&self, Parameters(p): Parameters<SampleFrames>, ctx: RequestContext<RoleServer>) -> Result<CallToolResult, McpError> {
         let id = match p.job {
             Some(id) => id,
             None => {
@@ -578,8 +704,7 @@ impl KumaServer {
                 let body = json!({
                     "t0": p.t0, "t1": p.t1, "count": p.count, "times": p.times, "tile": tile, "columns": p.columns,
                     "rect": p.rect.as_ref().map(|r| json!({ "x": r.x, "y": r.y, "w": r.w, "h": r.h })),
-                    // A sheet sizes its own frames.
-                    "width": p.width.or((p.rect.is_none() && !tile).then_some(960)),
+                    "width": p.width(),
                     "overlays": p.overlays.unwrap_or(true),
                     "sequence": p.sequence,
                     "overlay": p.overlay, "duration": p.duration, "backdrop": p.backdrop,
@@ -589,12 +714,13 @@ impl KumaServer {
                 v["job"].as_u64().ok_or_else(|| err(anyhow::anyhow!("daemon did not return a job id: {v}")))?
             }
         };
-        let j = self.client.wait_job(id, Duration::from_secs(p.wait_seconds.unwrap_or(90))).await.map_err(err)?;
+        let j = self.wait(id, Duration::from_secs(p.wait_seconds.unwrap_or(90)), &ctx).await.map_err(err)?;
         if j["kind"] != "sample" {
             return Err(McpError::invalid_params(format!("job {id} is a {} job, not a sample", j["kind"]), None));
         }
         match j["state"].as_str() {
             Some("done") => {}
+            Some("failed") => return Err(err(anyhow::anyhow!("job {id} failed: {}", j["message"].as_str().unwrap_or("?")))),
             Some("cancelled") => return Err(McpError::internal_error(format!("sample job {id} was cancelled"), None)),
             _ => {
                 let status = json!({
@@ -628,30 +754,35 @@ impl KumaServer {
         Ok(CallToolResult::success(content))
     }
 
-    #[tool(description = "Bake overlay clips to alpha frame sequences now (normally done automatically at render). Cached by content; returns the bake resources.")]
-    async fn bake_overlay(&self, Parameters(p): Parameters<BakeOverlay>) -> Result<CallToolResult, McpError> {
-        self.job("/api/bake", &json!({ "clips": p.clips }), Duration::from_secs(1800)).await
+    #[tool(description = "Bake overlay clips to alpha frame sequences now (normally done automatically at render). Cached by content; returns the bake resources. A job still running after `wait_seconds` comes back with its id and `next`: `job_status` with that id and `wait_seconds` waits again, in calls short enough for your client (Claude Code moves a call past 120 s to the background, where it still finishes); `job_status` without an id lists jobs.")]
+    async fn bake_overlay(&self, Parameters(p): Parameters<BakeOverlay>, ctx: RequestContext<RoleServer>) -> Result<CallToolResult, McpError> {
+        self.job("/api/bake", &json!({ "clips": p.clips }), Duration::from_secs(p.wait_seconds.unwrap_or(1800)), &ctx).await
     }
 
-    #[tool(description = "Render the timeline to a video file with an export preset. Renders the master unless `sequence` names another one. `threads`, `quality` and `speed` change this render only and default to the preset's (see list_presets). Renders run one at a time: a render asked for while another encodes waits `queued`. Waits up to wait_seconds; if still running, returns the job id to poll with job_status or stop with cancel_job.")]
-    async fn render(&self, Parameters(p): Parameters<Render>) -> Result<CallToolResult, McpError> {
-        self.job("/api/render", &p.body(), Duration::from_secs(p.wait_seconds.unwrap_or(900))).await
+    #[tool(description = "Render the timeline to a video file with an export preset. Renders the master unless `sequence` names another one. `threads`, `quality` and `speed` change this render only and default to the preset's (see list_presets). Renders run one at a time: a render asked for while another encodes waits `queued`. A job still running after `wait_seconds` comes back with its id and `next`: `job_status` with that id and `wait_seconds` waits again, in calls short enough for your client (Claude Code moves a call past 120 s to the background, where it still finishes); `job_status` without an id lists jobs. `cancel_job` stops it.")]
+    async fn render(&self, Parameters(p): Parameters<Render>, ctx: RequestContext<RoleServer>) -> Result<CallToolResult, McpError> {
+        self.job("/api/render", &p.body(), Duration::from_secs(p.wait_seconds.unwrap_or(900)), &ctx).await
     }
 
-    #[tool(description = "Measure how loud a sequence is (the master by default): its sound rendered through the real graph, no bakes needed, and metered to EBU R128. Returns integrated loudness (LUFS), loudness range and true peak (dBTP) overall and per section (by default each clip placing a sequence, i.e. each chapter), the five loudest moments, and silent stretches of a second or more. kuma has no limiter, so check this before a final render: a fade that silences music, or effects stacking on a peak, show up here.")]
-    async fn measure_audio(&self, Parameters(p): Parameters<MeasureAudio>) -> Result<CallToolResult, McpError> {
+    #[tool(description = "Measure how loud a sequence is (the master by default): its sound rendered through the real graph, no bakes needed, and metered to EBU R128. Returns integrated loudness (LUFS), loudness range and true peak (dBTP) overall and per section (by default each clip placing a sequence, i.e. each chapter), the five loudest moments, and silent stretches of a second or more. kuma has no limiter, so check this before a final render: a fade that silences music, or effects stacking on a peak, show up here. A job still running after `wait_seconds` comes back with its id and `next`: `job_status` with that id and `wait_seconds` waits again, in calls short enough for your client (Claude Code moves a call past 120 s to the background, where it still finishes); `job_status` without an id lists jobs.")]
+    async fn measure_audio(&self, Parameters(p): Parameters<MeasureAudio>, ctx: RequestContext<RoleServer>) -> Result<CallToolResult, McpError> {
         let body = json!({ "sequence": p.sequence, "range": p.range, "sections": p.sections });
-        self.job("/api/audio/measure", &body, Duration::from_secs(p.wait_seconds.unwrap_or(600))).await
+        self.job("/api/audio/measure", &body, Duration::from_secs(p.wait_seconds.unwrap_or(600)), &ctx).await
     }
 
     #[tool(description = "Delete what the project's `.kuma/` cache no longer uses: superseded bakes, sampled frames, thumbnails of removed entries. sample_frames leaves PNGs behind, so prune after a long session. Returns what was freed and what is left.")]
-    async fn prune_cache(&self, Parameters(p): Parameters<PruneCache>) -> Result<CallToolResult, McpError> {
-        self.job("/api/cache/prune", &json!({ "all": p.all }), Duration::from_secs(3600)).await
+    async fn prune_cache(&self, Parameters(p): Parameters<PruneCache>, ctx: RequestContext<RoleServer>) -> Result<CallToolResult, McpError> {
+        self.job("/api/cache/prune", &json!({ "all": p.all }), Duration::from_secs(3600), &ctx).await
     }
 
-    #[tool(description = "Status of a background job (render/bake): state (queued, running, done, failed, cancelled), percent, message, result.")]
-    async fn job_status(&self, Parameters(p): Parameters<JobArg>) -> Result<CallToolResult, McpError> {
-        self.get(&format!("/api/jobs/{}", p.id)).await
+    #[tool(description = "Status of a background job (render, bake, sample, measure, transcribe): state (queued, running, done, failed, cancelled), percent, message, result. With `wait_seconds`, waits up to that long for it to finish and returns it either way: the way to keep waiting on a long job in bounded calls. Without `id`, lists the jobs the daemon remembers, to find one whose call was moved to the background.")]
+    async fn job_status(&self, Parameters(p): Parameters<JobStatus>, ctx: RequestContext<RoleServer>) -> Result<CallToolResult, McpError> {
+        let Some(id) = p.id else {
+            let all = self.client.get("/api/jobs").await.map_err(err)?;
+            return Ok(ok_json(&job_summaries(all["jobs"].as_array().map(Vec::as_slice).unwrap_or_default())));
+        };
+        let j = self.wait(id, Duration::from_secs(p.wait_seconds.unwrap_or(0)), &ctx).await.map_err(err)?;
+        Ok(ok_json(&resumable(j)))
     }
 
     #[tool(description = "Cancel a render job, whether it is queued or encoding, or an audio measurement. melt is stopped, the partial file is removed, and the job ends in state `cancelled`. Refused for a job that has finished or cannot be stopped.")]
@@ -761,6 +892,49 @@ mod tests {
         assert_eq!(texts, [REBUILT, "answer"]);
         let Err(e) = noted(Err(McpError::invalid_params("bad", None)), REBUILT) else { panic!("still an error") };
         assert!(e.message.starts_with("kuma was rebuilt") && e.message.ends_with("bad"), "{}", e.message);
+    }
+
+    /// A wait reports the job's percent as it moves, nothing while it does not, and a
+    /// heartbeat once it has been quiet for a while — always rising, as MCP asks, even when
+    /// the job's own percent falls back for its next stage.
+    #[test]
+    fn a_wait_reports_progress_that_only_rises() {
+        let job = |percent: u8, message: &str| json!({ "id": 7, "kind": "render", "state": "running", "percent": percent, "message": message });
+        let t0 = Instant::now();
+        let mut p = Progress::new(ProgressToken(rmcp::model::NumberOrString::Number(1)));
+        let first = p.next(&job(10, "encoding"), t0).expect("the first poll is reported");
+        assert_eq!((first.progress, first.total), (10.0, Some(100.0)));
+        assert!(first.message.as_deref().unwrap().starts_with("job 7 (render), running"), "names the job to resume: {:?}", first.message);
+        assert!(p.next(&job(10, "encoding"), t0 + Duration::from_secs(1)).is_none(), "nothing new, nothing sent");
+        assert_eq!(p.next(&job(40, "encoding"), t0 + Duration::from_secs(2)).unwrap().progress, 40.0);
+        let back = p.next(&job(5, "baking title"), t0 + Duration::from_secs(3)).expect("a new stage is news");
+        assert!(back.progress > 40.0, "{}", back.progress);
+        assert!(p.next(&job(5, "baking title"), t0 + Duration::from_secs(4)).is_none());
+        let beat = p.next(&job(5, "baking title"), t0 + Duration::from_secs(3) + HEARTBEAT).expect("a heartbeat");
+        assert!(beat.progress > back.progress && beat.progress < 41.0, "{}", beat.progress);
+    }
+
+    /// One frame comes back at 960 px and several at 480 each, the size a sheet's are, unless
+    /// a width is asked for; a sheet and a crop are left to size themselves.
+    #[test]
+    fn several_frames_come_back_smaller_than_one() {
+        let width = |args: Value| serde_json::from_value::<SampleFrames>(args).unwrap().width();
+        assert_eq!(width(json!({ "t0": 3.0 })), Some(960));
+        assert_eq!(width(json!({ "times": [3.0] })), Some(960));
+        assert_eq!(width(json!({ "t0": 0.0, "t1": 4.0 })), Some(480), "five across a range");
+        assert_eq!(width(json!({ "t0": 0.0, "t1": 4.0, "count": 1 })), Some(960));
+        assert_eq!(width(json!({ "times": [1.0, 2.0] })), Some(480));
+        assert_eq!(width(json!({ "times": [1.0, 2.0], "width": 1280 })), Some(1280), "asked for wins");
+        assert_eq!(width(json!({ "times": [1.0, 2.0], "tile": true })), None, "a sheet sizes its own");
+        assert_eq!(width(json!({ "t0": 1.0, "rect": { "x": 0, "y": 0, "w": 400, "h": 300 } })), None, "a crop keeps its pixels");
+    }
+
+    /// A job that has not finished says how to keep waiting; one that has, does not.
+    #[test]
+    fn an_unfinished_job_says_how_to_resume() {
+        let running = resumable(json!({ "id": 3, "state": "queued" }));
+        assert!(running["next"].as_str().unwrap().contains("job_status with id 3"), "{running}");
+        assert!(resumable(json!({ "id": 3, "state": "done" })).get("next").is_none());
     }
 
     #[test]

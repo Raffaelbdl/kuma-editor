@@ -18,7 +18,7 @@ pub mod validate;
 pub use edit::{apply_patch, EditError};
 pub use model::*;
 pub use manifest::{OverlayManifest, VarSpec, VarType};
-pub use upgrade::parse_project;
+pub use upgrade::{canonical, parse_project, project_text};
 pub use time::{ClipFrames, Fps};
 pub use validate::{validate, Issue, Severity, ValidationContext};
 

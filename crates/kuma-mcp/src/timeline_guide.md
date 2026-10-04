@@ -2,10 +2,9 @@
 
 The timeline is a JSON project (get it with `get_project`, its
 JSON Schema with `get_schema`). Times are seconds (f64); clip `end` is exclusive; `fps` is rational.
-Tracks composite bottom-up, whatever their kind: a video track after an overlay track draws over that
-overlay, in a render, a sample and a nested sequence alike (the editor lists overlay tracks on top, and
-its live preview draws the open sequence's own overlays above everything, so check such a stack with
-`sample_frames`). Edit with `apply_edits` (RFC 6902 JSON Patch) and pass the `base_revision`
+Tracks composite bottom-up, and overlays always draw over video: every overlay track comes after a
+sequence's video tracks (a video track after an overlay track is refused). Something an overlay must
+draw under, a still or a thumbnail, it draws itself, from a picture in its own folder. Edit with `apply_edits` (RFC 6902 JSON Patch) and pass the `base_revision`
 you read, so you never overwrite a human edit made meanwhile. Every edit is validated atomically and
 undoable; label your edits with `note`. A patch a script wrote goes in a file in the project, and
 `apply_edits` with `patch_path` applies it in one call, whatever its size. kuma stores a document

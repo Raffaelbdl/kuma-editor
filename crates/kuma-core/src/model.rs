@@ -447,7 +447,8 @@ pub enum BinSource {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Sequence {
-    /// Tracks in **bottom-to-top** compositing order: `tracks[0]` is painted first.
+    /// Tracks in **bottom-to-top** compositing order: `tracks[0]` is painted first. Every
+    /// overlay track comes after the video tracks: overlays draw over video, never under it.
     /// Required (not defaulted) so an empty object cannot deserialize as a sequence.
     pub tracks: Vec<Track>,
     /// Timeline markers: the person's comments on this timeline (annotation only; never

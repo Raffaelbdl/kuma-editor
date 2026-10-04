@@ -170,6 +170,21 @@ fn check_sequence<'a>(
     groups: &mut HashMap<&'a str, &'a str>,
 ) {
     let base = format!("/bin/{seq_id}/source");
+    // Overlays draw over video, never under it. The render would stack a video track after
+    // an overlay track over it, but the editor's live preview draws the open sequence's
+    // overlays above its whole picture, so the two would disagree; and anything that has to
+    // sit under a picture can draw the picture itself. Audio tracks composite nothing.
+    if let Some(first) = seq.tracks.iter().position(|t| t.kind == TrackKind::Overlay) {
+        for (ti, t) in seq.tracks.iter().enumerate().skip(first + 1).filter(|(_, t)| t.kind == TrackKind::Video) {
+            issues.push(Issue::error(
+                format!("{base}/tracks/{ti}"),
+                format!(
+                    "video track `{}` comes after overlay track `{}`: overlays draw over video, so every overlay track goes after the video tracks (move `{}` before `{}` in `tracks`). Something an overlay must draw under, it draws itself, as a picture in its own folder",
+                    t.id, seq.tracks[first].id, t.id, seq.tracks[first].id
+                ),
+            ));
+        }
+    }
     for (ti, t) in seq.tracks.iter().enumerate() {
         let tp = format!("{base}/tracks/{ti}");
         check_id(issues, track_ids, &t.id, format!("{tp}/id"), "track");
@@ -540,6 +555,19 @@ mod tests {
         let ring = project(json!({ "bin": { "a": entry(Some("b")), "b": entry(Some("a")), "s": entry(Some("s")) }, "tracks": [] }));
         let bad: Vec<_> = validate(&ring, &Default::default()).into_iter().filter(|i| i.path.ends_with("/parent")).collect();
         assert_eq!(bad.len(), 3, "{bad:?}");
+    }
+
+    /// A video track may sit under an overlay track, never over one; audio tracks may go
+    /// anywhere, since they composite nothing.
+    #[test]
+    fn a_video_track_never_goes_over_an_overlay_track() {
+        let tracks = |kinds: &[&str]| json!(kinds.iter().enumerate().map(|(i, k)| json!({ "id": format!("t{i}"), "kind": k })).collect::<Vec<_>>());
+        let errors = |kinds: &[&str]| -> Vec<String> {
+            validate(&project(json!({ "bin": {}, "tracks": tracks(kinds) })), &Default::default()).into_iter().filter(|i| i.severity == Severity::Error).map(|i| i.path).collect()
+        };
+        assert!(errors(&["video", "video", "overlay", "overlay", "audio"]).is_empty());
+        assert!(errors(&["audio", "video", "overlay", "audio", "overlay"]).is_empty());
+        assert_eq!(errors(&["video", "overlay", "video", "audio", "video"]), ["/bin/main/source/tracks/2", "/bin/main/source/tracks/4"]);
     }
 
     /// Where a clip lives in the document now that timelines hang off the bin.

@@ -28,13 +28,12 @@ contract does not say, or what bit anyway.
   keep that for small things that do not change. To choose the picture per entry, a string
   var holds its file name. A copy does not follow the original: when a picture is replaced
   on disk, copy it in again.
-- **A graphic that must sit under a picture**: draw the picture in the overlay. A timeline
+- **A graphic that must sit under a picture**: draw the picture in the overlay. Overlays
+  always draw over video (a video track after an overlay track is refused), so a timeline
   rail with the thumbnails of earlier scenes in its slots is one overlay drawing both, not
-  a rail full of holes over thumbnail clips; a still shrinking into its slot is an `<img>`
-  the same overlay animates. Only moving footage has to stay an MLT clip: then either leave
-  one hole for it, or put its video track after the overlay track — the render stacks
-  tracks in document order whatever their kind, but the editor's live preview of the open
-  sequence draws its overlays on top, so check such a stack with `sample_frames`.
+  a rail full of holes over thumbnail clips, and a still shrinking into its slot is an
+  `<img>` the same overlay animates. Only moving footage has to stay an MLT clip under the
+  overlay: leave one hole for it.
 - Anchor with normalised positions plus an `origin` (`top-left`, `center`, …), size in the
   unit kuma injects, and check an overlay in the other orientation (`frame: [1080, 1920]`).
 - **Static** things: a texture or a logo as image media; a persistent frame (a HUD, a

@@ -483,7 +483,7 @@ is content you are not editing and is what the render will show. A sequence cann
 sped up — MLT's `timewarp` takes a resource path, not a tractor, so render the part out
 and place the result as media.
 
-Seconds everywhere, `end` exclusive, fps rational, tracks bottom-up, `in` meaningful for
+Seconds everywhere, `end` exclusive, fps rational, tracks bottom-up with every overlay track after the video tracks, `in` meaningful for
 video, audio and sequence entries. Track and clip ids are unique across the whole project,
 not per sequence. The full schema: `GET /api/schema` or the `get_schema` tool.
 

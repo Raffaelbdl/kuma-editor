@@ -733,7 +733,7 @@ pub enum BlendMode {
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Effect {
     /// Position / scale / rotation / opacity. `x`/`y` are pixel offsets from the centred
-    /// position; `scale` multiplies the composition size; `rotation` in degrees.
+    /// position; `scale` multiplies the composition size; `rotation` in degrees, about the picture's centre.
     Transform {
         #[serde(default)]
         x: f64,

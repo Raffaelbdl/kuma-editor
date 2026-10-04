@@ -546,6 +546,35 @@ fn a_freeze_holds_the_frame_its_clip_shows_at_t() {
     }
 }
 
+/// A transform turns its picture about the picture's centre, as the editor's preview does:
+/// a centred square turned 45° keeps its centre where it was. qtblend's own default is the
+/// top-left corner, which moved this one's centre by 34 and 26 pixels.
+#[test]
+fn a_rotation_turns_about_the_pictures_centre() {
+    if !have("ffmpeg") || !have("melt") {
+        eprintln!("ffmpeg/melt not available; skipping");
+        return;
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    let mut p = small_project(serde_json::json!({
+        "white": { "source": { "color": "#ffffff" } },
+        "main": { "source": { "tracks": [ { "id": "v1", "clips": [
+            { "id": "c", "start": 0, "end": 1, "bin": "white", "effects": [ { "type": "transform", "scale": 0.3, "rotation": 45 } ] }
+        ] } ] } }
+    }));
+    (p.width, p.height) = (320, 180);
+    let mlt = root.join("rot.mlt");
+    std::fs::write(&mlt, compile(&p, &CompileOptions::new(root)).unwrap()).unwrap();
+    let png = root.join("rot.png");
+    snapshot(&mlt, 15, &png).expect("snapshot");
+    let grey = Command::new("ffmpeg").args(["-v", "error", "-i"]).arg(&png).args(["-pix_fmt", "gray", "-f", "rawvideo", "-"]).output().unwrap().stdout;
+    let lit: Vec<(usize, usize)> = grey.iter().enumerate().filter(|(_, v)| **v > 128).map(|(i, _)| (i % 320, i / 320)).collect();
+    let mid = |v: Vec<usize>| (v.iter().min().unwrap() + v.iter().max().unwrap()) as f64 / 2.0;
+    let (cx, cy) = (mid(lit.iter().map(|p| p.0).collect()), mid(lit.iter().map(|p| p.1).collect()));
+    assert!((cx - 160.0).abs() <= 2.0 && (cy - 90.0).abs() <= 2.0, "the turned square is centred on ({cx}, {cy})");
+}
+
 /// An auto-level follows a source that drifts by 25 dB over twenty seconds and keeps it
 /// within a couple of dB, once its window has filled.
 #[test]

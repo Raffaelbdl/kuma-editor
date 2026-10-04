@@ -764,6 +764,14 @@ fn emit_effects(ctx: &Ctx, w: &mut XmlWriter, span: &Span, effects: &[Effect], f
                     rect_str(ctx, k.or("x", *x), k.or("y", *y), k.or("scale", *scale), k.or("opacity", *opacity))
                 }));
                 w.property("rotation", anim(keyframes, &at, num(*rotation), |k| num(k.or("rotation", *rotation))));
+                // qtblend turns about the rect's top-left corner unless told otherwise:
+                // measured, a centred picture-in-picture turned 45° moved its centre from
+                // (160, 90) to (126, 116) in a 320×180 frame. The editor's preview, and anyone
+                // reading "rotation", turn it about its centre. Written only when it ever
+                // turns, so a transform that does not is the document it was.
+                if *rotation != 0.0 || keyframes.iter().any(|k| k.or("rotation", *rotation) != 0.0) {
+                    w.property("rotate_center", "1");
+                }
                 w.close("filter");
             }
             Effect::Crop { left, right, top, bottom, radius, keyframes } => {
@@ -1034,6 +1042,7 @@ mod tests {
         let rect = xml.split(r#"<property name="rect">"#).nth(1).unwrap().split('<').next().unwrap();
         assert_eq!(rect.split(';').map(|s| s.split(' ').next().unwrap()).collect::<Vec<_>>(), ["0|=0", "30~=-960", "60=0"], "{xml}");
         assert!(xml.contains(r#"<property name="rotation">0|=0;30~=0;60=0</property>"#), "{xml}");
+        assert!(!xml.contains("rotate_center"), "nothing turns, so nothing says where about: {xml}");
         assert!(xml.contains(r#"<property name="level">0|=0;60=0</property>"#), "{xml}");
     }
 

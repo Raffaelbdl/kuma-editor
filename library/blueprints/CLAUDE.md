@@ -18,10 +18,15 @@ The folder name is the identity (the manifest has no `id`). A folder without bot
 does not load. Entries may share a folder with different `vars`; editing it changes all of
 them, so `make_overlay_unique` first to change one.
 
-`_vendor/` holds shared files, referenced as `_vendor/<file>` from the overlay. An
-overlay's own `_vendor/` wins, then the one next to it, then the shared one from the
-highest-precedence library that has it (`<library>/blueprints/_vendor/`); the bake stages
-and the daemon serves exactly the same folder. It is not copied into projects.
+`_vendor/` holds shared files, referenced as `_vendor/<file>` from the overlay. Each file is
+looked for in turn in the overlay's own `_vendor/`, then the one next to it (a project's
+`overlays/_vendor/`), then the shared one from the highest-precedence library that has it
+(`<library>/blueprints/_vendor/`); the first that has it wins, and the bake stages and the
+daemon serves exactly those files. So files several overlays of a project share (a house
+stylesheet, a font, a logo) go in `overlays/_vendor/` under names of their own, and
+`_vendor/kuma.js` still comes from the library. A copy of one of kuma's own files there
+shadows it for every overlay beside it, and `check_overlay` warns (`vendor_shadowed`) when
+it differs from the shipped one. The library's `_vendor/` is not copied into projects.
 
 - `_vendor/kuma.js` — `kumaTemplate(defaults)` applies the vars, returns `{ vars, width,
   height, duration, text(id, value), timeline(), onFrame(fn) }` and works standalone.

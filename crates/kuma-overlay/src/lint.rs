@@ -121,6 +121,7 @@ impl Baker {
         let staged = self.stage(req, &work.path().join("src"))?;
         let html = std::fs::read_to_string(&staged.entry)?;
         let mut findings = contract_findings(&html, req.manifest, &staged.dir);
+        findings.extend(self.vendor_findings(req.overlay_dir, &html));
         findings.extend(self.font_findings(req.manifest, &req.manifest.resolve_vars(req.vars), &html));
 
         let renderer_skipped = match hyperframes_lint(&self.hyperframes, &staged.dir) {
@@ -143,6 +144,27 @@ impl Baker {
         Ok(LintReport { overlay, findings, renderer_skipped })
     }
 
+    /// `_vendor/` files the overlay references that are not the library's, where the
+    /// library has one of that name with other bytes: a copy of kuma's runtime beside the
+    /// overlays shadows the shipped one for every overlay there, and does not get its fixes.
+    /// A file of the project's own under a name of its own is what that folder is for.
+    pub fn vendor_findings(&self, overlay_dir: &Path, html: &str) -> Vec<Finding> {
+        let mut out = Vec::new();
+        for href in local_refs(html).into_iter().collect::<std::collections::BTreeSet<_>>() {
+            let Some(rel) = href.strip_prefix("_vendor/") else { continue };
+            let (Some(used), shipped) = (self.vendor_file(overlay_dir, rel), self.vendor_dir.join(rel)) else { continue };
+            if used.starts_with(&self.vendor_dir) || !shipped.is_file() || std::fs::read(&used).ok() == std::fs::read(&shipped).ok() {
+                continue;
+            }
+            out.push(Finding::warn(
+                "vendor_shadowed",
+                format!("`{href}` is `{}`, not the one kuma ships, which differs", used.display()),
+                "delete the copy to use kuma's, or give a file of your own a name of its own",
+            ));
+        }
+        out
+    }
+
     /// What an overlay's text will not be drawn in, with these (resolved) vars and its
     /// markup: a family a `font` var names that is not installed, characters none of its
     /// `font` vars' families can set, and CJK text on a page whose `lang` is not a CJK one.
@@ -154,11 +176,14 @@ impl Baker {
         let fonts = self.fonts(manifest, vars);
         // A collection in a font folder is not read; saying so is the difference between
         // "not installed" and "installed the wrong way".
-        let collections = if fonts.missing.is_empty() { Vec::new() } else { self.fonts.collections() };
+        let (collections, web) = if fonts.missing.is_empty() { Default::default() } else { (self.fonts.collections(), self.fonts.web_fonts()) };
         for (k, family) in &fonts.missing {
             let mut fix = String::from("add the font file to the project's `fonts/` (or a library's), or pick one that is installed");
             if let Some(c) = collections.first() {
                 fix.push_str(&format!("; `{}` is a collection, which is only read once `add_font` has split it into its faces", c.display()));
+            }
+            if let Some(w) = web.first() {
+                fix.push_str(&format!("; `{}` is a web font, which is only read once `add_font` has unwrapped it into the font it holds", w.display()));
             }
             out.push(Finding::warn("font_missing", format!("`{k}` names the font `{family}`, which is not installed"), &fix).about(k));
         }
@@ -769,6 +794,30 @@ mod tests {
         assert_eq!(page_lang(r#"<html xml:lang="ja"><body>"#), None);
         assert_eq!(page_lang("<htmlx lang=ja><html lang=ko>").as_deref(), Some("ko"));
         assert_eq!(page_lang("<div>no page</div>"), None);
+    }
+
+    /// A file of the project's own beside its overlays is what that folder is for; a copy of
+    /// kuma's runtime there that is not the shipped one is said, since it shadows the shipped
+    /// one for every overlay beside it. A copy identical to kuma's is nothing to say.
+    #[test]
+    fn a_copy_of_kumas_runtime_beside_the_overlays_is_named() {
+        let tmp = tempfile::tempdir().unwrap();
+        let library = tmp.path().join("library/_vendor");
+        std::fs::create_dir_all(&library).unwrap();
+        std::fs::write(library.join("kuma.js"), "shipped").unwrap();
+        let overlay = tmp.path().join("overlays/title");
+        let beside = tmp.path().join("overlays/_vendor");
+        std::fs::create_dir_all(&overlay).unwrap();
+        std::fs::create_dir_all(&beside).unwrap();
+        std::fs::write(beside.join("house.css"), "mine").unwrap();
+        std::fs::write(beside.join("kuma.js"), "shipped").unwrap();
+        let baker = Baker::discover(tmp.path(), library, tmp.path().join("cache"));
+        let html = r#"<link rel="stylesheet" href="_vendor/house.css"><script src="_vendor/kuma.js"></script><script src="_vendor/kuma.js"></script>"#;
+        assert!(baker.vendor_findings(&overlay, html).is_empty());
+        std::fs::write(beside.join("kuma.js"), "an older one").unwrap();
+        let found = baker.vendor_findings(&overlay, html);
+        assert_eq!(found.iter().map(|f| f.code.as_str()).collect::<Vec<_>>(), ["vendor_shadowed"], "{found:?}");
+        assert!(found[0].message.contains("overlays/_vendor/kuma.js"), "{}", found[0].message);
     }
 
     /// A format change must not turn into a clean report.

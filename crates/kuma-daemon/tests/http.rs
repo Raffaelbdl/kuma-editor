@@ -402,6 +402,29 @@ async fn a_render_target_says_what_it_would_overwrite() {
     assert!(status.contains("400"), "{status}");
 }
 
+/// `_vendor/<file>` is served from the first folder that has that file: the overlay's own
+/// `_vendor/`, the one beside it, the library's. A project's shared files beside its
+/// overlays add to kuma's runtime rather than hiding it, as the bake stages them.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_vendor_file_is_served_from_the_first_folder_that_has_it() {
+    let (state, addr, _dir) = daemon().await;
+    let overlays = state.config.project_root().join("overlays");
+    std::fs::create_dir_all(overlays.join("_vendor/fonts")).unwrap();
+    std::fs::create_dir_all(overlays.join("probe/_vendor")).unwrap();
+    std::fs::write(overlays.join("_vendor/house.css"), "beside").unwrap();
+    std::fs::write(overlays.join("_vendor/fonts/house.woff2"), "beside font").unwrap();
+    std::fs::write(overlays.join("_vendor/kuma.js"), "beside kuma").unwrap();
+    std::fs::write(overlays.join("probe/_vendor/kuma.js"), "own kuma").unwrap();
+    for (path, body) in [("house.css", "beside"), ("fonts/house.woff2", "beside font"), ("kuma.js", "own kuma"), ("gsap.min.js", "")] {
+        for route in ["/overlay-entry/tag", "/overlay-preview/o1c1"] {
+            let (status, got) = get_body(&addr, &format!("{route}/_vendor/{path}"));
+            assert!(status.contains("200") && got == body, "{route}/_vendor/{path}: {status} {got:?}");
+        }
+    }
+    let (status, _) = get_body(&addr, "/overlay-entry/tag/_vendor/nope.js");
+    assert!(status.contains("404"), "{status}");
+}
+
 /// A font is added by path, is copied into the project's `fonts/` (or,
 /// shared, the library's) and is then what a `font` var draws with: the preview document
 /// carries its `@font-face` and serves the file from the path the rule names, the one a

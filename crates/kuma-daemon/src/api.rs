@@ -421,7 +421,7 @@ async fn fonts(State(st): S) -> ApiResult {
 
 #[derive(Deserialize)]
 struct AddFont {
-    /// A `.ttf`/`.otf` file, or a `.ttc`/`.otc` collection, relative to the project or absolute.
+    /// A `.ttf`/`.otf`/`.woff`/`.woff2` file, or a `.ttc`/`.otc` collection, relative to the project or absolute.
     path: PathBuf,
     /// Into the user library for every project, rather than this project's `fonts/`.
     #[serde(default)]
@@ -1039,12 +1039,13 @@ async fn blueprint_static(State(st): S, Path((id, rest)): Path<(String, String)>
     serve_overlay_file(&st, &dir, &rest)
 }
 
-/// A file inside an overlay folder. `_vendor/...` resolves exactly as the bake stages it.
+/// A file inside an overlay folder. `_vendor/...` resolves exactly as the bake stages it,
+/// file by file (`Baker::vendor_file`).
 fn serve_overlay_file(st: &AppState, dir: &std::path::Path, rest: &str) -> Result<Response, ApiError> {
     let mut path = safe_join(dir, rest).ok_or(ApiError::bad_request("bad path"))?;
     if !path.is_file() {
-        if let Some((vendor, v)) = rest.strip_prefix("_vendor/").and_then(|v| st.baker.vendor_for(dir).map(|d| (d, v))) {
-            path = safe_join(&vendor, v).ok_or(ApiError::bad_request("bad path"))?;
+        if let Some(found) = rest.strip_prefix("_vendor/").and_then(|v| st.baker.vendor_file(dir, v)) {
+            path = found;
         }
     }
     file_response(&path)

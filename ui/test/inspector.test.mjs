@@ -590,7 +590,7 @@ describe("the effects a clip is offered", { skip: why ? `skipping: ${why}` : fal
     if (tmp) fs.rmSync(tmp, { recursive: true, force: true });
   });
 
-  it("offers a colour the picture's effects, and says a volume on it does nothing", async () => {
+  it("offers a colour the picture's effects (nothing to freeze), and says a volume on it does nothing", async () => {
     await selectClip(page, "c1");
     await page.until(`!!document.querySelector(".effect")`);
     assert.equal(await offered(), "transform crop blend blur color fade mlt");
@@ -605,7 +605,7 @@ describe("the effects a clip is offered", { skip: why ? `skipping: ${why}` : fal
     await selectClip(page, "c2");
     await page.until(`!!${ADD} && document.querySelector("#inspector h3 .mono")?.textContent === "c2"`);
     // A mute is a state: what the clip can do is unchanged by it, and so is the list.
-    assert.equal(await offered(), "audio_fade volume mlt");
+    assert.equal(await offered(), "audio_fade volume limiter auto_level mlt");
     assert.equal(await page.eval(`${ADD}.options[1].textContent`), "audio fade");
     assert.match(await labels(), /Volume.*Muted/);
   });
@@ -617,5 +617,24 @@ describe("the effects a clip is offered", { skip: why ? `skipping: ${why}` : fal
     await page.until(`!!document.querySelector('.effect [data-prop="gain"]')`);
     assert.equal(await page.eval(`!!document.querySelector('.effect [data-prop="keys"]')`), false, "static until asked");
     assert.equal(await page.eval(`document.querySelector(".effect .head .kf-toggle").classList.contains("on")`), false);
+  });
+
+  it("offers the open sequence the effects on its mix when nothing is selected", async () => {
+    // The song is the master's only sound, and a sequence's mutes are its content: unmuted,
+    // the master has a mix to act on.
+    await page.eval(`fetch("/api/project/patch", { method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ patch: [{ op: "replace", path: "/bin/main/source/tracks/1/clips/0/muted", value: false }] }) }).then(r => r.ok)`);
+    await page.until(`fetch("/api/project").then(r => r.json()).then(p => p.revision).then(rev => document.querySelector("#topbar .mono").textContent.startsWith("r" + rev))`);
+    // A click on an empty stretch of lane selects nothing.
+    await page.eval(`(() => { const lane = document.querySelector(".tl-lane"); const r = lane.getBoundingClientRect();
+      lane.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, clientX: r.right - 10, clientY: r.top + 5 }));
+      window.dispatchEvent(new PointerEvent("pointerup", { bubbles: true })); return true; })()`);
+    await page.until(`!!${ADD} && !document.querySelector("#inspector h3 .mono")`);
+    assert.match(await page.eval(`[...document.querySelectorAll("#inspector h3")].map(h => h.textContent).join(" | ")`), /Master “Main” — on its mix/);
+    assert.equal(await offered(), "volume limiter auto_level");
+    await page.eval(`(() => { const s = ${ADD}; s.value = "limiter"; s.dispatchEvent(new Event("change", { bubbles: true })); return true; })()`);
+    const STAGE = `fetch("/api/project").then(r => r.json()).then(p => JSON.stringify(p.bin.main.source.effects))`;
+    await page.until(`${STAGE}.then(s => s === '[{"type":"limiter","ceiling":-1,"attack":5,"release":50}]')`);
+    await page.until(`!!document.querySelector('.effect [data-prop="ceiling"]')`);
   });
 });

@@ -414,7 +414,11 @@ export class Preview {
       const visible = covers(c, playhead);
       v.wrap.style.visibility = visible ? "" : "hidden";
       if (!visible || !v.ready) continue;
-      const local = (playhead - c.start) * Math.abs(c.speed || 1);
+      // A freeze holds the overlay where the clip is `t` in, as the render's held frame
+      // does; the clip's other effects still follow the playhead.
+      const freeze = c.effects.find((e) => e.type === "freeze");
+      const at = freeze?.type === "freeze" ? Math.min(Math.max(freeze.t ?? 0, 0), c.end - c.start) : playhead - c.start;
+      const local = at * Math.abs(c.speed || 1);
       const t = c.speed < 0 ? (c.end - c.start) * Math.abs(c.speed) - local : local;
       if (Math.abs(t - v.lastT) > 1e-4) {
         v.lastT = t;

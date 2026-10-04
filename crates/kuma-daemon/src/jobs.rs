@@ -857,8 +857,10 @@ pub struct Section {
 /// overlays make no sound — then metered to EBU R128 (`kuma_overlay::loudness`). The whole,
 /// each section, the loudest moments and the silent stretches, in sequence seconds.
 ///
-/// kuma has no limiter, so loudness and peak are whatever the gains make them; this is how
-/// an agent that cannot listen finds out, before and after rendering.
+/// The sequence is compiled as the root, so its own effects — the master stage, for the
+/// master — are in what is measured. Loudness and peak are whatever the gains and that
+/// stage make them; this is how an agent that cannot listen finds out, before and after
+/// rendering.
 pub fn measure_audio(state: &AppState, req: &MeasureRequest, progress: &dyn Fn(u8, &str), cancel: &AtomicBool) -> anyhow::Result<serde_json::Value> {
     let project = read(&state.project).clone();
     let sequence = project.sequence_or_master(req.sequence.as_deref()).map_err(|e| anyhow::anyhow!(e))?.clone();

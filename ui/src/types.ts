@@ -9,8 +9,9 @@ export interface MediaMeta {
   duration?: number; width?: number; height?: number; fps?: Fps; variable_fps?: boolean; has_audio: boolean;
 }
 
-/** A timeline: what a sequence bin entry holds, master included. */
-export interface Sequence { tracks: Track[]; markers?: Marker[] }
+/** A timeline: what a sequence bin entry holds, master included. `effects` act on its mix
+ *  (`SEQUENCE_EFFECTS`), keyed in its own seconds; the master's are the master stage. */
+export interface Sequence { tracks: Track[]; markers?: Marker[]; effects?: Effect[] }
 
 /** An overlay entry: a project folder (`overlays/<name>`) and its vars. */
 export interface OverlaySource { overlay: string; vars?: Record<string, unknown> }
@@ -72,8 +73,17 @@ const EFFECT_STREAMS: Record<Effect["type"], Streams> = {
   fade: { video: true, audio: false },
   audio_fade: { video: false, audio: true },
   volume: { video: false, audio: true },
+  limiter: { video: false, audio: true },
+  auto_level: { video: false, audio: true },
+  freeze: { video: true, audio: false },
   mlt: { video: true, audio: true },
 };
+
+/** The kinds a sequence may carry, on its mix. Mirrors `Effect::fits_a_sequence`. */
+export const SEQUENCE_EFFECTS: Effect["type"][] = ["volume", "limiter", "auto_level"];
+
+/** What a sequence's own effects have to act on: its sound, if anything in it sounds. */
+export const sequenceStreams = (p: Project, id: string): Streams => ({ video: false, audio: sequenceSounds(p, id) });
 
 /** What an effect of this kind acts on. */
 export const streamsOf = (type: Effect["type"]): Streams => EFFECT_STREAMS[type];
@@ -123,6 +133,9 @@ export type Effect =
   | { type: "fade"; in?: number; out?: number }
   | { type: "audio_fade"; in?: number; out?: number }
   | { type: "volume"; gain?: number; keyframes?: Keyframe[] }
+  | { type: "limiter"; ceiling?: number; attack?: number; release?: number }
+  | { type: "auto_level"; target?: number; window?: number; max_gain?: number; min_gain?: number }
+  | { type: "freeze"; t?: number }
   | { type: "mlt"; service: string; properties?: Record<string, string> };
 
 /** A placement of a bin entry: when it plays, not what it is. */
@@ -529,6 +542,8 @@ export function transformAt(e: Extract<Effect, { type: "transform" }>, local: nu
  *  half of a split): keyframes shift, the value at the cut becomes the first keyframe. */
 export function shiftEffect(e: Effect, cut: number): Effect {
   if (isFade(e)) return { ...e, in: 0 };
+  // The same frame is held on both halves: `t` counts from the clip's start, which moved.
+  if (e.type === "freeze") return { ...e, t: (e.t ?? 0) - cut };
   const kfs = keyframesOf(e);
   if (!kfs.length) return e;
   // The key the cut lands in carries that segment's ease (`sampleEffect` does), or a half

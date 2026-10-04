@@ -7,7 +7,6 @@
   "vars": {
     "text":               { "type": "text", "default": "Your title", "label": "Title", "group": "Text" },
     "font":               { "type": "font", "default": "Inter", "label": "Font", "group": "Text" },
-    "lang":               { "type": "lang", "default": "", "label": "Language", "group": "Text", "description": "The language of both lines as a tag: ja, zh-Hant, ko, en. Kanji are drawn in the forms this language uses, and a character the font lacks falls back to a font for it. Empty keeps the page's own, English." },
     "weight":             { "type": "number", "default": 700, "min": 100, "max": 900, "step": 100, "label": "Weight", "group": "Text", "description": "400 is regular, 700 bold. A font draws the weights it has; the rest are the nearest." },
     "italic":             { "type": "boolean", "default": false, "label": "Italic", "group": "Text" },
     "font_size":          { "type": "number", "default": 9, "min": 1, "max": 40, "step": 0.5, "label": "Size", "group": "Text", "description": "Percent of the frame's short side, so a title is the same size in landscape and portrait." },
@@ -16,6 +15,7 @@
     "letter_spacing":     { "type": "number", "default": 0, "min": -0.1, "max": 0.5, "step": 0.01, "label": "Letter spacing", "group": "Text", "description": "In em: 0.1 is a tenth of the type size." },
     "line_height":        { "type": "number", "default": 1.1, "min": 0.8, "max": 2, "step": 0.05, "label": "Line height", "group": "Text" },
     "align":              { "type": "enum", "options": ["left", "center", "right"], "default": "center", "label": "Align", "group": "Text" },
+    "lang":               { "type": "lang", "default": "", "label": "Language", "group": "Text", "description": "The language of both lines as a tag: ja, zh-Hant, ko, en. Kanji are drawn in the forms this language uses, and a character the font lacks falls back to a font for it. Empty keeps the page's own, English." },
 
     "subtitle":           { "type": "text", "default": "A line that says more", "label": "Text", "group": "Subtitle" },
     "sub_font":           { "type": "font", "default": "Inter", "label": "Font", "group": "Subtitle" },

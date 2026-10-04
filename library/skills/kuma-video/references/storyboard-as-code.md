@@ -65,9 +65,10 @@ Re-run the storyboard after applying, so the counts include themselves.
 
 ## The diff
 
-- **Normalise** before comparing: drop fields stored at their defaults (`0`, `false`,
-  `[]`, `null`, and `1` for gains, speeds and scales), so a hand-written document and the
-  one kuma returns compare equal.
+- **Normalise** before comparing: put the script's document through `kuma canonical`
+  (or `POST /api/project/canonical`), which writes it exactly as kuma stores it, without
+  the fields at their defaults (a key's `ease: "linear"`), so the two compare equal. Ignore
+  `revision`.
 - Entries: compare `name` and `vars`; emit `replace …/source/vars` for a change and `add`
   for a new entry. Remove only entries of this chapter's own folder that nothing wants any
   more.
@@ -94,6 +95,7 @@ Re-run the storyboard after applying, so the counts include themselves.
 - **Stale entries**: the patch removes what this script's folders hold that it no longer
   makes. Work that out from the live project, not from a state file the script keeps: a
   build that was never applied leaves the state file believing in entries that never
-  existed, and hides the ones that do.
+  existed, and hides the ones that do. `unused_entries` lists what no clip places, and what
+  is placed only where the master never reaches.
 - Before a sweeping change (a new time model, a shared helper), copy `assets/` and
   `overlays/` to scratch, so you can compare or roll back.

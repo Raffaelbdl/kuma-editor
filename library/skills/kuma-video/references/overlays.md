@@ -76,6 +76,10 @@ A wipe, a shutter, a page turn drawn by an overlay over a cut:
 
 ## Text
 
+- **A font is `add_font`, never a file in a folder**: it takes `.ttf`, `.otf`, `.ttc` and the
+  web fonts (`.woff`, `.woff2`) a design system often ships as, and every overlay names the
+  family through a `font` var. A face bundled with `@font-face` in one folder works, but
+  has to be copied into every folder that uses it.
 - **Ligatures**: mono fonts with programming ligatures draw `<!--`, `->` and `!=` as
   symbols. Put `font-variant-ligatures: none; font-feature-settings: "liga" 0, "calt" 0`
   on code.
@@ -85,7 +89,8 @@ A wipe, a shutter, a page turn drawn by an overlay over a cut:
   if the video has a portrait cut.
 - Inline markup in text vars (`*emphasis*`, `` `code` ``) is parsed by one shared helper
   in `_vendor/`, not by each component, so it means the same everywhere.
-- CJK text: see `japanese-type.md`. In short, `lang="ja"` on the page and a `jp` fallback
+- CJK text: see `japanese-type.md`. In short, the entry's `lang` var set to `ja` (or
+  `lang="ja"` on the page) and a `jp` fallback
   font var in every font stack.
 
 ## Lint messages worth knowing

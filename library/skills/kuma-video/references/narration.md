@@ -23,24 +23,27 @@ both.
 
 ## Timing from the voice
 
-- `transcribe` the voice-over (pass `language`) for sentence and word times. Good enough to
-  lay out scenes; the words themselves may be wrong with a small model, and it is the times
-  you need.
-- **Word times are approximate**: snap every scene boundary to a real pause in the
-  recording. Taken straight from the cues, 2 of 19 boundaries were audibly wrong in one
-  video: a slice held the first syllable of the next sentence, another clipped a first
-  word.
+- `transcribe` the voice-over (pass `language`) for sentence and word times. The default
+  model is small: outside English, ask for a larger one (`model: "large-v3"`, if `health`
+  lists it), or expect wrong words with good times, which are what you need here.
+- **Boundaries go in real pauses.** Whisper's words run into each other, and taken
+  straight from its times, 2 of 19 scene boundaries were audibly wrong in one video (a slice
+  held the first syllable of the next sentence, another clipped a first word). `transcribe`
+  moves cue edges onto the pauses it hears, so a gap between two cues is a pause; check
+  a boundary that matters against `measure_media`'s silences for the recording.
 - End a scene in the middle of the pause after its last word; start the next just before
   its first word.
 
 ## Takes to camera
 
-- A recording often holds several takes. Transcribe it and find each take's start and end
-  from its pauses; keep the last complete one unless told otherwise.
+- A recording often holds several takes. Transcribe it, and find each take's start and end
+  from its pauses (`measure_media`'s silences, which are in the file's own seconds); keep
+  the last complete one unless told otherwise.
 - Cut from **0.25 s before the first word to 0.2 s after the last**. By 0.4 s after it the
   speaker's hand is already reaching for the camera.
 - Picture from the camera file and voice from a cleaned audio file: compare the two files'
-  pauses before trusting that they line up (they should agree to a few milliseconds).
+  silences (`measure_media` on each) before trusting that they line up; they should agree to
+  a few milliseconds.
 - **Removing a pause inside a take**: two clips of the same take, about 0.12 s kept either
   side of the cut, the second one punched in a few percent, so the cut reads as a change of
   framing rather than a jump.
@@ -54,8 +57,9 @@ both.
 - Level the to-camera takes to the voice-over: one gain per take, from the take's own
   loudness: `gain = 10 ** ((target − L) / 20)`.
 - One recording session can still vary from paragraph to paragraph (−22 to −27 LUFS across
-  scenes in one video). Measure the voice alone with one section per scene and trim each
-  slice towards the target, capped at about ±3.5 dB so the performance keeps its shape.
+  scenes in one video). Measure the voice alone (`measure_audio` with the voice tracks in
+  `solo` and one section per scene) and trim each slice towards the target, capped at about
+  ±3.5 dB so the performance keeps its shape.
 - Then put the music under it: `audio.md`.
 
 ## Checking a narrated cut

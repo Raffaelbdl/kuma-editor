@@ -5,9 +5,11 @@ is also what makes it cheap: nothing is baked.
 
 ## Bringing it in
 
-- `add_media` each file (`probe_media` first to see its length, size, rate and audio).
-  Keep originals under `media/` and never overwrite one a render or the preview is reading:
-  write a new name and add that.
+- `add_media` with `paths` or a folder adds them in one edit and says what it skipped
+  (`probe_media` first to see a file's length, size, rate and audio). Keep originals under
+  `media/` and never overwrite one a render or the preview is reading: write a new name and
+  add that. If a file was replaced anyway, `reprobe_media` reads it again.
+- SVG is refused: rasterise it first (`rsvg-convert`, or ffmpeg where it has librsvg).
 - One entry per source, placed as many times as it is cut. A clip is a placement: `in` is
   where it reads from in the source, `start`/`end` where it sits on the timeline.
 - Mixed frame rates and sizes are fine; the project's `fps`, `width` and `height` are what
@@ -35,10 +37,11 @@ is also what makes it cheap: nothing is baked.
   drop. Cut in the gaps, a few hundredths of a second after the last word and before the
   next.
 - **Subtitles after cutting**: one `subtitles` entry per piece, holding that piece's cues,
-  its `offset` the piece's `in`, placed over the piece. That is also the split into pieces
-  of about a minute that keeps bakes short (`timeline_guide`).
-- **Length**: `in + (end − start) × speed` must stay within the source. A clip that reads
-  past the end shows its last frame or nothing.
+  its `offset` the piece's `in`, placed over the piece. `transcribe` from a clip does this
+  itself, cut at pauses into entries of about a minute, which keeps bakes short.
+- **Length**: `in + (end − start) × speed` must stay within the source. The frames a clip
+  reads past the end show the tracks below and are silent; the validator counts them in
+  whole frames, so a sound a fraction of a frame short of its clip is fine.
 
 ## Speed, movement, colour
 
@@ -50,7 +53,16 @@ is also what makes it cheap: nothing is baked.
   - a **slow push** on a still (Ken Burns): scale 1 → 1.1 over the clip, linear;
   - hits and shakes: `pacing.md`.
   Keep the scale ≥ 1 wherever the picture moves, or the frame's edge shows.
-- `crop` to reframe, `color` (brightness, contrast, saturation, gamma) to match clips shot
+- `freeze` holds the frame a clip shows at `t` (seconds into the clip) for the whole clip,
+  while its sound runs on: a scene that stops to become a picture (shrinking into a
+  timeline, flying into a frame) is the scene's own clip, frozen, with a `transform`.
+  Anything placeable freezes, a nested sequence included, so it never goes stale. It holds
+  only what that clip shows: a title on a track above it is not in the frame, and vanishes
+  when the frozen picture starts to move, so freeze at an instant with no title on screen.
+- `crop` to reframe: fractions of the *frame*, not of a letterboxed still inside it, and a
+  `radius` of 1 rounds the shorter side into semicircles (a circle on a square crop). Crop a
+  still's letterbox away first, or the rounding lands in the empty corners.
+- `color` (brightness, contrast, saturation, gamma) to match clips shot
   in different light.
 
 ## Stills

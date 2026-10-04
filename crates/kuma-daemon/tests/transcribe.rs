@@ -59,7 +59,7 @@ fn a_transcript_becomes_an_editable_subtitles_entry() {
 
     let config = Config { project_file: dir.path().join("t.kuma.json"), repo_root: repo.clone(), library_dirs: vec![repo.join("library")], bind: "127.0.0.1:0".parse().unwrap() };
     let state = Arc::new(AppState::load(config).unwrap());
-    jobs::add_media(&state, &media, None, None, None, "test").unwrap();
+    kuma_daemon::media::add(&state, &[media.clone()], Default::default(), None, "test").unwrap();
 
     let req = TranscribeRequest { bin: Some("talk".into()), clip: None, id: None, replace: false, split: None, options: Default::default(), origin: "test".into() };
     // Whisper is minutes of work on a real recording, so the job must report its
@@ -238,7 +238,7 @@ fn a_long_transcript_has_real_gaps_and_is_cut_into_pieces_of_about_a_minute() {
     // Set here rather than through the environment, which the other test in this file owns.
     state.transcriber = kuma_overlay::Transcriber { cli: fake.clone(), model: Some(models.join("ggml-base.bin")), model_dir: models.clone() };
     let state = Arc::new(state);
-    jobs::add_media(&state, &media, None, None, None, "test").unwrap();
+    kuma_daemon::media::add(&state, &[media.clone()], Default::default(), None, "test").unwrap();
 
     let req = TranscribeRequest {
         bin: Some("talk".into()),

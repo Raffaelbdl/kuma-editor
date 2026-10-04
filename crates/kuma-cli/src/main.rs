@@ -293,8 +293,7 @@ fn repo_root(cli: &Cli) -> anyhow::Result<PathBuf> {
 /// into it) as given, else whatever `locate_repo_root` finds for this project.
 fn repo_root_found(cli: &Cli) -> anyhow::Result<RepoRoot> {
     if let Some(path) = &cli.repo {
-        let from = if std::env::var_os("KUMA_REPO").is_some_and(|v| Path::new(&v) == path) { "KUMA_REPO" } else { "--repo" };
-        return Ok(RepoRoot { path: path.clone(), from: from.into() });
+        return Ok(RepoRoot { path: path.clone(), from: "--repo or KUMA_REPO".into() });
     }
     locate_repo_root(absolute(&cli.project).ok().as_deref()).ok_or_else(|| {
         anyhow::anyhow!("cannot find the kuma repository root (the checkout holding node_modules/hyperframes): pass --repo or set KUMA_REPO, or run `kuma mcp-config` so the project's .mcp.json names it")
@@ -608,7 +607,7 @@ async fn main() -> anyhow::Result<()> {
                 kuma_mcp::client::Client::new(&url).post("/api/bin/reprobe", &body).await?
             } else {
                 let state = open(&cli)?;
-                kuma_daemon::media::reprobe(&state, bins.as_deref(), None, "cli")?
+                serde_json::to_value(kuma_daemon::media::reprobe(&state, bins.as_deref(), None, "cli")?)?
             };
             for c in v["changed"].as_array().into_iter().flatten() {
                 for (field, change) in c["changes"].as_object().into_iter().flatten() {

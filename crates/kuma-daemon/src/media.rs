@@ -3,8 +3,9 @@
 //! video does not use. Probing runs outside the edit lock; what to write is decided
 //! against the project as it is when the patch lands.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use kuma_core::manifest::MANIFEST;
 use kuma_core::{BinItem, BinSource, Issue, MediaKind, Project};
@@ -12,7 +13,7 @@ use kuma_overlay::Probe;
 use serde::Serialize;
 use serde_json::{json, Value};
 
-use crate::jobs::{bin_op, bin_replace_op, resolve_path};
+use crate::jobs::{bin_op, bin_replace_op, project_relative, resolve_path};
 use crate::state::{read, AppState};
 
 /// How to add what the paths name.
@@ -43,23 +44,20 @@ pub struct Skipped {
     pub reason: String,
 }
 
-/// A file to add, and whether it was named or found in a folder: a named file that cannot
-/// be added fails the call, since it was asked for; one a folder held is skipped and said.
+/// A file to add, as the project stores it, and whether it was named or found in a folder:
+/// a named file that cannot be added fails the call; one a folder held is skipped and said.
 struct Candidate {
     abs: PathBuf,
+    rel: String,
     found: bool,
 }
 
-/// Probe files and add them to the bin in one edit, so a whole folder is one revision and
-/// one undo. Each path is a file or a folder; a folder adds the media files directly in it
-/// (by name, see [`kuma_overlay::media::MEDIA_EXTENSIONS`]), its subfolders' too with
-/// `recursive`, and reports the rest as skipped. Hidden files and folders are passed over
-/// without a word. A file a folder holds that is already in the bin is skipped, so adding
-/// a folder again adds what is new in it; a file named outright is added however often.
-/// One path naming an overlay folder (or its manifest) imports it, as it always has.
+/// Probe files and add them to the bin in one edit (one revision, one undo). A folder adds
+/// the media files in it by name, its subfolders' with `recursive`, and says what it passed
+/// over, files already in the bin included; a file named outright is added however often.
+/// One path naming an overlay folder (or its manifest) imports it.
 pub fn add(state: &AppState, paths: &[PathBuf], how: AddHow, base_revision: Option<u64>, origin: &str) -> anyhow::Result<Added> {
     anyhow::ensure!(!paths.is_empty(), "no path to add");
-    let root = state.config.project_root();
     if let [path] = paths {
         let abs = resolve_path(state, path);
         if is_overlay(&abs) {
@@ -73,21 +71,29 @@ pub fn add(state: &AppState, paths: &[PathBuf], how: AddHow, base_revision: Opti
     let mut candidates = Vec::new();
     for path in paths {
         let abs = resolve_path(state, path);
-        let shown = shown(&root, &abs);
+        let rel = project_relative(state, &abs);
         if is_overlay(&abs) {
-            anyhow::bail!("{shown} is an overlay folder: add it on its own, or with import_overlay");
+            anyhow::bail!("{rel} is an overlay folder: add it on its own, or with import_overlay");
         } else if abs.is_dir() {
-            scan(&root, &abs, how.recursive, &mut candidates, &mut skipped)?;
+            scan(state, &abs, how.recursive, &mut candidates, &mut skipped)?;
         } else if !abs.is_file() {
             anyhow::bail!("file not found: {}", abs.display());
         } else if let Some(why) = kuma_core::unplayable_media(&abs.to_string_lossy()) {
-            anyhow::bail!("{shown}: {why}");
+            anyhow::bail!("{rel}: {why}");
         } else {
-            candidates.push(Candidate { abs, found: false });
+            candidates.push(Candidate { abs, rel, found: false });
         }
     }
     if how.id.is_some() && candidates.len() != 1 {
         anyhow::bail!("`id` names one entry, and this adds {}: leave it out and each id is minted from its file's name", candidates.len());
+    }
+    // What a folder holds that the bin has already is not worth probing; checked again
+    // under the lock, against the project as it is then.
+    let already = |c: &Candidate, files: &HashMap<&str, &str>| files.get(c.rel.as_str()).filter(|_| c.found).map(|have| Skipped { path: c.rel.clone(), reason: format!("already in the bin as `{have}`") });
+    {
+        let project = read(&state.project);
+        let files = files_in(&project);
+        candidates.retain(|c| already(c, &files).map(|s| skipped.push(s)).is_none());
     }
 
     let probes = probe_all(&candidates.iter().map(|c| c.abs.clone()).collect::<Vec<_>>());
@@ -95,22 +101,21 @@ pub fn add(state: &AppState, paths: &[PathBuf], how: AddHow, base_revision: Opti
     for (c, probe) in candidates.into_iter().zip(probes) {
         match probe {
             Ok(probe) => probed.push((c, probe)),
-            Err(e) if c.found => skipped.push(Skipped { path: shown(&root, &c.abs), reason: format!("ffprobe cannot read it: {e}") }),
-            Err(e) => anyhow::bail!("{}: {e}", shown(&root, &c.abs)),
+            Err(e) if c.found => skipped.push(Skipped { path: c.rel.clone(), reason: format!("ffprobe cannot read it: {e}") }),
+            Err(e) => anyhow::bail!("{}: {e}", c.rel),
         }
     }
 
     let ((ids, more), revision, warnings) = state.apply_built(origin, base_revision, |p| {
+        let files = files_in(p);
         let mut ops = Vec::new();
         let mut ids: Vec<String> = Vec::new();
+        let mut minted = HashSet::new();
         let mut more = Vec::new();
         for (c, probe) in &probed {
-            let rel = c.abs.strip_prefix(&root).unwrap_or(&c.abs).to_string_lossy().into_owned();
-            if c.found {
-                if let Some(have) = entry_for(p, &rel) {
-                    more.push(Skipped { path: rel, reason: format!("already in the bin as `{have}`") });
-                    continue;
-                }
+            if let Some(s) = already(c, &files) {
+                more.push(s);
+                continue;
             }
             let stem = c.abs.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or("media".into());
             let id = match &how.id {
@@ -119,15 +124,12 @@ pub fn add(state: &AppState, paths: &[PathBuf], how: AddHow, base_revision: Opti
                     anyhow::ensure!(!p.bin.contains_key(id), "bin id `{id}` already exists (pass a different id)");
                     id.clone()
                 }
-                None => {
-                    let base = slug(&stem, probe.kind);
-                    let free = |id: &String| !p.bin.contains_key(id) && !ids.contains(id);
-                    std::iter::once(base.clone()).chain((2..).map(|n| format!("{base}-{n}"))).find(free).unwrap_or_default()
-                }
+                None => p.free_bin_id_besides(&slug(&stem, probe.kind), &minted),
             };
+            minted.insert(id.clone());
             let item = BinItem {
                 name: stem,
-                source: BinSource::File { path: rel, kind: probe.kind, proxy: None },
+                source: BinSource::File { path: c.rel.clone(), kind: probe.kind, proxy: None },
                 meta: Some(probe.meta.clone()),
                 parent: how.parent.clone(),
                 order: None,
@@ -147,19 +149,20 @@ pub fn add(state: &AppState, paths: &[PathBuf], how: AddHow, base_revision: Opti
 }
 
 /// A folder's own files, by name; its subfolders' with `recursive`.
-fn scan(root: &Path, dir: &Path, recursive: bool, out: &mut Vec<Candidate>, skipped: &mut Vec<Skipped>) -> anyhow::Result<()> {
+fn scan(state: &AppState, dir: &Path, recursive: bool, out: &mut Vec<Candidate>, skipped: &mut Vec<Skipped>) -> anyhow::Result<()> {
     let mut entries: Vec<PathBuf> = std::fs::read_dir(dir).map_err(|e| anyhow::anyhow!("{}: {e}", dir.display()))?.filter_map(|e| e.ok().map(|e| e.path())).collect();
     entries.sort();
     for abs in entries {
         if abs.file_name().is_some_and(|n| n.to_string_lossy().starts_with('.')) {
             continue;
         }
-        let skip = |reason: &str| Skipped { path: shown(root, &abs), reason: reason.to_string() };
+        let rel = project_relative(state, &abs);
+        let skip = |reason: &str| Skipped { path: rel.clone(), reason: reason.to_string() };
         if abs.is_dir() {
             if abs.join(MANIFEST).is_file() {
                 skipped.push(skip("an overlay folder: add it with import_overlay"));
             } else if recursive {
-                scan(root, &abs, recursive, out, skipped)?;
+                scan(state, &abs, recursive, out, skipped)?;
             } else {
                 skipped.push(skip("a folder: pass `recursive` to add what is in it"));
             }
@@ -168,7 +171,7 @@ fn scan(root: &Path, dir: &Path, recursive: bool, out: &mut Vec<Candidate>, skip
         } else if !kuma_overlay::media::is_media_name(&abs) {
             skipped.push(skip("not named like a media file"));
         } else {
-            out.push(Candidate { abs, found: true });
+            out.push(Candidate { abs, rel, found: true });
         }
     }
     Ok(())
@@ -178,14 +181,13 @@ fn is_overlay(abs: &Path) -> bool {
     abs.join(MANIFEST).is_file() || abs.file_name().is_some_and(|f| f == MANIFEST)
 }
 
-/// `abs` as the project would store it: relative when it is inside.
-fn shown(root: &Path, abs: &Path) -> String {
-    abs.strip_prefix(root).unwrap_or(abs).to_string_lossy().into_owned()
-}
-
-/// The file entry that already plays `rel`, if one does.
-fn entry_for<'a>(p: &'a Project, rel: &str) -> Option<&'a String> {
-    p.bin.iter().find(|(_, i)| matches!(&i.source, BinSource::File { path, .. } if path == rel)).map(|(id, _)| id)
+/// Each stored file path in the bin, with the first entry that plays it.
+fn files_in(p: &Project) -> HashMap<&str, &str> {
+    // Reversed: a later insert replaces an earlier one, so the first entry wins.
+    p.bin.iter().rev().filter_map(|(id, i)| match &i.source {
+        BinSource::File { path, .. } => Some((path.as_str(), id.as_str())),
+        _ => None,
+    }).collect()
 }
 
 /// A bin id from a file's stem: lowercase ASCII letters and digits, anything else `_` —
@@ -207,38 +209,64 @@ fn slug(stem: &str, kind: MediaKind) -> String {
 /// Probe every file, a few at a time: ffprobe is a process per file, and a folder of sixty
 /// one after another is seconds of waiting on nothing. Results are in `paths`' order.
 fn probe_all(paths: &[PathBuf]) -> Vec<Result<Probe, String>> {
-    let workers = std::thread::available_parallelism().map_or(4, |n| n.get()).clamp(1, 8);
-    let per = paths.len().div_ceil(workers).max(1);
-    std::thread::scope(|s| {
-        let handles: Vec<_> = paths.chunks(per).map(|chunk| s.spawn(move || chunk.iter().map(|p| kuma_overlay::probe(p)).collect::<Vec<_>>())).collect();
+    let workers = std::thread::available_parallelism().map_or(4, |n| n.get()).clamp(1, 8).min(paths.len());
+    let next = AtomicUsize::new(0);
+    let mut done: Vec<(usize, Result<Probe, String>)> = std::thread::scope(|s| {
+        let handles: Vec<_> = (0..workers)
+            .map(|_| {
+                s.spawn(|| {
+                    let mut out = Vec::new();
+                    loop {
+                        let i = next.fetch_add(1, Ordering::Relaxed);
+                        let Some(path) = paths.get(i) else { break };
+                        out.push((i, kuma_overlay::probe(path)));
+                    }
+                    out
+                })
+            })
+            .collect();
         handles.into_iter().flat_map(|h| h.join().unwrap_or_default()).collect()
-    })
+    });
+    done.sort_by_key(|(i, _)| *i);
+    done.into_iter().map(|(_, probe)| probe).collect()
 }
 
-/// Probe file entries again and write what changed: `bins`, or every file entry. For a
-/// file replaced on disk, which the document cannot notice by itself (see "Stale probed
-/// metadata" in `docs/decisions.md`): correcting it is asked for and is one revision-checked,
-/// undoable patch that touches only the entries whose probe now says something else — their
-/// `meta`, and their `kind` if the file is now another kind of thing. A kind change that
-/// breaks a placement (an `in` on what is now a still) is refused by the validator like any
-/// edit, and the whole correction with it. Nothing changed, nothing written.
-///
-/// The answer names, per entry, each field that changed with what it was and what it is.
-pub fn reprobe(state: &AppState, bins: Option<&[String]>, base_revision: Option<u64>, origin: &str) -> anyhow::Result<Value> {
-    let project = read(&state.project).clone();
-    let targets: Vec<(String, String)> = match bins {
-        Some(ids) => ids
-            .iter()
-            .map(|id| match project.bin.get(id).map(|i| &i.source) {
-                Some(BinSource::File { path, .. }) => Ok((id.clone(), path.clone())),
-                Some(_) => Err(anyhow::anyhow!("`{id}` is not a media file")),
-                None => Err(anyhow::anyhow!("no bin entry `{id}`")),
-            })
-            .collect::<anyhow::Result<_>>()?,
-        None => project.bin.iter().filter_map(|(id, i)| match &i.source {
-            BinSource::File { path, .. } => Some((id.clone(), path.clone())),
-            _ => None,
-        }).collect(),
+/// What a re-probe did: per entry, each field that changed with what it was and what it is.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct Reprobed {
+    pub changed: Vec<Value>,
+    pub unchanged: Vec<String>,
+    pub failed: Vec<NotProbed>,
+    pub revision: u64,
+    pub warnings: Vec<Issue>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct NotProbed {
+    pub id: String,
+    pub reason: String,
+}
+
+/// Probe file entries again (`bins`, or every one) and write only what changed, their
+/// `meta` and `kind`, as one undoable patch: for a file replaced on disk, which the
+/// document cannot notice by itself. A change that breaks a placement is refused whole.
+pub fn reprobe(state: &AppState, bins: Option<&[String]>, base_revision: Option<u64>, origin: &str) -> anyhow::Result<Reprobed> {
+    let targets: Vec<(String, String)> = {
+        let project = read(&state.project);
+        match bins {
+            Some(ids) => ids
+                .iter()
+                .map(|id| match project.bin.get(id).map(|i| &i.source) {
+                    Some(BinSource::File { path, .. }) => Ok((id.clone(), path.clone())),
+                    Some(_) => Err(anyhow::anyhow!("`{id}` is not a media file")),
+                    None => Err(anyhow::anyhow!("no bin entry `{id}`")),
+                })
+                .collect::<anyhow::Result<_>>()?,
+            None => project.bin.iter().filter_map(|(id, i)| match &i.source {
+                BinSource::File { path, .. } => Some((id.clone(), path.clone())),
+                _ => None,
+            }).collect(),
+        }
     };
     let probes = probe_all(&targets.iter().map(|(_, path)| resolve_path(state, Path::new(path))).collect::<Vec<_>>());
     let mut failed = Vec::new();
@@ -246,7 +274,7 @@ pub fn reprobe(state: &AppState, bins: Option<&[String]>, base_revision: Option<
     for ((id, path), probe) in targets.into_iter().zip(probes) {
         match probe {
             Ok(probe) => probed.push((id, path, probe)),
-            Err(reason) => failed.push(json!({ "id": id, "reason": reason })),
+            Err(reason) => failed.push(NotProbed { id, reason }),
         }
     }
 
@@ -295,12 +323,15 @@ pub fn reprobe(state: &AppState, bins: Option<&[String]>, base_revision: Option<
         let moved: HashSet<&str> = changed.iter().filter_map(|c| c["id"].as_str()).collect();
         probed.iter().map(|(id, _, _)| id.clone()).filter(|id| !moved.contains(id.as_str())).collect()
     };
-    if differences(&project)?.0.is_empty() {
-        let (revision, warnings) = (project.revision, state.validate(&project));
-        return Ok(json!({ "changed": [], "unchanged": unchanged(&[]), "failed": failed, "revision": revision, "warnings": warnings }));
+    let nothing_new = {
+        let project = read(&state.project);
+        differences(&project)?.0.is_empty().then_some(project.revision)
+    };
+    if let Some(revision) = nothing_new {
+        return Ok(Reprobed { unchanged: unchanged(&[]), failed, revision, ..Default::default() });
     }
     let (changed, revision, warnings) = state.apply_built(origin, base_revision, |p| differences(p))?;
-    Ok(json!({ "changed": changed, "unchanged": unchanged(&changed), "failed": failed, "revision": revision, "warnings": warnings }))
+    Ok(Reprobed { unchanged: unchanged(&changed), changed, failed, revision, warnings })
 }
 
 /// [`Project::unused_entries`], each with its name and what it is, for a client to show.

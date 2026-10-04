@@ -576,12 +576,9 @@ fn emit_clip_producer(ctx: &Ctx, p: &Plan, w: &mut XmlWriter) -> Result<(), Comp
     Ok(())
 }
 
-/// What a placement of sequence `id` cuts: its tractor, or — when the sequence has effects
-/// of its own for this graph — a playlist over the whole tractor carrying them, one per
-/// placement. On the tractor itself they would be one filter shared by every placement,
-/// and a limiter or an auto-level keeps state from frame to frame, which two placements
-/// playing at once would interleave. Over the whole tractor, this playlist's frames are
-/// the sequence's own, so the effects keep the sequence's clock.
+/// What a placement of sequence `id` cuts: its tractor, or, when the sequence has effects
+/// for this graph, a playlist of the whole tractor carrying them, one per placement, since
+/// a limiter or an auto-level keeps state that two placements sharing one would interleave.
 fn emit_sequence_effects(ctx: &Ctx, p: &Plan, id: &str, seq: &Sequence, w: &mut XmlWriter) -> String {
     let tractor = format!("seq_{id}");
     if !seq.effects.iter().any(|e| e.streams().meets(ctx.opts.streams)) {

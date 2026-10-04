@@ -235,8 +235,7 @@ async fn patch_project(State(st): S, Json(req): Json<PatchProject>) -> ApiResult
 /// or absolute and under it.
 fn read_patch(st: &AppState, path: &str) -> anyhow::Result<json_patch::Patch> {
     use anyhow::Context;
-    let file = jobs::resolve_path(st, std::path::Path::new(path)).canonicalize().with_context(|| format!("cannot read `{path}`"))?;
-    anyhow::ensure!(file.starts_with(st.config.project_root().canonicalize()?), "`{path}` is not inside the project");
+    let file = jobs::resolve_in_project(st, path)?;
     let text = std::fs::read_to_string(&file).with_context(|| format!("cannot read `{path}`"))?;
     serde_json::from_str(&text).with_context(|| format!("`{path}` is not a JSON Patch (an array of operations)"))
 }
@@ -694,7 +693,7 @@ struct Reprobe {
 /// replaced on disk. Says per entry what changed, from what to what.
 async fn reprobe_media(State(st): S, Json(req): Json<Reprobe>) -> ApiResult {
     let v = blocking(move || crate::media::reprobe(&st, req.bins.as_deref(), req.base_revision, &req.origin)).await?.map_err(edit_or_bad_request)?;
-    Ok(Json(v))
+    Ok(Json(json!(v)))
 }
 
 /// Entries no clip places, and entries placed only in sequences the master never reaches.
@@ -712,10 +711,6 @@ async fn transcribe(State(st): S, Json(req): Json<TranscribeRequest>) -> Json<Va
 
 // ---------- jobs ----------
 
-/// `p` relative to the project when it is inside it: a path as a person would type it.
-fn project_relative(st: &AppState, p: &std::path::Path) -> std::path::PathBuf {
-    p.strip_prefix(st.config.project_root()).unwrap_or(p).to_path_buf()
-}
 
 /// `jobs::render_target` off the async threads: it can try a hardware encoder.
 async fn target(st: &Arc<AppState>, req: &RenderRequest) -> Result<(String, &'static kuma_mlt::ExportPreset, PathBuf), ApiError> {
@@ -728,7 +723,7 @@ async fn target(st: &Arc<AppState>, req: &RenderRequest) -> Result<(String, &'st
 async fn render(State(st): S, Json(mut req): Json<RenderRequest>) -> ApiResult {
     let (sequence, preset, output) = target(&st, &req).await?;
     let params = json!({
-        "sequence": sequence, "preset": preset.id, "output": output, "path": project_relative(&st, &output),
+        "sequence": sequence, "preset": preset.id, "output": output, "path": jobs::project_relative(&st, &output),
         "threads": req.threads, "quality": req.quality, "speed": req.speed,
     });
     req.sequence = Some(sequence);
@@ -745,7 +740,7 @@ async fn render_target(State(st): S, Query(req): Query<RenderRequest>) -> ApiRes
     let (sequence, preset, output) = target(&st, &req).await?;
     let threads = req.threads.unwrap_or_else(kuma_mlt::melt::render_threads);
     Ok(Json(json!({
-        "sequence": sequence, "preset": preset.id, "path": project_relative(&st, &output), "exists": output.exists(),
+        "sequence": sequence, "preset": preset.id, "path": jobs::project_relative(&st, &output), "exists": output.exists(),
         "pending": st.jobs.writing(&output), "output": output, "threads": threads, "max_threads": kuma_mlt::presets::MAX_THREADS,
     })))
 }
@@ -824,7 +819,7 @@ struct SnapshotQuery {
 async fn snapshot(State(st): S, Query(q): Query<SnapshotQuery>) -> Result<Response, ApiError> {
     // Same overlay scope as the engine preview this stands in for: nested sequences baked
     // in, the open sequence's own left to the live DOM the UI draws on top.
-    let req = SampleRequest { t0: q.t, width: q.width.or(Some(960)), overlays: jobs::OverlayScope::Nested, sequence: Some(st.current_sequence()), ..Default::default() };
+    let req = SampleRequest { t0: q.t, width: q.width, overlays: jobs::OverlayScope::Nested, sequence: Some(st.current_sequence()), ..Default::default() };
     let samples = blocking(move || jobs::sample_frames(&st, &req, &|_, _| {})).await??;
     let bytes = std::fs::read(&samples[0].path).map_err(|e| anyhow::anyhow!(e))?;
     Ok(([(header::CONTENT_TYPE, "image/png"), (header::CACHE_CONTROL, "no-store")], bytes).into_response())
@@ -1101,16 +1096,10 @@ async fn blueprint_static(State(st): S, Path((id, rest)): Path<(String, String)>
     serve_overlay_file(&st, &dir, &rest)
 }
 
-/// A file inside an overlay folder. `_vendor/...` resolves exactly as the bake stages it,
-/// file by file (`Baker::vendor_file`).
+/// A file inside an overlay folder, `_vendor/...` resolved as the bake stages it.
 fn serve_overlay_file(st: &AppState, dir: &std::path::Path, rest: &str) -> Result<Response, ApiError> {
-    let mut path = safe_join(dir, rest).ok_or(ApiError::bad_request("bad path"))?;
-    if !path.is_file() {
-        if let Some(found) = rest.strip_prefix("_vendor/").and_then(|v| st.baker.vendor_file(dir, v)) {
-            path = found;
-        }
-    }
-    file_response(&path)
+    let path = safe_join(dir, rest).ok_or(ApiError::bad_request("bad path"))?;
+    file_response(&st.baker.overlay_file(dir, rest).unwrap_or(path))
 }
 
 /// The hyperframes runtime (from the repo's `node_modules`) and the shared `_vendor/`.

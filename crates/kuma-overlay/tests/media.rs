@@ -31,3 +31,27 @@ fn a_variable_rate_file_probes_as_its_average() {
     let meta = media::probe(&ntsc).unwrap().meta;
     assert_eq!((meta.fps, meta.variable_fps), (Some(Fps::new(30000, 1001)), false));
 }
+
+/// A transparent picture says so, which is what tells an agent why it shows black: where
+/// it is clear the tracks below show, and the master's background where there are none.
+#[test]
+fn a_picture_with_an_alpha_channel_says_so_and_an_opaque_one_does_not() {
+    if !media::ffprobe_available() {
+        eprintln!("ffmpeg unavailable; skipping probe test");
+        return;
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    let clear = make(tmp.path(), "clear.png", &["-f", "lavfi", "-i", "color=c=red@0.5:size=64x48,format=rgba", "-frames:v", "1"]);
+    let opaque = make(tmp.path(), "opaque.png", &["-f", "lavfi", "-i", "color=c=red:size=64x48,format=rgb24", "-frames:v", "1"]);
+    let jpeg = make(tmp.path(), "photo.jpg", &["-f", "lavfi", "-i", "color=c=red:size=64x48", "-frames:v", "1"]);
+    let clip = make(tmp.path(), "clip.mov", &["-f", "lavfi", "-i", "testsrc=duration=1:size=64x48,format=rgba", "-c:v", "qtrle"]);
+    let alpha = |p: &std::path::Path| media::probe(p).unwrap().meta.alpha;
+    assert!(alpha(&clear) && alpha(&clip));
+    assert!(!alpha(&opaque) && !alpha(&jpeg));
+}
+
+#[test]
+fn a_folder_is_scanned_for_media_by_name() {
+    assert!(media::is_media_name(std::path::Path::new("a/Take 1.MOV")) && media::is_media_name(std::path::Path::new("x.wav")));
+    assert!(!media::is_media_name(std::path::Path::new("notes.txt")) && !media::is_media_name(std::path::Path::new("logo.svg")) && !media::is_media_name(std::path::Path::new("README")));
+}

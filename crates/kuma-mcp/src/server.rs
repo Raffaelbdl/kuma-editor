@@ -390,14 +390,30 @@ pub struct MeasureAudio {
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct AddMedia {
-    /// Media path relative to the project directory (or absolute).
-    pub path: String,
-    /// Bin id; defaults to a slug of the file name.
+    /// A media file, or a folder of them, relative to the project directory (or absolute).
+    #[serde(default)]
+    pub path: Option<String>,
+    /// Several files and folders, added with `path` in one edit.
+    #[serde(default)]
+    pub paths: Option<Vec<String>>,
+    /// Also add what a folder's subfolders hold. Off by default.
+    #[serde(default)]
+    pub recursive: Option<bool>,
+    /// Bin id, only when adding exactly one file; otherwise each id is minted from its file name.
     #[serde(default)]
     pub id: Option<String>,
-    /// Bin id of the entry (usually a folder) to list it under.
+    /// Bin id of the entry (usually a folder) to list every new entry under.
     #[serde(default)]
     pub parent: Option<String>,
+    #[serde(default)]
+    pub base_revision: Option<u64>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct ReprobeMedia {
+    /// Bin ids of the media entries to probe again. Left out: every media file entry.
+    #[serde(default)]
+    pub bins: Option<Vec<String>>,
     #[serde(default)]
     pub base_revision: Option<u64>,
 }
@@ -531,9 +547,20 @@ impl KumaServer {
         Ok(ok_json(&self.client.get_query("/api/media/probe", &[("path", &p.path)]).await.map_err(err)?))
     }
 
-    #[tool(description = "Probe a media file and add it to the project bin (an overlay folder of the project is imported instead). Returns the bin id to reference from a clip.")]
+    #[tool(description = "Probe media and add it to the project bin, as one undoable edit: a file (`path`), a list (`paths`), or a folder, which adds the media files directly in it (with `recursive`, its subfolders' too) and returns the rest as `skipped`, with why. A file a folder holds that is already in the bin is skipped, so adding a folder again adds what is new. Ids are minted from the file names, never colliding; `id` names the entry when adding one file. A named file that cannot be added (missing, unreadable, an SVG) refuses the whole call. One overlay folder of the project is imported instead. Returns `ids` (and `id` when there is one) to reference from clips.")]
     async fn add_media(&self, Parameters(p): Parameters<AddMedia>) -> Result<CallToolResult, McpError> {
-        self.post("/api/bin", &json!({ "path": p.path, "id": p.id, "parent": p.parent, "base_revision": p.base_revision, "origin": "claude: add media" })).await
+        let body = json!({ "path": p.path, "paths": p.paths.unwrap_or_default(), "recursive": p.recursive.unwrap_or(false), "id": p.id, "parent": p.parent, "base_revision": p.base_revision, "origin": "claude: add media" });
+        self.post("/api/bin", &body).await
+    }
+
+    #[tool(description = "Probe media entries' files again (`bins`, or every media file entry) after a file was replaced on disk, and write what changed as one undoable edit: `meta` (duration, size, fps, audio, alpha) and `kind` if the file is now another kind. Returns `changed` (per entry, each field `from`/`to`), `unchanged` and `failed` (a file ffprobe cannot read). Nothing changed, nothing written. A kind change that breaks a placement (an `in` on what is now a still) is refused whole, with the validator's issues.")]
+    async fn reprobe_media(&self, Parameters(p): Parameters<ReprobeMedia>) -> Result<CallToolResult, McpError> {
+        self.post("/api/bin/reprobe", &json!({ "bins": p.bins, "base_revision": p.base_revision, "origin": "claude: reprobe media" })).await
+    }
+
+    #[tool(description = "List bin entries the video does not use: `unplaced` (no clip anywhere places them) and `unreached` (placed only in sequences the master never reaches, with `placed_in`). Folders, the master and entries something is listed under (`parent`) are never listed, so removing every listed entry (with `apply_edits`) leaves the bin valid. Reads only.")]
+    async fn unused_entries(&self) -> Result<CallToolResult, McpError> {
+        self.get("/api/bin/unused").await
     }
 
     #[tool(description = "Transcribe media audio with a local whisper.cpp model into a `subtitles` overlay entry (cues in source seconds, editable as its `cues` var), listed under the media. Pass `clip` to place it over that clip, aligned, on an overlay track; pass `bin` for the entry alone. The new entry's id is minted when the words are in and returned as `bin`; it takes no base_revision, since the model runs for minutes and the patch is composed against the project as it is when it lands.")]

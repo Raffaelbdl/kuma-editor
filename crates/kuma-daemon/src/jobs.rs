@@ -213,37 +213,16 @@ where
     id
 }
 
-/// Probe a media file and add it to the bin (shared by the API and the CLI). The id
-/// defaults to a slug of the file stem; the stored path is project-relative when possible.
-/// `parent` lists it under that entry, in the same edit.
+/// Probe a media file and add it to the bin. The id defaults to a slug of the file stem,
+/// made free if it is taken; the stored path is project-relative when possible. `parent`
+/// lists it under that entry, in the same edit. One path, one entry: a list or a folder is
+/// [`crate::media::add`], which this is the single-file case of.
 pub fn add_media(state: &AppState, path: &Path, id: Option<String>, parent: Option<String>, base_revision: Option<u64>, origin: &str) -> anyhow::Result<(String, u64, Vec<kuma_core::Issue>)> {
     let abs = resolve_path(state, path);
-    // An overlay folder, or its manifest, is imported rather than probed.
-    if abs.join(kuma_core::manifest::MANIFEST).is_file() || abs.file_name().is_some_and(|f| f == kuma_core::manifest::MANIFEST) {
-        let how = crate::overlays::Import { id, parent, ..Default::default() };
-        return crate::overlays::import_overlay(state, &abs.to_string_lossy(), how, base_revision, origin);
-    }
-    if !abs.is_file() {
-        anyhow::bail!("file not found: {}", abs.display());
-    }
-    let probe = kuma_overlay::probe(&abs).map_err(|e| anyhow::anyhow!(e))?;
-    let rel = abs.strip_prefix(state.config.project_root()).unwrap_or(&abs);
-    let stem = abs.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or("media".into());
-    let id = id.unwrap_or_else(|| stem.chars().map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '_' }).collect());
-    // JSON Patch `add` would silently replace an existing member, rebinding every clip.
-    if read(&state.project).bin.contains_key(&id) {
-        anyhow::bail!("bin id `{id}` already exists (pass a different id)");
-    }
-    let item = kuma_core::BinItem {
-        name: stem,
-        source: kuma_core::BinSource::File { path: rel.to_string_lossy().into_owned(), kind: probe.kind, proxy: None },
-        meta: Some(probe.meta),
-        parent,
-        order: None,
-        volume: 1.0,
-    };
-    let (rev, warnings) = state.apply_patch(&[bin_op(&id, "", serde_json::to_value(item)?)?], base_revision, origin)?;
-    Ok((id, rev, warnings))
+    anyhow::ensure!(!abs.is_dir() || abs.join(kuma_core::manifest::MANIFEST).is_file(), "{} is a folder, which adds an entry per file: use `media::add`", abs.display());
+    let how = crate::media::AddHow { id, parent, recursive: false };
+    let mut added = crate::media::add(state, &[abs], how, base_revision, origin)?;
+    Ok((added.ids.remove(0), added.revision, added.warnings))
 }
 
 /// The blueprint a transcript lands in. Its `cues` var is the transcript; the rest is looks.

@@ -51,6 +51,8 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/bin", post(add_media))
         .route("/api/transcribe", post(transcribe))
         .route("/api/bin/{id}/{file}", get(bin_asset))
+        .route("/api/bin/reprobe", post(reprobe_media))
+        .route("/api/bin/unused", get(unused_entries))
         .route("/api/presets", get(presets))
         .route("/api/render", post(render))
         .route("/api/render/target", get(render_target))
@@ -634,7 +636,15 @@ async fn probe_media(State(st): S, Query(q): Query<PathQuery>) -> ApiResult {
 
 #[derive(Deserialize)]
 struct AddMedia {
-    path: PathBuf,
+    /// One file, or a folder.
+    #[serde(default)]
+    path: Option<PathBuf>,
+    /// Several, files or folders, added with `path` in one edit.
+    #[serde(default)]
+    paths: Vec<PathBuf>,
+    /// A folder's subfolders too.
+    #[serde(default)]
+    recursive: bool,
     #[serde(default)]
     id: Option<String>,
     #[serde(default)]
@@ -645,10 +655,40 @@ struct AddMedia {
     origin: String,
 }
 
-/// Probe a media file and add it to the bin. The id defaults to the file stem.
+/// Probe media and add it to the bin, in one edit: a file, a list of them, or the media
+/// files of a folder. Ids are minted from the file names unless `id` names the one entry.
+/// `id` is the new entry's when exactly one was added, as it always was for one file; `ids`
+/// lists every one, and `skipped` what a folder held that is not media, with why.
 async fn add_media(State(st): S, Json(req): Json<AddMedia>) -> ApiResult {
-    let (id, rev, warnings) = blocking(move || jobs::add_media(&st, &req.path, req.id, req.parent, req.base_revision, &req.origin)).await?.map_err(edit_or_bad_request)?;
-    Ok(Json(json!({ "id": id, "revision": rev, "warnings": warnings })))
+    let paths: Vec<PathBuf> = req.path.into_iter().chain(req.paths).collect();
+    let how = crate::media::AddHow { id: req.id, parent: req.parent, recursive: req.recursive };
+    let added = blocking(move || crate::media::add(&st, &paths, how, req.base_revision, &req.origin)).await?.map_err(edit_or_bad_request)?;
+    let id = if let [id] = added.ids.as_slice() { Some(id.clone()) } else { None };
+    Ok(Json(json!({ "id": id, "ids": added.ids, "skipped": added.skipped, "revision": added.revision, "warnings": added.warnings })))
+}
+
+#[derive(Deserialize)]
+struct Reprobe {
+    /// The file entries to probe again; every one when left out.
+    #[serde(default)]
+    bins: Option<Vec<String>>,
+    #[serde(default)]
+    base_revision: Option<u64>,
+    #[serde(default = "default_origin")]
+    origin: String,
+}
+
+/// Probe file entries again and write what changed, as one undoable edit: for a file
+/// replaced on disk. Says per entry what changed, from what to what.
+async fn reprobe_media(State(st): S, Json(req): Json<Reprobe>) -> ApiResult {
+    let v = blocking(move || crate::media::reprobe(&st, req.bins.as_deref(), req.base_revision, &req.origin)).await?.map_err(edit_or_bad_request)?;
+    Ok(Json(v))
+}
+
+/// Entries no clip places, and entries placed only in sequences the master never reaches.
+/// Reads only.
+async fn unused_entries(State(st): S) -> Json<Value> {
+    Json(crate::media::unused(&read(&st.project)))
 }
 
 /// Speech to text on a media entry, as a job: whisper takes seconds to minutes. The

@@ -65,6 +65,11 @@ pub fn validate(p: &Project, ctx: &ValidationContext) -> Vec<Issue> {
         check_id(&mut issues, &mut bin_ids, id, format!("{ip}/id"), "bin");
         match &item.source {
             BinSource::File { path, .. } => {
+                // A warning, not an error: a project that already holds one must stay
+                // editable, and the entry renders — as nothing worth having.
+                if let Some(why) = unplayable_media(path) {
+                    issues.push(Issue::warn(format!("{ip}/source/path"), format!("`{id}`: {why}")));
+                }
                 if ctx.check_files {
                     let full = if std::path::Path::new(path).is_absolute() { PathBuf::from(path) } else { ctx.root.join(path) };
                     if !full.is_file() {
@@ -618,6 +623,17 @@ mod tests {
         let issues = validate(&p, &ValidationContext::default());
         let at = |id: &str| issues.iter().filter(|i| i.path == format!("/bin/{id}/volume")).count();
         assert_eq!((at("song"), at("loud"), at("logo")), (0, 1, 1), "{issues:?}");
+    }
+
+    /// An SVG already in the bin is said, not refused: the project stays editable, and the
+    /// warning says how to get a picture that renders.
+    #[test]
+    fn an_svg_entry_is_a_warning_that_says_how_to_rasterise_it() {
+        let p = project(json!({ "bin": { "logo": { "source": { "path": "art/logo.svg", "kind": "image" } } }, "tracks": [] }));
+        let issues = validate(&p, &ValidationContext::default());
+        assert_eq!(issues.len(), 1, "{issues:?}");
+        assert_eq!((issues[0].severity, issues[0].path.as_str()), (Severity::Warning, "/bin/logo/source/path"));
+        assert!(issues[0].message.contains("rasterise"), "{issues:?}");
     }
 
     /// A keyframe's parameters are its unknown fields, so the validator is what says a

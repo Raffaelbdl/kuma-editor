@@ -27,6 +27,8 @@ struct FfStream {
     avg_frame_rate: Option<String>,
     #[serde(default)]
     duration: Option<String>,
+    #[serde(default)]
+    pix_fmt: Option<String>,
 }
 
 /// Cover art in audio files is a "video" stream with `attached_pic`; it is not footage.
@@ -89,8 +91,36 @@ pub fn probe(path: &Path) -> Result<Probe, String> {
         fps,
         variable_fps,
         has_audio: audio,
+        alpha: video.and_then(|v| v.pix_fmt.as_deref()).is_some_and(has_alpha),
     };
     Ok(Probe { meta, kind })
+}
+
+/// Whether frames in pixel format `pix_fmt` carry an alpha channel, read from the name the
+/// way ffmpeg spells its formats. `pal8` is left out: its palette always has room for
+/// alpha, so the name cannot say whether a picture uses it. VP8/VP9 alpha travels beside
+/// the frames (`alpha_mode`), not in them, and is not seen here either.
+pub fn has_alpha(pix_fmt: &str) -> bool {
+    const ALPHA: &[&str] = &["rgba", "bgra", "argb", "abgr", "ya8", "ya16", "yuva", "gbrap", "ayuv", "vuya", "rgbaf", "rgba64", "bgra64"];
+    ALPHA.iter().any(|a| pix_fmt.starts_with(a))
+}
+
+/// Extensions a folder is scanned for when media is added from one. By name, because
+/// ffprobe reads more than media — a `.txt` probes as a video (its `tty` demuxer) — and a
+/// folder of footage usually holds other things too. A file added by its own path is
+/// probed whatever it is called.
+pub const MEDIA_EXTENSIONS: &[&str] = &[
+    // video
+    "mp4", "m4v", "mov", "mkv", "webm", "avi", "mpg", "mpeg", "mts", "m2ts", "ts", "mxf", "flv", "wmv", "ogv", "3gp",
+    // audio
+    "wav", "mp3", "aac", "m4a", "flac", "ogg", "oga", "opus", "aif", "aiff", "wma",
+    // stills
+    "png", "jpg", "jpeg", "webp", "gif", "bmp", "tif", "tiff", "tga", "exr",
+];
+
+/// Whether `path` is named like media (see [`MEDIA_EXTENSIONS`]).
+pub fn is_media_name(path: &Path) -> bool {
+    path.extension().is_some_and(|e| MEDIA_EXTENSIONS.contains(&e.to_string_lossy().to_ascii_lowercase().as_str()))
 }
 
 /// The rate to report, and whether the source is variable-rate: ffprobe's `r_frame_rate`

@@ -284,6 +284,36 @@ impl Project {
         (1..).map(|n| format!("{prefix}{n}")).find(|id| !taken.contains(id.as_str())).unwrap_or_default()
     }
 
+    /// Entries the render does not use: placed by no clip, or placed only in sequences
+    /// the master does not reach. Folders, the master and every entry something else is
+    /// listed under are never counted — they are organisation, and removing everything
+    /// listed must not leave an entry whose `parent` is gone. Read-only: removing them is
+    /// an ordinary patch, so it stays the caller's choice.
+    pub fn unused_entries(&self) -> Unused {
+        let parents: HashSet<&str> = self.bin.values().filter_map(|i| i.parent.as_deref()).collect();
+        // A cycle is refused by the validator; were one there, the master reaches nothing.
+        let reached: HashSet<BinId> = self.compile_order(&self.master).unwrap_or_default().into_iter().collect();
+        let mut placed_in: BTreeMap<&str, Vec<BinId>> = BTreeMap::new();
+        for (seq, _, clip) in self.all_clips() {
+            let seqs = placed_in.entry(clip.bin.as_str()).or_default();
+            if !seqs.contains(seq) {
+                seqs.push(seq.clone());
+            }
+        }
+        let mut unused = Unused::default();
+        for (id, item) in &self.bin {
+            if item.is_folder() || *id == self.master || parents.contains(id.as_str()) {
+                continue;
+            }
+            match placed_in.get(id.as_str()) {
+                None => unused.unplaced.push(id.clone()),
+                Some(seqs) if !seqs.iter().any(|s| reached.contains(s)) => unused.unreached.push((id.clone(), seqs.clone())),
+                Some(_) => {}
+            }
+        }
+        unused
+    }
+
     /// Entries listed directly under `parent` (`None` for the top level), in browser
     /// order: by `order` where set, then by id.
     pub fn children(&self, parent: Option<&str>) -> Vec<(&BinId, &BinItem)> {
@@ -505,6 +535,34 @@ pub struct MediaMeta {
     pub variable_fps: bool,
     #[serde(default)]
     pub has_audio: bool,
+    /// The picture has an alpha channel: where it is transparent the tracks below show,
+    /// and where nothing is below, the master's black background does.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub alpha: bool,
+}
+
+/// Why a file cannot be media, if it cannot: said by `add_media` when it refuses one and
+/// by the validator about an entry that is already in the bin. By name, so it needs no
+/// probe and does not depend on what the machine's ffmpeg was built with.
+pub fn unplayable_media(path: &str) -> Option<&'static str> {
+    let ext = std::path::Path::new(path).extension()?.to_string_lossy().to_ascii_lowercase();
+    // MLT plays an SVG through avformat as a blank white frame (and through `pixbuf`, as
+    // an image, as nothing), whatever is in it. Measured with melt 7.22.
+    matches!(ext.as_str(), "svg" | "svgz").then_some(
+        "an SVG renders as a blank frame: rasterise it to a PNG first (`rsvg-convert -w 1920 in.svg -o out.png`, \
+         `ffmpeg -i in.svg out.png` where ffmpeg has librsvg, or a headless Chrome screenshot), \
+         or show it from an overlay's `index.html`, which the bake draws in Chrome",
+    )
+}
+
+/// Bin entries nothing in the video uses, as [`Project::unused_entries`] finds them.
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct Unused {
+    /// Entries no clip places, in any sequence.
+    pub unplaced: Vec<BinId>,
+    /// Entries placed only in sequences the master never reaches, each with those
+    /// sequences: what renders without them is the same video.
+    pub unreached: Vec<(BinId, Vec<BinId>)>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
@@ -1118,5 +1176,52 @@ mod tests {
     fn ids_are_xml_and_url_safe() {
         assert!(is_valid_id("c1") && is_valid_id("_x-2") && is_valid_id("o_paris"));
         assert!(!is_valid_id("") && !is_valid_id("1c") && !is_valid_id("a b") && !is_valid_id("a/b"));
+    }
+
+    /// Unused is two questions: placed by nothing at all, and placed only where the master
+    /// never looks. Organisation — folders, the master, an entry something is listed under
+    /// — is neither, so removing everything listed never orphans a child.
+    #[test]
+    fn unused_entries_are_the_unplaced_and_the_placed_only_where_the_master_never_reaches() {
+        let p: Project = serde_json::from_value(json!({
+            "bin": {
+                "talk": { "source": { "path": "talk.mp4" } },
+                "spare": { "source": { "path": "spare.mp4" } },
+                "logo": { "source": { "path": "logo.png", "kind": "image" } },
+                "raw": { "source": { "path": "raw.wav", "kind": "audio" } },
+                "raw-subs": { "source": { "overlay": "overlays/subtitles" }, "parent": "raw" },
+                "clips": { "source": { "folder": true } },
+                "red": { "source": { "color": "#f00" }, "parent": "clips" },
+                "intro": seq(json!([{ "id": "iv", "clips": [ { "id": "i1", "start": 0, "end": 1, "bin": "red" } ] }])),
+                "draft": seq(json!([{ "id": "dv", "clips": [
+                    { "id": "d1", "start": 0, "end": 1, "bin": "logo" },
+                    { "id": "d2", "start": 1, "end": 2, "bin": "talk" } ] }])),
+                "old": seq(json!([{ "id": "ov", "clips": [ { "id": "o1", "start": 0, "end": 1, "bin": "draft" } ] }])),
+                "main": seq(json!([{ "id": "v1", "clips": [
+                    { "id": "c1", "start": 0, "end": 1, "bin": "intro" },
+                    { "id": "c2", "start": 1, "end": 2, "bin": "talk" } ] }]))
+            }
+        }))
+        .unwrap();
+        let unused = p.unused_entries();
+        assert_eq!(unused.unplaced, ["old", "raw-subs", "spare"], "`raw` is listed over its transcript, `clips` is a folder, `main` the master");
+        assert_eq!(unused.unreached, [("draft".to_string(), vec!["old".to_string()]), ("logo".to_string(), vec!["draft".to_string()])], "`talk` is in the master too");
+    }
+
+    /// The probe's alpha flag is written only when there is one, so a document probed
+    /// before it existed is byte-for-byte what it was.
+    #[test]
+    fn alpha_is_written_only_when_a_picture_has_it() {
+        let opaque: MediaMeta = serde_json::from_value(json!({ "width": 64, "height": 48, "has_audio": false })).unwrap();
+        assert_eq!(serde_json::to_value(&opaque).unwrap(), json!({ "width": 64, "height": 48, "has_audio": false }));
+        let clear = MediaMeta { alpha: true, ..opaque };
+        assert_eq!(serde_json::to_value(&clear).unwrap()["alpha"], true);
+    }
+
+    #[test]
+    fn an_svg_is_refused_by_name_whatever_the_case() {
+        assert!(unplayable_media("art/logo.SVG").is_some_and(|why| why.contains("rasterise")));
+        assert!(unplayable_media("logo.svgz").is_some());
+        assert!(unplayable_media("logo.png").is_none() && unplayable_media("svg").is_none());
     }
 }

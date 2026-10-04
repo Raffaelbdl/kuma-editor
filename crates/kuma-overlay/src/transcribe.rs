@@ -45,17 +45,17 @@ pub struct TranscribeOptions {
     pub snap: Option<bool>,
     /// What a pause is, for that: every sample under this many dBFS (default -35)…
     #[serde(default)]
-    pub pause_db: Option<f64>,
+    pub silence_db: Option<f64>,
     /// …for at least this many seconds (default 0.15).
     #[serde(default)]
-    pub pause_min: Option<f64>,
+    pub silence_min: Option<f64>,
 }
 
 impl TranscribeOptions {
     /// The pauses cues are snapped to, unless snapping is off.
     pub fn pauses(&self) -> Option<Quiet> {
         let d = Quiet::default();
-        (self.snap != Some(false)).then(|| Quiet { db: self.pause_db.unwrap_or(d.db), min: self.pause_min.unwrap_or(d.min) })
+        (self.snap != Some(false)).then(|| Quiet { db: self.silence_db.unwrap_or(d.db), min: self.silence_min.unwrap_or(d.min) })
     }
 }
 
@@ -78,12 +78,11 @@ impl Transcriber {
             let own = repo_root.join("whisper.cpp/build/bin/whisper-cli");
             if own.is_file() { own } else { "whisper-cli".into() }
         });
-        let model = std::env::var_os("KUMA_WHISPER_MODEL").map(PathBuf::from).or_else(|| {
-            let mut bins: Vec<PathBuf> = std::fs::read_dir(&model_dir).ok()?.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "bin")).collect();
-            bins.sort();
-            bins.into_iter().next()
-        });
-        Transcriber { cli, model, model_dir }
+        let mut t = Transcriber { cli, model: std::env::var_os("KUMA_WHISPER_MODEL").map(PathBuf::from), model_dir };
+        if t.model.is_none() {
+            t.model = t.models().first().map(|name| t.model_dir.join(name));
+        }
+        t
     }
 
     /// The model path when everything needed is there, else what to install and where.
@@ -189,8 +188,8 @@ impl Transcriber {
     }
 }
 
-/// How far a cue's edge may be from a pause and still be moved onto it. whisper's word
-/// edges were found up to 0.35 s off in French speech, against pauses measured in the file.
+/// How far a cue's edge may be from a pause and still be moved onto it: whisper's word
+/// edges can be a third of a second off.
 pub const SNAP_REACH: f64 = 0.4;
 
 /// Give cues the gaps the sound has. whisper's word cues are contiguous, so a pause is

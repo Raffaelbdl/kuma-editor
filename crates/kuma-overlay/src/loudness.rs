@@ -42,21 +42,17 @@ const RELATIVE_GATE: f64 = -10.0;
 /// How often the meter reports: each step is the 100 ms ending at its `t`.
 pub const STEP: f64 = 0.1;
 const BLOCK: f64 = 0.4;
+/// The meter, logging every step.
+const EBUR128: &str = "ebur128=peak=true:framelog=verbose";
 
 /// Meter `wav` with ffmpeg.
 pub fn scan(wav: &Path) -> Result<Scan, String> {
-    let out = Command::new("ffmpeg")
-        .args(["-hide_banner", "-nostats", "-v", "verbose", "-i"])
-        .arg(wav)
-        .args(["-af", "ebur128=peak=true:framelog=verbose", "-f", "null", "-"])
-        .output()
-        .map_err(|e| format!("ffmpeg: {e}"))?;
-    let log = String::from_utf8_lossy(&out.stderr);
-    if !out.status.success() {
-        let lines: Vec<&str> = log.lines().collect();
-        return Err(format!("ffmpeg could not meter {}: {}", wav.display(), lines[lines.len().saturating_sub(5)..].join("\n")));
-    }
-    parse(&log).ok_or_else(|| format!("ffmpeg's ebur128 printed nothing this version of kuma can read for {}", wav.display()))
+    let log = run_ffmpeg(wav, None, EBUR128, &AtomicBool::new(false), &|_| {})?;
+    parse(&log).ok_or_else(|| unreadable(wav))
+}
+
+fn unreadable(file: &Path) -> String {
+    format!("ffmpeg's ebur128 printed nothing this version of kuma can read for {}", file.display())
 }
 
 /// The meter's log: a line per step, `t: 2.5 TARGET:-23 LUFS M: -21.7 S:-120.7 I: … FTPK:
@@ -133,7 +129,7 @@ pub struct Measured {
 /// back in the file's seconds. `progress` hears how many seconds of the range are done, and
 /// `cancel` stops ffmpeg: a long recording takes a while to decode.
 pub fn measure(file: &Path, range: Option<(f64, f64)>, quiet: Quiet, cancel: &AtomicBool, progress: &dyn Fn(f64)) -> Result<Measured, String> {
-    let filters = format!("ebur128=peak=true:framelog=verbose,{}", quiet.filter());
+    let filters = format!("{EBUR128},{}", quiet.filter());
     let log = run_ffmpeg(file, range, &filters, cancel, &|line| {
         if line.contains("ebur128") {
             if let Some(t) = line.split_once(" t:").and_then(|(_, r)| r.split_whitespace().next()?.parse().ok()) {
@@ -142,7 +138,7 @@ pub fn measure(file: &Path, range: Option<(f64, f64)>, quiet: Quiet, cancel: &At
         }
     })?;
     let from = range.map_or(0.0, |r| r.0);
-    let mut scan = parse(&log).ok_or_else(|| format!("ffmpeg's ebur128 printed nothing this version of kuma can read for {}", file.display()))?;
+    let mut scan = parse(&log).ok_or_else(|| unreadable(file))?;
     let end = scan.steps.last().map_or(0.0, |s| s.t);
     for s in &mut scan.steps {
         s.t += from;

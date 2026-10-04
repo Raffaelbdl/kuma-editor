@@ -71,17 +71,17 @@ pub fn add_font(state: &AppState, path: &Path, shared: bool) -> anyhow::Result<V
 /// does not load is validation's to report, not this.
 pub fn check(state: &AppState, project: &kuma_core::Project, ids: &[&str]) -> Vec<kuma_core::Issue> {
     use kuma_core::{BinSource, Issue, Severity};
-    let mut folders: std::collections::HashMap<&str, Option<(crate::overlays::Resolved, String)>> = Default::default();
+    let mut folders: std::collections::HashMap<&str, Option<(crate::overlays::Resolved, String, kuma_overlay::lint::BundledFaces)>> = Default::default();
     let mut out = Vec::new();
     for &id in ids {
         let Some(BinSource::Overlay { overlay, vars }) = project.bin.get(id).map(|i| &i.source) else { continue };
         let folder = folders.entry(overlay.as_str()).or_insert_with(|| {
             let r = crate::overlays::resolve(state, overlay).ok()?;
             let html = std::fs::read_to_string(r.dir.join("index.html")).ok()?;
-            Some((r, html))
+            Some((r, html, Default::default()))
         });
-        let Some((r, html)) = folder else { continue };
-        for f in state.baker.font_findings(&r.manifest, &r.manifest.resolve_vars(vars), html, &r.dir) {
+        let Some((r, html, bundled)) = folder else { continue };
+        for f in state.baker.font_findings_in(&r.manifest, &r.manifest.resolve_vars(vars), html, &r.dir, bundled) {
             let path = match &f.var {
                 Some(var) => format!("/bin/{id}/source/vars/{var}"),
                 None => format!("/bin/{id}"),

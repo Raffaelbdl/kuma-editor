@@ -40,13 +40,6 @@ pub async fn serve(config: Config) -> anyhow::Result<(Arc<AppState>, SocketAddr)
     Ok((state, addr))
 }
 
-/// The repository root (for `node_modules/hyperframes`, `ui/dist`, `engine/build`):
-/// `KUMA_REPO`, else the nearest ancestor of the executable or the cwd that holds
-/// `node_modules/hyperframes`.
-pub fn find_repo_root() -> Option<PathBuf> {
-    locate_repo_root(None).map(|r| r.path)
-}
-
 /// A repository root, and where it was found, for `kuma doctor` to say.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RepoRoot {
@@ -54,13 +47,10 @@ pub struct RepoRoot {
     pub from: String,
 }
 
-/// The repository root as [`find_repo_root`] finds it, then, when that fails, as the
-/// project at `project_file` was set up to find it. A `kuma` copied or installed out of the
-/// checkout and run from the project's directory has neither the checkout above it nor
-/// above its cwd, while the MCP server beside it is told by `.mcp.json`; so the CLI reads
-/// the `KUMA_REPO` that `kuma mcp-config` wrote there. Last, the source tree this binary
-/// was built from, while it is still a checkout with its `node_modules`. What is asked for
-/// explicitly (`KUMA_REPO`, and `--repo` before it) always wins over what is found.
+/// The repository root (holding `node_modules/hyperframes`, `ui/dist`, `engine/build`):
+/// `KUMA_REPO`, else the nearest ancestor of the executable or the cwd that is one, else the
+/// `KUMA_REPO` that `kuma mcp-config` wrote in the `.mcp.json` beside `project_file` (for a
+/// `kuma` installed out of the checkout), else the source tree this binary was built from.
 pub fn locate_repo_root(project_file: Option<&Path>) -> Option<RepoRoot> {
     let env = std::env::var_os("KUMA_REPO").map(PathBuf::from);
     let starts = [(std::env::current_exe().ok(), "the executable's location"), (std::env::current_dir().ok(), "the working directory")];

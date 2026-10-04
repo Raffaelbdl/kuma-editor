@@ -250,7 +250,7 @@ fn emit_sequence(ctx: &Ctx, seq_id: &str, seq: &Sequence, is_root: bool, w: &mut
     // while a nested sequence's tractor is shared by its placements, so each placement
     // carries its own copy of them (`emit_sequence_effects`).
     if is_root {
-        emit_effects(ctx, w, &Span { id: "main_tractor".into(), f_in: 0, f_out: total - 1, pre: 0, post: 0 }, &seq.effects, 1.0, &std::cell::Cell::new(0));
+        emit_effects(ctx, w, &Span { id: "main_tractor".into(), f_in: 0, f_out: total - 1, pre: 0, post: 0 }, &seq.effects, 1.0);
     }
     w.close("tractor");
     Ok(())
@@ -286,6 +286,22 @@ struct CompiledTrack {
 enum Item {
     Blank(i64),
     Entry { producer: String, in_: i64, out: i64 },
+}
+
+impl Item {
+    /// A cut of `producer` over `in_..=out` whose last `short` frames are a blank: MLT cuts
+    /// an entry that asks past its source's end short, which would move everything after it.
+    fn padded_cut(producer: &str, in_: i64, out: i64, short: i64) -> impl Iterator<Item = Item> {
+        let entry = (out - short >= in_).then(|| Item::Entry { producer: producer.to_string(), in_, out: out - short });
+        entry.into_iter().chain((short > 0).then_some(Item::Blank(short)))
+    }
+
+    fn write(&self, w: &mut XmlWriter) {
+        match self {
+            Item::Blank(n) => w.empty("blank", &[("length", n.to_string())]),
+            Item::Entry { producer, in_, out } => w.empty("entry", &[("producer", producer.clone()), ("in", in_.to_string()), ("out", out.to_string())]),
+        }
+    }
 }
 
 /// How a dissolve extends a clip: frames added before (as the `to` side) and after (as
@@ -399,15 +415,10 @@ fn compile_track(ctx: &Ctx, track: &Track, total: i64, w: &mut XmlWriter) -> Res
         // frames past the end are asked of nobody: they are padded with a blank instead.
         let have = ctx.project.source_frames(clip);
         let short = have.map_or(0, |h| p_out + 1 - h).clamp(0, len);
-        // A freeze holds the frame the clip shows `t` from its own start, which is `pre`
-        // frames into the cut, kept to a frame the source has.
-        let held = clip.effects.iter().find_map(|e| match e {
-            Effect::Freeze { t } => Some(*t),
+        // A generated source starts at its own zero, `pre` frames before the clip.
+        let held = clip.effects.iter().find_map(|fx| match fx {
+            Effect::Freeze { t } => Some(ctx.project.held_frame(clip, *t, (e.before, e.after)).0 + if item.is_timed_media() { 0 } else { e.before }),
             _ => None,
-        });
-        let held = held.map(|t| {
-            let last = have.or_else(|| (!item.is_timed_media()).then_some(p_out + 1)).map_or(i64::MAX, |h| h - 1);
-            (p_in + e.before + fps.frame(t)).min(last).max(0)
         });
         let producer_id = format!("clip_{}", clip.id);
         let wrapped = item.is_sequence() || held.is_some();
@@ -444,12 +455,7 @@ fn compile_track(ctx: &Ctx, track: &Track, total: i64, w: &mut XmlWriter) -> Res
         let (in_, out) = p.entry();
         // A wrapper pads its own tail; a producer cut here is padded here.
         let short = if p.wrapped { 0 } else { p.short };
-        if out - short >= in_ {
-            lanes[l].push(Item::Entry { producer: p.producer_id.clone(), in_, out: out - short });
-        }
-        if short > 0 {
-            lanes[l].push(Item::Blank(short));
-        }
+        lanes[l].extend(Item::padded_cut(&p.producer_id, in_, out, short));
         cursor[l] = p.tl_out + 1;
     }
     let two_lanes = !lanes[1].is_empty();
@@ -460,13 +466,7 @@ fn compile_track(ctx: &Ctx, track: &Track, total: i64, w: &mut XmlWriter) -> Res
         let suffix = if l == 0 { "a" } else { "b" };
         w.open("playlist", &[("id", format!("{tid}_{suffix}"))]);
         for it in items {
-            match it {
-                Item::Blank(n) => w.empty("blank", &[("length", n.to_string())]),
-                Item::Entry { producer, in_, out } => w.empty(
-                    "entry",
-                    &[("producer", producer.clone()), ("in", in_.to_string()), ("out", out.to_string())],
-                ),
-            }
+            it.write(w);
         }
         w.close("playlist");
     }
@@ -526,12 +526,10 @@ fn compile_track(ctx: &Ctx, track: &Track, total: i64, w: &mut XmlWriter) -> Res
 /// frozen clip — a wrapper that makes the cut itself and starts at its own zero.
 ///
 /// A freeze is a wrapper of its own, a tractor of two tracks over the clip's source: the
-/// clip's own cut with its picture hidden, which is the sound running on, and the held
-/// frame repeated for the clip's length with its sound hidden. MLT's `freeze` filter was
-/// measured first and does not do: it fetches the frame from the "original producer",
-/// which for a sequence's wrapper is something else entirely (it held black), and for a
-/// still is the producer the filter is on (melt deadlocked). The clip's filters go on the
-/// tractor, so they act on the held frame and keep moving.
+/// clip's own cut with its picture hidden (the sound running on), and the held frame
+/// repeated with its sound hidden. Not MLT's `freeze` filter, which reads the "original
+/// producer" and so held black for a sequence and deadlocked on a still. The clip's
+/// filters go on the tractor, so they act on the held frame and keep moving.
 fn emit_clip_producer(ctx: &Ctx, p: &Plan, w: &mut XmlWriter) -> Result<(), CompileError> {
     let clip = p.clip;
     let len = p.p_out - p.p_in + 1;
@@ -548,16 +546,7 @@ fn emit_clip_producer(ctx: &Ctx, p: &Plan, w: &mut XmlWriter) -> Result<(), Comp
             id
         }
     };
-    // The cut, then whatever the source does not have as a blank, so the wrapper keeps
-    // its length and nothing after it moves.
-    let cut = |w: &mut XmlWriter| {
-        if p.p_out - p.short >= p.p_in {
-            w.empty("entry", &[("producer", source.clone()), ("in", p.p_in.to_string()), ("out", (p.p_out - p.short).to_string())]);
-        }
-        if p.short > 0 {
-            w.empty("blank", &[("length", p.short.to_string())]);
-        }
-    };
+    let cut = |w: &mut XmlWriter| Item::padded_cut(&source, p.p_in, p.p_out, p.short).for_each(|it| it.write(w));
     if let Some(frame) = p.held {
         let (sound, held) = (format!("{}_sound", p.producer_id), format!("{}_held", p.producer_id));
         w.open("playlist", &[("id", sound.clone())]);
@@ -587,12 +576,9 @@ fn emit_clip_producer(ctx: &Ctx, p: &Plan, w: &mut XmlWriter) -> Result<(), Comp
     Ok(())
 }
 
-/// What a placement of sequence `id` cuts: its tractor, or — when the sequence has effects
-/// of its own for this graph — a playlist over the whole tractor carrying them, one per
-/// placement. On the tractor itself they would be one filter shared by every placement,
-/// and a limiter or an auto-level keeps state from frame to frame, which two placements
-/// playing at once would interleave. Over the whole tractor, this playlist's frames are
-/// the sequence's own, so the effects keep the sequence's clock.
+/// What a placement of sequence `id` cuts: its tractor, or, when the sequence has effects
+/// for this graph, a playlist of the whole tractor carrying them, one per placement, since
+/// a limiter or an auto-level keeps state that two placements sharing one would interleave.
 fn emit_sequence_effects(ctx: &Ctx, p: &Plan, id: &str, seq: &Sequence, w: &mut XmlWriter) -> String {
     let tractor = format!("seq_{id}");
     if !seq.effects.iter().any(|e| e.streams().meets(ctx.opts.streams)) {
@@ -602,7 +588,7 @@ fn emit_sequence_effects(ctx: &Ctx, p: &Plan, id: &str, seq: &Sequence, w: &mut 
     let own = format!("{}_seq", p.producer_id);
     w.open("playlist", &[("id", own.clone())]);
     w.empty("entry", &[("producer", tractor), ("in", "0".into()), ("out", (total - 1).to_string())]);
-    emit_effects(ctx, w, &Span { id: own.clone(), f_in: 0, f_out: total - 1, pre: 0, post: 0 }, &seq.effects, 1.0, &std::cell::Cell::new(0));
+    emit_effects(ctx, w, &Span { id: own.clone(), f_in: 0, f_out: total - 1, pre: 0, post: 0 }, &seq.effects, 1.0);
     w.close("playlist");
     own
 }
@@ -708,10 +694,7 @@ fn emit_filters(ctx: &Ctx, p: &Plan, w: &mut XmlWriter) {
     let clip = p.clip;
     let (f_in, f_out) = p.entry();
     let span = Span { id: p.producer_id.clone(), f_in, f_out, pre: p.pre, post: p.post };
-    let n = std::cell::Cell::new(0usize);
-    let streams = ctx.opts.streams;
-
-    if streams.audio() && clip.muted && ctx.item(clip).is_ok_and(|i| i.is_sequence()) {
+    if ctx.opts.streams.audio() && clip.muted && ctx.item(clip).is_ok_and(|i| i.is_sequence()) {
         // A sequence has no decoder to switch off, the way `audio_index=-1` does for a
         // media file, so muting one is a filter. `MUTE_DB` rather than the `db(0)` floor:
         // that is -60 dB, which is quiet but audible against silence, and it has to stay
@@ -722,25 +705,17 @@ fn emit_filters(ctx: &Ctx, p: &Plan, w: &mut XmlWriter) {
         w.close("filter");
     }
 
-    // Clip-level volume times the entry's (static) unless a Volume effect folds it in.
-    let volume = clip.volume * ctx.project.item(clip).map_or(1.0, |i| i.volume);
-    let has_volume_effect = clip.effects.iter().any(|e| matches!(e, Effect::Volume { .. }));
-    if streams.audio() && !has_volume_effect && (volume - 1.0).abs() > 1e-9 {
-        n.set(n.get() + 1);
-        w.open("filter", &[("id", format!("{}_vol{}", span.id, n.get())), ("in", f_in.to_string()), ("out", f_out.to_string())]);
-        w.property("mlt_service", "volume");
-        w.property("level", num(db(volume)));
-        w.close("filter");
-    }
-    emit_effects(ctx, w, &span, &clip.effects, volume, &n);
+    // Clip-level volume times the entry's (static).
+    let fader = clip.volume * ctx.project.item(clip).map_or(1.0, |i| i.volume);
+    emit_effects(ctx, w, &span, &clip.effects, fader);
 }
 
-/// `effects` as filters over `span`, those of them this graph carries. `fader` is a linear
-/// gain folded into a `volume` effect, so a clip's own volume and the effect are one filter;
-/// `n` numbers the filters, shared with any the caller wrote before.
-fn emit_effects(ctx: &Ctx, w: &mut XmlWriter, span: &Span, effects: &[Effect], fader: f64, n: &std::cell::Cell<usize>) {
+/// `effects` as filters over `span`, those of them this graph carries, after a static
+/// `volume` filter for `fader` — a linear gain, folded into a `volume` effect when there is
+/// one, so a clip's own volume and the effect are one filter.
+fn emit_effects(ctx: &Ctx, w: &mut XmlWriter, span: &Span, effects: &[Effect], fader: f64) {
     let fps = ctx.fps;
-    let volume = fader;
+    let n = std::cell::Cell::new(0usize);
     let (f_in, f_out) = (span.f_in, span.f_out);
     let len = f_out - f_in + 1;
     // Open a `<filter>` with a unique id over an explicit frame range; the caller adds
@@ -755,6 +730,11 @@ fn emit_effects(ctx: &Ctx, w: &mut XmlWriter, span: &Span, effects: &[Effect], f
     let at = |t: f64| (fps.frame(t) + span.pre).clamp(0, len - 1);
     let streams = ctx.opts.streams;
 
+    if streams.audio() && !effects.iter().any(|e| matches!(e, Effect::Volume { .. })) && (fader - 1.0).abs() > 1e-9 {
+        open(w, "vol", "volume");
+        w.property("level", num(db(fader)));
+        w.close("filter");
+    }
     for e in effects.iter().filter(|e| e.streams().meets(streams)) {
         match e {
             Effect::Transform { x, y, scale, rotation, opacity, keyframes } => {
@@ -764,11 +744,9 @@ fn emit_effects(ctx: &Ctx, w: &mut XmlWriter, span: &Span, effects: &[Effect], f
                     rect_str(ctx, k.or("x", *x), k.or("y", *y), k.or("scale", *scale), k.or("opacity", *opacity))
                 }));
                 w.property("rotation", anim(keyframes, &at, num(*rotation), |k| num(k.or("rotation", *rotation))));
-                // qtblend turns about the rect's top-left corner unless told otherwise:
-                // measured, a centred picture-in-picture turned 45° moved its centre from
-                // (160, 90) to (126, 116) in a 320×180 frame. The editor's preview, and anyone
-                // reading "rotation", turn it about its centre. Written only when it ever
-                // turns, so a transform that does not is the document it was.
+                // qtblend turns about the rect's top-left corner unless told otherwise, and
+                // the preview turns about the centre. Written only when it ever turns, so a
+                // transform that does not compiles as it did.
                 if *rotation != 0.0 || keyframes.iter().any(|k| k.or("rotation", *rotation) != 0.0) {
                     w.property("rotate_center", "1");
                 }
@@ -844,7 +822,7 @@ fn emit_effects(ctx: &Ctx, w: &mut XmlWriter, span: &Span, effects: &[Effect], f
                 open(w, "vol", "volume");
                 // The clip's own volume folded in, so the placement's fader and this gain
                 // are one filter; a key without `gain` holds the static one.
-                w.property("level", anim(keyframes, &at, num(db(gain * volume)), |k| num(db(k.or("gain", *gain) * volume))));
+                w.property("level", anim(keyframes, &at, num(db(gain * fader)), |k| num(db(k.or("gain", *gain) * fader))));
                 w.close("filter");
             }
             Effect::Limiter { ceiling, attack, release } => {
@@ -852,8 +830,7 @@ fn emit_effects(ctx: &Ctx, w: &mut XmlWriter, span: &Span, effects: &[Effect], f
                 w.property("av.limit", num(10f64.powf(ceiling / 20.0)));
                 w.property("av.attack", num(*attack));
                 w.property("av.release", num(*release));
-                // ffmpeg's default is to level what it limited back up to the ceiling,
-                // which measured as 0 dBFS out of a mix that peaked at -6. Never: making
+                // ffmpeg's default levels what it limited back up to the ceiling; making
                 // the sound louder is the gain stage's job, in front of this.
                 w.property("av.level", "0");
                 w.close("filter");

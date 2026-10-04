@@ -172,17 +172,10 @@ impl Baker {
     /// or remote URL, a `local()` system font — since what that face draws is unknown, and
     /// text it may well set must not be reported as text nothing can.
     pub fn bundled_faces(&self, html: &str, dir: &Path) -> Option<Vec<(String, crate::fonts::Face)>> {
-        // A file the overlay references, by its path relative to the folder.
-        let file = |rel: &str| -> Option<std::path::PathBuf> {
-            let own = dir.join(rel);
-            if own.is_file() {
-                return Some(own);
-            }
-            self.vendor_file(dir, rel.strip_prefix("_vendor/")?)
-        };
+        let file = |rel: &str| self.overlay_file(dir, rel);
         // kuma's own rules (the `font` vars' faces) are not the overlay's.
         let mut sheets = vec![(String::new(), without_injection(html))];
-        for href in local_refs(html).into_iter().filter(|h| h.ends_with(".css")) {
+        for href in linked_stylesheets(html) {
             let Some(css) = relative_path("", &href).and_then(|rel| std::fs::read_to_string(file(&rel)?).ok()) else { continue };
             let base = href.rsplit_once('/').map(|(b, _)| format!("{b}/")).unwrap_or_default();
             sheets.push((base, css));
@@ -191,7 +184,7 @@ impl Baker {
         for (base, css) in &sheets {
             for (family, src) in font_face_rules(css) {
                 let rel = src.and_then(|s| relative_path(base, &s))?;
-                let (read_as, face) = self.fonts.read(&file(&rel)?)?;
+                let (read_as, face) = self.fonts.face(&file(&rel)?)?;
                 out.push((family.unwrap_or(read_as), face));
             }
         }
@@ -207,6 +200,12 @@ impl Baker {
     /// different picture on another machine, and not what anyone picked. Part of `lint`,
     /// and what the daemon checks every overlay entry of a project for.
     pub fn font_findings(&self, manifest: &OverlayManifest, vars: &Map<String, Value>, html: &str, dir: &Path) -> Vec<Finding> {
+        self.font_findings_in(manifest, vars, html, dir, &Default::default())
+    }
+
+    /// [`Self::font_findings`], the faces `dir` bundles read into `bundled` on first need:
+    /// one cell per folder serves every entry using it.
+    pub fn font_findings_in(&self, manifest: &OverlayManifest, vars: &Map<String, Value>, html: &str, dir: &Path, bundled: &BundledFaces) -> Vec<Finding> {
         let mut out = Vec::new();
         let fonts = self.fonts(manifest, vars);
         // A collection in a font folder is not read; saying so is the difference between
@@ -230,10 +229,10 @@ impl Baker {
         // none installed, none bundled) there is nothing to check against: the overlay
         // leaves its text to a system stack, or `font_missing` said why not. Nor when a
         // bundled face cannot be read, since it may be the one that sets the text.
-        let bundled = self.bundled_faces(html, dir);
+        let bundled = if text.is_empty() { None } else { bundled.get_or_init(|| self.bundled_faces(html, dir)).as_ref() };
         if let Some(bundled) = bundled.filter(|b| !fonts.families.is_empty() || !b.is_empty()) {
             let mut names: Vec<&str> = fonts.families.iter().map(|f| f.name.as_str()).collect();
-            for (name, _) in &bundled {
+            for (name, _) in bundled {
                 if !names.contains(&name.as_str()) {
                     names.push(name);
                 }
@@ -278,8 +277,8 @@ impl Baker {
             let is = lang.map(|l| format!("`lang=\"{l}\"`")).unwrap_or_else(|| "no `lang`".into());
             let either = |f: &dyn Fn(&str) -> String| want.iter().map(|w| f(w)).collect::<Vec<_>>().join(" or ");
             // An overlay with a `lang` var says it per entry; one without says it in its markup.
-            let fix = match manifest.vars.iter().find(|(_, s)| s.ty == kuma_core::VarType::Lang) {
-                Some((k, _)) => format!("set `{k}` to {}, whichever is the language of its text", either(&|w| format!("`{w}`"))),
+            let fix = match manifest.lang_var() {
+                Some(k) => format!("set `{k}` to {}, whichever is the language of its text", either(&|w| format!("`{w}`"))),
                 None => format!(
                     "put {} on the overlay's `<html>`, whichever is the language of its text, or declare a `lang` var so each entry can say its own",
                     either(&|w| format!("`lang=\"{w}\"`"))
@@ -297,6 +296,9 @@ impl Baker {
         out
     }
 }
+
+/// The faces an overlay folder bundles ([`Baker::bundled_faces`]), once read.
+pub type BundledFaces = std::cell::OnceCell<Option<Vec<(String, crate::fonts::Face)>>>;
 
 /// What an overlay shows as text, by var: `string` and `text` vars, and the lines of a
 /// `cues` list. A `string` can hold a CSS value too; any font someone picks sets those.
@@ -359,7 +361,7 @@ fn contract_findings(html: &str, manifest: &OverlayManifest, dir: &Path) -> Vec<
     // and a title that has no `size` has nothing wrong with it).
     let mut own = without_injection(html);
     let mut vendor = String::new();
-    for href in local_refs(html).into_iter().filter(|h| h.ends_with(".css")) {
+    for href in linked_stylesheets(html) {
         if let Ok(css) = std::fs::read_to_string(dir.join(&href)) {
             if href.starts_with("_vendor/") { vendor.push_str(&css) } else { own.push_str(&css) }
         }
@@ -410,7 +412,7 @@ fn contract_findings(html: &str, manifest: &OverlayManifest, dir: &Path) -> Vec<
     }
     let used_by_vendor = used_vars(&vendor);
     // A `lang` var is read by the contract, which writes it onto `<html lang>`.
-    for (name, _) in manifest.vars.iter().filter(|(_, s)| s.ty != kuma_core::VarType::Lang) {
+    for name in manifest.vars.keys().filter(|n| Some(n.as_str()) != manifest.lang_var()) {
         if !used.contains(name) && !used_by_vendor.contains(name) {
             out.push(Finding::warn("unused_var", format!("`{name}` is declared in overlay.json but never read"), "read it as `vars.<name>` or `var(--var-<name>)`, or remove it from the manifest"));
         }
@@ -587,15 +589,24 @@ fn local_refs(html: &str) -> Vec<String> {
             rest = &rest[i + attr.len()..];
             let Some(end) = rest.find('"') else { break };
             let v = &rest[..end];
-            // Anything with a scheme (`https:`, `data:`, `mailto:`) is not a file here.
-            let has_scheme = v.split('/').next().is_some_and(|head| head.contains(':'));
-            let skip = v.is_empty() || has_scheme || v.starts_with("//") || v.starts_with('#') || v.starts_with('/');
-            if !skip {
+            if is_local_url(v) && !v.starts_with('#') {
                 out.push(v.to_string());
             }
         }
     }
     out
+}
+
+/// The stylesheets the document links to, as [`local_refs`].
+fn linked_stylesheets(html: &str) -> impl Iterator<Item = String> {
+    local_refs(html).into_iter().filter(|h| h.ends_with(".css"))
+}
+
+/// Whether a URL can name a file in the overlay folder: not empty, no scheme (`https:`,
+/// `data:`, `mailto:`), not absolute.
+fn is_local_url(url: &str) -> bool {
+    let has_scheme = url.split('/').next().is_some_and(|head| head.contains(':'));
+    !(url.is_empty() || has_scheme || url.starts_with('/'))
 }
 
 /// Each `@font-face` rule in a stylesheet: the family it declares, and the URL of its first
@@ -626,8 +637,7 @@ fn font_face_rules(css: &str) -> Vec<(Option<String>, Option<String>)> {
 /// file in it: a scheme (`data:`, `https:`), an absolute path, one that climbs out.
 fn relative_path(base: &str, url: &str) -> Option<String> {
     let url = url.split(['?', '#']).next()?.trim();
-    let has_scheme = url.split('/').next().is_some_and(|head| head.contains(':'));
-    if url.is_empty() || has_scheme || url.starts_with('/') {
+    if !is_local_url(url) {
         return None;
     }
     let mut parts: Vec<String> = base.split('/').filter(|p| !p.is_empty()).map(String::from).collect();

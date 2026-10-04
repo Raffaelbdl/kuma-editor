@@ -366,9 +366,10 @@ impl FontLibrary {
         FontLibrary { dirs, cache: Arc::default() }
     }
 
-    /// A font file, from its stamp and the cache or, when it changed, read afresh. The
-    /// lock is held for the lookup and the insert, never for reading a file.
-    fn face(&self, path: &Path) -> Option<(String, Face)> {
+    /// A font file anywhere, web fonts included (what an overlay's own `@font-face` rules
+    /// point at), from its stamp and the cache or, when it changed, read afresh. `None`
+    /// when it is not a font kuma can read. The lock is never held while reading a file.
+    pub fn face(&self, path: &Path) -> Option<(String, Face)> {
         let meta = std::fs::metadata(path).ok()?;
         let stamp = (meta.modified().unwrap_or(SystemTime::UNIX_EPOCH), meta.len());
         let lock = || self.cache.lock().unwrap_or_else(|e| e.into_inner());
@@ -380,12 +381,6 @@ impl FontLibrary {
         let v = read_face(path);
         lock().insert(path.to_path_buf(), (stamp, v.clone()));
         v
-    }
-
-    /// A font file anywhere, web fonts included, read through the same cache: what an
-    /// overlay's own `@font-face` rules point at. `None` when it is not a font kuma can read.
-    pub fn read(&self, path: &Path) -> Option<(String, Face)> {
-        self.face(path)
     }
 
     /// Every family, by name; a later folder's family replaces an earlier one's whole.

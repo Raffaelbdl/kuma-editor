@@ -111,8 +111,8 @@ fn a_list_of_files_is_one_edit_and_one_bad_file_refuses_it_whole() {
     let e = media::add(&state, &["c.wav".into(), "a.wav".into()], AddHow { id: Some("x".into()), ..Default::default() }, None, "test").unwrap_err().to_string();
     assert!(e.contains("`id` names one entry"), "{e}");
     // One file by its own name, again, is a second entry under a free id, as one always was.
-    let (id, _, _) = kuma_daemon::jobs::add_media(&state, Path::new("a.wav"), None, None, None, "test").unwrap();
-    assert_eq!(id, "a-2");
+    let again = media::add(&state, &["a.wav".into()], AddHow::default(), None, "test").unwrap();
+    assert_eq!(again.ids, ["a-2"]);
 }
 
 /// A file replaced on disk is corrected only when asked: the entries whose probe says
@@ -133,7 +133,8 @@ fn a_replaced_file_is_probed_again_on_asking_and_only_what_changed_is_written() 
     beep(&dir.path().join("a.wav"), 2);
     let before = revision(&state);
 
-    let out = media::reprobe(&state, None, Some(before), "test").unwrap();
+    let reprobe = |bins: Option<&[String]>, base| serde_json::to_value(media::reprobe(&state, bins, base, "test").unwrap()).unwrap();
+    let out = reprobe(None, Some(before));
     assert_eq!(out["revision"], before + 1);
     assert_eq!(out["changed"], json!([{ "id": "a", "changes": { "meta.duration": { "from": 1.0, "to": 2.0 } } }]));
     assert_eq!(out["unchanged"], json!(["b"]));
@@ -142,7 +143,7 @@ fn a_replaced_file_is_probed_again_on_asking_and_only_what_changed_is_written() 
     assert_eq!(state.project.read().unwrap().bin["a"].meta.as_ref().and_then(|m| m.duration), Some(1.0), "one undo");
     state.redo().unwrap();
     let before = revision(&state);
-    let out = media::reprobe(&state, Some(&["a".into()]), None, "test").unwrap();
+    let out = reprobe(Some(&["a".into()]), None);
     assert_eq!((out["changed"].clone(), out["revision"].clone()), (json!([]), json!(before)), "nothing new, nothing written");
     assert!(media::reprobe(&state, Some(&["main".into()]), None, "test").is_err(), "a sequence has no file");
 
@@ -161,7 +162,7 @@ fn a_replaced_file_is_probed_again_on_asking_and_only_what_changed_is_written() 
     assert_eq!(revision(&state), before);
     let unplace = json!([{ "op": "replace", "path": "/bin/main/source/tracks/0/clips/0/in", "value": 0 }]);
     patch(&state, unplace);
-    let out = media::reprobe(&state, Some(&["v".into()]), None, "test").unwrap();
+    let out = reprobe(Some(&["v".into()]), None);
     assert_eq!(out["changed"][0]["changes"]["kind"], json!({ "from": "video", "to": "image" }), "{out}");
     assert!(matches!(state.project.read().unwrap().bin["v"].source, BinSource::File { kind: MediaKind::Image, .. }));
 }

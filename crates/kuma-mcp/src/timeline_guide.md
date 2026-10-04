@@ -137,7 +137,7 @@ the clips placing it, and everything else on the way is silenced.
 `measure_media` measures one source instead (a media `bin` entry or a `path` in the project, whole or
 a `range`, in its own seconds), with no ffmpeg by hand: loudness, range and true peak; a loudness
 `curve` to key a music bed's volume by (short-term every `step` seconds, about 120 values by
-default); and its quiet stretches as `[start, end]` pairs. Quiet is every sample under `silence_db`
+default); and its quiet stretches as `{start, end}`. Quiet is every sample under `silence_db`
 (-35) for `silence_min` (0.15 s): speech pauses to cut a voice-over at. Raise `silence_min` to 1 s
 to find the gaps between takes; lower `silence_db` to -50 to find where a sound effect starts (the
 end of the silence before it).
@@ -145,8 +145,8 @@ end of the silence before it).
 Subtitles: `transcribe` runs a local speech-to-text model (whisper.cpp) and adds `subtitles`
 overlay entries whose `cues` var is `[{start, end, text}, …]` in source seconds, one cue per word (the
 overlay groups them by its `words_per_line` var and can stress the word being said), listed under the media
-(`parent`). Cue edges are moved onto the pauses in the sound (`snap`, on by default; `pause_db`,
-`pause_min` say what a pause is), so a gap between cues is a real pause and a sentence boundary taken
+(`parent`). Cue edges are moved onto the pauses in the sound (`snap`, on by default; `silence_db`,
+`silence_min` say what a pause is), so a gap between cues is a real pause and a sentence boundary taken
 from them can be cut at. Given a `clip`, it also places the subtitles over that clip, aligned; given a `bin`, the
 entries are yours to place (each `offset` var is the source second its clip must start at). Fix a misheard word by
 patching the cue's `text`; re-transcribe with `replace` to overwrite one entry's words in place and keep the

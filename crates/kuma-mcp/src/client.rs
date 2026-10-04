@@ -22,6 +22,16 @@ pub async fn health(base: &str) -> Option<Value> {
     r.json::<Value>().await.ok()
 }
 
+/// Whether job `j` has finished: done, failed or cancelled.
+pub fn is_final(j: &Value) -> bool {
+    matches!(j["state"].as_str(), Some("done" | "failed" | "cancelled"))
+}
+
+/// The error job `id` ended in, if it failed. Cancelled is an outcome, not a failure.
+pub fn failure(id: u64, j: &Value) -> Option<anyhow::Error> {
+    (j["state"] == "failed").then(|| anyhow::anyhow!("job {id} failed: {}", j["message"].as_str().unwrap_or("?")))
+}
+
 impl Client {
     pub fn new(base: impl Into<String>) -> Self {
         let base = base.into().trim_end_matches('/').to_string();
@@ -64,11 +74,7 @@ impl Client {
     /// Poll a job until it finishes (or `timeout` elapses, returning it still running).
     pub async fn wait_job(&self, id: u64, timeout: Duration) -> anyhow::Result<Value> {
         let j = self.poll_job(id, timeout, |_| async {}).await?;
-        // Cancelled is an outcome, not a failure: it was stopped on purpose.
-        if j["state"] == "failed" {
-            anyhow::bail!("job {id} failed: {}", j["message"].as_str().unwrap_or("?"));
-        }
-        Ok(j)
+        failure(id, &j).map_or(Ok(j), Err)
     }
 
     /// Poll a job until it is final or `timeout` elapses, and return it as it then is,
@@ -82,7 +88,7 @@ impl Client {
         let start = std::time::Instant::now();
         loop {
             let j = self.get(&format!("/api/jobs/{id}")).await?;
-            if matches!(j["state"].as_str(), Some("done" | "failed" | "cancelled")) || start.elapsed() > timeout {
+            if is_final(&j) || start.elapsed() > timeout {
                 return Ok(j);
             }
             each(j).await;

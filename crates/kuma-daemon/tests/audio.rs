@@ -103,10 +103,10 @@ fn a_source_is_measured_in_its_own_seconds() {
     // Pauses at 2–2.5 s and 5–5.2 s, 6 dB down after the first.
     make("talk.wav", "sine=frequency=440:duration=8:sample_rate=48000:samples_per_frame=48,volume='if(between(t,2,2.5)+between(t,5,5.2),0,if(gt(t,2.5),0.5,1))':eval=frame");
     make("room.wav", "anullsrc=channel_layout=mono:sample_rate=8000:duration=130");
-    kuma_daemon::jobs::add_media(&state, std::path::Path::new("talk.wav"), None, None, None, "test").unwrap();
+    kuma_daemon::media::add(&state, &["talk.wav".into()], Default::default(), None, "test").unwrap();
     let before = serde_json::to_value(&*state.project.read().unwrap()).unwrap();
     let measure = |req: serde_json::Value| measure_media(&state, &serde_json::from_value(req).unwrap(), &|_, _| {}, &Default::default());
-    let pairs = |v: &serde_json::Value| -> Vec<(f64, f64)> { v["silences"].as_array().unwrap().iter().map(|p| (p[0].as_f64().unwrap(), p[1].as_f64().unwrap())).collect() };
+    let pairs = |v: &serde_json::Value| -> Vec<(f64, f64)> { v["silences"].as_array().unwrap().iter().map(|s| (s["start"].as_f64().unwrap(), s["end"].as_f64().unwrap())).collect() };
     let near = |a: &[(f64, f64)], b: &[(f64, f64)]| a.len() == b.len() && a.iter().zip(b).all(|(x, y)| (x.0 - y.0).abs() < 0.03 && (x.1 - y.1).abs() < 0.03);
 
     let whole = measure(json!({ "bin": "talk" })).unwrap();

@@ -168,15 +168,23 @@ impl Baker {
     /// bake stages, the lint reads and the preview serves the same files.
     pub fn vendor_layers(&self, overlay_dir: &Path) -> Vec<PathBuf> {
         let sibling = overlay_dir.parent().map(|p| p.join("_vendor"));
-        let mut out: Vec<PathBuf> = Vec::new();
-        for dir in [Some(overlay_dir.join("_vendor")), sibling, Some(self.vendor_dir.clone())].into_iter().flatten() {
-            // A blueprint's sibling is usually the library's own `_vendor/`.
-            let same = |o: &PathBuf| o == &dir || (o.canonicalize().ok().is_some() && o.canonicalize().ok() == dir.canonicalize().ok());
-            if dir.is_dir() && !out.iter().any(same) {
-                out.push(dir);
-            }
+        // A blueprint's sibling is usually the library's own `_vendor/`.
+        let mut seen = std::collections::HashSet::new();
+        [Some(overlay_dir.join("_vendor")), sibling, Some(self.vendor_dir.clone())]
+            .into_iter()
+            .flatten()
+            .filter(|dir| dir.is_dir() && seen.insert(dir.canonicalize().unwrap_or_else(|_| dir.clone())))
+            .collect()
+    }
+
+    /// The file `rel` is for this overlay: its own, else a `_vendor/` layer's — what the
+    /// lint reads and the preview serves.
+    pub fn overlay_file(&self, overlay_dir: &Path, rel: &str) -> Option<PathBuf> {
+        let own = overlay_dir.join(rel);
+        if own.is_file() {
+            return Some(own);
         }
-        out
+        self.vendor_file(overlay_dir, rel.strip_prefix("_vendor/")?)
     }
 
     /// The file `_vendor/<rel>` is for this overlay: the first layer that has it.
@@ -375,7 +383,7 @@ impl Baker {
         // folder beside it, then the library, file by file, exactly as the preview serves it.
         copy_dir(req.overlay_dir, src)?;
         for layer in self.vendor_layers(req.overlay_dir).iter().filter(|v| !v.starts_with(req.overlay_dir)) {
-            copy_missing(layer, &src.join("_vendor"))?;
+            copy_tree(layer, &src.join("_vendor"), false)?;
         }
         let vars = req.manifest.resolve_vars(req.vars);
         let is_still = req.manifest.is_static;
@@ -659,36 +667,22 @@ fn ignored(name: &std::ffi::OsStr) -> bool {
 /// Copy an overlay folder, leaving out dotfiles and what is generated from it (thumbnails,
 /// previews) at every depth. What the bake stages, and what a blueprint copy carries.
 pub fn copy_dir(src: &Path, dst: &Path) -> std::io::Result<()> {
-    std::fs::create_dir_all(dst)?;
-    for entry in std::fs::read_dir(src)? {
-        let entry = entry?;
-        let p = entry.path();
-        let name = entry.file_name();
-        if ignored(&name) {
-            continue;
-        }
-        if p.is_dir() {
-            copy_dir(&p, &dst.join(name))?;
-        } else {
-            std::fs::copy(&p, dst.join(name))?;
-        }
-    }
-    Ok(())
+    copy_tree(src, dst, true)
 }
 
-/// Copy into `dst` what `src` has and `dst` does not, at every depth, leaving out what
-/// `copy_dir` leaves out: a lower `_vendor/` layer under the ones already staged.
-fn copy_missing(src: &Path, dst: &Path) -> std::io::Result<()> {
+/// [`copy_dir`]; without `overwrite`, only what `dst` does not have yet: a lower
+/// `_vendor/` layer under the ones already staged.
+fn copy_tree(src: &Path, dst: &Path, overwrite: bool) -> std::io::Result<()> {
     std::fs::create_dir_all(dst)?;
     for entry in std::fs::read_dir(src)? {
         let entry = entry?;
         let (p, name) = (entry.path(), entry.file_name());
         let to = dst.join(&name);
-        if ignored(&name) || (to.exists() && !(p.is_dir() && to.is_dir())) {
+        if ignored(&name) || (!overwrite && to.exists() && !(p.is_dir() && to.is_dir())) {
             continue;
         }
         if p.is_dir() {
-            copy_missing(&p, &to)?;
+            copy_tree(&p, &to, overwrite)?;
         } else {
             std::fs::copy(&p, to)?;
         }
@@ -702,7 +696,7 @@ fn hash_dir(dir: &Path) -> std::io::Result<String> {
 }
 
 /// [`hash_dir`] of the folder that `layers` make when each file is taken from the first
-/// layer that has it — what `copy_missing` stages. One layer hashes as that folder does.
+/// layer that has it — what the bake stages. One layer hashes as that folder does.
 fn hash_layers(layers: &[PathBuf]) -> std::io::Result<String> {
     fn walk(dir: &Path, base: &Path, out: &mut std::collections::BTreeMap<PathBuf, PathBuf>) -> std::io::Result<()> {
         for entry in std::fs::read_dir(dir)? {

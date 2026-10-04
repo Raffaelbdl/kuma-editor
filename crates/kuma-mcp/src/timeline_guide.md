@@ -25,12 +25,33 @@ nothing is: a drawing made for a white page needs a white colour entry under it.
 rasterise it to a PNG, or show it from an overlay.
 
 An effect acts on the picture or the sound (`mlt` on either): `transform`, `crop`, `blur`, `color`,
-`blend` and `fade` on what a clip shows, `volume` and `audio_fade` on what it sounds. A colour, a
+`blend`, `fade` and `freeze` on what a clip shows, `volume`, `audio_fade`, `limiter` and
+`auto_level` on what it sounds. A colour, a
 still and an overlay never sound; nothing on an audio track shows. Put only what can act on the clip:
 anything else renders as nothing and comes back as a warning. Every effect with a quantity to move
 (`transform`, `crop`, `blur`, `color`, `volume`) has static values and optional `keyframes`,
 `[{t, <param>: value, ease?}]` with `t` from the clip's start; a parameter a key leaves out is
-the static value.
+the static value. `crop`'s `radius` is a fraction of *half* the shorter side of what the crop
+leaves (1 on a square is a circle), and the crop is of the whole frame: crop a letterboxed still
+to its own edges first. `freeze` `{t}` holds the frame the clip shows `t` s in (anything it
+places, sequences too) for the whole clip; its sound runs on (mute the clip to silence it), its
+other effects act on the held frame and still move. Split the clip to play, then hold.
+`auto_level` `{target (LUFS, -23), window (s, 3), max_gain, min_gain (dB, ±15)}` rides a
+drifting source's gain toward `target`, measured over the last `window`: no keyframes needed for
+a bed that swells and falls; it lags a sudden change by about a window, and after a seek it
+settles within one.
+
+**A sequence's `effects` act on its mix** (`/bin/<seq>/source/effects`, always present):
+`volume`, `limiter` and `auto_level` only, keyframes in the sequence's own seconds, on every
+placement and when it is rendered itself. The master's are the master stage: e.g.
+`[{"type":"volume","gain":3.2},{"type":"limiter","ceiling":-2.5}]`. `limiter`
+`{ceiling (dBFS, -1), attack (ms, 5), release (ms, 50)}` holds sample peaks at the ceiling and
+never raises anything (the gain before it does); true peak lands up to about a dB over the
+ceiling, so check with `measure_audio`. It delays the sound by `attack`. There is no ducking:
+key the music's `volume` under the speech by hand.
+
+A clip may run past its source's end: the missing frames show the tracks below and are silent,
+and the validator warns only when a whole frame is missing.
 
 **There is no project-level `tracks`.** A timeline is a sequence entry in the bin, and `master` names
 the one that gets rendered — so a clip lives at `/bin/<sequence>/source/tracks/<i>/clips/<j>`. A
@@ -105,8 +126,10 @@ finishes. `job_status` without an id lists the jobs, to find one again.
 Sound: `measure_audio` renders a sequence's sound through the real graph (no overlay is baked) and
 meters it: integrated loudness (LUFS), range and true peak (dBTP), overall and per chapter (each
 clip placing a sequence, or the `sections` you name), the loudest moments and every silent stretch
-of a second or more. kuma has no limiter, so loudness and peak are whatever the gains make them:
-measure before a final render, and read the silences against what you meant. To measure one part
+of a second or more, after the sequence's own effects. Loudness and peak are whatever the gains
+and the master's limiter make them: measure before a final render, set the master's `volume`
+from the integrated figure (gain = 10^((target − measured)/20)), and read the silences against
+what you meant. To measure one part
 alone, pass track ids as `solo` (the voice, the music bed) or `mute`: they apply to that
 measurement only, never to the project. A soloed track inside a nested sequence is heard through
 the clips placing it, and everything else on the way is silenced.

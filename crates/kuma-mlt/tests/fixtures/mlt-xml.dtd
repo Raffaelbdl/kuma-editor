@@ -2,7 +2,7 @@
 
 <!-- MLT XML DTD v7.0.0 -->
 
-<!-- Two local fixes to the copy MLT 7.22 ships. Both are about the DTD lagging the
+<!-- Three local fixes to the copy MLT 7.22 ships. All are about the DTD lagging the
      parser, not about kuma emitting something exotic:
 
      * `properties` was declared as exactly one `property`, which no real document obeys.
@@ -10,7 +10,11 @@
        honours its frame range — this is how Kdenlive carries track effects, and how kuma
        gives one placement of a nested sequence its own effects without them reaching the
        other placements. Measured before relaxing it: a `brightness` filter with
-       in="10" out="19" on a two-entry playlist dimmed only the second entry. -->
+       in="10" out="19" on a two-entry playlist dimmed only the second entry.
+     * `entry` did not declare `repeat`, which the parser reads (`mlt_playlist_repeat_clip`)
+       and which is how kuma holds a frame for a freeze. Measured before relaxing it: a
+       one-frame entry of a nested sequence with repeat="60" played that frame sixty
+       times, and the lane after it did not move. -->
 
 <!ELEMENT mlt (profile | producer | playlist | tractor | multitrack | consumer | chain)+ >
 <!ATTLIST mlt
@@ -96,6 +100,7 @@
     producer IDREF    #IMPLIED
     in       CDATA    #IMPLIED
     out      CDATA    #IMPLIED
+    repeat   CDATA    #IMPLIED
 >
 <!ELEMENT blank EMPTY >
 <!ATTLIST blank

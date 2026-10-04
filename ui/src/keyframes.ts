@@ -16,8 +16,10 @@ import { ANIMATABLE, clipPathOf, covers, keyframesOf, nearest, paramAt, sampleEf
  *  the store on demand, never captured: the playhead moves under a panel that is
  *  deliberately not re-rendered while it does. */
 export class Animation {
-  /** `commit` writes the effect back, whole, as one patch. */
-  constructor(private effect: Effect, private clip: Clip, private commit: (next: Effect, note: string) => void) {}
+  /** `commit` writes the effect back, whole, as one patch. `clip` is where the keys' time
+   *  counts from and how long it runs: a clip, or a sequence's own span when the effect is
+   *  on the sequence (open, so the playhead is in its time). */
+  constructor(private effect: Effect, private clip: Pick<Clip, "start" | "end">, private commit: (next: Effect, note: string) => void) {}
 
   get keys(): Keyframe[] {
     return keyframesOf(this.effect);

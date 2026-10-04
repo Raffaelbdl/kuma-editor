@@ -187,6 +187,7 @@ fn check_sequence<'a>(
             ));
         }
     }
+    check_sequence_effects(issues, p, seq_id, seq);
     for (ti, t) in seq.tracks.iter().enumerate() {
         let tp = format!("{base}/tracks/{ti}");
         check_id(issues, track_ids, &t.id, format!("{tp}/id"), "track");
@@ -263,11 +264,17 @@ fn check_sequence<'a>(
                             issues.push(Issue::error(format!("{cp}/bin"), format!("sequence `{}` is empty; put a clip on it before placing it", c.bin)))
                         }
                         Some(d) => {
-                            let need = c.source_in + c.duration() * c.speed.abs();
-                            if need > d + 1e-6 {
+                            // Counted in frames, as the compiler cuts: a source a fraction
+                            // of a frame short of the clip is not short at all — MLT plays
+                            // a frame that starts inside the source — so only a whole frame
+                            // the source does not have is worth a word.
+                            let (_, end) = c.source_span(p.fps);
+                            let short = p.source_frames(c).map_or(0, |have| end - have);
+                            if short > 0 {
+                                let frames = if short == 1 { "frame".to_string() } else { format!("{short} frames") };
                                 issues.push(Issue::warn(
                                     format!("{cp}/end"),
-                                    format!("clip reads {need:.2}s of a {d:.2}s source; tail will be black/silent"),
+                                    format!("clip reads past the end of its {d:.2}s source: its last {frames} will show the tracks below and be silent"),
                                 ));
                             }
                         }
@@ -286,7 +293,7 @@ fn check_sequence<'a>(
             let carries = if placeable && !c.effects.is_empty() { p.clip_streams(t, c) } else { None };
             for (ei, e) in c.effects.iter().enumerate() {
                 let ep = format!("{cp}/effects/{ei}");
-                let kind = serde_json::to_value(e).ok().and_then(|v| v["type"].as_str().map(String::from)).unwrap_or_default();
+                let kind = e.kind();
                 if kind != "mlt" && !kinds.insert(kind.clone()) {
                     issues.push(Issue::error(ep.clone(), format!("duplicate `{kind}` effect on this clip")));
                 }
@@ -297,73 +304,28 @@ fn check_sequence<'a>(
                     let lacks = if e.streams().video() { "shows no picture" } else { "has no sound" };
                     issues.push(Issue::warn(ep.clone(), format!("`{kind}` does nothing here: this clip {lacks}")));
                 }
-                // Keyframes, for every kind that takes them: times in order, and names the
-                // kind knows. A key naming a parameter the kind does not have is refused
-                // here rather than by serde — the parameters *are* a keyframe's unknown
-                // fields — and this error can say what the kind's parameters are.
-                let keys = e.keyframes();
-                check_keyframes(issues, &ep, c, keys.iter().map(|k| k.t));
-                for (ki, k) in keys.iter().enumerate() {
-                    for name in k.values.keys() {
-                        if !e.animatable().contains(&name.as_str()) {
-                            issues.push(Issue::error(
-                                format!("{ep}/keyframes/{ki}/{name}"),
-                                format!("`{kind}` has no parameter `{name}`; its keyframes may set {}", e.animatable().join(", ")),
-                            ));
-                        }
-                    }
-                }
-                // Then the bounds each kind has, checked on every sample the effect will be
-                // evaluated at: the statics, and each key as the compiler reads it.
+                check_effect(issues, &ep, e, ("clip", c.duration()));
                 match e {
-                    Effect::Crop { left, right, top, bottom, radius, .. } => {
-                        for (path, k) in samples(&ep, e) {
-                            let (l, r, t, b, rad) = (at(k, "left", *left), at(k, "right", *right), at(k, "top", *top), at(k, "bottom", *bottom), at(k, "radius", *radius));
-                            if l + r >= 1.0 || t + b >= 1.0 {
-                                issues.push(Issue::error(path.clone(), "crop leaves nothing visible"));
-                            }
-                            if [l, r, t, b, rad].iter().any(|x| *x < 0.0 || *x > 1.0) {
-                                issues.push(Issue::error(path, "crop values must be within 0..1"));
-                            }
-                        }
-                    }
-                    Effect::Transform { opacity, scale, .. } => {
-                        for (path, k) in samples(&ep, e) {
-                            if !(0.0..=1.0).contains(&at(k, "opacity", *opacity)) {
-                                issues.push(Issue::error(format!("{path}/opacity"), "opacity must be 0..1"));
-                            }
-                            let s = at(k, "scale", *scale);
-                            if !(s.is_finite() && s > 0.0) {
-                                issues.push(Issue::error(format!("{path}/scale"), "scale must be > 0"));
-                            }
-                        }
-                    }
-                    Effect::Blur { radius, .. } => {
-                        for (path, k) in samples(&ep, e) {
-                            if at(k, "radius", *radius) < 0.0 {
-                                issues.push(Issue::error(path, "blur radius must be >= 0"));
-                            }
-                        }
-                    }
                     Effect::Fade { fade_in, fade_out } | Effect::AudioFade { fade_in, fade_out } => {
                         if fade_in + fade_out > c.duration() + 1e-9 {
                             issues.push(Issue::warn(ep.clone(), "fade in + out exceed the clip duration"));
                         }
                     }
-                    Effect::Volume { gain, .. } => {
-                        for (path, k) in samples(&ep, e) {
-                            let g = at(k, "gain", *gain);
-                            if !(g.is_finite() && g >= 0.0) {
-                                issues.push(Issue::error(path, "volume gain must be >= 0"));
-                            }
+                    Effect::Freeze { t } => {
+                        // The frame held is the one the clip would show at `t`, so it must be
+                        // one its source has: counted in the same frames the compiler cuts.
+                        // Outside them the compiler holds the nearest, which is a warning's
+                        // worth, not a refusal of whatever edit moved the clip's `in`.
+                        let (first, end) = c.source_span(p.fps);
+                        let have = p.source_frames(c).or_else(|| (!item.is_some_and(BinItem::is_timed_media)).then_some(end));
+                        let held = first + p.fps.frame(*t);
+                        if !t.is_finite() {
+                            issues.push(Issue::error(format!("{ep}/t"), "freeze `t` must be a number of seconds"));
+                        } else if held < 0 || have.is_some_and(|h| held >= h) {
+                            issues.push(Issue::warn(format!("{ep}/t"), "freeze `t` lands outside the clip's source; it holds the source's nearest frame"));
                         }
                     }
-                    Effect::Mlt { service, .. } => {
-                        if service.trim().is_empty() {
-                            issues.push(Issue::error(ep.clone(), "mlt effect needs a service name"));
-                        }
-                    }
-                    Effect::Blend { .. } | Effect::Color { .. } => {}
+                    _ => {}
                 }
             }
         }
@@ -457,6 +419,116 @@ fn check_sequence<'a>(
     }
 }
 
+/// What an effect is wherever it sits, on a clip or a sequence: its keyframes (times in
+/// order, within `duration`, naming parameters the kind has) and the bounds of its kind,
+/// checked on every sample the effect will be evaluated at.
+fn check_effect(issues: &mut Vec<Issue>, ep: &str, e: &Effect, owner: (&str, f64)) {
+    let kind = e.kind();
+    // A key naming a parameter the kind does not have is refused here rather than by serde
+    // — the parameters *are* a keyframe's unknown fields — and this error can say what the
+    // kind's parameters are.
+    let keys = e.keyframes();
+    check_keyframes(issues, ep, owner, keys.iter().map(|k| k.t));
+    for (ki, k) in keys.iter().enumerate() {
+        for name in k.values.keys() {
+            if !e.animatable().contains(&name.as_str()) {
+                issues.push(Issue::error(
+                    format!("{ep}/keyframes/{ki}/{name}"),
+                    format!("`{kind}` has no parameter `{name}`; its keyframes may set {}", e.animatable().join(", ")),
+                ));
+            }
+        }
+    }
+    // Then the bounds each kind has: the statics, and each key as the compiler reads it.
+    match e {
+        Effect::Crop { left, right, top, bottom, radius, .. } => {
+            for (path, k) in samples(ep, e) {
+                let (l, r, t, b, rad) = (at(k, "left", *left), at(k, "right", *right), at(k, "top", *top), at(k, "bottom", *bottom), at(k, "radius", *radius));
+                if l + r >= 1.0 || t + b >= 1.0 {
+                    issues.push(Issue::error(path.clone(), "crop leaves nothing visible"));
+                }
+                if [l, r, t, b, rad].iter().any(|x| *x < 0.0 || *x > 1.0) {
+                    issues.push(Issue::error(path, "crop values must be within 0..1"));
+                }
+            }
+        }
+        Effect::Transform { opacity, scale, .. } => {
+            for (path, k) in samples(ep, e) {
+                if !(0.0..=1.0).contains(&at(k, "opacity", *opacity)) {
+                    issues.push(Issue::error(format!("{path}/opacity"), "opacity must be 0..1"));
+                }
+                let s = at(k, "scale", *scale);
+                if !(s.is_finite() && s > 0.0) {
+                    issues.push(Issue::error(format!("{path}/scale"), "scale must be > 0"));
+                }
+            }
+        }
+        Effect::Blur { radius, .. } => {
+            for (path, k) in samples(ep, e) {
+                if at(k, "radius", *radius) < 0.0 {
+                    issues.push(Issue::error(path, "blur radius must be >= 0"));
+                }
+            }
+        }
+        Effect::Volume { gain, .. } => {
+            for (path, k) in samples(ep, e) {
+                let g = at(k, "gain", *gain);
+                if !(g.is_finite() && g >= 0.0) {
+                    issues.push(Issue::error(path, "volume gain must be >= 0"));
+                }
+            }
+        }
+        // The ranges ffmpeg's `alimiter` and MLT's `dynamic_loudness` take: outside them
+        // the filter clamps or refuses, so the number would not mean what it says.
+        Effect::Limiter { ceiling, attack, release } => {
+            for (name, v, lo, hi) in [("ceiling", ceiling, -24.0, 0.0), ("attack", attack, 0.1, 80.0), ("release", release, 1.0, 8000.0)] {
+                if !(lo..=hi).contains(v) {
+                    issues.push(Issue::error(format!("{ep}/{name}"), format!("limiter {name} must be within {lo}..{hi}")));
+                }
+            }
+        }
+        Effect::AutoLevel { target, window, max_gain, min_gain } => {
+            for (name, v, lo, hi) in [("target", target, -50.0, -10.0), ("window", window, 1.0, 60.0), ("max_gain", max_gain, 0.0, 30.0), ("min_gain", min_gain, -30.0, 0.0)] {
+                if !(lo..=hi).contains(v) {
+                    issues.push(Issue::error(format!("{ep}/{name}"), format!("auto_level {name} must be within {lo}..{hi}")));
+                }
+            }
+        }
+        Effect::Mlt { service, .. } => {
+            if service.trim().is_empty() {
+                issues.push(Issue::error(ep, "mlt effect needs a service name"));
+            }
+        }
+        Effect::Blend { .. } | Effect::Color { .. } | Effect::Fade { .. } | Effect::AudioFade { .. } | Effect::Freeze { .. } => {}
+    }
+}
+
+/// A sequence's own effects, which act on its mix: only the kinds that can, once each, and
+/// keyed in the sequence's own seconds.
+fn check_sequence_effects(issues: &mut Vec<Issue>, p: &Project, seq_id: &str, seq: &Sequence) {
+    let mut kinds = HashSet::new();
+    // A walk of everything nested, so only for a sequence that has effects.
+    let sounds = !seq.effects.is_empty() && p.seq_has_audio(seq_id);
+    for (ei, e) in seq.effects.iter().enumerate() {
+        let ep = format!("/bin/{seq_id}/source/effects/{ei}");
+        let kind = e.kind();
+        if !e.fits_a_sequence() {
+            issues.push(Issue::error(
+                ep,
+                format!("a sequence carries only effects on its mix (`volume`, `limiter`, `auto_level`); put `{kind}` on the clips that place it"),
+            ));
+            continue;
+        }
+        if !kinds.insert(kind.clone()) {
+            issues.push(Issue::error(ep.clone(), format!("duplicate `{kind}` effect on this sequence")));
+        }
+        if !sounds {
+            issues.push(Issue::warn(ep.clone(), format!("`{kind}` does nothing here: this sequence has no sound")));
+        }
+        check_effect(issues, &ep, e, ("sequence", seq.duration()));
+    }
+}
+
 /// How much material a clip's entry has, when that is knowable: the probed duration of a
 /// media file, or a sequence's own length. `None` for a still, a colour, an overlay or an
 /// unprobed file, all of which are generated to whatever length is asked of them.
@@ -485,16 +557,17 @@ fn at(k: Option<&Keyframe>, name: &str, stat: f64) -> f64 {
     k.map_or(stat, |k| k.or(name, stat))
 }
 
-/// Keyframe times must be non-negative and sorted; beyond the clip end they are pointless.
-fn check_keyframes(issues: &mut Vec<Issue>, ep: &str, c: &Clip, times: impl Iterator<Item = f64>) {
+/// Keyframe times must be non-negative and sorted; beyond the end of the clip (or the
+/// sequence) that carries them they are pointless. `owner` is which, and how long.
+fn check_keyframes(issues: &mut Vec<Issue>, ep: &str, (owner, duration): (&str, f64), times: impl Iterator<Item = f64>) {
     let mut last = f64::NEG_INFINITY;
     for (ki, t) in times.enumerate() {
         if t < 0.0 || t < last {
             issues.push(Issue::error(format!("{ep}/keyframes/{ki}/t"), "keyframes must be >= 0 and sorted by t"));
         }
         last = t;
-        if t > c.duration() + 1e-9 {
-            issues.push(Issue::warn(format!("{ep}/keyframes/{ki}/t"), "keyframe beyond clip end"));
+        if t > duration + 1e-9 {
+            issues.push(Issue::warn(format!("{ep}/keyframes/{ki}/t"), format!("keyframe beyond {owner} end")));
         }
     }
 }
@@ -664,6 +737,88 @@ mod tests {
         assert_eq!(issues.len(), 1, "{issues:?}");
         assert_eq!((issues[0].severity, issues[0].path.as_str()), (Severity::Warning, "/bin/logo/source/path"));
         assert!(issues[0].message.contains("rasterise"), "{issues:?}");
+    }
+
+    /// A sequence's effects act on its mix, so it takes only the kinds that do — once each,
+    /// keyed in its own seconds, bounded like anywhere else — and refuses the rest saying
+    /// where they go instead.
+    #[test]
+    fn a_sequence_carries_only_effects_on_its_mix() {
+        let p = project(json!({
+            "bin": {
+                "song": { "source": { "path": "song.wav", "kind": "audio" } },
+                "red": { "source": { "color": "#f00" } },
+                "quiet": { "source": { "effects": [ { "type": "limiter" } ], "tracks": [
+                    { "id": "qv", "clips": [ { "id": "q1", "start": 0, "end": 2, "bin": "red" } ] }
+                ] } }
+            },
+            "tracks": [{ "id": "a1", "kind": "audio", "clips": [ { "id": "a", "start": 0, "end": 4, "bin": "song" } ] }]
+        }));
+        let mut p = p;
+        let BinSource::Sequence(main) = &mut p.bin.get_mut("main").unwrap().source else { unreachable!() };
+        main.effects = serde_json::from_value(json!([
+            { "type": "volume", "gain": 2, "keyframes": [ { "t": 0, "gain": 2 }, { "t": 5, "gain": 1 } ] },
+            { "type": "limiter", "ceiling": -1.5 },
+            { "type": "blur", "radius": 2 },
+            { "type": "limiter", "ceiling": 3 }
+        ]))
+        .unwrap();
+        let issues = validate(&p, &ValidationContext::default());
+        let at = |path: &str| issues.iter().filter(|i| i.path.starts_with(&format!("/bin/main/source/effects/{path}"))).map(|i| (i.severity, i.message.as_str())).collect::<Vec<_>>();
+        assert_eq!(at("0"), [(Severity::Warning, "keyframe beyond sequence end")], "the master is 4 s long");
+        assert!(at("1").is_empty(), "{issues:?}");
+        assert!(matches!(at("2")[..], [(Severity::Error, m)] if m.contains("only effects on its mix") && m.contains("`blur`")), "{issues:?}");
+        let fourth = at("3");
+        assert!(fourth.iter().any(|(_, m)| m.contains("duplicate `limiter`")) && fourth.iter().any(|(_, m)| m.contains("ceiling must be within -24..0")), "{fourth:?}");
+        // A sequence with nothing to sound has nothing for its limiter to act on.
+        assert!(issues.iter().any(|i| i.path == "/bin/quiet/source/effects/0" && i.severity == Severity::Warning && i.message.contains("no sound")), "{issues:?}");
+    }
+
+    /// A clip is short of its source only by a whole frame: MLT plays a frame that starts
+    /// inside the source. A 0.366 s sound placed for 11 frames at 30 fps reads all of it,
+    /// and a sequence placed for its exact length is not read past by a rounding error.
+    #[test]
+    fn a_clip_is_short_of_its_source_only_by_a_whole_frame() {
+        let p = project(json!({
+            "fps": 30,
+            "bin": {
+                "sfx": { "source": { "path": "sfx.wav", "kind": "audio" }, "meta": { "duration": 0.366, "has_audio": true } },
+                "clip": { "source": { "path": "clip.mp4" }, "meta": { "duration": 1.0, "has_audio": true } },
+                "red": { "source": { "color": "#f00" } },
+                "part": { "source": { "tracks": [ { "id": "pv", "clips": [ { "id": "p1", "start": 0, "end": 25.3, "bin": "red" } ] } ] } }
+            },
+            "tracks": [
+                { "id": "a1", "kind": "audio", "clips": [
+                    { "id": "s1", "start": 0, "end": 0.37, "bin": "sfx" },
+                    { "id": "c1", "start": 1, "end": 2.07, "bin": "clip" }
+                ] },
+                { "id": "v1", "clips": [ { "id": "n1", "start": 0, "end": 15.2004, "bin": "part", "in": 10.1 } ] }
+            ]
+        }));
+        let short: Vec<_> = validate(&p, &ValidationContext::default()).into_iter().filter(|i| i.path.ends_with("/end")).collect();
+        assert_eq!(short.len(), 1, "{short:?}");
+        assert!(short[0].path.ends_with("tracks/0/clips/1/end") && short[0].message.contains("last 2 frames"), "{short:?}");
+    }
+
+    /// A freeze holds a frame the clip's source has; one outside it is held at the nearest,
+    /// which is worth a warning rather than a refusal of the edit that moved the clip.
+    #[test]
+    fn a_freeze_outside_its_source_is_a_warning() {
+        let p = project(json!({
+            "bin": {
+                "clip": { "source": { "path": "clip.mp4" }, "meta": { "duration": 3.0, "has_audio": false } },
+                "red": { "source": { "color": "#f00" } }
+            },
+            "tracks": [{ "id": "v1", "clips": [
+                { "id": "a", "start": 0, "end": 1, "bin": "clip", "in": 1, "effects": [ { "type": "freeze", "t": -0.5 } ] },
+                { "id": "b", "start": 1, "end": 2, "bin": "clip", "in": 1, "effects": [ { "type": "freeze", "t": 2.5 } ] },
+                { "id": "c", "start": 2, "end": 3, "bin": "red", "effects": [ { "type": "freeze", "t": 1.5 } ] },
+                { "id": "d", "start": 3, "end": 4, "bin": "clip", "effects": [ { "type": "freeze", "t": -0.1 } ] }
+            ] }]
+        }));
+        let issues = validate(&p, &ValidationContext::default());
+        let warned = |ci: usize| issues.iter().any(|i| i.path == format!("{}/effects/0/t", clip_path("main", 0, ci)) && i.severity == Severity::Warning);
+        assert_eq!((warned(0), warned(1), warned(2), warned(3)), (false, true, true, true), "{issues:?}");
     }
 
     /// A keyframe's parameters are its unknown fields, so the validator is what says a

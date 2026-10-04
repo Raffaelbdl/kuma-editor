@@ -201,7 +201,8 @@ one table in `ui/src/panels/inspector.ts`, and the bounds there are the model's 
 panel cannot offer a value the daemon would refuse.
 
 **Effects are offered where they can act.** Each effect acts on the picture (transform,
-crop, blur, colour, blend, fade) or the sound (volume, audio fade), so `+ add effect` lists
+crop, blur, colour, blend, fade, freeze) or the sound (volume, audio fade, limiter, auto
+level), so `+ add effect` lists
 only what the selected clip can use: a colour or a still is not offered a volume, a song is not
 offered a picture fade. An effect that got there anyway — by an agent's patch, or on a clip
 moved to an audio track — stays, dimmed, and says *no effect here*; the validator warns too.
@@ -483,6 +484,27 @@ is content you are not editing and is what the render will show. A sequence cann
 sped up — MLT's `timewarp` takes a resource path, not a tractor, so render the part out
 and place the result as media.
 
+**A sequence has effects of its own, on its mix:** `volume`, `limiter` and `auto_level`
+in its `effects`, keyed in the sequence's own seconds. The master's are the render's master
+stage — a gain, then a peak limiter — and they are in the document, so the preview plays
+them, `measure_audio` measures after them and `render` renders them. A nested sequence's
+act on every placement of it, each placement with its own copy (a limiter keeps state from
+frame to frame, and two placements playing at once must not share it). The compiler hangs
+the root's on its tractor and a nested one's on a playlist per placement over the whole
+tractor (`compile.rs`). The limiter is ffmpeg's `alimiter` with its auto level off: it
+holds *sample* peaks at the ceiling, so a true-peak target wants a ceiling about a dB under
+it, and it looks ahead `attack` ms (5 by default), which is how much later the limited sound
+comes out. **Freeze** holds the frame a clip shows `t` seconds in, of anything it places,
+sequences included; the picture holds and the sound runs on. It is a tractor of the clip's
+sound and that frame repeated, because MLT's `freeze` filter fetches its frame from the
+wrong producer for a sequence and deadlocks on a still.
+
+A clip that reads past the end of its source is padded with nothing for the frames the
+source lacks, which show the tracks below and are silent. MLT would otherwise cut the
+entry to what the source has, and every later clip on the track would slide earlier. The
+validator counts this in frames, as the compiler cuts: a source a fraction of a frame short
+of its clip is not short.
+
 Seconds everywhere, `end` exclusive, fps rational, tracks bottom-up with every overlay track after the video tracks, `in` meaningful for
 video, audio and sequence entries. Track and clip ids are unique across the whole project,
 not per sequence. The full schema: `GET /api/schema` or the `get_schema` tool.
@@ -567,7 +589,8 @@ and the values live with the rest of the project's decisions.
 - Compiler: dissolves (A/B lanes + luma), wipes (generated PGM lumas), timewarp speed,
   crop, transform, blur, colour correction and volume — each static or keyframed, linear,
   held or smooth per key — picture and sound fades, blend modes (discrete keyframes on `qtblend`),
-  solid-colour clips, PiP stills, overlay PNG sequences; golden-file + DTD + real `melt` render tests.
+  solid-colour clips, PiP stills, overlay PNG sequences, a sequence's own gain, limiter and
+  auto-level, freeze frames; golden-file + DTD + real `melt` render tests.
 - Daemon + MCP end to end: patch/undo/409 on stale revisions, `sample_frames` returning
   image blocks, background render jobs.
 - Preview engine: seek/play at ~23 fps for a 960×540 composite on 4 CPU cores, audio as

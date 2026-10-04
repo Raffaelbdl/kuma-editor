@@ -2731,7 +2731,7 @@ with it.
 ### Transcription
 
 8. **Contiguous word cues, a weak model** — **built**. Cue edges within 0.4 s of a pause
-   move onto it (`snap_to_pauses`, on by default; `pause_db` −35, `pause_min` 0.15 s), so a
+   move onto it (`snap_to_pauses`, on by default; `silence_db` −35, `silence_min` 0.15 s, the names `measure_media` uses), so a
    gap between cues is a real pause: on 150 s of audio whose word boundaries sat 0.3 s past
    each pause, every pause came out within 0.02 s. `model` names a file in the models
    folder or a size (`large-v3`); `health` lists `whisper_models`. The default model is

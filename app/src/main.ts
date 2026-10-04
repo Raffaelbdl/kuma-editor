@@ -490,7 +490,7 @@ function wireIpc() {
       title: "Add fonts",
       defaultPath: path.dirname(d.projectFile),
       properties: ["openFile", "multiSelections"],
-      filters: [{ name: "Fonts", extensions: ["ttf", "otf", "ttc", "otc"] }, { name: "All files", extensions: ["*"] }],
+      filters: [{ name: "Fonts", extensions: ["ttf", "otf", "ttc", "otc", "woff", "woff2"] }, { name: "All files", extensions: ["*"] }],
     });
     return r.canceled ? [] : r.filePaths;
   });

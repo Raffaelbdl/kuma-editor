@@ -402,6 +402,29 @@ async fn a_render_target_says_what_it_would_overwrite() {
     assert!(status.contains("400"), "{status}");
 }
 
+/// `_vendor/<file>` is served from the first folder that has that file: the overlay's own
+/// `_vendor/`, the one beside it, the library's. A project's shared files beside its
+/// overlays add to kuma's runtime rather than hiding it, as the bake stages them.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_vendor_file_is_served_from_the_first_folder_that_has_it() {
+    let (state, addr, _dir) = daemon().await;
+    let overlays = state.config.project_root().join("overlays");
+    std::fs::create_dir_all(overlays.join("_vendor/fonts")).unwrap();
+    std::fs::create_dir_all(overlays.join("probe/_vendor")).unwrap();
+    std::fs::write(overlays.join("_vendor/house.css"), "beside").unwrap();
+    std::fs::write(overlays.join("_vendor/fonts/house.woff2"), "beside font").unwrap();
+    std::fs::write(overlays.join("_vendor/kuma.js"), "beside kuma").unwrap();
+    std::fs::write(overlays.join("probe/_vendor/kuma.js"), "own kuma").unwrap();
+    for (path, body) in [("house.css", "beside"), ("fonts/house.woff2", "beside font"), ("kuma.js", "own kuma"), ("gsap.min.js", "")] {
+        for route in ["/overlay-entry/tag", "/overlay-preview/o1c1"] {
+            let (status, got) = get_body(&addr, &format!("{route}/_vendor/{path}"));
+            assert!(status.contains("200") && got == body, "{route}/_vendor/{path}: {status} {got:?}");
+        }
+    }
+    let (status, _) = get_body(&addr, "/overlay-entry/tag/_vendor/nope.js");
+    assert!(status.contains("404"), "{status}");
+}
+
 /// A font is added by path, is copied into the project's `fonts/` (or,
 /// shared, the library's) and is then what a `font` var draws with: the preview document
 /// carries its `@font-face` and serves the file from the path the rule names, the one a
@@ -428,9 +451,9 @@ async fn a_font_is_added_and_an_overlay_draws_with_it() {
     std::fs::write(dir.path().join("notes.ttf"), b"not a font").unwrap();
     let (status, _) = add(&dir.path().join("notes.ttf"), false);
     assert!(status.contains("400"), "{status}");
-    std::fs::copy(&anton, dir.path().join("Anton.woff2")).unwrap();
-    let (status, _) = add(&dir.path().join("Anton.woff2"), false);
-    assert!(status.contains("400"), "{status}");
+    std::fs::write(dir.path().join("notes.woff2"), b"wOF2 but not a font").unwrap();
+    let (status, refused) = add(&dir.path().join("notes.woff2"), false);
+    assert!(status.contains("400") && refused["error"].as_str().unwrap_or_default().contains("does not decode"), "{status}: {refused}");
     let (status, _) = add(&dir.path().join("nope.ttf"), false);
     assert!(status.contains("400"), "{status}");
     // Shared goes to the user library; the project's copy still wins.
@@ -460,6 +483,23 @@ async fn a_font_is_added_and_an_overlay_draws_with_it() {
     // The editor's own page gets every family, from the same route, for the picker.
     let (_, css) = get_body(&addr, "/api/fonts.css");
     assert!(css.contains("url(\"/fonts/anton/0.ttf\")"), "{css}");
+
+    // A web font goes in as the font it wraps, which a font folder reads.
+    let web = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../kuma-overlay/tests/fixtures/fonts").canonicalize().unwrap();
+    let (status, woff2) = add(&web.join("BebasNeue-Regular.woff2"), false);
+    assert!(status.contains("200"), "{status}: {woff2}");
+    assert_eq!(woff2["family"], "Bebas Neue");
+    assert!(woff2["path"].as_str().unwrap().ends_with("fonts/Bebas Neue/BebasNeue-Regular.ttf"), "{woff2}");
+    let (_, again) = add(&web.join("BebasNeue-Regular.woff2"), false);
+    assert_eq!(again["path"], woff2["path"], "unwrapping is deterministic: {again}");
+    let (status, woff) = add(&web.join("BebasNeue-Regular.woff"), false);
+    assert!(status.contains("200") && woff["family"] == "Bebas Neue", "{status}: {woff}");
+    let (_, body) = get_body(&addr, "/api/fonts");
+    assert!(body.contains("\"Bebas Neue\""), "{body}");
+    // A font named as a web font that is not one is kept as what it is.
+    std::fs::copy(&anton, dir.path().join("Anton.woff2")).unwrap();
+    let (_, misnamed) = add(&dir.path().join("Anton.woff2"), false);
+    assert!(misnamed["path"].as_str().unwrap().ends_with("fonts/Anton/Anton.ttf"), "{misnamed}");
 }
 
 /// A patch a script wrote is applied from its file, exactly, as one revision-checked edit;
@@ -549,6 +589,33 @@ async fn validation_names_text_the_fonts_will_not_draw() {
     assert!(kanji.iter().any(|m| m.contains(r#"lang="en""#)), "{issues}");
     assert!(at("/bin/unset/source/vars/font").iter().any(|m| m.contains("Nope Sans")), "{issues}");
     assert!(issues.as_array().unwrap().iter().all(|i| i["severity"] == "warning" && !i["path"].as_str().unwrap().starts_with("/bin/fine")), "{issues}");
+}
+
+/// Two entries of one folder in two languages: each previews with its own `<html lang>`,
+/// and validation reads the language the entry sets rather than the one the page is
+/// written with, so only the entry left in English is told its kana want `ja`.
+#[tokio::test(flavor = "multi_thread")]
+async fn an_entry_sets_its_page_language_with_a_lang_var() {
+    let (state, addr, _dir) = daemon().await;
+    let label = state.config.project_root().join("overlays/caption");
+    std::fs::create_dir_all(&label).unwrap();
+    std::fs::write(label.join("overlay.json"), r#"{ "name": "Caption", "vars": { "label": { "type": "text", "default": "ありがとう" }, "lang": { "type": "lang", "default": "" } } }"#).unwrap();
+    std::fs::write(label.join("index.html"), "<!doctype html><html lang=\"en\"><head></head><body data-composition-id=\"root\"></body></html>").unwrap();
+    for (id, vars) in [("ja", r#"{ "lang": "ja" }"#), ("en", "{}")] {
+        let (status, body) = post(&addr, "/api/overlays/import", &format!(r#"{{ "path": "overlays/caption", "id": "{id}", "vars": {vars} }}"#));
+        assert!(status.contains("200"), "{status}: {body}");
+    }
+    let (status, body) = post(&addr, "/api/overlays/import", r#"{ "path": "overlays/caption", "id": "bad", "vars": { "lang": "Japanese please" } }"#);
+    assert!(status.contains("400"), "not a language tag: {status} {body}");
+    let (_, doc) = get_body(&addr, "/overlay-entry/ja");
+    assert!(doc.starts_with("<!doctype html><html lang=\"ja\">"), "{doc}");
+    let (_, doc) = get_body(&addr, "/overlay-entry/en");
+    assert!(doc.starts_with("<!doctype html><html lang=\"en\">"), "{doc}");
+
+    let (_, body) = get_body(&addr, "/api/project/validate");
+    let issues = serde_json::from_str::<serde_json::Value>(&body).unwrap()["issues"].clone();
+    let cjk: Vec<&str> = issues.as_array().unwrap().iter().filter(|i| i["message"].as_str().unwrap().contains("CJK")).map(|i| i["path"].as_str().unwrap()).collect();
+    assert_eq!(cjk, ["/bin/en/source/vars/label"], "{issues}");
 }
 
 #[tokio::test(flavor = "multi_thread")]

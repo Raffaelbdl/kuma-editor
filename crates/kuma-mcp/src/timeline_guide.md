@@ -57,12 +57,14 @@ before editing a shared folder; `save_blueprint` only when the user asks. See `o
 Overlays are live DOM in the preview and baked to alpha frames at export. For a plain title, the
 `title` and `title-subtitle` blueprints are typography, box, outline, shadow and entrance/exit as
 vars — set those rather than writing markup. A `font` var takes a family name from `list_fonts`;
-`add_font` copies a new one in (a `.ttc` collection is split into its faces). Each family lists the
+`add_font` copies a new one in (a `.ttc` collection is split into its faces, a `.woff2` unwrapped). Each family lists the
 `scripts` it can set: text in any other (kanji in a Latin font, say) is drawn by the baking machine's
 fonts, not the project's, so pick or add a family that covers the text. `validate_project` warns
 about every entry whose `font` var names a family that is not installed, whose text has characters
 none of its fonts can set (it lists them), or that shows CJK text on a page whose `lang` is another
-language; a render's result carries the same `warnings` for what it drew.
+language; a render's result carries the same `warnings` for what it drew. The page's language is an
+entry's `lang` var where the overlay declares one (`title`, `title-subtitle` and `subtitles` do):
+set it to `ja` on a Japanese title rather than copying the folder.
 
 To look at the footage, call `sample_frames` with a time range (and an optional pixel `rect`); it
 returns the composited frames as images plus their PNG paths. To look at an *overlay you are

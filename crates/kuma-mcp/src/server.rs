@@ -549,7 +549,7 @@ pub struct PathArg {
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct AddFont {
-    /// A `.ttf` or `.otf` file, or a `.ttc`/`.otc` collection, relative to the project or absolute.
+    /// A `.ttf`, `.otf`, `.woff` or `.woff2` file, or a `.ttc`/`.otc` collection, relative to the project or absolute.
     pub path: String,
     /// Into the user's library for every project, instead of this project's `fonts/`.
     /// Only when the user asks: the library is theirs.
@@ -632,7 +632,7 @@ impl KumaServer {
         self.get("/api/fonts").await
     }
 
-    #[tool(description = "Copy a font file (.ttf/.otf) into the project's `fonts/` (or, with `shared`, the user's library) so `font` vars can name it. A collection (.ttc/.otc, how most CJK fonts ship) is split into one file per face. Returns the family it reads as, and every face with its family and scripts. Not an edit: nothing to undo. Add a family's weights and italics as separate calls.")]
+    #[tool(description = "Copy a font file (.ttf/.otf) into the project's `fonts/` (or, with `shared`, the user's library) so `font` vars can name it. A collection (.ttc/.otc, how most CJK fonts ship) is split into one file per face; a web font (.woff/.woff2) is unwrapped and kept as the .ttf/.otf it holds. Returns the family it reads as, and every face with its family and scripts. Not an edit: nothing to undo. Add a family's weights and italics as separate calls.")]
     async fn add_font(&self, Parameters(p): Parameters<AddFont>) -> Result<CallToolResult, McpError> {
         self.post("/api/fonts", &json!({ "path": p.path, "shared": p.shared })).await
     }

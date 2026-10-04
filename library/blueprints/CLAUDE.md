@@ -18,10 +18,15 @@ The folder name is the identity (the manifest has no `id`). A folder without bot
 does not load. Entries may share a folder with different `vars`; editing it changes all of
 them, so `make_overlay_unique` first to change one.
 
-`_vendor/` holds shared files, referenced as `_vendor/<file>` from the overlay. An
-overlay's own `_vendor/` wins, then the one next to it, then the shared one from the
-highest-precedence library that has it (`<library>/blueprints/_vendor/`); the bake stages
-and the daemon serves exactly the same folder. It is not copied into projects.
+`_vendor/` holds shared files, referenced as `_vendor/<file>` from the overlay. Each file is
+looked for in turn in the overlay's own `_vendor/`, then the one next to it (a project's
+`overlays/_vendor/`), then the shared one from the highest-precedence library that has it
+(`<library>/blueprints/_vendor/`); the first that has it wins, and the bake stages and the
+daemon serves exactly those files. So files several overlays of a project share (a house
+stylesheet, a font, a logo) go in `overlays/_vendor/` under names of their own, and
+`_vendor/kuma.js` still comes from the library. A copy of one of kuma's own files there
+shadows it for every overlay beside it, and `check_overlay` warns (`vendor_shadowed`) when
+it differs from the shipped one. The library's `_vendor/` is not copied into projects.
 
 - `_vendor/kuma.js` — `kumaTemplate(defaults)` applies the vars, returns `{ vars, width,
   height, duration, text(id, value), timeline(), onFrame(fn) }` and works standalone.
@@ -79,6 +84,10 @@ overlays/<name>`) does, optionally with `vars`, once it checks clean.
 - At the end of `<head>` (so they win over the overlay's own `:root` fallbacks): CSS
   custom properties `--var-<name>` on `:root` for every scalar var, and
   `--var-<name>-x` / `--var-<name>-y` for `point` vars.
+- On `<html>`: `lang`, from the entry's `lang` var when the manifest declares one and it is
+  not empty; otherwise the page keeps the `lang` it is written with. It decides the forms
+  han characters are drawn in and which font a missing character falls back to, so one
+  folder serves a Japanese entry and an English one.
 - The root `[data-composition-id]` element's `data-duration` (and `data-width`/`data-height`)
   are **rewritten in the markup** to the clip's real length before the renderer sees the
   file — hyperframes sizes the render from the attribute as written, before any script runs.
@@ -123,8 +132,12 @@ overlays/<name>`) does, optionally with `vars`, once it checks clean.
 7. Take a font as a `font` var and write `font-family: var(--var-<name>), <fallback stack>`:
    kuma supplies the `@font-face` rules for the family it names and stages the files, in
    the bake and the live preview alike. `list_fonts` says which families exist. A fixed
-   font can also be bundled in the folder (`@font-face` with a relative `src`), or left to
-   a system stack. No Google Fonts links: the bake is headless and must be deterministic.
+   font can also be bundled in the folder (`@font-face` with a relative `src`, in the
+   overlay's own CSS or a stylesheet it links, `_vendor/` included), or left to a system
+   stack. The check counts a bundled face's characters with the `font` vars' when it says
+   which text no font can set; put the readable file first in `src` (a `local()` first, or
+   a file it cannot read, and it claims nothing). No Google Fonts links: the bake is
+   headless and must be deterministic.
 8. **Re-measure rather than measure once.** Prefer CSS that needs no measuring at all; if
    the page must measure itself — fitting a line of text to its box is the usual reason —
    run it again on `resize` (a `ResizeObserver` on the element is the reliable one) and
@@ -156,6 +169,7 @@ Transitions (dissolve/wipe) are refused on overlay clips: bakes carry no handle 
     "anchor": { "type": "point",  "default": { "x": 0.68, "y": 0.28 } },
     "on":     { "type": "boolean", "default": true },
     "note":   { "type": "text",   "default": "multi-line" },
+    "lang":   { "type": "lang",   "default": "", "label": "Language" },
     "cues":   { "type": "cues",   "default": [ { "start": 0, "end": 1.5, "text": "line" } ] }
   },
   "tags": ["label"]
@@ -165,8 +179,11 @@ Transitions (dissolve/wipe) are refused on overlay clips: bakes carry no handle 
 Var types → UI controls: `string` input, `text` textarea, `number` slider (min/max/step),
 `color` picker, `boolean` checkbox, `enum` select, `point` x/y (fraction of frame), `cues`
 one editable row per `{start, end, text}` (seconds; `end` after `start`), `font` a family
-picker (its `--var-<name>` is the quoted family name). A `cues` value
-reaches the overlay only through `window.kuma.vars` — a list has no CSS property.
+picker (its `--var-<name>` is the quoted family name), `lang` a language tag (`ja`,
+`zh-Hant`, `ko`, `en`, or empty for the page's own) that kuma writes onto `<html lang>` —
+the markup need not read it, and a manifest has at most one. Give an overlay that may show
+CJK text a `lang` var rather than copying its folder to change the page's language. A
+`cues` value reaches the overlay only through `window.kuma.vars` — a list has no CSS property.
 
 The inspector lists vars **in the order the manifest writes them**. `group` puts a var in a
 foldable section of that name (sections in the order their first var appears, ungrouped

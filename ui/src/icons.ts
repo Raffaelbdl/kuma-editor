@@ -42,6 +42,12 @@ const ICONS = {
     shape("path", { d: "M10 14a4 4 0 0 0 6 0l3-3a4 4 0 0 0-6-6l-1 1", fill: "none", stroke: "currentColor", "stroke-width": 2.4, "stroke-linecap": "round" }),
     shape("path", { d: "M14 10a4 4 0 0 0-6 0l-3 3a4 4 0 0 0 6 6l1-1", fill: "none", stroke: "currentColor", "stroke-width": 2.4, "stroke-linecap": "round" }),
   ],
+  /** A speaker with a cross after it: a clip muted on its own, while its track plays.
+   *  Stroked, like `link`, so it reads at the 10px a clip's name is drawn at. */
+  "volume-off": [
+    shape("path", { d: "M4 9h4l5-4v14l-5-4H4z", fill: "none", stroke: "currentColor", "stroke-width": 2.2, "stroke-linejoin": "round" }),
+    shape("path", { d: "M16 9l5 6M21 9l-5 6", fill: "none", stroke: "currentColor", "stroke-width": 2.4, "stroke-linecap": "round" }),
+  ],
   /** The bin's toolbar. Stroked, like `link`, in one weight so the row reads as a set. */
   plus: [shape("path", { d: "M12 5v14M5 12h14", fill: "none", stroke: "currentColor", "stroke-width": 2.2, "stroke-linecap": "round", "stroke-linejoin": "round" })],
   "folder-plus": [shape("path", { d: "M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2zM12 10v6M9 13h6", fill: "none", stroke: "currentColor", "stroke-width": 2.2, "stroke-linecap": "round", "stroke-linejoin": "round" })],

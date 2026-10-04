@@ -62,6 +62,15 @@ is also what makes it cheap: nothing is baked.
 - `crop` to reframe: fractions of the *frame*, not of a letterboxed still inside it, and a
   `radius` of 1 rounds the shorter side into semicircles (a circle on a square crop). Crop a
   still's letterbox away first, or the rounding lands in the empty corners.
+- **A picture in a circle that moves** is `crop` then `transform` on one clip: effects run
+  in list order, and a clip takes one of each kind. The crop cuts a square (in pixels)
+  around the point (cx, cy) with radius r, anywhere in the frame — `left = (cx − r)/W`,
+  `right = (W − cx − r)/W`, `top = (cy − r)/H`, `bottom = (H − cy − r)/H`, `radius: 1` — and
+  the transform, which scales about the frame's centre, puts that circle's centre at
+  (px, py) with `x = px − (W/2 + (cx − W/2)·s)`, `y = py − (H/2 + (cy − H/2)·s)`. The other
+  way round, the crop's window stays put and cuts whatever the transform moved into it. A
+  picture that moves inside a circle that stays (a push within a round frame) is the
+  clip with its transform in a sequence, and the crop on the clip placing it.
 - `color` (brightness, contrast, saturation, gamma) to match clips shot
   in different light.
 

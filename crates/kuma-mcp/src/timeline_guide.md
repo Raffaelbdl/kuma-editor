@@ -85,6 +85,11 @@ its job id and what it is baking; call `sample_frames` with `job` set to that id
 Asking again with the same arguments costs nothing extra either: an overlay already baking is
 waited for, not baked twice.
 
+Long jobs (`render`, `measure_audio`, `transcribe`, `bake_overlay`) likewise wait `wait_seconds`, then
+return the job still running with its id. Keep waiting with `job_status` (`id`, `wait_seconds` about
+100): a client may move a longer call to the background (Claude Code does at 120 s), where it still
+finishes. `job_status` without an id lists the jobs, to find one again.
+
 Sound: `measure_audio` renders a sequence's sound through the real graph (no overlay is baked) and
 meters it: integrated loudness (LUFS), range and true peak (dBTP), overall and per chapter (each
 clip placing a sequence, or the `sections` you name), the loudest moments and every silent stretch

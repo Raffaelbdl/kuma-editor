@@ -356,7 +356,13 @@ shows one entry on its own, and with `times` and `tile` a contact sheet of chose
 `apply_edits` takes a patch inline or, with `patch_path`, from a file in the project, so a
 script's patch of any size is one exact edit. `measure_audio` meters a sequence's sound (EBU
 R128, per chapter, loudest moments, silences), rendered through the real graph without
-baking anything. A server that outlives a rebuild of `kuma` says so on every call, since its
+baking anything. The tools that start a job (`render`, `measure_audio`, `transcribe`,
+`bake_overlay`, `sample_frames`) wait `wait_seconds` and then return it still running, with
+its id; `job_status` with that id and its own `wait_seconds` waits again, in calls as short
+as the client needs (Claude Code moves a call that runs past 120 s to the background), and
+without an id lists the jobs. While a tool waits it sends MCP progress notifications when the
+call carries a progress token: the job's percent and message, and a heartbeat every 20 s, so
+a client that gives up on a silent call does not. A server that outlives a rebuild of `kuma` says so on every call, since its
 tools are the old build's. `overlay_guide` returns `library/blueprints/CLAUDE.md`, and
 `timeline_guide` returns `crates/kuma-mcp/src/timeline_guide.md`: the server's own
 instructions are kept under the 2048 characters a client shows and point at both.

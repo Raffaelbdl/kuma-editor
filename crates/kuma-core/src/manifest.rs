@@ -141,7 +141,7 @@ impl OverlayManifest {
             if let Some(p) = spec.check(&spec.default) {
                 return Some(format!("var `{k}`: default {p}"));
             }
-            if spec.ty == VarType::Lang && self.vars.iter().take_while(|(other, _)| *other != k).any(|(_, s)| s.ty == VarType::Lang) {
+            if spec.ty == VarType::Lang && self.lang_var() != Some(k.as_str()) {
                 return Some(format!("var `{k}`: a page has one language, and another `lang` var already sets it"));
             }
             for (other, allowed) in &spec.when {
@@ -195,8 +195,12 @@ impl OverlayManifest {
     /// The page language these (resolved) vars set: the `lang` var's value, unless it is
     /// empty or there is none, when the page keeps the `lang` it is written with.
     pub fn lang<'v>(&self, vars: &'v Map<String, Value>) -> Option<&'v str> {
-        let (k, _) = self.vars.iter().find(|(_, s)| s.ty == VarType::Lang)?;
-        vars.get(k)?.as_str().map(str::trim).filter(|l| !l.is_empty())
+        vars.get(self.lang_var()?)?.as_str().map(str::trim).filter(|l| !l.is_empty())
+    }
+
+    /// The var that sets the page language, if the overlay declares one.
+    pub fn lang_var(&self) -> Option<&str> {
+        self.vars.iter().find(|(_, s)| s.ty == VarType::Lang).map(|(k, _)| k.as_str())
     }
 
     /// Validate overrides against the manifest. Returns human-readable problems.

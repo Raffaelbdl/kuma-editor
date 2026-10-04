@@ -170,12 +170,8 @@ fn check_sequence<'a>(
     groups: &mut HashMap<&'a str, &'a str>,
 ) {
     let base = format!("/bin/{seq_id}/source");
-    // Overlays draw over video, never under it. The editor has always kept to that (a new
-    // video track goes under the first overlay track); this makes it the rule for every
-    // client. The render would stack a video track after an overlay track over it, but the
-    // live preview draws the open sequence's overlays above its whole picture, so the two
-    // would disagree; and anything that has to sit under a picture can draw the picture
-    // itself. Audio tracks composite nothing.
+    // Overlays draw over video, never under it: the live preview draws the open sequence's
+    // overlays above its whole picture, so a video track after one would render otherwise.
     if let Some(first) = seq.tracks.iter().position(|t| t.kind == TrackKind::Overlay) {
         for (ti, t) in seq.tracks.iter().enumerate().skip(first + 1).filter(|(_, t)| t.kind == TrackKind::Video) {
             issues.push(Issue::error(
@@ -294,7 +290,7 @@ fn check_sequence<'a>(
             for (ei, e) in c.effects.iter().enumerate() {
                 let ep = format!("{cp}/effects/{ei}");
                 let kind = e.kind();
-                if kind != "mlt" && !kinds.insert(kind.clone()) {
+                if kind != "mlt" && !kinds.insert(kind) {
                     issues.push(Issue::error(ep.clone(), format!("duplicate `{kind}` effect on this clip")));
                 }
                 // A warning, not an error: it renders, and does nothing. The editor does not
@@ -304,7 +300,7 @@ fn check_sequence<'a>(
                     let lacks = if e.streams().video() { "shows no picture" } else { "has no sound" };
                     issues.push(Issue::warn(ep.clone(), format!("`{kind}` does nothing here: this clip {lacks}")));
                 }
-                check_effect(issues, &ep, e, ("clip", c.duration()));
+                check_effect(issues, &ep, e, kind, ("clip", c.duration()));
                 match e {
                     Effect::Fade { fade_in, fade_out } | Effect::AudioFade { fade_in, fade_out } => {
                         if fade_in + fade_out > c.duration() + 1e-9 {
@@ -312,16 +308,11 @@ fn check_sequence<'a>(
                         }
                     }
                     Effect::Freeze { t } => {
-                        // The frame held is the one the clip would show at `t`, so it must be
-                        // one its source has: counted in the same frames the compiler cuts.
-                        // Outside them the compiler holds the nearest, which is a warning's
-                        // worth, not a refusal of whatever edit moved the clip's `in`.
-                        let (first, end) = c.source_span(p.fps);
-                        let have = p.source_frames(c).or_else(|| (!item.is_some_and(BinItem::is_timed_media)).then_some(end));
-                        let held = first + p.fps.frame(*t);
+                        // Outside the source the compiler holds the nearest frame: a warning,
+                        // not a refusal of whatever edit moved the clip's `in`.
                         if !t.is_finite() {
                             issues.push(Issue::error(format!("{ep}/t"), "freeze `t` must be a number of seconds"));
-                        } else if held < 0 || have.is_some_and(|h| held >= h) {
+                        } else if p.held_frame(c, *t, (0, 0)).1 {
                             issues.push(Issue::warn(format!("{ep}/t"), "freeze `t` lands outside the clip's source; it holds the source's nearest frame"));
                         }
                     }
@@ -422,8 +413,7 @@ fn check_sequence<'a>(
 /// What an effect is wherever it sits, on a clip or a sequence: its keyframes (times in
 /// order, within `duration`, naming parameters the kind has) and the bounds of its kind,
 /// checked on every sample the effect will be evaluated at.
-fn check_effect(issues: &mut Vec<Issue>, ep: &str, e: &Effect, owner: (&str, f64)) {
-    let kind = e.kind();
+fn check_effect(issues: &mut Vec<Issue>, ep: &str, e: &Effect, kind: &str, owner: (&str, f64)) {
     // A key naming a parameter the kind does not have is refused here rather than by serde
     // — the parameters *are* a keyframe's unknown fields — and this error can say what the
     // kind's parameters are.
@@ -480,17 +470,17 @@ fn check_effect(issues: &mut Vec<Issue>, ep: &str, e: &Effect, owner: (&str, f64
         }
         // The ranges ffmpeg's `alimiter` and MLT's `dynamic_loudness` take: outside them
         // the filter clamps or refuses, so the number would not mean what it says.
-        Effect::Limiter { ceiling, attack, release } => {
-            for (name, v, lo, hi) in [("ceiling", ceiling, -24.0, 0.0), ("attack", attack, 0.1, 80.0), ("release", release, 1.0, 8000.0)] {
-                if !(lo..=hi).contains(v) {
-                    issues.push(Issue::error(format!("{ep}/{name}"), format!("limiter {name} must be within {lo}..{hi}")));
+        Effect::Limiter { .. } | Effect::AutoLevel { .. } => {
+            let ranges = match *e {
+                Effect::Limiter { ceiling, attack, release } => vec![("ceiling", ceiling, -24.0, 0.0), ("attack", attack, 0.1, 80.0), ("release", release, 1.0, 8000.0)],
+                Effect::AutoLevel { target, window, max_gain, min_gain } => {
+                    vec![("target", target, -50.0, -10.0), ("window", window, 1.0, 60.0), ("max_gain", max_gain, 0.0, 30.0), ("min_gain", min_gain, -30.0, 0.0)]
                 }
-            }
-        }
-        Effect::AutoLevel { target, window, max_gain, min_gain } => {
-            for (name, v, lo, hi) in [("target", target, -50.0, -10.0), ("window", window, 1.0, 60.0), ("max_gain", max_gain, 0.0, 30.0), ("min_gain", min_gain, -30.0, 0.0)] {
-                if !(lo..=hi).contains(v) {
-                    issues.push(Issue::error(format!("{ep}/{name}"), format!("auto_level {name} must be within {lo}..{hi}")));
+                _ => vec![],
+            };
+            for (name, v, lo, hi) in ranges {
+                if !(lo..=hi).contains(&v) {
+                    issues.push(Issue::error(format!("{ep}/{name}"), format!("{kind} {name} must be within {lo}..{hi}")));
                 }
             }
         }
@@ -519,13 +509,13 @@ fn check_sequence_effects(issues: &mut Vec<Issue>, p: &Project, seq_id: &str, se
             ));
             continue;
         }
-        if !kinds.insert(kind.clone()) {
+        if !kinds.insert(kind) {
             issues.push(Issue::error(ep.clone(), format!("duplicate `{kind}` effect on this sequence")));
         }
         if !sounds {
             issues.push(Issue::warn(ep.clone(), format!("`{kind}` does nothing here: this sequence has no sound")));
         }
-        check_effect(issues, &ep, e, ("sequence", seq.duration()));
+        check_effect(issues, &ep, e, kind, ("sequence", seq.duration()));
     }
 }
 

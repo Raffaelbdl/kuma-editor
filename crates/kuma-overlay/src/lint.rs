@@ -278,8 +278,8 @@ impl Baker {
             let is = lang.map(|l| format!("`lang=\"{l}\"`")).unwrap_or_else(|| "no `lang`".into());
             let either = |f: &dyn Fn(&str) -> String| want.iter().map(|w| f(w)).collect::<Vec<_>>().join(" or ");
             // An overlay with a `lang` var says it per entry; one without says it in its markup.
-            let fix = match manifest.vars.iter().find(|(_, s)| s.ty == kuma_core::VarType::Lang) {
-                Some((k, _)) => format!("set `{k}` to {}, whichever is the language of its text", either(&|w| format!("`{w}`"))),
+            let fix = match manifest.lang_var() {
+                Some(k) => format!("set `{k}` to {}, whichever is the language of its text", either(&|w| format!("`{w}`"))),
                 None => format!(
                     "put {} on the overlay's `<html>`, whichever is the language of its text, or declare a `lang` var so each entry can say its own",
                     either(&|w| format!("`lang=\"{w}\"`"))
@@ -410,7 +410,7 @@ fn contract_findings(html: &str, manifest: &OverlayManifest, dir: &Path) -> Vec<
     }
     let used_by_vendor = used_vars(&vendor);
     // A `lang` var is read by the contract, which writes it onto `<html lang>`.
-    for (name, _) in manifest.vars.iter().filter(|(_, s)| s.ty != kuma_core::VarType::Lang) {
+    for name in manifest.vars.keys().filter(|n| Some(n.as_str()) != manifest.lang_var()) {
         if !used.contains(name) && !used_by_vendor.contains(name) {
             out.push(Finding::warn("unused_var", format!("`{name}` is declared in overlay.json but never read"), "read it as `vars.<name>` or `var(--var-<name>)`, or remove it from the manifest"));
         }

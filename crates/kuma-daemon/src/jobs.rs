@@ -340,9 +340,7 @@ pub fn transcribe(state: &AppState, req: &TranscribeRequest, progress: &dyn Fn(u
     // The language asked for is the page's too, where the folder takes one: kanji then come
     // in Japanese forms without anyone setting it. A detected language is not used, since
     // whisper can guess wrong on a short take.
-    let lang_var = crate::overlays::resolve(state, &overlay)
-        .ok()
-        .and_then(|r| r.manifest.vars.iter().find(|(_, v)| v.ty == kuma_core::VarType::Lang).map(|(k, _)| k.clone()));
+    let lang_var = crate::overlays::resolve(state, &overlay).ok().and_then(|r| r.manifest.lang_var().map(String::from));
     let lang = req.options.language.clone().filter(|l| !l.is_empty() && l != "auto").zip(lang_var);
     let (outcome, rev, warnings) = state.apply_built(&req.origin, None, |p| {
         // Everything below reads `p`, the project as it is now — never the snapshot above.

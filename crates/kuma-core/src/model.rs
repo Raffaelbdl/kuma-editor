@@ -254,15 +254,9 @@ impl Project {
         walk(self, id, &mut HashSet::new())
     }
 
-    /// How many frames the producer behind `clip` has, counted the way MLT counts them: a
-    /// sequence's own length, or a probed file's duration at the project rate and the
-    /// clip's speed, rounded (measured: a 10.4-frame file plays 10 frames, a 10.6-frame one
-    /// 11, and at half speed 20.8 plays 21). `None` where that is not known — an unprobed
-    /// file — and for a still, a colour or an overlay, which are made to any length.
-    ///
-    /// MLT cuts a playlist entry that asks for more than this down to what there is, which
-    /// shortens the track and pulls every later clip on it earlier; so the compiler pads the
-    /// difference rather than asking for it, and the validator warns about it.
+    /// How many frames the producer behind `clip` has, rounded as MLT counts them: a
+    /// sequence's own length, or a probed file's duration at the clip's speed. `None` when
+    /// unknown, and for a still, a colour or an overlay, which are made to any length.
     pub fn source_frames(&self, clip: &Clip) -> Option<i64> {
         let item = self.item(clip)?;
         if item.is_sequence() {
@@ -274,6 +268,23 @@ impl Project {
         }
     }
 
+    /// The source frame a freeze at `t` holds (the one the clip shows `t` seconds from its
+    /// start, kept to a frame the source has) and whether it had to be kept. A still, a
+    /// colour or an overlay counts from its own zero and has the clip's frames plus the
+    /// dissolve `handles` (before, after) cut around them.
+    pub fn held_frame(&self, clip: &Clip, t: f64, handles: (i64, i64)) -> (i64, bool) {
+        let (first, end) = clip.source_span(self.fps);
+        let timed = self.item(clip).is_some_and(BinItem::is_timed_media);
+        let want = if timed { first } else { 0 } + self.fps.frame(t);
+        let (lo, hi) = match self.source_frames(clip) {
+            Some(have) => (0, have - 1),
+            None if timed => (0, i64::MAX),
+            None => (-handles.0, end - first - 1 + handles.1),
+        };
+        let held = want.min(hi).max(lo);
+        (held, held != want)
+    }
+
     /// The bin entry a clip plays, if it resolves.
     pub fn item(&self, clip: &Clip) -> Option<&BinItem> {
         self.bin.get(&clip.bin)
@@ -282,9 +293,20 @@ impl Project {
     /// `base` if it is free, else `base-2`, `base-3`… — the shape the editor names bin
     /// entries in, so a minted id reads like one someone typed.
     pub fn free_bin_id(&self, base: &str) -> BinId {
-        std::iter::once(base.to_string())
-            .chain((2..).map(|n| format!("{base}-{n}")))
-            .find(|id| !self.bin.contains_key(id))
+        self.free_bin_id_besides(base, &HashSet::new())
+    }
+
+    /// [`Self::free_bin_id`], also avoiding `minted`: ids the patch being built has handed out.
+    pub fn free_bin_id_besides(&self, base: &str, minted: &HashSet<String>) -> BinId {
+        id_series(base).find(|id| !self.bin.contains_key(id) && !minted.contains(id)).unwrap_or_default()
+    }
+
+    /// `n` ids `<b>-1`…`<b>-n` for pieces of one thing, `b` the first of `base`, `base-2`…
+    /// that leaves all of them free.
+    pub fn free_bin_ids(&self, base: &str, n: usize) -> Vec<BinId> {
+        id_series(base)
+            .map(|b| (1..=n).map(|k| format!("{b}-{k}")).collect::<Vec<_>>())
+            .find(|ids| ids.iter().all(|id| !self.bin.contains_key(id)))
             .unwrap_or_default()
     }
 
@@ -301,8 +323,13 @@ impl Project {
 
     /// Lowest free `<prefix><n>` track or clip id — one namespace, the whole project.
     pub fn free_track_or_clip_id(&self, prefix: &str) -> String {
+        self.free_track_or_clip_ids(prefix, 1).remove(0)
+    }
+
+    /// The `n` lowest free `<prefix><n>` track or clip ids.
+    pub fn free_track_or_clip_ids(&self, prefix: &str, n: usize) -> Vec<String> {
         let taken: HashSet<&str> = self.sequences().flat_map(|(_, s)| s.tracks.iter().flat_map(|t| std::iter::once(t.id.as_str()).chain(t.clips.iter().map(|c| c.id.as_str())))).collect();
-        (1..).map(|n| format!("{prefix}{n}")).find(|id| !taken.contains(id.as_str())).unwrap_or_default()
+        (1..).map(|k| format!("{prefix}{k}")).filter(|id| !taken.contains(id.as_str())).take(n).collect()
     }
 
     /// Entries the render does not use: placed by no clip, or placed only in sequences
@@ -395,6 +422,11 @@ pub fn is_valid_id(s: &str) -> bool {
     matches!(chars.next(), Some(c) if c.is_ascii_alphabetic() || c == '_') && chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
 }
 
+/// `base`, `base-2`, `base-3`…: the names a bin id is minted from.
+fn id_series(base: &str) -> impl Iterator<Item = String> + '_ {
+    std::iter::once(base.to_string()).chain((2..).map(move |n| format!("{base}-{n}")))
+}
+
 /// One entry in the project bin: something that can occupy time on a track. A clip is a
 /// placement of one of these, so everything that describes *what* is shown lives here and
 /// everything that describes *when* lives on the clip.
@@ -476,11 +508,9 @@ pub struct Sequence {
     /// rendered).
     #[serde(default)]
     pub markers: Vec<Marker>,
-    /// Effects on what the sequence sounds like as a whole — its mix — in order: a gain, a
-    /// limiter, an auto-level ([`Effect::fits_a_sequence`]). Keyframe times count from the
-    /// sequence's own start, which is unambiguous however often it is placed. They act on
-    /// every placement and on the sequence rendered as the root, so the master's are the
-    /// render's master stage. Always written, so a patch can append to it.
+    /// Effects on the sequence's mix, in order ([`Effect::fits_a_sequence`]), keyed from the
+    /// sequence's own start and acting on every placement and on the root render. Always
+    /// written, so a patch can append to it.
     #[serde(default)]
     pub effects: Vec<Effect>,
 }
@@ -570,13 +600,12 @@ pub struct MediaMeta {
     pub alpha: bool,
 }
 
-/// Why a file cannot be media, if it cannot: said by `add_media` when it refuses one and
+/// Why a file cannot be media, if it cannot: said when adding one is refused, and
 /// by the validator about an entry that is already in the bin. By name, so it needs no
 /// probe and does not depend on what the machine's ffmpeg was built with.
 pub fn unplayable_media(path: &str) -> Option<&'static str> {
     let ext = std::path::Path::new(path).extension()?.to_string_lossy().to_ascii_lowercase();
-    // MLT plays an SVG through avformat as a blank white frame (and through `pixbuf`, as
-    // an image, as nothing), whatever is in it. Measured with melt 7.22.
+    // MLT plays an SVG as a blank frame, whatever is in it.
     matches!(ext.as_str(), "svg" | "svgz").then_some(
         "an SVG renders as a blank frame: rasterise it to a PNG first (`rsvg-convert -w 1920 in.svg -o out.png`, \
          `ffmpeg -i in.svg out.png` where ffmpeg has librsvg, or a headless Chrome screenshot), \
@@ -873,12 +902,10 @@ pub enum Effect {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         keyframes: Vec<Keyframe>,
     },
-    /// A peak limiter: the sound's sample peaks are held at or under `ceiling` dBFS, by
-    /// turning the gain down ahead of each one and letting it back up over `release`. It
-    /// does not raise anything (no auto level): a gain stage before it, `volume`, is what
-    /// makes the sound louder. It limits *samples*, not true peaks, so a true-peak target
-    /// wants a ceiling about a dB under it. It looks ahead `attack` milliseconds, so the
-    /// sound it limits comes out that much later — 5 ms by default, a sixth of a frame.
+    /// A peak limiter: sample peaks are held at or under `ceiling` dBFS, looking ahead
+    /// `attack` ms (the sound comes out that much later) and recovering over `release` ms.
+    /// It never raises the level (that is `volume`, before it), and limits samples, not
+    /// true peaks, so a true-peak target wants a ceiling about a dB under it.
     Limiter {
         /// dBFS, -24..0.
         #[serde(default = "default_ceiling")]
@@ -890,12 +917,9 @@ pub enum Effect {
         #[serde(default = "default_release")]
         release: f64,
     },
-    /// Rides the gain so the sound's loudness, measured over the last `window` seconds,
-    /// stays at `target` LUFS: a source that drifts (a music bed that swells and falls) is
-    /// levelled without keyframes. It never moves the gain by more than `max_gain` up or
-    /// `min_gain` down. It follows rather than anticipates, so a sudden change is heard
-    /// for about a window before the gain catches it, and after a seek it starts measuring
-    /// afresh, settling within a window.
+    /// Rides the gain, within `min_gain`..`max_gain` dB, so the loudness over the last
+    /// `window` seconds stays at `target` LUFS. It follows rather than anticipates: a sudden
+    /// change, or a seek, takes about a window to settle.
     AutoLevel {
         /// LUFS, -50..-10.
         #[serde(default = "default_target")]
@@ -910,14 +934,12 @@ pub enum Effect {
         #[serde(default = "default_min_gain")]
         min_gain: f64,
     },
-    /// Holds one frame of whatever the clip places — a file, a still, an overlay, a
-    /// sequence — for the clip's whole length: the frame it would show `t` seconds from its
-    /// start. Picture only: the sound runs on underneath; mute the clip to silence it. It
-    /// replaces the source, so the clip's other effects act on the held frame and still
-    /// move, whatever their place in the list. Split the clip to play, then hold.
+    /// Holds, for the clip's whole length, the frame it would show `t` seconds from its
+    /// start. Picture only: the sound runs on. The clip's other effects act on the held
+    /// frame, whatever their place in the list. Split the clip to play, then hold.
     Freeze {
-        /// Seconds from the clip's start, like a keyframe's `t`. May be negative, or past
-        /// the clip's end, where the source has the frame.
+        /// Seconds from the clip's start, like a keyframe's `t`; may lie outside the clip
+        /// where the source has the frame.
         #[serde(default)]
         t: f64,
     },
@@ -989,8 +1011,21 @@ impl Effect {
     }
 
     /// The `type` this effect is written with — `audio_fade`, `limiter` — for messages.
-    pub fn kind(&self) -> String {
-        serde_json::to_value(self).ok().and_then(|v| v["type"].as_str().map(String::from)).unwrap_or_default()
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Effect::Transform { .. } => "transform",
+            Effect::Crop { .. } => "crop",
+            Effect::Blend { .. } => "blend",
+            Effect::Blur { .. } => "blur",
+            Effect::Color { .. } => "color",
+            Effect::Fade { .. } => "fade",
+            Effect::AudioFade { .. } => "audio_fade",
+            Effect::Volume { .. } => "volume",
+            Effect::Limiter { .. } => "limiter",
+            Effect::AutoLevel { .. } => "auto_level",
+            Effect::Freeze { .. } => "freeze",
+            Effect::Mlt { .. } => "mlt",
+        }
     }
 
     /// Whether this effect does anything to a clip carrying `clip` — see
@@ -1180,7 +1215,9 @@ mod tests {
         assert_eq!((lim.streams(), level.streams(), freeze.streams()), (Streams::Audio, Streams::Audio, Streams::Video));
         assert!(lim.animatable().is_empty() && level.animatable().is_empty() && freeze.animatable().is_empty());
         assert!(lim.fits_a_sequence() && level.fits_a_sequence() && !freeze.fits_a_sequence());
-        assert_eq!(freeze.kind(), "freeze");
+        for e in [&lim, &level, &freeze] {
+            assert_eq!(serde_json::to_value(e).unwrap()["type"], e.kind());
+        }
         let s: Sequence = serde_json::from_value(json!({ "tracks": [] })).unwrap();
         assert_eq!(serde_json::to_value(&s).unwrap()["effects"], json!([]));
     }
@@ -1304,6 +1341,9 @@ mod tests {
         .unwrap();
         assert_eq!(p.free_bin_id("talk-subs"), "talk-subs-3");
         assert_eq!(p.free_bin_id("other"), "other");
+        assert_eq!(p.free_bin_id_besides("other", &HashSet::from(["other".to_string()])), "other-2");
+        assert_eq!(p.free_bin_ids("talk-subs", 1), ["talk-subs-1"], "the piece is free though `talk-subs` is not");
+        assert_eq!(p.free_bin_ids("talk-subs", 2), ["talk-subs-2-1", "talk-subs-2-2"]);
     }
 
     #[test]

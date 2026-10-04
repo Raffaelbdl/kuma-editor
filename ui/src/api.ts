@@ -59,9 +59,14 @@ export const api = {
   strip: (bin: string) => json<{ strip: { count: number; step: number; width: number; height: number } }>(`/api/bin/${encodeURIComponent(bin)}/strip.json`),
   /** Check an overlay folder against the authoring contract. Reads only. */
   lintOverlay: (path: string) => json<LintReport>(`/api/overlays/lint?${new URLSearchParams({ path })}`),
-  /** Add a media file, or an overlay folder of the project (or its `overlay.json`). */
+  /** Add a media file, a folder's media files (`ids`, and what it passed over in
+   *  `skipped`), or an overlay folder of the project (or its `overlay.json`). */
   addMedia: (path: string, base_revision: number, parent?: string | null) =>
-    json<{ id: string; revision: number }>("/api/bin", { method: "POST", body: JSON.stringify({ path, base_revision, parent: parent ?? undefined, origin: "ui: add media" }) }),
+    json<{ id: string | null; ids: string[]; skipped: { path: string; reason: string }[]; revision: number }>("/api/bin", { method: "POST", body: JSON.stringify({ path, base_revision, parent: parent ?? undefined, origin: "ui: add media" }) }),
+  /** Probe media entries' files again and write what changed, as one edit. */
+  reprobe: (bins: string[]) =>
+    json<{ changed: { id: string; changes: Record<string, { from: unknown; to: unknown }> }[]; unchanged: string[]; failed: { id: string; reason: string }[]; revision: number }>(
+      "/api/bin/reprobe", { method: "POST", body: JSON.stringify({ bins, origin: "ui: reload media" }) }),
   /** Speech to text. From a `bin` entry the result is added unplaced; from a `clip` it is
    *  placed over that clip, aligned. `replace` overwrites the transcript of an entry that
    *  already exists instead of refusing, keeping its styling and where it is placed. No

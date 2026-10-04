@@ -565,7 +565,7 @@ export class Inspector {
       this.host.appendChild(field("Path", textInput(item.source.path, (v) => store.patch([{ op: "replace", path: `${bp}/source/path`, value: v }], `path ${id}`))));
       const m = item.meta;
       const rate = m?.fps ? `${+fpsValue(m.fps).toFixed(3)} fps${m.variable_fps ? " (variable)" : ""}` : "";
-      const facts = [m?.duration ? `${m.duration.toFixed(2)}s` : "", m?.width ? `${m.width}×${m.height}` : "", rate, m?.has_audio ? "audio" : ""].filter(Boolean).join(" · ");
+      const facts = [m?.duration ? `${m.duration.toFixed(2)}s` : "", m?.width ? `${m.width}×${m.height}` : "", rate, m?.alpha ? "alpha" : "", m?.has_audio ? "audio" : ""].filter(Boolean).join(" · ");
       if (facts) this.host.appendChild(field("Probed", el("div", "mono muted", facts)));
       return;
     }

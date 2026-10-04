@@ -106,8 +106,10 @@ async function addMediaPaths(paths: string[], parent: string | null): Promise<vo
     const project = store.state.project;
     if (!project) return;
     try {
+      // A dropped folder adds the media in it and says what else it held.
       const r = await api.addMedia(path, project.revision, parent);
-      added.push(r.id);
+      added.push(...r.ids);
+      if (r.skipped.length) toast(`${path}: skipped ${r.skipped.map((s) => `${s.path} (${s.reason})`).join(", ")}`, "", 8000);
       await store.refresh();
     } catch (e) {
       toast(`${path}: ${(e as Error).message}`, "err", 8000);

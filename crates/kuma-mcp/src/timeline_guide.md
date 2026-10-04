@@ -2,7 +2,10 @@
 
 The timeline is a JSON project (get it with `get_project`, its
 JSON Schema with `get_schema`). Times are seconds (f64); clip `end` is exclusive; `fps` is rational.
-Tracks composite bottom-up. Edit with `apply_edits` (RFC 6902 JSON Patch) and pass the `base_revision`
+Tracks composite bottom-up, whatever their kind: a video track after an overlay track draws over that
+overlay, in a render, a sample and a nested sequence alike (the editor lists overlay tracks on top, and
+its live preview draws the open sequence's own overlays above everything, so check such a stack with
+`sample_frames`). Edit with `apply_edits` (RFC 6902 JSON Patch) and pass the `base_revision`
 you read, so you never overwrite a human edit made meanwhile. Every edit is validated atomically and
 undoable; label your edits with `note`. A patch a script wrote goes in a file in the project, and
 `apply_edits` with `patch_path` applies it in one call, whatever its size. kuma stores a document
@@ -14,7 +17,13 @@ configured overlays (`{"source": {"overlay": "overlays/<name>", "vars": {…}}}`
 (`{"source": {"tracks": [...], "markers": [...]}}`). A clip is a *placement* of one entry: it carries
 `bin`, `start`, `end`, `in`, `speed` and `effects`, never a source of its own. So changing an
 overlay's text edits its bin entry and every placement follows; to vary the text, add a second entry.
-Add media with `add_media` rather than by hand.
+Add media with `add_media` rather than by hand: `paths` (or a folder, whose media files it adds and
+whose other files it lists as `skipped`) is one edit, with ids minted from the file names. A file
+replaced on disk keeps its old `meta` until `reprobe_media` reads it again. `unused_entries` lists what
+no clip places, or what only sequences the master never reaches place; removing them is your patch.
+A picture with transparency (`meta.alpha`) shows what is below it, and the master's black where
+nothing is: a drawing made for a white page needs a white colour entry under it. An SVG is refused:
+rasterise it to a PNG, or show it from an overlay.
 
 An effect acts on the picture or the sound (`mlt` on either): `transform`, `crop`, `blur`, `color`,
 `blend` and `fade` on what a clip shows, `volume` and `audio_fade` on what it sounds. A colour, a

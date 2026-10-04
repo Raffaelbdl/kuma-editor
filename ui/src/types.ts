@@ -6,7 +6,7 @@ export interface Fps { num: number; den: number }
 export type MediaKind = "video" | "audio" | "image";
 
 export interface MediaMeta {
-  duration?: number; width?: number; height?: number; fps?: Fps; variable_fps?: boolean; has_audio: boolean;
+  duration?: number; width?: number; height?: number; fps?: Fps; variable_fps?: boolean; has_audio: boolean; alpha?: boolean;
 }
 
 /** A timeline: what a sequence bin entry holds, master included. */

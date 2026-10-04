@@ -195,12 +195,27 @@ enum Cmd {
         #[arg(long)]
         force: bool,
     },
-    /// Probe a media file and add it to the project bin.
+    /// Probe media files and add them to the project bin, as one edit. A folder adds the
+    /// media files directly in it (by extension) and says what it skipped.
     AddMedia {
-        path: PathBuf,
+        #[arg(required = true)]
+        paths: Vec<PathBuf>,
+        /// Bin id, when adding one file (minted from the file name otherwise).
         #[arg(long)]
         id: Option<String>,
+        /// Bin id of the entry (usually a folder) to list them under.
+        #[arg(long)]
+        parent: Option<String>,
+        /// Also add what a folder's subfolders hold.
+        #[arg(long, short)]
+        recursive: bool,
     },
+    /// Probe media entries again (the given bin ids, or every one) after their files were
+    /// replaced, and write what changed as one edit. Prints each change.
+    Reprobe { bins: Vec<String> },
+    /// List bin entries the video does not use: placed by no clip, or placed only in
+    /// sequences the master never reaches. Changes nothing.
+    Unused,
     /// Transcribe a media entry with whisper.cpp and add the subtitles to the bin.
     Transcribe {
         /// Bin id of the media entry (the result is added to the bin, unplaced).
@@ -564,20 +579,53 @@ async fn main() -> anyhow::Result<()> {
             let n = install_library(&src, &dst, *force)?;
             println!("installed {n} entries into {}", dst.display());
         }
-        Cmd::AddMedia { path, id } => {
+        Cmd::AddMedia { paths, id, parent, recursive } => {
             // The daemon owns the project while it runs: route the edit through it rather
             // than writing the file underneath it.
-            let path = absolute(path)?;
-            let (id, rev) = if let Some(url) = running_daemon(&cli).await {
-                let body = serde_json::json!({ "path": path, "id": id, "origin": "cli: add media" });
-                let v = kuma_mcp::client::Client::new(&url).post("/api/bin", &body).await?;
-                (v["id"].as_str().unwrap_or_default().to_string(), v["revision"].as_u64().unwrap_or_default())
+            let paths = paths.iter().map(|p| absolute(p)).collect::<anyhow::Result<Vec<_>>>()?;
+            let v = if let Some(url) = running_daemon(&cli).await {
+                let body = serde_json::json!({ "paths": paths, "id": id, "parent": parent, "recursive": recursive, "origin": "cli: add media" });
+                kuma_mcp::client::Client::new(&url).post("/api/bin", &body).await?
             } else {
                 let state = open(&cli)?;
-                let (id, rev, _) = kuma_daemon::jobs::add_media(&state, &path, id.clone(), None, None, "cli")?;
-                (id, rev)
+                let how = kuma_daemon::media::AddHow { id: id.clone(), parent: parent.clone(), recursive: *recursive };
+                serde_json::to_value(kuma_daemon::media::add(&state, &paths, how, None, "cli")?)?
             };
-            println!("added bin entry `{id}` (revision {rev})");
+            for s in v["skipped"].as_array().into_iter().flatten() {
+                eprintln!("skipped {}: {}", s["path"].as_str().unwrap_or_default(), s["reason"].as_str().unwrap_or_default());
+            }
+            let ids: Vec<&str> = v["ids"].as_array().into_iter().flatten().filter_map(|i| i.as_str()).collect();
+            let rev = v["revision"].as_u64().unwrap_or_default();
+            match ids.as_slice() {
+                [id] => println!("added bin entry `{id}` (revision {rev})"),
+                ids => println!("added {} bin entries: {} (revision {rev})", ids.len(), ids.join(", ")),
+            }
+        }
+        Cmd::Reprobe { bins } => {
+            let bins = (!bins.is_empty()).then(|| bins.clone());
+            let v = if let Some(url) = running_daemon(&cli).await {
+                let body = serde_json::json!({ "bins": bins, "origin": "cli: reprobe" });
+                kuma_mcp::client::Client::new(&url).post("/api/bin/reprobe", &body).await?
+            } else {
+                let state = open(&cli)?;
+                kuma_daemon::media::reprobe(&state, bins.as_deref(), None, "cli")?
+            };
+            for c in v["changed"].as_array().into_iter().flatten() {
+                for (field, change) in c["changes"].as_object().into_iter().flatten() {
+                    println!("{}: {field} {} → {}", c["id"].as_str().unwrap_or_default(), change["from"], change["to"]);
+                }
+            }
+            for f in v["failed"].as_array().into_iter().flatten() {
+                eprintln!("{}: not probed: {}", f["id"].as_str().unwrap_or_default(), f["reason"].as_str().unwrap_or_default());
+            }
+            let changed = v["changed"].as_array().map_or(0, Vec::len);
+            let unchanged = v["unchanged"].as_array().map_or(0, Vec::len);
+            println!("{changed} changed, {unchanged} unchanged (revision {})", v["revision"]);
+        }
+        Cmd::Unused => {
+            let state = open(&cli)?;
+            let project = state.project.read().unwrap().clone();
+            println!("{}", serde_json::to_string_pretty(&kuma_daemon::media::unused(&project))?);
         }
         Cmd::Transcribe { bin, clip, id, replace, language, max_chars, model, split, no_snap } => {
             let options = kuma_overlay::TranscribeOptions { language: language.clone(), max_chars: Some(*max_chars), model: model.clone(), snap: no_snap.then_some(false), ..Default::default() };

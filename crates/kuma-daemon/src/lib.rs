@@ -8,6 +8,7 @@ pub mod api;
 pub mod cache;
 pub mod fonts;
 pub mod jobs;
+pub mod media;
 pub mod overlays;
 pub mod preview;
 pub mod state;

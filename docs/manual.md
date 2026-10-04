@@ -365,7 +365,7 @@ claude mcp add --scope user    kuma -- kuma mcp --project /abs/path.kuma.json  #
 
 `kuma mcp` starts the daemon in-process if none is running on the port, so the browser UI
 and the agent always share one state. Tools: `timeline_guide`, `get_project`, `get_schema`, `apply_edits`,
-`undo`, `redo`, `validate_project`, `list_presets`, `add_media`, `probe_media`,
+`undo`, `redo`, `validate_project`, `list_presets`, `add_media`, `probe_media`, `reprobe_media`, `unused_entries`,
 `transcribe`, **`sample_frames`**, `measure_audio`, `measure_media`, `bake_overlay`, `render`, `job_status`, `cancel_job`,
 `prune_cache`, `health`, and for overlays `overlay_guide`, `new_overlay`, `check_overlay`,
 `import_overlay`, `make_overlay_unique`, `list_blueprints`, `add_blueprint`,
@@ -373,7 +373,11 @@ and the agent always share one state. Tools: `timeline_guide`, `get_project`, `g
 `check_overlay` and adds it with `import_overlay`; `sample_frames` with `overlay` (a bin id)
 shows one entry on its own, and with `times` and `tile` a contact sheet of chosen moments.
 `apply_edits` takes a patch inline or, with `patch_path`, from a file in the project, so a
-script's patch of any size is one exact edit. A script that diffs its own document against
+script's patch of any size is one exact edit. `add_media` takes a list of paths or a folder
+(its media files, by extension; `recursive` for subfolders) as one edit and says what it
+skipped; `reprobe_media` reads replaced files again and writes only what changed;
+`unused_entries` lists entries no clip places, and those placed only where the master never
+reaches. A script that diffs its own document against
 the stored one puts its own in kuma's form first — `kuma canonical plan.json`, or
 `POST /api/project/canonical` to the daemon, which answers the text the file would hold —
 since kuma leaves out every field at its default (a keyframe's `ease: "linear"`). `measure_audio` meters a sequence's sound (EBU
@@ -409,6 +413,9 @@ kuma cache                                 # how big .kuma/ is: bakes, sampled f
 kuma cache prune                           # delete what the project no longer uses (--all: every bake and frame)
 kuma compile > timeline.mlt                # inspect the MLT graph (or open it in Kdenlive); baked overlays included, --bake bakes the rest
 kuma render --sequence intro               # render one nested sequence instead of the master
+kuma add-media media/                      # every media file in the folder, one edit (several paths too; --recursive, --parent)
+kuma reprobe                               # probe every media entry again after files were replaced; prints what changed
+kuma unused                                # entries no clip places, and those only sequences the master never reaches place
 kuma transcribe --clip c1 --language fr    # whisper.cpp → `subtitles` entry under the media, placed over clip c1
 kuma transcribe screen --replace           # re-transcribe in place: same entry, styling and placement, new words
 kuma transcribe voice --model large-v3 --split 45   # a larger model; entries of about 45 s, cut at pauses
@@ -497,6 +504,10 @@ var), `location-tag`, `lower-third`, `callout-arrow`, `paint-wipe` (a hand-drawn
 drawn on a canvas with `_vendor/kuma-canvas.js` and Rough.js),
 `label-pin`, `section-title`, `countdown`, `watermark` (static), `subtitles` (a `cues` var;
 transcripts share one copy of it). Contract: `library/blueprints/CLAUDE.md`.
+
+**A file replaced on disk** keeps the duration, size and kind it was probed with until a
+right-click on its bin row, **Reload from file** (or `kuma reprobe`, or `reprobe_media`), reads it
+again: one undoable edit, and a toast says what changed.
 
 **Titles** are made from the bin, the way Kdenlive's *Add Title Clip* is: **+ New** (or a
 right-click in the bin, which creates inside the folder under the pointer) lists every

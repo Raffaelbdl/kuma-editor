@@ -9,6 +9,7 @@
 
 use std::path::Path;
 use std::process::Command;
+use std::sync::atomic::AtomicBool;
 
 /// One 100 ms step of the meter, ending at `t` seconds into the file.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -97,7 +98,129 @@ pub fn parse(log: &str) -> Option<Scan> {
     })
 }
 
+/// Where a source is quiet: every sample under `db` dBFS for at least `min` seconds, as
+/// ffmpeg's `silencedetect` reads it. The absolute gate above finds only digital silence,
+/// which a recording never has; a pause in speech is about -35 dB for 0.15 s or more.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Quiet {
+    pub db: f64,
+    pub min: f64,
+}
+
+impl Default for Quiet {
+    fn default() -> Self {
+        Quiet { db: -35.0, min: 0.15 }
+    }
+}
+
+impl Quiet {
+    fn filter(&self) -> String {
+        format!("silencedetect=noise={}dB:d={}", self.db, self.min)
+    }
+}
+
+/// A source file measured over a stretch of it: its loudness and where it is quiet, both
+/// in the file's own seconds.
+#[derive(Debug, Clone, Default)]
+pub struct Measured {
+    pub scan: Scan,
+    /// `(start, end)` of each quiet stretch, in order.
+    pub silences: Vec<(f64, f64)>,
+}
+
+/// Meter `file` over `range` (its own seconds; all of it when `None`) and find where it is
+/// quiet, in one ffmpeg pass: `ebur128` passes the sound on to `silencedetect`. Times come
+/// back in the file's seconds. `progress` hears how many seconds of the range are done, and
+/// `cancel` stops ffmpeg: a long recording takes a while to decode.
+pub fn measure(file: &Path, range: Option<(f64, f64)>, quiet: Quiet, cancel: &AtomicBool, progress: &dyn Fn(f64)) -> Result<Measured, String> {
+    let filters = format!("ebur128=peak=true:framelog=verbose,{}", quiet.filter());
+    let log = run_ffmpeg(file, range, &filters, cancel, &|line| {
+        if line.contains("ebur128") {
+            if let Some(t) = line.split_once(" t:").and_then(|(_, r)| r.split_whitespace().next()?.parse().ok()) {
+                progress(t);
+            }
+        }
+    })?;
+    let from = range.map_or(0.0, |r| r.0);
+    let mut scan = parse(&log).ok_or_else(|| format!("ffmpeg's ebur128 printed nothing this version of kuma can read for {}", file.display()))?;
+    let end = scan.steps.last().map_or(0.0, |s| s.t);
+    for s in &mut scan.steps {
+        s.t += from;
+    }
+    let silences = parse_silences(&log, end).into_iter().map(|(a, b)| (a + from, b + from)).collect();
+    Ok(Measured { scan, silences })
+}
+
+/// Only where `file` is quiet, in its own seconds: `silencedetect` alone, which is quick.
+pub fn silences(file: &Path, quiet: Quiet) -> Result<Vec<(f64, f64)>, String> {
+    let log = run_ffmpeg(file, None, &quiet.filter(), &AtomicBool::new(false), &|_| {})?;
+    // A stretch still open at the end runs to it, which the last line ffmpeg prints says.
+    let end = log.lines().filter_map(|l| l.split_once("time=")?.1.split_whitespace().next().and_then(clock)).last().unwrap_or(f64::INFINITY);
+    Ok(parse_silences(&log, end))
+}
+
+/// `HH:MM:SS.ss` as seconds.
+fn clock(s: &str) -> Option<f64> {
+    s.split(':').try_fold(0.0, |acc, part| Some(acc * 60.0 + part.parse::<f64>().ok()?))
+}
+
+/// ffmpeg reading the audio of `file` (over `range`) through `filters`, discarding the
+/// result: its log, every line of which `on_line` also hears as it comes.
+fn run_ffmpeg(file: &Path, range: Option<(f64, f64)>, filters: &str, cancel: &AtomicBool, on_line: &dyn Fn(&str)) -> Result<String, String> {
+    let mut cmd = Command::new("ffmpeg");
+    cmd.args(["-hide_banner", "-v", "verbose"]);
+    // Before `-i`, so ffmpeg seeks rather than decoding up to the start, and the filters'
+    // clocks start at 0 there.
+    if let Some((a, b)) = range {
+        cmd.args(["-ss", &a.to_string(), "-t", &(b - a).to_string()]);
+    }
+    cmd.arg("-i").arg(file).args(["-vn", "-af", filters, "-f", "null", "-"]);
+    let mut log = String::new();
+    let code = kuma_mlt::melt::run_cancellable(cmd, cancel, |line| {
+        on_line(line);
+        log.push_str(line);
+        log.push('\n');
+    })
+    .map_err(|e| match e {
+        kuma_mlt::MeltError::Cancelled => "cancelled".to_string(),
+        e => format!("ffmpeg: {e}"),
+    })?;
+    if code != Some(0) {
+        let lines: Vec<&str> = log.lines().collect();
+        return Err(format!("ffmpeg could not read the sound of {}: {}", file.display(), lines[lines.len().saturating_sub(5)..].join("\n")));
+    }
+    Ok(log)
+}
+
+/// `silencedetect`'s log: `silence_start: 1.2` then `silence_end: 1.6 | silence_duration: 0.4`.
+/// A stretch the log leaves open runs to `end`.
+pub fn parse_silences(log: &str, end: f64) -> Vec<(f64, f64)> {
+    let value = |line: &str, key: &str| -> Option<f64> { line.split_once(key)?.1.split_whitespace().next()?.parse().ok() };
+    let mut out = Vec::new();
+    let mut open = None;
+    for line in log.lines().filter(|l| l.contains("silencedetect")) {
+        if let Some(a) = value(line, "silence_start:") {
+            open = Some(a.max(0.0));
+        } else if let (Some(b), Some(a)) = (value(line, "silence_end:"), open) {
+            out.push((a, b));
+            open = None;
+        }
+    }
+    if let Some(a) = open.filter(|&a| end > a) {
+        out.push((a, end));
+    }
+    out
+}
+
 impl Scan {
+    /// One value every `step` seconds from the first step on (`step` a multiple of
+    /// [`STEP`]): the short-term loudness, or the momentary one. Value `i` is the window
+    /// ending at `steps[0].t - STEP + (i + 1) · step`.
+    pub fn curve(&self, step: f64, momentary: bool) -> Vec<f64> {
+        let every = ((step / STEP).round() as usize).max(1);
+        self.steps.iter().skip(every - 1).step_by(every).map(|s| if momentary { s.momentary } else { s.short_term }).collect()
+    }
+
     /// The integrated loudness of `[from, to)` seconds: its 400 ms blocks, gated as BS.1770
     /// gates them. `None` for a part too short to hold a block, or silent.
     pub fn integrated_over(&self, from: f64, to: f64) -> Option<f64> {
@@ -200,6 +323,26 @@ mod tests {
         assert_eq!(s.integrated_over(0.0, 0.3), None, "shorter than a block");
         assert_eq!(s.peak_over(0.0, 1.3), -18.0);
         assert_eq!(s.peak_over(2.0, 2.5), -37.5);
+    }
+
+    #[test]
+    fn a_curve_takes_every_nth_step() {
+        let s = scan();
+        assert_eq!(s.curve(0.1, true).len(), 25);
+        let half = s.curve(0.5, true);
+        assert_eq!(half.len(), 5, "0.5 s, 1.0 s … 2.5 s");
+        assert_eq!((half[1], half[2], half[4]), (-20.0, f64::NEG_INFINITY, -40.0), "{half:?}");
+        assert!(s.curve(1.0, false).iter().all(|&v| v == -22.0));
+    }
+
+    #[test]
+    fn quiet_stretches_read_from_the_log_and_one_left_open_runs_to_the_end() {
+        let log = "[silencedetect @ 0x1] silence_start: -0.00133\n[Parsed_ebur128_0 @ 0x5] t: 0.1 …\n\
+                   [silencedetect @ 0x1] silence_end: 0.5 | silence_duration: 0.5\n\
+                   [silencedetect @ 0x1] silence_start: 2.25\n[silencedetect @ 0x1] silence_end: 2.5 | silence_duration: 0.25\n\
+                   [silencedetect @ 0x1] silence_start: 3.75\nsize=N/A time=00:00:04.00 bitrate=N/A\n";
+        assert_eq!(parse_silences(log, 4.0), vec![(0.0, 0.5), (2.25, 2.5), (3.75, 4.0)]);
+        assert_eq!(clock("00:01:04.50"), Some(64.5));
     }
 
     #[test]

@@ -497,6 +497,45 @@ pub struct MeasureAudio {
     /// clip of the sequence that places another sequence (its chapters).
     #[serde(default)]
     pub sections: Option<Vec<Value>>,
+    /// Track ids to silence for this measurement only (the project is not edited).
+    #[serde(default)]
+    pub mute: Option<Vec<String>>,
+    /// Track ids to hear alone, for this measurement only. A track inside a nested sequence
+    /// is heard through the clips that place it; every other track, and every other clip on
+    /// a track on the way, is silenced. Tracks or clips the project mutes stay muted.
+    #[serde(default)]
+    pub solo: Option<Vec<String>>,
+    /// Seconds to wait before returning the job id instead (default 600).
+    #[serde(default)]
+    pub wait_seconds: Option<u64>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct MeasureMedia {
+    /// Bin id of a media entry (audio or video) to measure.
+    #[serde(default)]
+    pub bin: Option<String>,
+    /// Or a file in the project (relative to it). One of the two.
+    #[serde(default)]
+    pub path: Option<String>,
+    /// Optional `[start, end]` source seconds to measure only that stretch.
+    #[serde(default)]
+    pub range: Option<(f64, f64)>,
+    /// Loudness over time: `short_term` (3 s windows, default), `momentary` (400 ms) or `none`.
+    #[serde(default)]
+    pub curve: Option<String>,
+    /// Seconds between curve values (a multiple of 0.1). Default: 0.1, 0.2, 0.5, 1, 2, 5,
+    /// 10… whichever keeps the curve to about 120 values; at most 1200 values.
+    #[serde(default)]
+    pub step: Option<f64>,
+    /// Quiet means every sample under this many dBFS. Default -35 (speech pauses); lower
+    /// it (-50, -60) to find only near-silence, e.g. before a sound effect's onset.
+    #[serde(default)]
+    pub silence_db: Option<f64>,
+    /// …for at least this many seconds. Default 0.15 (a pause between sentences); 1 or
+    /// more to find the gaps between takes.
+    #[serde(default)]
+    pub silence_min: Option<f64>,
     /// Seconds to wait before returning the job id instead (default 600).
     #[serde(default)]
     pub wait_seconds: Option<u64>,
@@ -524,7 +563,7 @@ pub struct Transcribe {
     /// Or a clip id: transcribe what it plays and place the subtitles over it, aligned. One of the two.
     #[serde(default)]
     pub clip: Option<String>,
-    /// Bin id for the subtitles entry. Defaults to `<bin>-subs`.
+    /// Bin id for the subtitles entry (several pieces are `<id>-1`, `<id>-2`…). Defaults to `<bin>-subs`.
     #[serde(default)]
     pub id: Option<String>,
     /// Overwrite the transcript of an entry that already exists (keeping its styling and
@@ -537,6 +576,21 @@ pub struct Transcribe {
     /// Longest cue in characters. Default 1: one cue per word, which the `subtitles` overlay groups into lines itself; 0 keeps whisper's own sentences.
     #[serde(default)]
     pub max_chars: Option<u32>,
+    /// Model: a file in the models folder or its size (`large-v3`, `medium`, `small`); `health` lists `whisper_models`. The default model when omitted; a larger one is much better outside English.
+    #[serde(default)]
+    pub model: Option<String>,
+    /// Seconds of transcript per entry, cut at pauses (default 60; 0 for one entry). Several pieces are `<id>-1`, `<id>-2`…; refused with `replace`, which defaults it to 0.
+    #[serde(default)]
+    pub split: Option<f64>,
+    /// Move cue edges onto the pauses in the sound (default true): whisper's word cues are contiguous, so without it a pause is part of a word.
+    #[serde(default)]
+    pub snap: Option<bool>,
+    /// A pause, for snapping, is every sample under this many dBFS (default -35)…
+    #[serde(default)]
+    pub pause_db: Option<f64>,
+    /// …for at least this many seconds (default 0.15).
+    #[serde(default)]
+    pub pause_min: Option<f64>,
     /// Seconds to wait for the model before returning the job id (default 600).
     #[serde(default)]
     pub wait_seconds: Option<u64>,
@@ -662,9 +716,12 @@ impl KumaServer {
         self.post("/api/bin", &json!({ "path": p.path, "id": p.id, "parent": p.parent, "base_revision": p.base_revision, "origin": "claude: add media" })).await
     }
 
-    #[tool(description = "Transcribe media audio with a local whisper.cpp model into a `subtitles` overlay entry (cues in source seconds, editable as its `cues` var), listed under the media. Pass `clip` to place it over that clip, aligned, on an overlay track; pass `bin` for the entry alone. The new entry's id is minted when the words are in and returned as `bin`; it takes no base_revision, since the model runs for minutes and the patch is composed against the project as it is when it lands. A job still running after `wait_seconds` comes back with its id and `next`: `job_status` with that id and `wait_seconds` waits again, in calls short enough for your client (Claude Code moves a call past 120 s to the background, where it still finishes); `job_status` without an id lists jobs.")]
+    #[tool(description = "Transcribe media audio with a local whisper.cpp model into `subtitles` overlay entries (cues in source seconds, editable as their `cues` var), listed under the media: one per stretch of about `split` seconds (default 60), cut at pauses, each with its own cues and `offset`. Cue edges are moved onto the pauses in the sound, so sentence boundaries can be cut at. Pass `clip` to place them over that clip, aligned, on an overlay track (the pieces it plays, each over its stretch); pass `bin` for the entries alone. Ids are minted when the words are in and returned as `bin` and, for several, `pieces` (`bin`, source `start`/`end`, `cues`); it takes no base_revision, since the model runs for minutes and the patch is composed against the project as it is when it lands. A job still running after `wait_seconds` comes back with its id and `next`: `job_status` with that id and `wait_seconds` waits again, in calls short enough for your client (Claude Code moves a call past 120 s to the background, where it still finishes); `job_status` without an id lists jobs.")]
     async fn transcribe(&self, Parameters(p): Parameters<Transcribe>, ctx: RequestContext<RoleServer>) -> Result<CallToolResult, McpError> {
-        let body = json!({ "bin": p.bin, "clip": p.clip, "id": p.id, "replace": p.replace.unwrap_or(false), "language": p.language, "max_chars": p.max_chars, "origin": "claude: transcribe" });
+        let body = json!({
+            "bin": p.bin, "clip": p.clip, "id": p.id, "replace": p.replace.unwrap_or(false), "language": p.language, "max_chars": p.max_chars,
+            "model": p.model, "split": p.split, "snap": p.snap, "pause_db": p.pause_db, "pause_min": p.pause_min, "origin": "claude: transcribe",
+        });
         self.job("/api/transcribe", &body, Duration::from_secs(p.wait_seconds.unwrap_or(600)), &ctx).await
     }
 
@@ -764,10 +821,16 @@ impl KumaServer {
         self.job("/api/render", &p.body(), Duration::from_secs(p.wait_seconds.unwrap_or(900)), &ctx).await
     }
 
-    #[tool(description = "Measure how loud a sequence is (the master by default): its sound rendered through the real graph, no bakes needed, and metered to EBU R128. Returns integrated loudness (LUFS), loudness range and true peak (dBTP) overall and per section (by default each clip placing a sequence, i.e. each chapter), the five loudest moments, and silent stretches of a second or more. kuma has no limiter, so check this before a final render: a fade that silences music, or effects stacking on a peak, show up here. A job still running after `wait_seconds` comes back with its id and `next`: `job_status` with that id and `wait_seconds` waits again, in calls short enough for your client (Claude Code moves a call past 120 s to the background, where it still finishes); `job_status` without an id lists jobs.")]
+    #[tool(description = "Measure how loud a sequence is (the master by default): its sound rendered through the real graph, no bakes needed, and metered to EBU R128. Returns integrated loudness (LUFS), loudness range and true peak (dBTP) overall and per section (by default each clip placing a sequence, i.e. each chapter), the five loudest moments, and silent stretches of a second or more. kuma has no limiter, so check this before a final render: a fade that silences music, or effects stacking on a peak, show up here. `solo` (track ids, nested ones too) measures the voice or the music alone and `mute` leaves tracks out, for this measurement only: the project is not edited. A job still running after `wait_seconds` comes back with its id and `next`: `job_status` with that id and `wait_seconds` waits again, in calls short enough for your client (Claude Code moves a call past 120 s to the background, where it still finishes); `job_status` without an id lists jobs.")]
     async fn measure_audio(&self, Parameters(p): Parameters<MeasureAudio>, ctx: RequestContext<RoleServer>) -> Result<CallToolResult, McpError> {
-        let body = json!({ "sequence": p.sequence, "range": p.range, "sections": p.sections });
+        let body = json!({ "sequence": p.sequence, "range": p.range, "sections": p.sections, "mute": p.mute.unwrap_or_default(), "solo": p.solo.unwrap_or_default() });
         self.job("/api/audio/measure", &body, Duration::from_secs(p.wait_seconds.unwrap_or(600)), &ctx).await
+    }
+
+    #[tool(description = "Measure one source, a media entry (`bin`) or a file in the project (`path`), optionally over a `range` of it, in its own seconds: integrated loudness (LUFS), loudness range and true peak (dBTP); its loudness over time (`curve`: short-term by default, about 120 values unless `step` says, at most 1200); and its quiet stretches as `[start, end]` pairs (every sample under `silence_db`, default -35 dB, for `silence_min`, default 0.15 s; at most 500 listed). A silence's end is where sound starts: a take, a sentence or a sound effect's onset. For a level a volume keyframe can follow, a pause to cut at, or a take to place. Nothing is stored.")]
+    async fn measure_media(&self, Parameters(p): Parameters<MeasureMedia>, ctx: RequestContext<RoleServer>) -> Result<CallToolResult, McpError> {
+        let body = json!({ "bin": p.bin, "path": p.path, "range": p.range, "curve": p.curve, "step": p.step, "silence_db": p.silence_db, "silence_min": p.silence_min });
+        self.job("/api/media/measure", &body, Duration::from_secs(p.wait_seconds.unwrap_or(600)), &ctx).await
     }
 
     #[tool(description = "Delete what the project's `.kuma/` cache no longer uses: superseded bakes, sampled frames, thumbnails of removed entries. sample_frames leaves PNGs behind, so prune after a long session. Returns what was freed and what is left.")]
@@ -785,12 +848,12 @@ impl KumaServer {
         Ok(ok_json(&resumable(j)))
     }
 
-    #[tool(description = "Cancel a render job, whether it is queued or encoding, or an audio measurement. melt is stopped, the partial file is removed, and the job ends in state `cancelled`. Refused for a job that has finished or cannot be stopped.")]
+    #[tool(description = "Cancel a render job, whether it is queued or encoding, or an audio or media measurement. melt is stopped, the partial file is removed, and the job ends in state `cancelled`. Refused for a job that has finished or cannot be stopped.")]
     async fn cancel_job(&self, Parameters(p): Parameters<JobArg>) -> Result<CallToolResult, McpError> {
         self.post(&format!("/api/jobs/{}/cancel", p.id), &json!({})).await
     }
 
-    #[tool(description = "Daemon health: project path and revision, hyperframes/browser/preview-engine availability, blueprint library dirs and any blueprint manifest that failed to load.")]
+    #[tool(description = "Daemon health: project path and revision, hyperframes/browser/preview-engine availability, whisper and the models `transcribe` can name, blueprint library dirs and any blueprint manifest that failed to load.")]
     async fn health(&self) -> Result<CallToolResult, McpError> {
         let mut h = self.client.get("/api/health").await.map_err(err)?;
         if let Some(obj) = h.as_object_mut() {

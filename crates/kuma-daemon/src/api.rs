@@ -17,7 +17,7 @@ use serde_json::{json, Value};
 use tower_http::services::ServeDir;
 use tower_http::set_header::SetResponseHeaderLayer;
 
-use crate::jobs::{self, MeasureRequest, RenderRequest, SampleRequest, TranscribeRequest};
+use crate::jobs::{self, MeasureRequest, MediaMeasureRequest, RenderRequest, SampleRequest, TranscribeRequest};
 use crate::preview::{self, EngineEvent};
 use crate::state::{lock, read, AppState};
 
@@ -59,6 +59,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/sample", post(sample))
         .route("/api/sample/job", post(sample_job))
         .route("/api/audio/measure", post(measure_audio))
+        .route("/api/media/measure", post(measure_media))
         .route("/api/snapshot", get(snapshot))
         .route("/api/cache", get(cache_usage))
         .route("/api/cache/prune", post(cache_prune))
@@ -185,6 +186,8 @@ async fn health(State(st): S) -> Json<Value> {
         "sequence": st.current_sequence(),
         "preview_error": lock(&st.preview.last_error).clone(),
         "whisper": st.transcriber.available().map(|m| json!(m)).unwrap_or_else(|e| json!({ "error": e })),
+        // What `transcribe` can name as its `model`.
+        "whisper_models": st.transcriber.models(),
     }))
 }
 
@@ -740,8 +743,17 @@ async fn sample_job(State(st): S, Json(req): Json<SampleRequest>) -> Json<Value>
 /// for a long video. The result is `jobs::measure_audio`'s.
 async fn measure_audio(State(st): S, Json(req): Json<MeasureRequest>) -> Json<Value> {
     let s2 = st.clone();
-    let params = json!({ "sequence": req.sequence });
+    let params = json!({ "sequence": req.sequence, "mute": req.mute, "solo": req.solo });
     Json(json!({ "job": jobs::spawn_cancellable(st, "measure", params, move |progress, cancel| jobs::measure_audio(&s2, &req, progress, cancel)) }))
+}
+
+/// How loud one source is and where it is quiet, as a cancellable job: ffmpeg decodes the
+/// whole stretch, which takes a while for a long recording. The result is
+/// `jobs::measure_media`'s.
+async fn measure_media(State(st): S, Json(req): Json<MediaMeasureRequest>) -> Json<Value> {
+    let s2 = st.clone();
+    let params = json!({ "bin": req.bin, "path": req.path, "range": req.range });
+    Json(json!({ "job": jobs::spawn_cancellable(st, "measure-media", params, move |progress, cancel| jobs::measure_media(&s2, &req, progress, cancel)) }))
 }
 
 async fn cache_usage(State(st): S) -> ApiResult {

@@ -278,6 +278,14 @@ pub struct TranscribeRequest {
     /// Without it, naming an entry that exists is refused rather than overwritten.
     #[serde(default)]
     pub replace: bool,
+    /// Cut the transcript at pauses into entries of about this many seconds, each its own
+    /// `subtitles` entry with its own cues and `offset` (`kuma_overlay::split_at_pauses`):
+    /// one long entry bakes as one long clip, and again after every correction. Default
+    /// [`SPLIT_SECONDS`]; 0 keeps one entry. Several pieces are `<id>-1`, `<id>-2`…, and
+    /// from a clip, the pieces it plays, each placed over its stretch. `replace` overwrites
+    /// one entry's words, so with it the default is 0 and a split is refused.
+    #[serde(default)]
+    pub split: Option<f64>,
     #[serde(flatten)]
     pub options: TranscribeOptions,
     #[serde(default = "default_origin")]
@@ -287,10 +295,15 @@ fn default_origin() -> String {
     "ui".into()
 }
 
-/// Transcribe a media entry's audio and add the result to the bin as a `subtitles`
-/// overlay entry under that media, cues in source seconds. From a clip, also place it
-/// over the clip. With `replace`, an entry that is already there keeps everything but its
-/// words. One patch either way, so it is revision-checked and one undo step.
+/// How long a transcript entry is by default, in seconds: past about a minute, a bake is
+/// long enough to wait on.
+pub const SPLIT_SECONDS: f64 = 60.0;
+
+/// Transcribe a media entry's audio and add the result to the bin as `subtitles` overlay
+/// entries under that media, cues in source seconds: one per stretch of about a minute,
+/// cut at pauses (`split`). From a clip, also place them over the clip. With `replace`, an
+/// entry that is already there keeps everything but its words. One patch either way, so it
+/// is revision-checked and one undo step.
 ///
 /// The model runs for minutes, and the document is edited while it does. So nothing about
 /// *where the words go* is decided until they exist: the id, the entry to replace, the
@@ -322,6 +335,15 @@ pub fn transcribe(state: &AppState, req: &TranscribeRequest, progress: &dyn Fn(u
     if let Some(id) = req.id.as_ref().filter(|_| !req.replace) {
         anyhow::ensure!(!project.bin.contains_key(id), "`{id}` already exists; pass `replace` to overwrite its transcript, or a different `id`");
     }
+    let reversed = clip.as_ref().and_then(|(_, id)| project.find_clip(id)).is_some_and(|(_, _, c)| c.speed < 0.0);
+    let split = match req.split {
+        Some(s) if !(s == 0.0 || (s.is_finite() && s >= 5.0)) => anyhow::bail!("`split` is the seconds of transcript per entry, 5 or more, or 0 for one entry"),
+        Some(s) if s > 0.0 && req.replace => anyhow::bail!("`replace` overwrites the words of one entry and `split` makes several: pass `split: 0` with `replace`, or remove the old transcript and transcribe again to split it"),
+        Some(s) if s > 0.0 && reversed => anyhow::bail!("a reversed clip's transcript cannot be split: pass `split: 0`"),
+        Some(s) => s,
+        None if req.replace || reversed => 0.0,
+        None => SPLIT_SECONDS,
+    };
 
     progress(2, "extracting audio");
     let media = resolve_path(state, Path::new(path));
@@ -330,12 +352,12 @@ pub fn transcribe(state: &AppState, req: &TranscribeRequest, progress: &dyn Fn(u
     let cues = state.transcriber.transcribe(&media, &state.config.cache_dir().join("transcripts"), &req.options, &report).map_err(|e| anyhow::anyhow!(e))?;
     progress(90, "adding to the bin");
 
-    let cues_value = serde_json::to_value(&cues)?;
     // Copied outside the edit lock, and only once the words are in.
     let overlay = match existing {
         Some(folder) => folder,
         None => crate::overlays::copy_blueprint(state, SUBTITLES_BLUEPRINT, None)?,
     };
+    let pieces = kuma_overlay::split_at_pauses(&cues, split);
     let (outcome, rev, warnings) = state.apply_built(&req.origin, None, |p| {
         // Everything below reads `p`, the project as it is now — never the snapshot above.
         let media_item = p.bin.get(&bin).ok_or_else(|| anyhow::anyhow!("`{bin}` is gone"))?;
@@ -348,68 +370,137 @@ pub fn transcribe(state: &AppState, req: &TranscribeRequest, progress: &dyn Fn(u
                 Some((seq.clone(), c.clone()))
             }
         };
+        // The pieces this run makes, and where each goes on the clip's sequence: `(start,
+        // end, offset)`. One piece is the clip's whole length, as an unsplit transcript always
+        // was. Of several, a clip makes those it plays a word of, each over the stretch of it
+        // that it plays, its `offset` the source second there; a bin entry makes them all,
+        // unplaced, each `offset` its own start.
+        let made: Vec<(&kuma_overlay::Piece, Option<(f64, f64, f64)>)> = match &placement {
+            None => pieces.iter().map(|piece| (piece, None)).collect(),
+            Some((_, c)) if pieces.len() == 1 => vec![(&pieces[0], Some((c.start, c.end, c.source_in)))],
+            Some((_, c)) => {
+                let (from, to) = (c.source_in, c.source_in + c.duration() * c.speed);
+                let at = |s: f64| c.start + (s - from) / c.speed;
+                let made: Vec<_> = pieces
+                    .iter()
+                    .filter(|piece| cues[piece.cues.clone()].iter().any(|q| q.end > from && q.start < to))
+                    .map(|piece| {
+                        let (a, b) = (piece.start.max(from), piece.end.min(to));
+                        (piece, Some((if a <= from { c.start } else { at(a) }, if b >= to { c.end } else { at(b) }, a)))
+                    })
+                    .collect();
+                anyhow::ensure!(!made.is_empty(), "clip `{}` plays none of the words", c.id);
+                made
+            }
+        };
+        let several = made.len() > 1;
         // Where the words go, decided here and nowhere earlier: the entry named, else the
         // one `replace` means, else a free name minted with the words already in hand.
-        let target = req.id.clone().or_else(|| req.replace.then(|| format!("{bin}-subs")));
-        let (id, replacing) = match target {
-            Some(id) => match p.bin.get(&id) {
-                Some(existing) => {
-                    anyhow::ensure!(req.replace, "`{id}` already exists; pass `replace` to overwrite its transcript, or a different `id`");
-                    anyhow::ensure!(existing.is_overlay(), "`{id}` is not an overlay entry");
-                    (id, true)
+        // Several pieces are `<id>-1`, `<id>-2`…, all of them free.
+        let ids: Vec<(String, bool)> = if several {
+            let names = |base: &str| (1..=made.len()).map(|k| format!("{base}-{k}")).collect::<Vec<_>>();
+            let free = |base: &str| names(base).iter().all(|id| !p.bin.contains_key(id));
+            let base = match &req.id {
+                Some(id) => {
+                    anyhow::ensure!(free(id), "`{id}-1` to `{id}-{}` must all be free to split the transcript under `{id}`; pass a different `id`", made.len());
+                    id.clone()
                 }
-                // Named, or asked to replace, something that is not there: make it.
-                None => (id, false),
-            },
-            None => (p.free_bin_id(&format!("{bin}-subs")), false),
+                None => std::iter::once(format!("{bin}-subs")).chain((2..).map(|n| format!("{bin}-subs-{n}"))).find(|b| free(b)).unwrap_or_default(),
+            };
+            names(&base).into_iter().map(|id| (id, false)).collect()
+        } else {
+            let target = req.id.clone().or_else(|| req.replace.then(|| format!("{bin}-subs")));
+            vec![match target {
+                Some(id) => match p.bin.get(&id) {
+                    Some(existing) => {
+                        anyhow::ensure!(req.replace, "`{id}` already exists; pass `replace` to overwrite its transcript, or a different `id`");
+                        anyhow::ensure!(existing.is_overlay(), "`{id}` is not an overlay entry");
+                        (id, true)
+                    }
+                    // Named, or asked to replace, something that is not there: make it.
+                    None => (id, false),
+                },
+                None => (p.free_bin_id(&format!("{bin}-subs")), false),
+            }]
         };
 
         let mut ops = Vec::new();
-        if replacing {
-            // Only the vars the transcript owns: the entry's own styling stays as it is.
-            ops.push(bin_op(&id, "/source/vars/cues", cues_value.clone())?);
-            if let Some((_, c)) = &placement {
-                ops.push(bin_op(&id, "/source/vars/offset", c.source_in.into())?);
-            }
-        } else {
-            let mut vars = serde_json::Map::from_iter([("cues".to_string(), cues_value.clone())]);
-            if let Some((_, c)) = &placement {
-                vars.insert("offset".into(), c.source_in.into());
-            }
-            let entry = kuma_core::BinItem {
-                name: format!("Subtitles: {}", media_item.display_name(&bin)),
-                source: BinSource::Overlay { overlay: overlay.clone(), vars },
-                meta: None,
-                parent: Some(bin.clone()),
-                order: None,
-                volume: 1.0,
-            };
-            // The entry first: the clip that places it must find it.
-            ops.push(bin_op(&id, "", serde_json::to_value(entry)?)?);
-        }
-        // Place it, unless it is on a timeline already — a re-run must not stack a second
-        // clip on the one the first run put there.
-        let place = placement.as_ref().filter(|_| !p.all_clips().any(|(_, _, c)| c.bin == id));
-        if let Some((seq, c)) = place {
-            // The overlay clip copies the media clip's start, end and speed, so at every
-            // timeline instant the overlay's own time is `source − in`: the cues line up.
-            let tracks = &p.seq(seq).ok_or_else(|| anyhow::anyhow!("`{seq}` is not a sequence"))?.tracks;
-            let free = |t: &kuma_core::Track| t.kind == kuma_core::TrackKind::Overlay && !t.clips.iter().any(|x| x.start < c.end && x.end > c.start);
-            let ti = match tracks.iter().position(free) {
-                Some(ti) => ti,
-                None => {
-                    let track = kuma_core::Track { id: p.free_track_or_clip_id("o"), kind: kuma_core::TrackKind::Overlay, name: "Subtitles".into(), muted: false, hidden: false, clips: vec![], transitions: vec![] };
-                    ops.push(add_op(&format!("/bin/{seq}/source/tracks/-"), serde_json::to_value(track)?)?);
-                    tracks.len()
+        // The overlay track the clips go on, found once: they are side by side within the
+        // media clip's range.
+        let mut track: Option<(String, usize)> = None;
+        let mut clip_ids = std::collections::HashSet::new();
+        let mut report = Vec::new();
+        for ((piece, place), (id, replacing)) in made.iter().zip(&ids) {
+            let place = *place;
+            let words = serde_json::to_value(&cues[piece.cues.clone()])?;
+            // A piece's `offset` is where its stretch starts, placed or not; an unsplit
+            // transcript has one only when placed, as it always had.
+            let offset = place.map(|(_, _, o)| o).or_else(|| several.then_some(piece.start));
+            if *replacing {
+                // Only the vars the transcript owns: the entry's own styling stays as it is.
+                ops.push(bin_op(id, "/source/vars/cues", words)?);
+                if let Some(o) = offset {
+                    ops.push(bin_op(id, "/source/vars/offset", o.into())?);
                 }
-            };
-            let placed = kuma_core::Clip { id: p.free_track_or_clip_id("subs"), start: c.start, end: c.end, bin: id.clone(), source_in: 0.0, speed: c.speed, volume: 1.0, muted: false, effects: vec![], label: String::new(), group: String::new() };
-            ops.push(add_op(&format!("/bin/{seq}/source/tracks/{ti}/clips/-"), serde_json::to_value(placed)?)?);
+            } else {
+                let mut vars = serde_json::Map::from_iter([("cues".to_string(), words)]);
+                if let Some(o) = offset {
+                    vars.insert("offset".into(), o.into());
+                }
+                let name = format!("Subtitles: {}", media_item.display_name(&bin));
+                let entry = kuma_core::BinItem {
+                    name: if several { format!("{name} ({}/{})", report.len() + 1, made.len()) } else { name },
+                    source: BinSource::Overlay { overlay: overlay.clone(), vars },
+                    meta: None,
+                    parent: Some(bin.clone()),
+                    order: None,
+                    volume: 1.0,
+                };
+                // The entry first: the clip that places it must find it.
+                ops.push(bin_op(id, "", serde_json::to_value(entry)?)?);
+            }
+            // Place it, unless it is on a timeline already — a re-run must not stack a second
+            // clip on the one the first run put there.
+            let place = place.zip(placement.as_ref()).filter(|_| !p.all_clips().any(|(_, _, c)| &c.bin == id));
+            if let Some(((start, end, _), (seq, c))) = place {
+                // The overlay clip has the media clip's speed, and starts where its stretch
+                // does, so at every timeline instant the overlay's own time is `source −
+                // offset`: the cues line up.
+                if track.is_none() {
+                    let tracks = &p.seq(seq).ok_or_else(|| anyhow::anyhow!("`{seq}` is not a sequence"))?.tracks;
+                    let free = |t: &kuma_core::Track| t.kind == kuma_core::TrackKind::Overlay && !t.clips.iter().any(|x| x.start < c.end && x.end > c.start);
+                    let ti = match tracks.iter().position(free) {
+                        Some(ti) => ti,
+                        None => {
+                            let new = kuma_core::Track { id: p.free_track_or_clip_id("o"), kind: kuma_core::TrackKind::Overlay, name: "Subtitles".into(), muted: false, hidden: false, clips: vec![], transitions: vec![] };
+                            ops.push(add_op(&format!("/bin/{seq}/source/tracks/-"), serde_json::to_value(new)?)?);
+                            tracks.len()
+                        }
+                    };
+                    track = Some((seq.clone(), ti));
+                }
+                let (seq, ti) = track.clone().unwrap_or_default();
+                // As `free_track_or_clip_id` would, but several, none of them the same.
+                let taken: std::collections::HashSet<&str> = p.sequences().flat_map(|(_, s)| s.tracks.iter().flat_map(|t| std::iter::once(t.id.as_str()).chain(t.clips.iter().map(|c| c.id.as_str())))).collect();
+                let clip_id = (1..).map(|n| format!("subs{n}")).find(|c| !taken.contains(c.as_str()) && !clip_ids.contains(c)).unwrap_or_default();
+                clip_ids.insert(clip_id.clone());
+                let placed = kuma_core::Clip { id: clip_id, start, end, bin: id.clone(), source_in: 0.0, speed: c.speed, volume: 1.0, muted: false, effects: vec![], label: String::new(), group: String::new() };
+                ops.push(add_op(&format!("/bin/{seq}/source/tracks/{ti}/clips/-"), serde_json::to_value(placed)?)?);
+            }
+            report.push((id.clone(), *replacing, place.is_some(), (*piece).clone()));
         }
-        Ok((ops, (id, replacing, place.is_some())))
+        Ok((ops, report))
     })?;
-    let (id, replaced, placed) = outcome;
-    Ok(serde_json::json!({ "bin": id, "cues": cues.len(), "replaced": replaced, "placed": placed, "revision": rev, "warnings": warnings }))
+    let (id, replaced) = (outcome[0].0.clone(), outcome[0].1);
+    let placed = outcome.iter().any(|o| o.2);
+    let mut out = serde_json::json!({ "bin": id, "cues": cues.len(), "replaced": replaced, "placed": placed, "revision": rev, "warnings": warnings });
+    if outcome.len() > 1 {
+        // Seconds of the source each stands for; the last runs to the end of the words.
+        let last = cues.last().map_or(0.0, |c| c.end);
+        let secs = |v: f64| (v.min(last) * 100.0).round() / 100.0;
+        out["pieces"] = outcome.iter().map(|(id, _, placed, piece)| serde_json::json!({ "bin": id, "start": secs(piece.start), "end": secs(piece.end), "cues": piece.cues.len(), "placed": placed })).collect();
+    }
+    Ok(out)
 }
 
 fn add_op(pointer: &str, value: serde_json::Value) -> anyhow::Result<json_patch::PatchOperation> {
@@ -839,6 +930,12 @@ pub struct MeasureRequest {
     /// another sequence: its chapters, if it is built of them.
     #[serde(default)]
     pub sections: Option<Vec<Section>>,
+    /// Track ids to silence for this measurement only. See [`audition`].
+    #[serde(default)]
+    pub mute: Vec<String>,
+    /// Track ids to hear alone, wherever they are nested. See [`audition`].
+    #[serde(default)]
+    pub solo: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -860,8 +957,10 @@ pub struct Section {
 /// kuma has no limiter, so loudness and peak are whatever the gains make them; this is how
 /// an agent that cannot listen finds out, before and after rendering.
 pub fn measure_audio(state: &AppState, req: &MeasureRequest, progress: &dyn Fn(u8, &str), cancel: &AtomicBool) -> anyhow::Result<serde_json::Value> {
-    let project = read(&state.project).clone();
+    let mut project = read(&state.project).clone();
     let sequence = project.sequence_or_master(req.sequence.as_deref()).map_err(|e| anyhow::anyhow!(e))?.clone();
+    // On the copy that is compiled: listening to one part never costs the document an edit.
+    let silenced = audition(&mut project, &sequence, &req.mute, &req.solo)?;
     let total = project.seq_duration(&sequence);
     let (from, to) = req.range.unwrap_or((0.0, total));
     anyhow::ensure!(from >= 0.0 && to > from, "the range must be `[start, end]` with 0 ≤ start < end");
@@ -915,7 +1014,7 @@ pub fn measure_audio(state: &AppState, req: &MeasureRequest, progress: &dyn Fn(u
         .map(|s| serde_json::json!({ "t": secs(s.t - kuma_overlay::loudness::STEP + offset), "true_peak": db(s.true_peak), "short_term": db(s.short_term) }))
         .collect();
     let silences: Vec<serde_json::Value> = scan.silences(1.0).iter().map(|(a, b)| serde_json::json!({ "start": secs(a + offset), "end": secs(b + offset) })).collect();
-    Ok(serde_json::json!({
+    let mut out = serde_json::json!({
         "sequence": sequence,
         "start": secs(from),
         "end": secs(to),
@@ -926,7 +1025,224 @@ pub fn measure_audio(state: &AppState, req: &MeasureRequest, progress: &dyn Fn(u
         "hottest": hottest,
         "silences": silences,
         "note": "LUFS and dBTP of the mix as the graph builds it, before encoding; the encoded file's true peak can come out a little higher. `null` is silence.",
-    }))
+    });
+    if !req.mute.is_empty() || !req.solo.is_empty() {
+        out["mute"] = serde_json::json!(req.mute);
+        out["solo"] = serde_json::json!(req.solo);
+        out["silenced"] = serde_json::json!({ "tracks": silenced.tracks, "clips": silenced.clips });
+    }
+    Ok(out)
+}
+
+/// What [`audition`] silenced on top of what the document already does.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Silenced {
+    pub tracks: usize,
+    pub clips: usize,
+}
+
+/// Mute and solo tracks of `project` — a copy about to be compiled, never the document —
+/// for listening to one part of `root`.
+///
+/// `mute` silences those tracks. `solo` keeps those tracks and the way to them, and silences
+/// everything else `root` sounds:
+/// - a **soloed** track plays as it is, with everything it nests;
+/// - a track **leading** to a soloed one (it places a sequence that holds a soloed track, or
+///   a track leading to one) keeps the clips that lead there and loses its other clips, so
+///   the master's picture track carries the soloed voice of one chapter and not the
+///   others;
+/// - every other track of a sequence on the way is muted.
+///
+/// A sequence compiles to one tractor however often it is placed, so a sequence that holds
+/// a solo plays only that, wherever it is placed — under a soloed track too. A sequence
+/// holding none plays whole wherever a soloed track reaches it. Mute and solo only ever add
+/// silence: a track or clip the document mutes stays muted, so soloing one is refused.
+///
+/// Ids are tracks of `root` or of a sequence it nests (ids are unique across the project);
+/// anything else is refused, since a typo would otherwise measure the whole mix and look
+/// like an answer.
+pub fn audition(project: &mut Project, root: &str, mute: &[String], solo: &[String]) -> anyhow::Result<Silenced> {
+    if mute.is_empty() && solo.is_empty() {
+        return Ok(Silenced::default());
+    }
+    // Innermost first, so a sequence is settled before anything that places it.
+    let order = project.compile_order(root).map_err(|ring| anyhow::anyhow!("`{}` contains itself", ring.join(" → ")))?;
+    let reached: std::collections::HashSet<&str> = order.iter().map(String::as_str).collect();
+    for id in mute.iter().chain(solo) {
+        let Some((seq, track)) = project.sequences().find_map(|(s, seq)| seq.tracks.iter().find(|t| &t.id == id).map(|t| (s, t))) else {
+            anyhow::bail!("no track `{id}` in this project");
+        };
+        anyhow::ensure!(reached.contains(seq.as_str()), "track `{id}` is on `{seq}`, which `{root}` does not play");
+        anyhow::ensure!(track.kind != kuma_core::TrackKind::Overlay, "track `{id}` is an overlay track, which makes no sound");
+        anyhow::ensure!(!(track.muted && solo.contains(id)), "track `{id}` is muted in the project, and a solo does not unmute it: unmute it with an edit to hear it");
+        anyhow::ensure!(!(mute.contains(id) && solo.contains(id)), "track `{id}` is both muted and soloed");
+    }
+    let soloed = |t: &kuma_core::Track| solo.contains(&t.id);
+    // The sequences that hold a solo: a soloed track, or a clip placing one that does.
+    let mut holds: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for id in &order {
+        let Some(seq) = project.seq(id) else { continue };
+        if seq.tracks.iter().any(|t| !t.muted && (soloed(t) || t.clips.iter().any(|c| !c.muted && holds.contains(&c.bin)))) {
+            holds.insert(id.clone());
+        }
+    }
+    anyhow::ensure!(solo.is_empty() || holds.contains(root), "nothing `{root}` plays leads to the soloed tracks: a track or clip on the way is muted");
+    let mut silenced = Silenced::default();
+    for id in &order {
+        let Some(kuma_core::BinItem { source: BinSource::Sequence(seq), .. }) = project.bin.get_mut(id) else { continue };
+        for track in &mut seq.tracks {
+            if track.muted || soloed(track) || track.kind == kuma_core::TrackKind::Overlay {
+                continue;
+            }
+            if mute.contains(&track.id) || (holds.contains(id) && !track.clips.iter().any(|c| holds.contains(&c.bin))) {
+                track.muted = true;
+                silenced.tracks += 1;
+                continue;
+            }
+            if holds.contains(id) {
+                for clip in track.clips.iter_mut().filter(|c| !c.muted && !holds.contains(&c.bin)) {
+                    clip.muted = true;
+                    silenced.clips += 1;
+                }
+            }
+        }
+    }
+    Ok(silenced)
+}
+
+/// What to measure of one source, and how finely.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct MediaMeasureRequest {
+    /// A media entry of the bin.
+    #[serde(default)]
+    pub bin: Option<String>,
+    /// Or a file in the project: relative to it, or absolute under it.
+    #[serde(default)]
+    pub path: Option<String>,
+    /// `[start, end]` source seconds; all of it when absent.
+    #[serde(default)]
+    pub range: Option<(f64, f64)>,
+    /// The loudness over time: `short_term` (3 s windows, the default), `momentary` (400 ms)
+    /// or `none`.
+    #[serde(default)]
+    pub curve: Option<String>,
+    /// Seconds between the curve's values, a multiple of 0.1. By default the step of
+    /// 0.1, 0.2, 0.5, 1, 2, 5, 10, 15, 30 or 60 s that keeps it to [`CURVE_POINTS`] values.
+    #[serde(default)]
+    pub step: Option<f64>,
+    /// What counts as quiet: every sample under this many dBFS (default -35)…
+    #[serde(default)]
+    pub silence_db: Option<f64>,
+    /// …for at least this many seconds (default 0.15).
+    #[serde(default)]
+    pub silence_min: Option<f64>,
+}
+
+/// About how many values a curve has when no step is asked for: one screen of numbers.
+pub const CURVE_POINTS: f64 = 120.0;
+/// The most a curve may have: a 20-minute file at 1 s.
+pub const MAX_CURVE_POINTS: usize = 1200;
+/// The most quiet stretches a result lists; the rest are counted.
+pub const MAX_SILENCES: usize = 500;
+
+/// How loud one source is, and where it is quiet: a media entry or a file in the project,
+/// read by ffmpeg in one pass (`kuma_overlay::loudness::measure`), in the file's own
+/// seconds. What is otherwise `ffmpeg -af ebur128` and `silencedetect` by hand: a take's
+/// level, a music bed's level over time to key a volume by, the pauses of a voice, and the
+/// onset of a sound effect, which is where a silence ends.
+///
+/// Measured, never stored: the result depends on the stretch and the threshold asked for,
+/// and the bin's probed metadata is already a copy of the file that can go stale.
+pub fn measure_media(state: &AppState, req: &MediaMeasureRequest, progress: &dyn Fn(u8, &str), cancel: &AtomicBool) -> anyhow::Result<serde_json::Value> {
+    let project = read(&state.project).clone();
+    let file = match (&req.bin, &req.path) {
+        (Some(id), None) => {
+            let item = project.bin.get(id).ok_or_else(|| anyhow::anyhow!("no bin entry `{id}`"))?;
+            let BinSource::File { path, kind, .. } = &item.source else { anyhow::bail!("`{id}` is not a media file") };
+            anyhow::ensure!(*kind != kuma_core::MediaKind::Image, "`{id}` is a still image, which makes no sound");
+            resolve_path(state, Path::new(path))
+        }
+        (None, Some(path)) => {
+            let file = resolve_path(state, Path::new(path)).canonicalize().map_err(|e| anyhow::anyhow!("cannot read `{path}`: {e}"))?;
+            anyhow::ensure!(file.starts_with(state.config.project_root().canonicalize()?), "`{path}` is not inside the project");
+            file
+        }
+        _ => anyhow::bail!("pass exactly one of `bin` or `path`"),
+    };
+    let name = req.bin.clone().or_else(|| req.path.clone()).unwrap_or_default();
+    // Probed now rather than read from the bin: what is measured is the file as it is.
+    let probe = kuma_overlay::probe(&file).map_err(|e| anyhow::anyhow!(e))?;
+    anyhow::ensure!(probe.meta.has_audio, "`{name}` has no sound");
+    let duration = probe.meta.duration.ok_or_else(|| anyhow::anyhow!("cannot tell how long `{name}` is"))?;
+    let (from, to) = req.range.unwrap_or((0.0, duration));
+    anyhow::ensure!(from.is_finite() && to.is_finite() && from >= 0.0 && to > from, "the range must be `[start, end]` with 0 ≤ start < end");
+    let to = to.min(duration);
+    anyhow::ensure!(to > from, "`{name}` is {duration:.2} s long, so there is nothing after {from} s to measure");
+    let length = to - from;
+
+    let momentary = match req.curve.as_deref().unwrap_or("short_term") {
+        "short_term" => Some(false),
+        "momentary" => Some(true),
+        "none" => None,
+        other => anyhow::bail!("`curve` is `short_term`, `momentary` or `none`, not `{other}`"),
+    };
+    let step = match req.step {
+        Some(s) => {
+            anyhow::ensure!(s.is_finite() && s >= 0.1, "`step` is seconds, 0.1 or more");
+            (s * 10.0).round() / 10.0
+        }
+        None => [0.1, 0.2, 0.5, 1.0, 2.0, 5.0, 10.0, 15.0, 30.0, 60.0].into_iter().find(|s| length / s <= CURVE_POINTS).unwrap_or_else(|| (length / CURVE_POINTS / 60.0).ceil() * 60.0),
+    };
+    let points = (length / step).floor() as usize;
+    if momentary.is_some() && points > MAX_CURVE_POINTS {
+        let least = (length / MAX_CURVE_POINTS as f64 * 10.0).ceil() / 10.0;
+        anyhow::bail!("a curve every {step} s over {length:.0} s is {points} values, and the most is {MAX_CURVE_POINTS}: pass a `step` of {least} s or more, a shorter `range`, or `curve: none`");
+    }
+    let quiet = kuma_overlay::loudness::Quiet { db: req.silence_db.unwrap_or(-35.0), min: req.silence_min.unwrap_or(0.15) };
+    anyhow::ensure!(quiet.db.is_finite() && (-120.0..0.0).contains(&quiet.db), "`silence_db` is dBFS, under 0 (speech pauses are about -35)");
+    anyhow::ensure!(quiet.min.is_finite() && quiet.min > 0.0 && quiet.min <= 60.0, "`silence_min` is seconds, more than 0");
+
+    progress(0, "reading the sound");
+    let report = |t: f64| progress((t / length * 100.0).clamp(0.0, 99.0) as u8, &format!("metering {t:.0} of {length:.0} s"));
+    let m = kuma_overlay::loudness::measure(&file, req.range.map(|_| (from, to)), quiet, cancel, &report).map_err(|e| anyhow::anyhow!(e))?;
+
+    let db = |v: f64| v.is_finite().then(|| (v * 10.0).round() / 10.0);
+    let secs = |v: f64| (v * 100.0).round() / 100.0 + 0.0;
+    let curve = momentary.map(|momentary| {
+        let values: Vec<Option<f64>> = m.scan.curve(step, momentary).into_iter().map(|v| db(v).filter(|&v| v > kuma_overlay::loudness::SILENT_LUFS)).collect();
+        serde_json::json!({
+            "of": if momentary { "momentary" } else { "short_term" },
+            "window": if momentary { 0.4 } else { 3.0 },
+            "start": secs(from + step),
+            "step": step,
+            "lufs": values,
+        })
+    });
+    let silences: Vec<[f64; 2]> = m.silences.iter().take(MAX_SILENCES).map(|&(a, b)| [secs(a), secs(b)]).collect();
+    let mut out = serde_json::json!({
+        "bin": req.bin,
+        "path": project_relative_to(state, &file),
+        "start": secs(from),
+        "end": secs(to),
+        "integrated": m.scan.integrated.and_then(db),
+        "range": db(m.scan.range),
+        "true_peak": db(m.scan.true_peak),
+        "curve": curve,
+        "silence": { "db": quiet.db, "min": quiet.min },
+        "silences": silences,
+        "note": "Seconds are the file's own. `curve.lufs[i]` is the loudness of the `window` seconds ending at `curve.start + i·step`, null under -70 LUFS. `silences` are [start, end] pairs: where sound stops, and where it starts again (an onset).",
+    });
+    if m.silences.len() > MAX_SILENCES {
+        out["silences_total"] = m.silences.len().into();
+    }
+    Ok(out)
+}
+
+/// `p` relative to the project when it is inside it.
+fn project_relative_to(state: &AppState, p: &Path) -> PathBuf {
+    let root = state.config.project_root();
+    let real = root.canonicalize().unwrap_or_else(|_| root.clone());
+    p.strip_prefix(&root).or_else(|_| p.strip_prefix(&real)).map(Path::to_path_buf).unwrap_or_else(|_| p.to_path_buf())
 }
 
 /// A sequence's chapters: its clips that place another sequence, in time order.

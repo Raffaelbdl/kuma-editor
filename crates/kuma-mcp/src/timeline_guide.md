@@ -98,24 +98,38 @@ Sound: `measure_audio` renders a sequence's sound through the real graph (no ove
 meters it: integrated loudness (LUFS), range and true peak (dBTP), overall and per chapter (each
 clip placing a sequence, or the `sections` you name), the loudest moments and every silent stretch
 of a second or more. kuma has no limiter, so loudness and peak are whatever the gains make them:
-measure before a final render, and read the silences against what you meant.
+measure before a final render, and read the silences against what you meant. To measure one part
+alone, pass track ids as `solo` (the voice, the music bed) or `mute`: they apply to that
+measurement only, never to the project. A soloed track inside a nested sequence is heard through
+the clips placing it, and everything else on the way is silenced.
 
-Subtitles: `transcribe` runs a local speech-to-text model (whisper.cpp) and adds a `subtitles`
-overlay entry whose `cues` var is `[{start, end, text}, …]` in source seconds, one cue per word (the
+`measure_media` measures one source instead (a media `bin` entry or a `path` in the project, whole or
+a `range`, in its own seconds), with no ffmpeg by hand: loudness, range and true peak; a loudness
+`curve` to key a music bed's volume by (short-term every `step` seconds, about 120 values by
+default); and its quiet stretches as `[start, end]` pairs. Quiet is every sample under `silence_db`
+(-35) for `silence_min` (0.15 s): speech pauses to cut a voice-over at. Raise `silence_min` to 1 s
+to find the gaps between takes; lower `silence_db` to -50 to find where a sound effect starts (the
+end of the silence before it).
+
+Subtitles: `transcribe` runs a local speech-to-text model (whisper.cpp) and adds `subtitles`
+overlay entries whose `cues` var is `[{start, end, text}, …]` in source seconds, one cue per word (the
 overlay groups them by its `words_per_line` var and can stress the word being said), listed under the media
-(`parent`). Given a `clip`, it also places the subtitles over that clip, aligned; given a `bin`, the
-entry is yours to place (set its `offset` var to a trimmed clip's `in`). Fix a misheard word by
-patching the cue's `text`; re-transcribe with `replace` to overwrite the words in place and keep the
+(`parent`). Cue edges are moved onto the pauses in the sound (`snap`, on by default; `pause_db`,
+`pause_min` say what a pause is), so a gap between cues is a real pause and a sentence boundary taken
+from them can be cut at. Given a `clip`, it also places the subtitles over that clip, aligned; given a `bin`, the
+entries are yours to place (each `offset` var is the source second its clip must start at). Fix a misheard word by
+patching the cue's `text`; re-transcribe with `replace` to overwrite one entry's words in place and keep the
 entry's styling and placement, and with `language` (an ISO 639-1 code) to force the language rather
-than detect it. `parent` on a bin entry is organisation only: the entry it is listed under
+than detect it. `model` picks a larger model than the default (`large-v3`, `medium`: much better
+outside English; `health` lists `whisper_models`). `parent` on a bin entry is organisation only: the entry it is listed under
 in the browser, which can be any entry or a folder (`{"source": {"folder": true}}`, never placeable);
 `order` sorts siblings there (ordered ones first, the rest by id).
 
-**Never leave a transcript longer than about a minute in one entry.** `transcribe` puts a whole
-recording in one entry, so split it straight after: one `subtitles` entry per stretch of up to about
-60 s, cut at a pause between cues, each holding only its own cues. Give each the same styling vars,
-`offset` set to the stretch's first source second, and place it over that stretch of the clip. One
-transcript over a 20-minute recording bakes as a single 20-minute clip, again after every correction.
+**A transcript is cut into entries of about a minute**, since one entry bakes as one clip, again
+after every correction. `transcribe` cuts at the best pause near every `split` seconds (default 60;
+0 for one entry): `<id>-1`, `<id>-2`… each with its own cues and `offset`, returned as `pieces`. From
+a clip, it makes the pieces the clip plays and places each over its stretch. `replace` overwrites one
+entry and refuses `split`: to redo a split transcript, remove its pieces and transcribe again.
 
 Vertical (9:16) is only
 `width`/`height`: patch them to 1080×1920 (or swap them) and every preset renders portrait.

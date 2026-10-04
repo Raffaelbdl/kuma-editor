@@ -148,7 +148,8 @@ pub fn render(job: &RenderJob, cancel: &AtomicBool, mut on_progress: impl FnMut(
 }
 
 /// Run `cmd`, handing each non-empty stderr line to `on_line`, and return its exit code.
-fn run_cancellable(mut cmd: Command, cancel: &AtomicBool, mut on_line: impl FnMut(&str)) -> Result<Option<i32>, MeltError> {
+/// Public for the other long subprocesses a job can stop: ffmpeg metering a long file.
+pub fn run_cancellable(mut cmd: Command, cancel: &AtomicBool, mut on_line: impl FnMut(&str)) -> Result<Option<i32>, MeltError> {
     cmd.stdout(Stdio::null()).stderr(Stdio::piped());
     let mut child = cmd.spawn()?;
     let pid = child.id();

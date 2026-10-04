@@ -85,3 +85,105 @@ fn a_sequence_is_measured_whole_by_chapter_and_where_it_is_silent() {
     let quiet = part["silences"].as_array().unwrap();
     assert!(quiet.len() == 1 && (f(&quiet[0]["start"]) - 5.0).abs() < 0.15 && (f(&quiet[0]["end"]) - 6.0).abs() < 0.15, "{part:#}");
 }
+
+/// A master whose picture track places two scenes, each with its own voice track, and a
+/// music bed under both that runs on after them; the first scene also has a sound effect.
+/// Three tones at distinct pitches, so each part is its own level: the voice in the second
+/// scene 6 dB under the first, the music 12 dB under the voice.
+const NESTED: &str = r##"{
+  "version": 7, "name": "t", "master": "main",
+  "fps": { "num": 30, "den": 1 }, "width": 320, "height": 240, "sample_rate": 48000,
+  "bin": {
+    "voice": { "name": "Voice", "source": { "path": "voice.wav", "kind": "audio" } },
+    "music": { "name": "Music", "source": { "path": "music.wav", "kind": "audio" } },
+    "sfx": { "name": "Sfx", "source": { "path": "sfx.wav", "kind": "audio" } },
+    "sc1": { "name": "Scene one", "source": { "tracks": [
+      { "id": "va", "kind": "audio", "clips": [ { "id": "v1", "start": 0, "end": 4, "bin": "voice" } ] },
+      { "id": "fx", "kind": "audio", "clips": [ { "id": "f1", "start": 2, "end": 3, "bin": "sfx" } ] }
+    ] } },
+    "sc2": { "name": "Scene two", "source": { "tracks": [
+      { "id": "vb", "kind": "audio", "clips": [ { "id": "v2", "start": 0, "end": 4, "bin": "voice", "volume": 0.5 } ] }
+    ] } },
+    "unused": { "name": "Unused", "source": { "tracks": [
+      { "id": "ux", "kind": "audio", "clips": [ { "id": "u1", "start": 0, "end": 1, "bin": "voice" } ] }
+    ] } },
+    "main": { "name": "Main", "source": { "tracks": [
+      { "id": "pic", "kind": "video", "clips": [
+        { "id": "ch1", "start": 0, "end": 4, "bin": "sc1" },
+        { "id": "ch2", "start": 5, "end": 9, "bin": "sc2" } ] },
+      { "id": "bed", "kind": "audio", "clips": [ { "id": "m1", "start": 0, "end": 12, "bin": "music", "volume": 0.25 } ] },
+      { "id": "o1", "kind": "overlay", "clips": [] }
+    ] } }
+  }
+}"##;
+
+/// Solo and mute are for one measurement: applied to the copy that is compiled, never to
+/// the document. Soloing a track inside a nested sequence hears it through the track that
+/// places that sequence, and nothing else that track or any other carries.
+#[test]
+fn a_track_is_heard_alone_wherever_it_is_nested() {
+    if !kuma_overlay::media::ffprobe_available() || !kuma_mlt::melt::melt_available() {
+        eprintln!("ffmpeg/melt not available; skipping");
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    for (name, tone) in [("voice", "sine=frequency=440:duration=6"), ("music", "sine=frequency=660:duration=20"), ("sfx", "sine=frequency=880:duration=2")] {
+        let out = dir.path().join(format!("{name}.wav")).to_string_lossy().into_owned();
+        kuma_overlay::media::ffmpeg(&["-f".into(), "lavfi".into(), "-i".into(), format!("{tone}:sample_rate=48000"), "-ac".into(), "2".into(), out]).unwrap();
+    }
+    let project_file = dir.path().join("t.kuma.json");
+    std::fs::write(&project_file, NESTED).unwrap();
+    let repo_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let config = Config { project_file, repo_root, library_dirs: vec![dir.path().join("library")], bind: "127.0.0.1:0".parse().unwrap() };
+    let state = Arc::new(AppState::load(config).unwrap());
+    let before = serde_json::to_value(&*state.project.read().unwrap()).unwrap();
+
+    let ids = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+    let measure = |mute: &[&str], solo: &[&str]| measure_audio(&state, &MeasureRequest { mute: ids(mute), solo: ids(solo), ..Default::default() }, &|_, _| {}, &Default::default());
+    let chapters = |m: &serde_json::Value| -> Vec<Option<f64>> { m["sections"].as_array().unwrap().iter().map(|s| s["integrated"].as_f64()).collect() };
+    let silent = |m: &serde_json::Value, a: f64, b: f64| m["silences"].as_array().unwrap().iter().any(|s| s["start"].as_f64().unwrap() <= a + 0.15 && s["end"].as_f64().unwrap() >= b - 0.15);
+    let near = |a: Option<f64>, b: f64| a.is_some_and(|a| (a - b).abs() < 0.3);
+
+    // One scene's voice alone: the picture track still carries it, but not the other
+    // scene, whose voice is on another track, nor the music or the effect.
+    let one = measure(&[], &["va"]).unwrap();
+    let [voice, none] = chapters(&one)[..] else { panic!("{one:#}") };
+    let voice = voice.unwrap_or_else(|| panic!("the soloed voice is heard: {one:#}"));
+    assert_eq!(none, None, "the other scene is silent: {one:#}");
+    assert!(silent(&one, 4.0, 12.0), "and so is the music after the first scene: {one:#}");
+    assert_eq!(one["silenced"], serde_json::json!({ "tracks": 2, "clips": 1 }), "`fx` and `bed`, and the clip placing the other scene: {one:#}");
+
+    // Both voices: each scene at its own level, and still no music.
+    let both = measure(&[], &["va", "vb"]).unwrap();
+    let c = chapters(&both);
+    assert!(near(c[0], voice) && near(c[1], voice - 6.0), "{both:#}");
+    assert!(silent(&both, 9.0, 12.0), "{both:#}");
+
+    // The music alone, under both scenes and after them.
+    let bed = measure(&[], &["bed"]).unwrap();
+    let c = chapters(&bed);
+    assert!(near(c[0], voice - 12.0) && near(c[1], voice - 12.0), "the bed is 12 dB under the voice: {bed:#}");
+    assert!(bed["silences"].as_array().unwrap().is_empty(), "{bed:#}");
+
+    // The effect alone is only its one second.
+    let fx = measure(&[], &["fx"]).unwrap();
+    assert!(silent(&fx, 0.0, 2.0) && silent(&fx, 3.0, 12.0), "{fx:#}");
+
+    // Muting the bed leaves the scenes as they are mixed: the first louder than its voice,
+    // for the effect in it.
+    let muted = measure(&["bed"], &[]).unwrap();
+    let c = chapters(&muted);
+    assert!(c[0].unwrap() > voice + 0.3 && near(c[1], voice - 6.0), "{muted:#}");
+    assert!(silent(&muted, 9.0, 12.0), "{muted:#}");
+    let whole = measure(&[], &[]).unwrap();
+    assert!(whole.get("silenced").is_none() && whole["silences"].as_array().unwrap().is_empty(), "{whole:#}");
+
+    // A typo would measure the whole mix and look like an answer, so it is refused.
+    let refused = |mute: &[&str], solo: &[&str]| measure(mute, solo).unwrap_err().to_string();
+    assert!(refused(&[], &["nope"]).contains("no track `nope`"));
+    assert!(refused(&["ux"], &[]).contains("does not play"));
+    assert!(refused(&[], &["o1"]).contains("overlay track"));
+    assert!(refused(&["va"], &["va"]).contains("both muted and soloed"));
+
+    assert_eq!(serde_json::to_value(&*state.project.read().unwrap()).unwrap(), before, "the document is untouched, revision and all");
+}

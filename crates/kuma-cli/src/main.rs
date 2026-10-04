@@ -96,6 +96,12 @@ enum Cmd {
         /// Only `start,end` seconds of it.
         #[arg(long, value_delimiter = ',', num_args = 2)]
         range: Option<Vec<f64>>,
+        /// Track ids to silence for this measurement only, `a,b,…`.
+        #[arg(long, value_delimiter = ',')]
+        mute: Vec<String>,
+        /// Track ids to hear alone, wherever they are nested, `a,b,…`.
+        #[arg(long, value_delimiter = ',')]
+        solo: Vec<String>,
     },
     /// Show how big the project's `.kuma/` cache is, or prune it.
     Cache {
@@ -334,9 +340,9 @@ async fn main() -> anyhow::Result<()> {
             let out = if *tile { out } else { out["samples"].clone() };
             println!("{}", serde_json::to_string_pretty(&out)?);
         }
-        Cmd::MeasureAudio { sequence, range } => {
+        Cmd::MeasureAudio { sequence, range, mute, solo } => {
             let state = open(&cli)?;
-            let req = kuma_daemon::jobs::MeasureRequest { sequence: sequence.clone(), range: range.as_deref().map(|r| (r[0], r[1])), sections: None };
+            let req = kuma_daemon::jobs::MeasureRequest { sequence: sequence.clone(), range: range.as_deref().map(|r| (r[0], r[1])), sections: None, mute: mute.clone(), solo: solo.clone() };
             let out = tokio::task::spawn_blocking(move || kuma_daemon::jobs::measure_audio(&state, &req, &|p, m| eprintln!("[{p:3}%] {m}"), &Default::default())).await??;
             println!("{}", serde_json::to_string_pretty(&out)?);
         }

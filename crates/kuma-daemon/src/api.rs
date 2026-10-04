@@ -731,7 +731,7 @@ async fn sample_job(State(st): S, Json(req): Json<SampleRequest>) -> Json<Value>
 /// for a long video. The result is `jobs::measure_audio`'s.
 async fn measure_audio(State(st): S, Json(req): Json<MeasureRequest>) -> Json<Value> {
     let s2 = st.clone();
-    let params = json!({ "sequence": req.sequence });
+    let params = json!({ "sequence": req.sequence, "mute": req.mute, "solo": req.solo });
     Json(json!({ "job": jobs::spawn_cancellable(st, "measure", params, move |progress, cancel| jobs::measure_audio(&s2, &req, progress, cancel)) }))
 }
 

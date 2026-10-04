@@ -383,6 +383,14 @@ pub struct MeasureAudio {
     /// clip of the sequence that places another sequence (its chapters).
     #[serde(default)]
     pub sections: Option<Vec<Value>>,
+    /// Track ids to silence for this measurement only (the project is not edited).
+    #[serde(default)]
+    pub mute: Option<Vec<String>>,
+    /// Track ids to hear alone, for this measurement only. A track inside a nested sequence
+    /// is heard through the clips that place it; every other track, and every other clip on
+    /// a track on the way, is silenced. Tracks or clips the project mutes stay muted.
+    #[serde(default)]
+    pub solo: Option<Vec<String>>,
     /// Seconds to wait before returning the job id instead (default 600).
     #[serde(default)]
     pub wait_seconds: Option<u64>,
@@ -638,9 +646,9 @@ impl KumaServer {
         self.job("/api/render", &p.body(), Duration::from_secs(p.wait_seconds.unwrap_or(900))).await
     }
 
-    #[tool(description = "Measure how loud a sequence is (the master by default): its sound rendered through the real graph, no bakes needed, and metered to EBU R128. Returns integrated loudness (LUFS), loudness range and true peak (dBTP) overall and per section (by default each clip placing a sequence, i.e. each chapter), the five loudest moments, and silent stretches of a second or more. kuma has no limiter, so check this before a final render: a fade that silences music, or effects stacking on a peak, show up here.")]
+    #[tool(description = "Measure how loud a sequence is (the master by default): its sound rendered through the real graph, no bakes needed, and metered to EBU R128. Returns integrated loudness (LUFS), loudness range and true peak (dBTP) overall and per section (by default each clip placing a sequence, i.e. each chapter), the five loudest moments, and silent stretches of a second or more. kuma has no limiter, so check this before a final render: a fade that silences music, or effects stacking on a peak, show up here. `solo` (track ids, nested ones too) measures the voice or the music alone and `mute` leaves tracks out, for this measurement only: the project is not edited.")]
     async fn measure_audio(&self, Parameters(p): Parameters<MeasureAudio>) -> Result<CallToolResult, McpError> {
-        let body = json!({ "sequence": p.sequence, "range": p.range, "sections": p.sections });
+        let body = json!({ "sequence": p.sequence, "range": p.range, "sections": p.sections, "mute": p.mute.unwrap_or_default(), "solo": p.solo.unwrap_or_default() });
         self.job("/api/audio/measure", &body, Duration::from_secs(p.wait_seconds.unwrap_or(600))).await
     }
 

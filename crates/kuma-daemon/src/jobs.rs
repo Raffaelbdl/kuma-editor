@@ -839,6 +839,12 @@ pub struct MeasureRequest {
     /// another sequence: its chapters, if it is built of them.
     #[serde(default)]
     pub sections: Option<Vec<Section>>,
+    /// Track ids to silence for this measurement only. See [`audition`].
+    #[serde(default)]
+    pub mute: Vec<String>,
+    /// Track ids to hear alone, wherever they are nested. See [`audition`].
+    #[serde(default)]
+    pub solo: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -860,8 +866,10 @@ pub struct Section {
 /// kuma has no limiter, so loudness and peak are whatever the gains make them; this is how
 /// an agent that cannot listen finds out, before and after rendering.
 pub fn measure_audio(state: &AppState, req: &MeasureRequest, progress: &dyn Fn(u8, &str), cancel: &AtomicBool) -> anyhow::Result<serde_json::Value> {
-    let project = read(&state.project).clone();
+    let mut project = read(&state.project).clone();
     let sequence = project.sequence_or_master(req.sequence.as_deref()).map_err(|e| anyhow::anyhow!(e))?.clone();
+    // On the copy that is compiled: listening to one part never costs the document an edit.
+    let silenced = audition(&mut project, &sequence, &req.mute, &req.solo)?;
     let total = project.seq_duration(&sequence);
     let (from, to) = req.range.unwrap_or((0.0, total));
     anyhow::ensure!(from >= 0.0 && to > from, "the range must be `[start, end]` with 0 ≤ start < end");
@@ -915,7 +923,7 @@ pub fn measure_audio(state: &AppState, req: &MeasureRequest, progress: &dyn Fn(u
         .map(|s| serde_json::json!({ "t": secs(s.t - kuma_overlay::loudness::STEP + offset), "true_peak": db(s.true_peak), "short_term": db(s.short_term) }))
         .collect();
     let silences: Vec<serde_json::Value> = scan.silences(1.0).iter().map(|(a, b)| serde_json::json!({ "start": secs(a + offset), "end": secs(b + offset) })).collect();
-    Ok(serde_json::json!({
+    let mut out = serde_json::json!({
         "sequence": sequence,
         "start": secs(from),
         "end": secs(to),
@@ -926,7 +934,89 @@ pub fn measure_audio(state: &AppState, req: &MeasureRequest, progress: &dyn Fn(u
         "hottest": hottest,
         "silences": silences,
         "note": "LUFS and dBTP of the mix as the graph builds it, before encoding; the encoded file's true peak can come out a little higher. `null` is silence.",
-    }))
+    });
+    if !req.mute.is_empty() || !req.solo.is_empty() {
+        out["mute"] = serde_json::json!(req.mute);
+        out["solo"] = serde_json::json!(req.solo);
+        out["silenced"] = serde_json::json!({ "tracks": silenced.tracks, "clips": silenced.clips });
+    }
+    Ok(out)
+}
+
+/// What [`audition`] silenced on top of what the document already does.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Silenced {
+    pub tracks: usize,
+    pub clips: usize,
+}
+
+/// Mute and solo tracks of `project` — a copy about to be compiled, never the document —
+/// for listening to one part of `root`.
+///
+/// `mute` silences those tracks. `solo` keeps those tracks and the way to them, and silences
+/// everything else `root` sounds:
+/// - a **soloed** track plays as it is, with everything it nests;
+/// - a track **leading** to a soloed one (it places a sequence that holds a soloed track, or
+///   a track leading to one) keeps the clips that lead there and loses its other clips, so
+///   the master's picture track carries the soloed voice of one chapter and not the
+///   others;
+/// - every other track of a sequence on the way is muted.
+///
+/// A sequence compiles to one tractor however often it is placed, so a sequence that holds
+/// a solo plays only that, wherever it is placed — under a soloed track too. A sequence
+/// holding none plays whole wherever a soloed track reaches it. Mute and solo only ever add
+/// silence: a track or clip the document mutes stays muted, so soloing one is refused.
+///
+/// Ids are tracks of `root` or of a sequence it nests (ids are unique across the project);
+/// anything else is refused, since a typo would otherwise measure the whole mix and look
+/// like an answer.
+pub fn audition(project: &mut Project, root: &str, mute: &[String], solo: &[String]) -> anyhow::Result<Silenced> {
+    if mute.is_empty() && solo.is_empty() {
+        return Ok(Silenced::default());
+    }
+    // Innermost first, so a sequence is settled before anything that places it.
+    let order = project.compile_order(root).map_err(|ring| anyhow::anyhow!("`{}` contains itself", ring.join(" → ")))?;
+    let reached: std::collections::HashSet<&str> = order.iter().map(String::as_str).collect();
+    for id in mute.iter().chain(solo) {
+        let Some((seq, track)) = project.sequences().find_map(|(s, seq)| seq.tracks.iter().find(|t| &t.id == id).map(|t| (s, t))) else {
+            anyhow::bail!("no track `{id}` in this project");
+        };
+        anyhow::ensure!(reached.contains(seq.as_str()), "track `{id}` is on `{seq}`, which `{root}` does not play");
+        anyhow::ensure!(track.kind != kuma_core::TrackKind::Overlay, "track `{id}` is an overlay track, which makes no sound");
+        anyhow::ensure!(!(track.muted && solo.contains(id)), "track `{id}` is muted in the project, and a solo does not unmute it: unmute it with an edit to hear it");
+        anyhow::ensure!(!(mute.contains(id) && solo.contains(id)), "track `{id}` is both muted and soloed");
+    }
+    let soloed = |t: &kuma_core::Track| solo.contains(&t.id);
+    // The sequences that hold a solo: a soloed track, or a clip placing one that does.
+    let mut holds: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for id in &order {
+        let Some(seq) = project.seq(id) else { continue };
+        if seq.tracks.iter().any(|t| !t.muted && (soloed(t) || t.clips.iter().any(|c| !c.muted && holds.contains(&c.bin)))) {
+            holds.insert(id.clone());
+        }
+    }
+    anyhow::ensure!(solo.is_empty() || holds.contains(root), "nothing `{root}` plays leads to the soloed tracks: a track or clip on the way is muted");
+    let mut silenced = Silenced::default();
+    for id in &order {
+        let Some(kuma_core::BinItem { source: BinSource::Sequence(seq), .. }) = project.bin.get_mut(id) else { continue };
+        for track in &mut seq.tracks {
+            if track.muted || soloed(track) || track.kind == kuma_core::TrackKind::Overlay {
+                continue;
+            }
+            if mute.contains(&track.id) || (holds.contains(id) && !track.clips.iter().any(|c| holds.contains(&c.bin))) {
+                track.muted = true;
+                silenced.tracks += 1;
+                continue;
+            }
+            if holds.contains(id) {
+                for clip in track.clips.iter_mut().filter(|c| !c.muted && !holds.contains(&c.bin)) {
+                    clip.muted = true;
+                    silenced.clips += 1;
+                }
+            }
+        }
+    }
+    Ok(silenced)
 }
 
 /// A sequence's chapters: its clips that place another sequence, in time order.

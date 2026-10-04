@@ -356,7 +356,8 @@ shows one entry on its own, and with `times` and `tile` a contact sheet of chose
 `apply_edits` takes a patch inline or, with `patch_path`, from a file in the project, so a
 script's patch of any size is one exact edit. `measure_audio` meters a sequence's sound (EBU
 R128, per chapter, loudest moments, silences), rendered through the real graph without
-baking anything. A server that outlives a rebuild of `kuma` says so on every call, since its
+baking anything; `solo` and `mute` (track ids, nested ones too) hear one part alone for that
+measurement, on the copy that is compiled and never on the project. A server that outlives a rebuild of `kuma` says so on every call, since its
 tools are the old build's. `overlay_guide` returns `library/blueprints/CLAUDE.md`, and
 `timeline_guide` returns `crates/kuma-mcp/src/timeline_guide.md`: the server's own
 instructions are kept under the 2048 characters a client shows and point at both.
@@ -369,6 +370,7 @@ kuma sample 12.0 14.0 --count 4 --rect 400,300,800,400
 kuma sample 0 3 --count 6 --overlay paris          # one overlay entry on its own, no placement (--backdrop, --duration, --frame 1080x1920)
 kuma sample --times 3.2,3.8,41.7,42.3 --tile      # chosen moments, and one captioned contact sheet of them
 kuma measure-audio                         # loudness (LUFS), true peak, per chapter, loudest moments, silences
+kuma measure-audio --solo va,vb            # the same with only those tracks heard (nested ones too); --mute bed leaves one out
 kuma bake                                  # bake all overlay clips (cached by content)
 kuma cache                                 # how big .kuma/ is: bakes, sampled frames, thumbnails
 kuma cache prune                           # delete what the project no longer uses (--all: every bake and frame)

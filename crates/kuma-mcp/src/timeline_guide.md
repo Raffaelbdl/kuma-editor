@@ -89,7 +89,10 @@ Sound: `measure_audio` renders a sequence's sound through the real graph (no ove
 meters it: integrated loudness (LUFS), range and true peak (dBTP), overall and per chapter (each
 clip placing a sequence, or the `sections` you name), the loudest moments and every silent stretch
 of a second or more. kuma has no limiter, so loudness and peak are whatever the gains make them:
-measure before a final render, and read the silences against what you meant.
+measure before a final render, and read the silences against what you meant. To measure one part
+alone, pass track ids as `solo` (the voice, the music bed) or `mute`: they apply to that
+measurement only, never to the project. A soloed track inside a nested sequence is heard through
+the clips placing it, and everything else on the way is silenced.
 
 Subtitles: `transcribe` runs a local speech-to-text model (whisper.cpp) and adds a `subtitles`
 overlay entry whose `cues` var is `[{start, end, text}, …]` in source seconds, one cue per word (the

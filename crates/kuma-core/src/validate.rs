@@ -170,10 +170,12 @@ fn check_sequence<'a>(
     groups: &mut HashMap<&'a str, &'a str>,
 ) {
     let base = format!("/bin/{seq_id}/source");
-    // Overlays draw over video, never under it. The render would stack a video track after
-    // an overlay track over it, but the editor's live preview draws the open sequence's
-    // overlays above its whole picture, so the two would disagree; and anything that has to
-    // sit under a picture can draw the picture itself. Audio tracks composite nothing.
+    // Overlays draw over video, never under it. The editor has always kept to that (a new
+    // video track goes under the first overlay track); this makes it the rule for every
+    // client. The render would stack a video track after an overlay track over it, but the
+    // live preview draws the open sequence's overlays above its whole picture, so the two
+    // would disagree; and anything that has to sit under a picture can draw the picture
+    // itself. Audio tracks composite nothing.
     if let Some(first) = seq.tracks.iter().position(|t| t.kind == TrackKind::Overlay) {
         for (ti, t) in seq.tracks.iter().enumerate().skip(first + 1).filter(|(_, t)| t.kind == TrackKind::Video) {
             issues.push(Issue::error(

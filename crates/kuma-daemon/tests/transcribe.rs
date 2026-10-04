@@ -137,6 +137,13 @@ fn a_transcript_becomes_an_editable_subtitles_entry() {
     // Transcripts share the one copy of the blueprint rather than each taking another.
     assert!(!dir.path().join("overlays/subtitles-2").exists(), "a second transcript copied the blueprint again");
     assert!(kuma_core::validate(&p, &state.validation_context()).is_empty());
+    assert!(subs["source"]["vars"].get("lang").is_none(), "a detected language is not the page's");
+    // A language asked for is the page's too, so kanji come in that language's forms.
+    let japanese = TranscribeRequest { bin: Some("talk".into()), clip: None, id: Some("talk-ja".into()), options: kuma_overlay::TranscribeOptions { language: Some("ja".into()), ..Default::default() }, ..req.clone() };
+    jobs::transcribe(&state, &japanese, &|_, _| {}).unwrap();
+    let p = state.project.read().unwrap().clone();
+    assert_eq!(serde_json::to_value(&p.bin["talk-ja"].source).unwrap()["vars"]["lang"], "ja");
+    assert!(kuma_core::validate(&p, &state.validation_context()).is_empty());
 
     // Re-running with `replace` overwrites the words in place: the same entry, its
     // styling, and the clip the first run placed all survive, and the language asked for

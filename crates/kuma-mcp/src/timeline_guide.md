@@ -129,7 +129,7 @@ from them can be cut at. Given a `clip`, it also places the subtitles over that 
 entries are yours to place (each `offset` var is the source second its clip must start at). Fix a misheard word by
 patching the cue's `text`; re-transcribe with `replace` to overwrite one entry's words in place and keep the
 entry's styling and placement, and with `language` (an ISO 639-1 code) to force the language rather
-than detect it. `model` picks a larger model than the default (`large-v3`, `medium`: much better
+than detect it; a new entry then also gets it as its `lang` var, the page's language. `model` picks a larger model than the default (`large-v3`, `medium`: much better
 outside English; `health` lists `whisper_models`). `parent` on a bin entry is organisation only: the entry it is listed under
 in the browser, which can be any entry or a folder (`{"source": {"folder": true}}`, never placeable);
 `order` sorts siblings there (ordered ones first, the rest by id).

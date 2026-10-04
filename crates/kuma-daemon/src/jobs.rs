@@ -337,6 +337,13 @@ pub fn transcribe(state: &AppState, req: &TranscribeRequest, progress: &dyn Fn(u
         None => crate::overlays::copy_blueprint(state, SUBTITLES_BLUEPRINT, None)?,
     };
     let pieces = kuma_overlay::split_at_pauses(&cues, split);
+    // The language asked for is the page's too, where the folder takes one: kanji then come
+    // in Japanese forms without anyone setting it. A detected language is not used, since
+    // whisper can guess wrong on a short take.
+    let lang_var = crate::overlays::resolve(state, &overlay)
+        .ok()
+        .and_then(|r| r.manifest.vars.iter().find(|(_, v)| v.ty == kuma_core::VarType::Lang).map(|(k, _)| k.clone()));
+    let lang = req.options.language.clone().filter(|l| !l.is_empty() && l != "auto").zip(lang_var);
     let (outcome, rev, warnings) = state.apply_built(&req.origin, None, |p| {
         // Everything below reads `p`, the project as it is now — never the snapshot above.
         let media_item = p.bin.get(&bin).ok_or_else(|| anyhow::anyhow!("`{bin}` is gone"))?;
@@ -425,6 +432,9 @@ pub fn transcribe(state: &AppState, req: &TranscribeRequest, progress: &dyn Fn(u
                 let mut vars = serde_json::Map::from_iter([("cues".to_string(), words)]);
                 if let Some(o) = offset {
                     vars.insert("offset".into(), o.into());
+                }
+                if let Some((code, var)) = &lang {
+                    vars.insert(var.clone(), code.clone().into());
                 }
                 let name = format!("Subtitles: {}", media_item.display_name(&bin));
                 let entry = kuma_core::BinItem {

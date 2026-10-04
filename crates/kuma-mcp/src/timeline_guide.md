@@ -72,7 +72,7 @@ legible over footage you have not seen. It is the same view the editor's overlay
 person, and `overlay_guide` ends with the checklist to run through. To look at chosen moments,
 pass `times` (`[3.5, 41.7, 42.3]`) instead of a range: each bakes only what it shows, and with
 `tile: true` they come back as one captioned contact sheet, so every cut and a moment either side
-of it is one image.
+of it is one image. One frame comes back 960 px wide, several 480 px each; `width` overrides.
 
 A sample is exact, so every overlay it shows is baked first, for its whole clip: a changed
 overlay costs about 0.1 s per frame at 1080p before the first frame comes back, while an

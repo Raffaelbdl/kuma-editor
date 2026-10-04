@@ -357,7 +357,8 @@ pub struct SampleFrames {
     /// Crop rectangle in composition pixels `{x, y, w, h}`.
     #[serde(default)]
     pub rect: Option<Rect>,
-    /// Output width in pixels (aspect kept). Default 960 for full frames.
+    /// Output width in pixels (aspect kept). Default 960 for one full frame and 480 each
+    /// for several, the size a sheet's frames are; a `rect` crop keeps its own pixels.
     #[serde(default)]
     pub width: Option<u32>,
     /// Include baked overlays (default true). Set false for a faster footage-only look.
@@ -392,6 +393,29 @@ pub struct SampleFrames {
     /// its frames. Every other field is ignored.
     #[serde(default)]
     pub job: Option<u64>,
+}
+
+/// How wide one full frame comes back when no `width` is asked for, and each of several.
+const ONE_FRAME_WIDTH: u32 = 960;
+const FRAMES_WIDTH: u32 = 480;
+
+impl SampleFrames {
+    /// How many frames this asks for, by the daemon's rule: `times`, else `count`, else
+    /// one for a single time and five across a range.
+    fn frames(&self) -> usize {
+        self.times.as_ref().map(Vec::len).or(self.count).unwrap_or(if self.t1.is_some_and(|t1| t1 > self.t0) { 5 } else { 1 })
+    }
+
+    /// The width to ask the daemon for. Several frames are for comparing moments, which
+    /// 480 px shows as well as a sheet does — at a quarter of the image a full frame costs
+    /// the agent each; one frame is for looking closely. A sheet sizes its own frames (480)
+    /// and a crop keeps its pixels, and an explicit `width` wins over all of it.
+    fn width(&self) -> Option<u32> {
+        if self.width.is_some() || self.rect.is_some() || self.tile == Some(true) {
+            return self.width;
+        }
+        Some(if self.frames() > 1 { FRAMES_WIDTH } else { ONE_FRAME_WIDTH })
+    }
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -671,7 +695,7 @@ impl KumaServer {
         self.post("/api/overlays/save-blueprint", &json!({ "bin": p.bin, "id": p.id, "force": p.force.unwrap_or(false) })).await
     }
 
-    #[tool(description = "Render exact composited frames (through the real MLT graph, overlays included) and return them as images: evenly over `t0`..`t1`, or at exactly the `times` given, and with `tile` as one captioned contact sheet (every cut ±0.3 s in one image). Use a rect to zoom into a region. Pass `sequence` to look at a nested sequence instead of the master, or `overlay` to look at one overlay bin entry on its own — no placement needed, times counted from the start of the overlay, which is how to check an animation you are authoring before it is in the cut. Frames are also written as PNGs whose paths are returned. An overlay changed since it was last baked is baked for its whole clip first, which can take a minute or more per overlay: after `wait_seconds` a sample still baking returns its job id and progress, and calling again with `job` set to that id picks it up.")]
+    #[tool(description = "Render exact composited frames (through the real MLT graph, overlays included) and return them as images: evenly over `t0`..`t1`, or at exactly the `times` given, and with `tile` as one captioned contact sheet (every cut ±0.3 s in one image). Use a rect to zoom into a region. Pass `sequence` to look at a nested sequence instead of the master, or `overlay` to look at one overlay bin entry on its own — no placement needed, times counted from the start of the overlay, which is how to check an animation you are authoring before it is in the cut. One frame comes back 960 px wide and several 480 px each unless `width` says. Frames are also written as PNGs whose paths are returned. An overlay changed since it was last baked is baked for its whole clip first, which can take a minute or more per overlay: after `wait_seconds` a sample still baking returns its job id and progress, and calling again with `job` set to that id picks it up.")]
     async fn sample_frames(&self, Parameters(p): Parameters<SampleFrames>, ctx: RequestContext<RoleServer>) -> Result<CallToolResult, McpError> {
         let id = match p.job {
             Some(id) => id,
@@ -680,8 +704,7 @@ impl KumaServer {
                 let body = json!({
                     "t0": p.t0, "t1": p.t1, "count": p.count, "times": p.times, "tile": tile, "columns": p.columns,
                     "rect": p.rect.as_ref().map(|r| json!({ "x": r.x, "y": r.y, "w": r.w, "h": r.h })),
-                    // A sheet sizes its own frames.
-                    "width": p.width.or((p.rect.is_none() && !tile).then_some(960)),
+                    "width": p.width(),
                     "overlays": p.overlays.unwrap_or(true),
                     "sequence": p.sequence,
                     "overlay": p.overlay, "duration": p.duration, "backdrop": p.backdrop,
@@ -889,6 +912,21 @@ mod tests {
         assert!(p.next(&job(5, "baking title"), t0 + Duration::from_secs(4)).is_none());
         let beat = p.next(&job(5, "baking title"), t0 + Duration::from_secs(3) + HEARTBEAT).expect("a heartbeat");
         assert!(beat.progress > back.progress && beat.progress < 41.0, "{}", beat.progress);
+    }
+
+    /// One frame comes back at 960 px and several at 480 each, the size a sheet's are, unless
+    /// a width is asked for; a sheet and a crop are left to size themselves.
+    #[test]
+    fn several_frames_come_back_smaller_than_one() {
+        let width = |args: Value| serde_json::from_value::<SampleFrames>(args).unwrap().width();
+        assert_eq!(width(json!({ "t0": 3.0 })), Some(960));
+        assert_eq!(width(json!({ "times": [3.0] })), Some(960));
+        assert_eq!(width(json!({ "t0": 0.0, "t1": 4.0 })), Some(480), "five across a range");
+        assert_eq!(width(json!({ "t0": 0.0, "t1": 4.0, "count": 1 })), Some(960));
+        assert_eq!(width(json!({ "times": [1.0, 2.0] })), Some(480));
+        assert_eq!(width(json!({ "times": [1.0, 2.0], "width": 1280 })), Some(1280), "asked for wins");
+        assert_eq!(width(json!({ "times": [1.0, 2.0], "tile": true })), None, "a sheet sizes its own");
+        assert_eq!(width(json!({ "t0": 1.0, "rect": { "x": 0, "y": 0, "w": 400, "h": 300 } })), None, "a crop keeps its pixels");
     }
 
     /// A job that has not finished says how to keep waiting; one that has, does not.

@@ -856,7 +856,7 @@ function fontInput(cur: string, onChange: (v: string) => void): HTMLElement {
   s.value = cur;
   s.style.fontFamily = `"${cur}", system-ui`;
   s.onchange = () => onChange(s.value);
-  const add = button("+", () => void addFonts(onChange), "Add font files (.ttf, .otf, or a .ttc collection) to this project or to every project");
+  const add = button("+", () => void addFonts(onChange), "Add font files (.ttf, .otf, .woff, .woff2, or a .ttc collection) to this project or to every project");
   return row("row", s, add);
 }
 
@@ -880,7 +880,7 @@ async function addFonts(use: (family: string) => void): Promise<void> {
   ], "project", () => {});
   const ok = await askForm({
     title: paths.length > 1 ? `Add ${paths.length} fonts` : "Add a font",
-    note: "A .ttf or .otf file is copied in; a .ttc or .otc collection is split into its faces. A family's weights and italics are separate files in most fonts: add them together. A font in the project goes wherever the project goes; one in your library is there for every project on this machine.",
+    note: "A .ttf or .otf file is copied in; a .ttc or .otc collection is split into its faces, and a .woff or .woff2 web font is unwrapped into the font it holds. A family's weights and italics are separate files in most fonts: add them together. A font in the project goes wherever the project goes; one in your library is there for every project on this machine.",
     rows: [...(app ? [] : [{ label: "File", input: typed }]), { label: "For", input: where }],
     ok: "Add",
   });

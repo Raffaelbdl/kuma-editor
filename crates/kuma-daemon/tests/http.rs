@@ -428,9 +428,9 @@ async fn a_font_is_added_and_an_overlay_draws_with_it() {
     std::fs::write(dir.path().join("notes.ttf"), b"not a font").unwrap();
     let (status, _) = add(&dir.path().join("notes.ttf"), false);
     assert!(status.contains("400"), "{status}");
-    std::fs::copy(&anton, dir.path().join("Anton.woff2")).unwrap();
-    let (status, _) = add(&dir.path().join("Anton.woff2"), false);
-    assert!(status.contains("400"), "{status}");
+    std::fs::write(dir.path().join("notes.woff2"), b"wOF2 but not a font").unwrap();
+    let (status, refused) = add(&dir.path().join("notes.woff2"), false);
+    assert!(status.contains("400") && refused["error"].as_str().unwrap_or_default().contains("does not decode"), "{status}: {refused}");
     let (status, _) = add(&dir.path().join("nope.ttf"), false);
     assert!(status.contains("400"), "{status}");
     // Shared goes to the user library; the project's copy still wins.
@@ -460,6 +460,23 @@ async fn a_font_is_added_and_an_overlay_draws_with_it() {
     // The editor's own page gets every family, from the same route, for the picker.
     let (_, css) = get_body(&addr, "/api/fonts.css");
     assert!(css.contains("url(\"/fonts/anton/0.ttf\")"), "{css}");
+
+    // A web font goes in as the font it wraps, which a font folder reads.
+    let web = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../kuma-overlay/tests/fixtures/fonts").canonicalize().unwrap();
+    let (status, woff2) = add(&web.join("BebasNeue-Regular.woff2"), false);
+    assert!(status.contains("200"), "{status}: {woff2}");
+    assert_eq!(woff2["family"], "Bebas Neue");
+    assert!(woff2["path"].as_str().unwrap().ends_with("fonts/Bebas Neue/BebasNeue-Regular.ttf"), "{woff2}");
+    let (_, again) = add(&web.join("BebasNeue-Regular.woff2"), false);
+    assert_eq!(again["path"], woff2["path"], "unwrapping is deterministic: {again}");
+    let (status, woff) = add(&web.join("BebasNeue-Regular.woff"), false);
+    assert!(status.contains("200") && woff["family"] == "Bebas Neue", "{status}: {woff}");
+    let (_, body) = get_body(&addr, "/api/fonts");
+    assert!(body.contains("\"Bebas Neue\""), "{body}");
+    // A font named as a web font that is not one is kept as what it is.
+    std::fs::copy(&anton, dir.path().join("Anton.woff2")).unwrap();
+    let (_, misnamed) = add(&dir.path().join("Anton.woff2"), false);
+    assert!(misnamed["path"].as_str().unwrap().ends_with("fonts/Anton/Anton.ttf"), "{misnamed}");
 }
 
 /// A patch a script wrote is applied from its file, exactly, as one revision-checked edit;

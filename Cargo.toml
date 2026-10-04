@@ -27,6 +27,8 @@ serde_json = { version = "1", features = ["preserve_order"] }
 schemars = { version = "1", features = ["indexmap2"] }
 indexmap = { version = "2", features = ["serde"] }
 ttf-parser = "0.25"
+# WOFF/WOFF2 → the sfnt they wrap, for `add_font`: pure Rust, a port of Google's decoder.
+wuff = "0.2"
 json-patch = "4"
 thiserror = "2"
 anyhow = "1"

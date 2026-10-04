@@ -18,17 +18,33 @@ use crate::state::AppState;
 /// `<fonts>/<Family>/`. The same bytes already there are not written twice; a different
 /// file of that name is kept and this one is suffixed. A collection (`.ttc`/`.otc`) is
 /// split into one file per face, each under its own family, since `@font-face` takes one
-/// face per file. Answers with the first face's family and path, and every face.
+/// face per file. A web font (`.woff`/`.woff2`) is unwrapped into the font it holds and
+/// written as that (`.ttf`/`.otf`), so a font folder holds one kind of file whatever was
+/// added. Answers with the first face's family and path, and every face.
 pub fn add_font(state: &AppState, path: &Path, shared: bool) -> anyhow::Result<Value> {
-    use kuma_overlay::fonts::{parse_face, split_collection, COLLECTIONS, EXTENSIONS};
+    use kuma_overlay::fonts::{parse_face, sfnt_ext, split_collection, unwrap_web_font, COLLECTIONS, EXTENSIONS, WEB_FONTS};
     let src = crate::jobs::resolve_path(state, path);
-    let file = src.file_name().and_then(|s| s.to_str()).unwrap_or_default().to_string();
+    let mut file = src.file_name().and_then(|s| s.to_str()).unwrap_or_default().to_string();
     let ext = src.extension().and_then(|e| e.to_str()).unwrap_or_default().to_ascii_lowercase();
     anyhow::ensure!(
-        COLLECTIONS.contains(&ext.as_str()) || EXTENSIONS.contains(&ext.as_str()),
-        "`{file}` is not a .ttf, .otf, .ttc or .otc file (a .woff/.woff2 needs converting first)"
+        [COLLECTIONS, EXTENSIONS, WEB_FONTS].iter().any(|exts| exts.contains(&ext.as_str())),
+        "`{file}` is not a .ttf, .otf, .woff, .woff2, .ttc or .otc file"
     );
-    let bytes = std::fs::read(&src).map_err(|e| anyhow::anyhow!("cannot read {}: {e}", src.display()))?;
+    let mut bytes = std::fs::read(&src).map_err(|e| anyhow::anyhow!("cannot read {}: {e}", src.display()))?;
+    // Whether it is a web font is the file's to say too. What it wraps is what is kept: the
+    // same bytes the font was made from, under the extension they call for.
+    let unwrapped = match unwrap_web_font(&bytes) {
+        Some(sfnt) => {
+            bytes = sfnt.map_err(|e| anyhow::anyhow!("`{file}` does not decode: {e}"))?;
+            true
+        }
+        None => false,
+    };
+    // A font named `.woff2` that is not one is kept too, under a name a font folder reads.
+    if unwrapped || WEB_FONTS.contains(&ext.as_str()) {
+        let stem = file.rsplit_once('.').map_or(file.as_str(), |(s, _)| s).to_string();
+        file = format!("{stem}.{}", sfnt_ext(&bytes));
+    }
     let (stem, _) = file.rsplit_once('.').unwrap_or((&file, ""));
     // Whether it is a collection is the file's to say, not its extension's.
     let faces: Vec<(Vec<u8>, String)> = match split_collection(&bytes) {

@@ -22,6 +22,8 @@ assets/patches/       generated: one patch per chapter + the master
 - Times are **absolute chapter seconds** everywhere in the storyboard. A helper converts
   times an overlay reads relative to its clip (a highlight's marks, a character's moods)
   with `t - t0`, in one place, so a scene can be read top to bottom.
+- In a narrated video, a scene's times are seconds of its voice-over recording instead,
+  and shots are appended inside it: `narration.md`.
 - `build()` sorts clips by start, puts each in the first free lane of its band, and names
   tracks `<cid>_<kind><band>_<lane>`. The stacking then follows the band, whatever order the
   storyboard wrote things in.
@@ -85,5 +87,13 @@ Re-run the storyboard after applying, so the counts include themselves.
 - Then **re-run the diff: it must print 0 ops**, and `validate_project` must be clean.
 - If the revision moved since you last looked, someone else edited. Read what the diff
   would change and make sure every op is yours before sending it.
+- **A person editing in the editor between your turns** is the usual case, not the
+  exception. Before applying, diff the live project against the last one you wrote; fold
+  each of their changes into the script (a moved clip, a retimed title, a gain), then build
+  and apply. Never regenerate over them.
+- **Stale entries**: the patch removes what this script's folders hold that it no longer
+  makes. Work that out from the live project, not from a state file the script keeps: a
+  build that was never applied leaves the state file believing in entries that never
+  existed, and hides the ones that do.
 - Before a sweeping change (a new time model, a shared helper), copy `assets/` and
   `overlays/` to scratch, so you can compare or roll back.

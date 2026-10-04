@@ -22,6 +22,7 @@ pub const FILES: &[(&str, &str)] = skill_files![
     "references/audio.md",
     "references/pacing.md",
     "references/footage.md",
+    "references/narration.md",
     "references/render-and-review.md",
     "scripts/subset_jp_fonts.py",
     "scripts/reading_audit.py",

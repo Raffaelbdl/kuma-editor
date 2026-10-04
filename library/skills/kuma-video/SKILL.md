@@ -8,7 +8,9 @@ description: Make or edit a video in kuma-editor through its MCP — screen reco
 The MCP's `timeline_guide` and `overlay_guide` are the contract. This skill is the craft
 around them: how to organise a video, and the traps that each cost a render to find. The
 largest project it was learned on is a 9½-minute motion-graphics explainer (~400 overlay
-entries, ~600 clips), so its examples lean that way; the rules hold for any video. `kuma
+entries, ~600 clips), so its examples lean that way, and a 13-minute narrated essay (~470
+clips over 55 sequences: voice-over, to-camera takes, stills and footage, music beds); the
+rules hold for any video. `kuma
 init` and `kuma mcp-config` install it into the project and refresh it, so keep project
 notes elsewhere.
 
@@ -31,6 +33,7 @@ notes elsewhere.
 | Vlog, travel, montage | many short clips, music, titles | `footage.md`, `pacing.md` |
 | Short (9:16) | reframed footage, large captions | `footage.md` (portrait) |
 | Explainer, motion graphics | many small overlays, little or generated footage | `overlays.md`, `storyboard-as-code.md` |
+| Essay, documentary, narrated tutorial | a voice-over or to-camera takes, stills, footage, music | `narration.md`, `footage.md`, `audio.md` |
 
 Most videos mix these. The shape below holds for all of them.
 
@@ -105,6 +108,16 @@ difference: `references/storyboard-as-code.md`. In short:
 - Final preset: `youtube-1080p` (x264 slow, CRF 18), or `youtube-nvenc` where available
   (much faster, somewhat larger). `threads`, `quality` and `speed` change one render only.
 
+## Working habits
+
+- A new version of a file (a render, a re-cut music cue, a flattened picture) gets a new
+  name; an original is never overwritten, and neither is a file a render or the preview
+  may be reading.
+- Scratch output goes into a new, empty folder. Never `rm` a path built from an unquoted
+  or possibly empty variable.
+- Report what was measured and what was only computed, and name what cannot be judged
+  without ears or eyes, so the person checks exactly those.
+
 ## Scripts
 
 Run them from the project directory: `python3 .claude/skills/kuma-video/scripts/<name>`.
@@ -120,7 +133,8 @@ a venv: `python3 -m venv .venv && .venv/bin/pip install numpy pillow fonttools`.
 
 ## References
 
-- `references/footage.md`: bringing footage in, cutting it, speed, movement, transitions, portrait, generating it
+- `references/footage.md`: bringing footage in, finding moments, cutting, speed, movement, stills, transitions, portrait, generating it
+- `references/narration.md`: a video carried by a voice: a sequence per paragraph, timing from the voice, takes to camera, levelling the voice
 - `references/overlays.md`: authoring overlays beyond the contract
 - `references/audio.md`: loudness with gains only, voice and music, measuring the mix
 - `references/pacing.md`: readable text, hooks, beats, punch-ins, trimming

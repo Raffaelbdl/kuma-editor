@@ -36,6 +36,27 @@ contract does not say, or what bit anyway.
   private timeline fails the lint.
 - Draw on canvas through `kumaCanvas` with seeded Rough.js (`g.rough(key)`), never an
   unseeded `rough.canvas`.
+- Few easings for a whole video (an out-cubic, an in-out-cubic and one soft overshoot is
+  enough), and flash or shake only on percussive moments.
+
+## Transition overlays
+
+A wipe, a shutter, a page turn drawn by an overlay over a cut:
+
+- The clip is a window **centred on the cut**: placed at `[cut − d/2, cut + d/2]`, a cover
+  phase, then a reveal phase, and **the frame is fully covered at the midpoint**, which is
+  where the cut goes. Then the cut never shows, whatever is on either side.
+- Everything is a function of progress through the window alone, and nothing is drawn
+  outside it, so the clip can be lengthened or moved without re-authoring it.
+
+## Geometry
+
+- Author in the pixels of a 1920-wide frame and scale once: `--px: calc(100vw / 1920)`,
+  then `calc(24 * var(--px))`. Numbers then match what you measure on a sampled frame.
+- A geometry an overlay and a script both need (the slots of a timeline graphic that
+  footage shrinks into, say) is written in one place and read by both, never typed twice.
+- Marks drawn over footage (an arrow, a ring) need a dark line under the light one, or
+  they vanish on a white wall.
 
 ## Text
 

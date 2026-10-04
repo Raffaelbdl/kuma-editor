@@ -13,6 +13,19 @@ is also what makes it cheap: nothing is baked.
 - Mixed frame rates and sizes are fine; the project's `fps`, `width` and `height` are what
   renders.
 
+## Finding moments
+
+- **Contact sheets** of a source, coarse first, then dense around the candidates:
+  `ffmpeg -i f.mp4 -vf "fps=1/5,scale=240:-2,drawtext=text='%{pts\:hms}':x=4:y=4:fontcolor=white,tile=8x4" -frames:v 1 sheet.png`
+  is one frame every 5 s; then every 0.5–1 s over the stretch that matters.
+- **Exact cuts** in edited material: `ffmpeg -i f.mp4 -vf "select='gt(scene,0.3)',showinfo" -f null -`
+  and read each `pts_time`.
+- **Long files** (a 24-minute episode, a 20-minute walk): hand the scouting to a sub-agent
+  with the exact lines to cover and the lengths needed, then check its picks with
+  `sample_frames`. Its times are right to the shot, not always to the frame.
+- Keep every image you look at small: `width` 300–600 and `tile`. Full-size frames are
+  expensive to read.
+
 ## Cutting
 
 - **Removing a stretch** is two clips of one entry: the second starts where the first ends
@@ -39,6 +52,29 @@ is also what makes it cheap: nothing is baked.
   Keep the scale ≥ 1 wherever the picture moves, or the frame's edge shows.
 - `crop` to reframe, `color` (brightness, contrast, saturation, gamma) to match clips shot
   in different light.
+
+## Stills
+
+- A still is **fitted** into the frame (letterboxed or pillarboxed). To fill the frame with
+  a `w`×`h` picture in a `W`×`H` frame: `transform` scale `max(W/w, H/h) / min(W/w, H/h)`.
+- `transform` scales about the centre; `x` positive moves right, `y` positive moves down,
+  in frame pixels. To centre a point (cx, cy) of a picture that fills the frame, at scale
+  `s`: `x = (W/2 − cx)·s`, `y = (H/2 − cy)·s`. Keep `|x| ≤ (s − 1)·W/2` and
+  `|y| ≤ (s − 1)·H/2`, or the edge shows.
+- Ways to show one, each worth a helper in a script:
+  - **cover and push**: fill the frame, slow scale-up;
+  - **card**: the whole picture over a blurred, dimmed copy of itself that fills the frame
+    (two clips of one entry);
+  - **tilt**: a portrait picture filling the width, the frame travelling between two
+    heights. Only when the picture is wide enough (≥ ~1000 px for a 1920 frame): a 400–700 px
+    portrait upscaled 2.5–4× goes soft, and stays a card. A narrow travel keeps only the
+    part you want, a title and faces say;
+  - **pillar**: 4:3 archive footage over a blurred copy of itself;
+  - **inset**: a picture over the main one, fading in and out.
+- **Transparency shows what is below**, and with nothing below, the master's black: a map
+  or a sketch drawn for a white page turns unreadable. Put a white colour clip under it, or
+  flatten it first:
+  `ffmpeg -i in.png -filter_complex "color=white:s=WxH[bg];[bg][0]overlay=format=auto:shortest=1" out.png`.
 
 ## Transitions
 

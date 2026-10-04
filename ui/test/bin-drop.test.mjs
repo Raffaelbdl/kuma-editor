@@ -85,13 +85,13 @@ describe("dropping files on the bin", { skip: why ? `skipping: ${why}` : false }
     assert.equal(await page.eval(REVISION), before);
   });
 
-  it("adds files dropped on the timeline to the bin, one edit each", async () => {
+  it("adds files dropped on the timeline to the bin, in one edit", async () => {
     await page.eval(`globalThis.kumaApp = { pathForFile: (f) => ${JSON.stringify(tmp + "/")} + f.name }; true`);
     const before = await page.eval(REVISION);
     const shown = await dragIn(["one.wav", "two.wav"], "#library", "#timeline");
     assert.match(shown.hint, /^Drop to add/);
     await page.until(`${MEDIA}.then(s => s === "one> two>")`);
-    assert.equal(await page.eval(REVISION), before + 2);
+    assert.equal(await page.eval(REVISION), before + 1);
     assert.equal(await page.eval(`!${HINT}`), true, "the frame outlived the drop");
   });
 

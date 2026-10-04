@@ -175,14 +175,12 @@ export class Library {
 async function reloadMedia(id: string) {
   try {
     const r = await api.reprobe([id]);
-    await store.refresh();
     if (r.failed.length) { toast(`${id}: ${r.failed[0].reason}`, "err", 8000); return; }
     const changes = Object.entries(r.changed[0]?.changes ?? {}).map(([field, c]) => `${field.replace(/^meta\./, "")} ${JSON.stringify(c.from)} → ${JSON.stringify(c.to)}`);
+    if (changes.length) await store.refresh();
     toast(changes.length ? `${id}: ${changes.join(", ")}` : `${id} is unchanged`, "ok", changes.length ? 6000 : 3500);
   } catch (e) {
-    // A refused kind change comes back as the validator's issues; the error is the reason.
-    const issues = ((e as { body?: { issues?: { severity: string; message: string }[] } }).body?.issues ?? []).filter((i) => i.severity === "error");
-    toast(`${id}: ${issues.length ? issues.map((i) => i.message).join("; ") : (e as Error).message}`, "err", 8000);
+    await store.refused(e);
   }
 }
 

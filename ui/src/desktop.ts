@@ -96,25 +96,16 @@ export async function dropMedia(files: FileList, parent: string | null): Promise
   await addMediaPaths([...files].map((f) => app.pathForFile(f)).filter(Boolean), parent);
 }
 
-/** Add each path to the bin, stopping at the first that fails. */
+/** Add the paths to the bin as one edit; a dropped folder adds the media in it. */
 async function addMediaPaths(paths: string[], parent: string | null): Promise<void> {
-  if (!paths.length) return;
-  // One at a time, against the revision each previous add produced: the daemon refuses a
-  // patch built on a stale revision, and a multi-select would hit that on the second file.
-  const added: string[] = [];
-  for (const path of paths) {
-    const project = store.state.project;
-    if (!project) return;
-    try {
-      // A dropped folder adds the media in it and says what else it held.
-      const r = await api.addMedia(path, project.revision, parent);
-      added.push(...r.ids);
-      if (r.skipped.length) toast(`${path}: skipped ${r.skipped.map((s) => `${s.path} (${s.reason})`).join(", ")}`, "", 8000);
-      await store.refresh();
-    } catch (e) {
-      toast(`${path}: ${(e as Error).message}`, "err", 8000);
-      break;
-    }
+  const project = store.state.project;
+  if (!paths.length || !project) return;
+  try {
+    const r = await api.addMedia(paths, project.revision, parent);
+    if (r.skipped.length) toast(`Skipped ${r.skipped.map((s) => `${s.path} (${s.reason})`).join(", ")}`, "", 8000);
+    await store.refresh();
+    toast(`Added ${r.ids.join(", ")} to the bin`, "ok");
+  } catch (e) {
+    toast((e as Error).message, "err", 8000);
   }
-  if (added.length) toast(`Added ${added.join(", ")} to the bin`, "ok");
 }

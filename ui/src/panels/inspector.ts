@@ -690,13 +690,14 @@ export class Inspector {
     const path = `${seqPath(id)}/effects`;
     const span = { start: 0, end: seqDuration(p, id) };
     const name = p.bin[id]?.name || id;
+    const carries = sequenceStreams(p, id);
     this.renderEffects({
       key: `seq:${id}`,
       what: "the sequence",
       effects: seq.effects ?? [],
       path,
-      carries: sequenceStreams(p, id),
-      offers: (type) => SEQUENCE_EFFECTS.includes(type) && actsOn(type, sequenceStreams(p, id)),
+      carries,
+      offers: (type) => SEQUENCE_EFFECTS.includes(type) && actsOn(type, carries),
       anim: (ei) => {
         const e = seq.effects?.[ei];
         return e ? new Animation(e, span, (next, note) => void store.patch([{ op: "replace", path: `${path}/${ei}`, value: next }], `${e.type} ${note}`)) : null;

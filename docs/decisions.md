@@ -2889,8 +2889,9 @@ with it.
 
 **Test status when this was merged:** everything passes except, in this container,
 `a_preset_whose_encoder_is_missing_cannot_be_tried` (its melt does not name a missing
-encoder) and `renders_reference_project_with_melt` ("melt reported no progress"), both of
-which fail the same way on the commit before this work.
+encoder), `renders_reference_project_with_melt` ("melt reported no progress"), the UI's
+`the render queue` (which waits for the same missing progress) and `titles from the bin`'s
+font picker, all of which fail the same way on the commit before this work.
 
 ## Still open
 

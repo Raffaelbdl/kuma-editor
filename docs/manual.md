@@ -261,7 +261,9 @@ pixel-valued `transform` offsets are the one thing that stays put.
 
 **Subtitles.** Select a clip and press **Transcribe → subtitles** (or `kuma transcribe
 --clip <id>`, or the `transcribe` tool with `clip`). A dialog asks the **language** — detect
-it, or force one, and your choice is remembered for next time — and, when that media has
+it, or force one, and your choice is remembered for next time —, the **model** when more
+than one is installed, whether to **snap to pauses** (on), and **split every** so many
+seconds (60; 0 for one entry, never under 5) — and, when that media has
 been transcribed before, offers to **replace** that transcript: the same entry keeps its
 styling and where it is placed, and only the words change. Leave it unticked for a second
 transcript beside the first, which is also what a second `kuma transcribe` does: an

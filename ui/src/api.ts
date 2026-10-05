@@ -76,7 +76,9 @@ export const api = {
    *  already exists instead of refusing, keeping its styling and where it is placed. No
    *  `base_revision`: the model runs for minutes, and the daemon composes the patch
    *  against the project as it is when the words are in. */
-  transcribe: (req: ({ bin: string } | { clip: string }) & { id?: string; language?: string; replace?: boolean }) =>
+  /** The whisper models installed, by file name; the first is the default. */
+  whisperModels: () => json<{ whisper_models?: string[] }>("/api/health").then((h) => h.whisper_models ?? []),
+  transcribe: (req: ({ bin: string } | { clip: string }) & { id?: string; language?: string; replace?: boolean; model?: string; snap?: boolean; split?: number }) =>
     json<{ job: number }>("/api/transcribe", { method: "POST", body: JSON.stringify({ ...req, origin: "ui: transcribe" }) }),
   /** Queue a render of `sequence`, or of the project's master when it is left out — the
    *  daemon's own default, so the two agree without the client having to know which is

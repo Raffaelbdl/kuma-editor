@@ -207,6 +207,45 @@ fn an_apostrophe_in_a_var_leaves_the_vars_after_it_alone() {
     assert!(px[0] > 200 && px[2] < 50, "the colour after the apostrophe was not read: {px:?}");
 }
 
+/// Two things the renderer must see as the preview does. An entry's `lang` var is the
+/// page's language: a `:lang(ja)` rule draws red, the page's own `en` blue. And a stylesheet
+/// from `overlays/_vendor/` beside the overlay comes with `_vendor/kuma.js` from the
+/// library, which marks a corner green when it loaded; a sibling `_vendor/` used to hide it.
+#[test]
+fn an_entry_bakes_in_its_own_language_with_shared_files_from_beside_it() {
+    let root = repo_root();
+    let tmp = tempfile::tempdir().unwrap();
+    let baker = Baker::discover(&root, root.join("library/blueprints/_vendor"), tmp.path().join("cache"));
+    if baker.available().is_err() || (baker.browser.is_none() && std::env::var_os("KUMA_ALLOW_BROWSER_DOWNLOAD").is_none()) {
+        eprintln!("hyperframes or a browser is unavailable; skipping");
+        return;
+    }
+    let shared = tmp.path().join("overlays/_vendor");
+    std::fs::create_dir_all(&shared).unwrap();
+    std::fs::write(shared.join("house.css"), "#fill { position: absolute; inset: 0; background: #0000ff; } :lang(ja) #fill { background: #ff0000; }").unwrap();
+    let dir = tmp.path().join("overlays/swatch");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("overlay.json"), r#"{ "name": "Swatch", "static": true, "vars": { "lang": { "type": "lang", "default": "" } } }"#).unwrap();
+    std::fs::write(dir.join("index.html"), r##"<!doctype html><html lang="en"><head>
+        <style>html, body { margin: 0; background: transparent; } #mark { position: absolute; left: 0; top: 0; width: 8px; height: 8px; }</style>
+        <link rel="stylesheet" href="_vendor/house.css"><script src="_vendor/kuma.js"></script></head><body>
+      <div id="root" data-composition-id="main" data-no-timeline data-start="0" data-duration="1" data-width="64" data-height="36"><div id="fill"></div><div id="mark"></div></div>
+      <script>document.getElementById("mark").style.background = typeof kumaTemplate === "function" ? "#00ff00" : "#000000";</script>
+      </body></html>"##).unwrap();
+    let manifest = OverlayManifest::load(&dir).unwrap();
+    let bake = |lang: &str| {
+        let vars: Map<String, serde_json::Value> = json!({ "lang": lang }).as_object().unwrap().clone();
+        let req = BakeRequest { overlay_dir: &dir, manifest: &manifest, vars: &vars, fps: Fps::new(30, 1), width: 64, height: 36, duration: 1.0, frames: 30, speed: 1.0 };
+        let r = baker.bake(&req).expect("bake");
+        (rgba_at(&r.resource, 32, 18), rgba_at(&r.resource, 2, 2))
+    };
+    let (ja, mark) = bake("ja");
+    assert!(ja[0] > 200 && ja[2] < 50, "the entry's language did not reach the page: {ja:?}");
+    assert!(mark[1] > 200 && mark[0] < 50, "the library's kuma.js was not staged beside the shared stylesheet: {mark:?}");
+    let (en, _) = bake("");
+    assert!(en[2] > 200 && en[0] < 50, "an empty `lang` keeps the page's own: {en:?}");
+}
+
 /// A baker whose renderer is a stand-in that takes a second, writes six empty frames, and
 /// logs `start` and `end` for each run, in the order they happen; and a probe overlay. So
 /// these need no hyperframes and no browser.

@@ -67,7 +67,9 @@ Subtitles need a local speech-to-text model, [whisper.cpp](https://github.com/gg
 into `~/.local/share/kuma/models/` (`WHISPER_MODEL=small npm run rebuild` for another size;
 `base` is the default, `.en` variants are English-only). To use your own, put `whisper-cli`
 on `PATH` (or `KUMA_WHISPER_BIN`) and a model in that folder (or `KUMA_WHISPER_MODEL`).
-`kuma doctor` reports both.
+`kuma doctor` reports both. Several models can sit in the folder side by side: the first by
+name is the default, and `transcribe` takes `model` (`large-v3` for `ggml-large-v3.bin`) to use
+another; `base` is weak outside English.
 
 Build:
 
@@ -106,6 +108,11 @@ it into `~/.cargo/bin`, tell it where the repository is once:
 ```
 export KUMA_REPO=/path/to/kuma-editor        # or pass --repo <path> on each call
 ```
+
+Failing those, it reads the `KUMA_REPO` that `kuma mcp-config` (or `kuma init`) wrote into
+the `.mcp.json` beside the project file, so the CLI finds what the project's MCP server is
+told; and last, the source tree the binary was built from, while that still has its
+`node_modules`. `kuma doctor` says where it found it.
 
 Blueprints (reusable overlays), effect presets, design systems and fonts are **assets shared
 across projects**, not part of the codebase: they live in a user library at
@@ -194,7 +201,8 @@ one table in `ui/src/panels/inspector.ts`, and the bounds there are the model's 
 panel cannot offer a value the daemon would refuse.
 
 **Effects are offered where they can act.** Each effect acts on the picture (transform,
-crop, blur, colour, blend, fade) or the sound (volume, audio fade), so `+ add effect` lists
+crop, blur, colour, blend, fade, freeze) or the sound (volume, audio fade, limiter, auto
+level), so `+ add effect` lists
 only what the selected clip can use: a colour or a still is not offered a volume, a song is not
 offered a picture fade. An effect that got there anyway — by an agent's patch, or on a clip
 moved to an audio track — stays, dimmed, and says *no effect here*; the validator warns too.
@@ -253,7 +261,9 @@ pixel-valued `transform` offsets are the one thing that stays put.
 
 **Subtitles.** Select a clip and press **Transcribe → subtitles** (or `kuma transcribe
 --clip <id>`, or the `transcribe` tool with `clip`). A dialog asks the **language** — detect
-it, or force one, and your choice is remembered for next time — and, when that media has
+it, or force one, and your choice is remembered for next time —, the **model** when more
+than one is installed, whether to **snap to pauses** (on), and **split every** so many
+seconds (60; 0 for one entry, never under 5) — and, when that media has
 been transcribed before, offers to **replace** that transcript: the same entry keeps its
 styling and where it is placed, and only the words change. Leave it unticked for a second
 transcript beside the first, which is also what a second `kuma transcribe` does: an
@@ -273,6 +283,18 @@ The inspector shows one row per cue, so a misheard word is fixed in place and th
 follows as you type. `max_chars` on the job asks whisper for lines of that many characters
 instead, or 0 for its own sentences; those cues are already lines, so set `words_per_line`
 to 1.
+
+whisper's word cues are contiguous: a pause is absorbed into the word beside it, and a word
+boundary near a pause can be a third of a second off. So once the words are in, the job finds
+the pauses in the sound (ffmpeg's `silencedetect`: under -35 dB for 0.15 s, `silence_db` and
+`silence_min` to change it) and moves every cue edge within 0.4 s of one onto it: a word that
+runs into a pause ends where it starts, one that starts in or just after it starts where it
+ends. `snap: false` (`--no-snap`) keeps whisper's times. A long recording is not one entry:
+the transcript is cut at the best pause near every minute (`split`, in seconds; 0 for one
+entry) into entries `<id>-1`, `<id>-2`…, each with its own cues and `offset`, since an entry
+bakes as one clip and is baked again after every correction. From a clip, the pieces it plays
+are made and each is placed over its stretch. **Replace** overwrites one entry's words, so it
+is offered when the media has one transcript, and the job refuses `replace` with `split`.
 
 **Themes.** The palette button in the top bar (or *View → Theme…* in the app) swaps the
 editor's colours: **Kuma**, the default, and **Tokyo Night**, retro neon on deep indigo.
@@ -346,17 +368,34 @@ claude mcp add --scope user    kuma -- kuma mcp --project /abs/path.kuma.json  #
 
 `kuma mcp` starts the daemon in-process if none is running on the port, so the browser UI
 and the agent always share one state. Tools: `timeline_guide`, `get_project`, `get_schema`, `apply_edits`,
-`undo`, `redo`, `validate_project`, `list_presets`, `add_media`, `probe_media`,
-`transcribe`, **`sample_frames`**, `measure_audio`, `bake_overlay`, `render`, `job_status`, `cancel_job`,
+`undo`, `redo`, `validate_project`, `list_presets`, `add_media`, `probe_media`, `reprobe_media`, `unused_entries`,
+`transcribe`, **`sample_frames`**, `measure_audio`, `measure_media`, `bake_overlay`, `render`, `job_status`, `cancel_job`,
 `prune_cache`, `health`, and for overlays `overlay_guide`, `new_overlay`, `check_overlay`,
 `import_overlay`, `make_overlay_unique`, `list_blueprints`, `add_blueprint`,
 `save_blueprint`. An agent scaffolds an overlay with `new_overlay`, checks it with
 `check_overlay` and adds it with `import_overlay`; `sample_frames` with `overlay` (a bin id)
 shows one entry on its own, and with `times` and `tile` a contact sheet of chosen moments.
 `apply_edits` takes a patch inline or, with `patch_path`, from a file in the project, so a
-script's patch of any size is one exact edit. `measure_audio` meters a sequence's sound (EBU
+script's patch of any size is one exact edit. `add_media` takes a list of paths or a folder
+(its media files, by extension; `recursive` for subfolders) as one edit and says what it
+skipped; `reprobe_media` reads replaced files again and writes only what changed;
+`unused_entries` lists entries no clip places, and those placed only where the master never
+reaches. A script that diffs its own document against
+the stored one puts its own in kuma's form first — `kuma canonical plan.json`, or
+`POST /api/project/canonical` to the daemon, which answers the text the file would hold —
+since kuma leaves out every field at its default (a keyframe's `ease: "linear"`). `measure_audio` meters a sequence's sound (EBU
 R128, per chapter, loudest moments, silences), rendered through the real graph without
-baking anything. A server that outlives a rebuild of `kuma` says so on every call, since its
+baking anything; `solo` and `mute` (track ids, nested ones too) hear one part alone for that
+measurement, on the copy that is compiled and never on the project. `measure_media` meters
+one source instead, a media entry or a file in the project: loudness, range and true peak, a
+loudness curve over time and its quiet stretches (pauses, gaps between takes, the onset of a
+sound), in the file's own seconds; nothing is stored. The tools that start a job (`render`, `measure_audio`, `measure_media`, `transcribe`,
+`bake_overlay`, `sample_frames`) wait `wait_seconds` and then return it still running, with
+its id; `job_status` with that id and its own `wait_seconds` waits again, in calls as short
+as the client needs (Claude Code moves a call that runs past 120 s to the background), and
+without an id lists the jobs. While a tool waits it sends MCP progress notifications when the
+call carries a progress token: the job's percent and message, and a heartbeat every 20 s, so
+a client that gives up on a silent call does not. A server that outlives a rebuild of `kuma` says so on every call, since its
 tools are the old build's. `overlay_guide` returns `library/blueprints/CLAUDE.md`, and
 `timeline_guide` returns `crates/kuma-mcp/src/timeline_guide.md`: the server's own
 instructions are kept under the 2048 characters a client shows and point at both.
@@ -368,19 +407,32 @@ kuma render --preset youtube-1080p         # bakes overlays, compiles, renders w
 kuma sample 12.0 14.0 --count 4 --rect 400,300,800,400
 kuma sample 0 3 --count 6 --overlay paris          # one overlay entry on its own, no placement (--backdrop, --duration, --frame 1080x1920)
 kuma sample --times 3.2,3.8,41.7,42.3 --tile      # chosen moments, and one captioned contact sheet of them
+kuma sample 0 60 --count 12 --no-overlays          # footage only: no overlay is baked first
 kuma measure-audio                         # loudness (LUFS), true peak, per chapter, loudest moments, silences
+kuma measure-audio --solo va,vb            # the same with only those tracks heard (nested ones too); --mute bed leaves one out
+kuma measure-media voice --range 0,60      # one source: LUFS, range, true peak, a loudness curve, pauses (--silence-db -35 --silence-min 0.15)
 kuma bake                                  # bake all overlay clips (cached by content)
 kuma cache                                 # how big .kuma/ is: bakes, sampled frames, thumbnails
 kuma cache prune                           # delete what the project no longer uses (--all: every bake and frame)
 kuma compile > timeline.mlt                # inspect the MLT graph (or open it in Kdenlive); baked overlays included, --bake bakes the rest
 kuma render --sequence intro               # render one nested sequence instead of the master
+kuma add-media media/                      # every media file in the folder, one edit (several paths too; --recursive, --parent)
+kuma reprobe                               # probe every media entry again after files were replaced; prints what changed
+kuma unused                                # entries no clip places, and those only sequences the master never reaches place
 kuma transcribe --clip c1 --language fr    # whisper.cpp → `subtitles` entry under the media, placed over clip c1
 kuma transcribe screen --replace           # re-transcribe in place: same entry, styling and placement, new words
+kuma transcribe voice --model large-v3 --split 45   # a larger model; entries of about 45 s, cut at pauses
 kuma new-overlay my-tag                    # a contract-abiding skeleton in the project's overlays/ (--blueprint for the user library)
 kuma import-overlay overlays/my-tag        # add that folder to the bin (--id)
 kuma lint                                  # every blueprint and every folder the bin uses (exit 1 on errors); `kuma lint overlays/my-tag` or `kuma lint location-tag` for one
 kuma validate | thumbs | library | doctor  # validate also names text the entries' fonts will not draw
+kuma canonical plan.json                   # a project document (any version; `-` for stdin) in the form kuma stores it, to diff against
 ```
+
+When a daemon serves the project (`--bind`, `127.0.0.1:7455` by default), `render`, `bake`,
+`sample`, `measure-audio`, `measure-media` and `transcribe` run as its jobs: they show in the
+editor's job queue (the **Queue** button), wait their turn with its renders, and print the
+same result; Ctrl-C cancels the job. Without one, they run in the `kuma` process itself.
 
 ## The project file
 
@@ -422,7 +474,8 @@ id, so new entries land at the bottom). In the editor, `+ folder` adds one; drag
 the middle of a folder to move it there, onto the upper or lower part of any row to put it
 before or after that row, or onto the list's empty space to send it last at the top level;
 the caret folds a folder. In the desktop app, files dropped anywhere in the window join
-the bin, or the folder they were dropped on; an `overlay.json` is imported as an overlay, its folder copied into `overlays/` if it is not there already. A clip is a
+the bin, or the folder they were dropped on, as one edit; a folder dropped among them is
+passed over (drop its files), and an `overlay.json` is imported as an overlay, its folder copied into `overlays/` if it is not there already. A clip is a
 *placement*: it says which entry, when, how fast and with which effects, and never carries
 a source of its own. So an overlay's text lives on its bin entry and every placement of it
 follows; a second wording is a second entry. Overlay clips take the same effects as video
@@ -439,7 +492,28 @@ is content you are not editing and is what the render will show. A sequence cann
 sped up — MLT's `timewarp` takes a resource path, not a tractor, so render the part out
 and place the result as media.
 
-Seconds everywhere, `end` exclusive, fps rational, tracks bottom-up, `in` meaningful for
+**A sequence has effects of its own, on its mix:** `volume`, `limiter` and `auto_level`
+in its `effects`, keyed in the sequence's own seconds. The master's are the render's master
+stage — a gain, then a peak limiter — and they are in the document, so the preview plays
+them, `measure_audio` measures after them and `render` renders them. A nested sequence's
+act on every placement of it, each placement with its own copy (a limiter keeps state from
+frame to frame, and two placements playing at once must not share it). The compiler hangs
+the root's on its tractor and a nested one's on a playlist per placement over the whole
+tractor (`compile.rs`). The limiter is ffmpeg's `alimiter` with its auto level off: it
+holds *sample* peaks at the ceiling, so a true-peak target wants a ceiling about a dB under
+it, and it looks ahead `attack` ms (5 by default), which is how much later the limited sound
+comes out. **Freeze** holds the frame a clip shows `t` seconds in, of anything it places,
+sequences included; the picture holds and the sound runs on. It is a tractor of the clip's
+sound and that frame repeated, because MLT's `freeze` filter fetches its frame from the
+wrong producer for a sequence and deadlocks on a still.
+
+A clip that reads past the end of its source is padded with nothing for the frames the
+source lacks, which show the tracks below and are silent. MLT would otherwise cut the
+entry to what the source has, and every later clip on the track would slide earlier. The
+validator counts this in frames, as the compiler cuts: a source a fraction of a frame short
+of its clip is not short.
+
+Seconds everywhere, `end` exclusive, fps rational, tracks bottom-up with every overlay track after the video tracks, `in` meaningful for
 video, audio and sequence entries. Track and clip ids are unique across the whole project,
 not per sequence. The full schema: `GET /api/schema` or the `get_schema` tool.
 
@@ -461,6 +535,10 @@ drawn on a canvas with `_vendor/kuma-canvas.js` and Rough.js),
 `label-pin`, `section-title`, `countdown`, `watermark` (static), `subtitles` (a `cues` var;
 transcripts share one copy of it). Contract: `library/blueprints/CLAUDE.md`.
 
+**A file replaced on disk** keeps the duration, size and kind it was probed with until a
+right-click on its bin row, **Reload from file** (or `kuma reprobe`, or `reprobe_media`), reads it
+again: one undoable edit, and a toast says what changed.
+
 **Titles** are made from the bin, the way Kdenlive's *Add Title Clip* is: **+ New** (or a
 right-click in the bin, which creates inside the folder under the pointer) lists every
 blueprint whose manifest has a `create` label — *Title*, *Title + subtitle* — and makes a new
@@ -474,9 +552,16 @@ the `@font-face` rules, and the bake stages exactly the files it draws with. The
 twelve open-licence families (`library/fonts/`, OFL/Apache/UFL licences beside each). The **+** by a
 font picker adds `.ttf`/`.otf` files by path (the app's file picker, or a typed path in a
 browser tab), to this project or to every project; agents use `add_font`. A `.ttc`/`.otc`
-collection, which is how most CJK fonts ship, is split into one file per face as it is added.
+collection, which is how most CJK fonts ship, is split into one file per face as it is added,
+and a `.woff`/`.woff2` web font is unwrapped into the `.ttf`/`.otf` it holds (`wuff`, a pure-Rust
+port of Google's decoder), so a font folder only ever holds those; one copied in by hand is not
+read, and `check_overlay` says so where the family is missing.
 Each family reports the writing systems it sets (`scripts`: latin, han, kana, hangul, …): text
-in any other is drawn by whatever fonts the baking machine has.
+in any other is drawn by whatever fonts the baking machine has. Which forms kanji take, and
+which font a missing character falls back to, follow the page's `lang`: an overlay that
+declares a `lang` var (the `title`, `title-subtitle` and `subtitles` blueprints do) gets the
+entry's value written onto `<html lang>` in the bake, the check and the preview alike, so one
+folder serves entries in several languages.
 
 Effect presets are `<library>/presets/*.json` (Ken Burns, zoom to region, vignette,
 picture-in-picture, dim) and expand to ordinary effects; `$expr` values may use the
@@ -512,7 +597,8 @@ and the values live with the rest of the project's decisions.
 - Compiler: dissolves (A/B lanes + luma), wipes (generated PGM lumas), timewarp speed,
   crop, transform, blur, colour correction and volume — each static or keyframed, linear,
   held or smooth per key — picture and sound fades, blend modes (discrete keyframes on `qtblend`),
-  solid-colour clips, PiP stills, overlay PNG sequences; golden-file + DTD + real `melt` render tests.
+  solid-colour clips, PiP stills, overlay PNG sequences, a sequence's own gain, limiter and
+  auto-level, freeze frames; golden-file + DTD + real `melt` render tests.
 - Daemon + MCP end to end: patch/undo/409 on stale revisions, `sample_frames` returning
   image blocks, background render jobs.
 - Preview engine: seek/play at ~23 fps for a 960×540 composite on 4 CPU cores, audio as
@@ -555,7 +641,8 @@ and the values live with the rest of the project's decisions.
 - **"Transcribe" fails with "is not runnable" or "no whisper model"** — `kuma doctor`
   shows what it looked for: `whisper-cli` on `PATH` (`KUMA_WHISPER_BIN`) and a ggml model in
   `~/.local/share/kuma/models` (`KUMA_WHISPER_MODEL`). `GET /api/health` has the same under
-  `whisper`.
+  `whisper`, and the models `model` can name under `whisper_models`; a `model` that is not
+  there is refused with the list.
 - **`.kuma/` keeps growing** — superseded bakes and sampled frames are never deleted on
   their own. `kuma cache prune` (or the job queue's button, or `prune_cache`) removes what
   the project no longer uses; `--all` empties bakes and frames.

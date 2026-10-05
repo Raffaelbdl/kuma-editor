@@ -14,6 +14,7 @@
     "accent":         { "type": "color",   "default": "#ffd400", "label": "Stressed word" },
     "background":     { "type": "color",   "default": "#111111", "label": "Box / stroke" },
     "style":          { "type": "enum",    "options": ["box", "outline", "plain"], "default": "box", "label": "Style" },
-    "uppercase":      { "type": "boolean", "default": false, "label": "Uppercase" }
+    "uppercase":      { "type": "boolean", "default": false, "label": "Uppercase" },
+    "lang":           { "type": "lang",    "default": "", "label": "Language", "description": "The transcript's language as a tag: ja, zh-Hant, ko, en. Kanji are drawn in the forms this language uses, and the system font that sets the cues is picked by it. Empty keeps the page's own, English." }
   }
 }

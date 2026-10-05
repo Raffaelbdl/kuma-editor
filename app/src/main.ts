@@ -346,6 +346,7 @@ function rebuildMenu() {
         { type: "separator" },
         { label: "Reload Preview", click: () => sendCommand("reload-preview") },
         { label: "Render", accelerator: "CmdOrCtrl+Shift+E", click: () => sendCommand("render") },
+        { label: "Job Queue", click: () => sendCommand("queue") },
       ],
     },
     {
@@ -490,7 +491,7 @@ function wireIpc() {
       title: "Add fonts",
       defaultPath: path.dirname(d.projectFile),
       properties: ["openFile", "multiSelections"],
-      filters: [{ name: "Fonts", extensions: ["ttf", "otf", "ttc", "otc"] }, { name: "All files", extensions: ["*"] }],
+      filters: [{ name: "Fonts", extensions: ["ttf", "otf", "ttc", "otc", "woff", "woff2"] }, { name: "All files", extensions: ["*"] }],
     });
     return r.canceled ? [] : r.filePaths;
   });

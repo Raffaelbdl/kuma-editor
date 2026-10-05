@@ -31,3 +31,66 @@ fn a_variable_rate_file_probes_as_its_average() {
     let meta = media::probe(&ntsc).unwrap().meta;
     assert_eq!((meta.fps, meta.variable_fps), (Some(Fps::new(30000, 1001)), false));
 }
+
+/// A source is metered and its pauses found in one pass, in the file's own seconds even
+/// when only part of it is read: a compressed file, so the seek before decoding is real.
+#[test]
+fn a_recording_is_metered_and_its_pauses_found_in_its_own_seconds() {
+    if !media::ffprobe_available() {
+        eprintln!("ffmpeg unavailable; skipping loudness test");
+        return;
+    }
+    use kuma_overlay::loudness::{measure, silences, Quiet};
+    let tmp = tempfile::tempdir().unwrap();
+    // A tone with two pauses, 2–2.5 s and 5–5.2 s, 6 dB quieter after the first; 1 ms
+    // frames so the volume steps where it is told to.
+    let tone = "sine=frequency=440:duration=8:sample_rate=48000:samples_per_frame=48,volume='if(between(t,2,2.5)+between(t,5,5.2),0,if(gt(t,2.5),0.5,1))':eval=frame";
+    let file = make(tmp.path(), "talk.m4a", &["-f", "lavfi", "-i", tone, "-ac", "2", "-c:a", "aac", "-b:a", "192k"]);
+    let no = std::sync::atomic::AtomicBool::new(false);
+    let near = |a: f64, b: f64| (a - b).abs() < 0.03;
+    let pauses = |s: &[(f64, f64)], want: &[(f64, f64)]| s.len() == want.len() && s.iter().zip(want).all(|(a, b)| near(a.0, b.0) && near(a.1, b.1));
+
+    let heard = std::sync::Mutex::new(0.0);
+    let m = measure(&file, None, Quiet::default(), &no, &|t| *heard.lock().unwrap() = t).unwrap();
+    assert!(pauses(&m.silences, &[(2.0, 2.5), (5.0, 5.2)]), "{:?}", m.silences);
+    let (loud, quiet) = (m.scan.integrated_over(0.0, 2.0).unwrap(), m.scan.integrated_over(2.5, 5.0).unwrap());
+    assert!((loud - quiet - 6.0).abs() < 0.3, "{loud} and {quiet}");
+    assert!(*heard.lock().unwrap() > 7.5, "progress reached the end");
+    // A pause shorter than asked for is not one.
+    let long = measure(&file, None, Quiet { db: -35.0, min: 0.3 }, &no, &|_| {}).unwrap();
+    assert!(pauses(&long.silences, &[(2.0, 2.5)]), "{:?}", long.silences);
+
+    // Part of it: the times are still the file's, and so is what the curve starts from.
+    let part = measure(&file, Some((3.0, 7.0)), Quiet::default(), &no, &|_| {}).unwrap();
+    assert!(pauses(&part.silences, &[(5.0, 5.2)]), "{:?}", part.silences);
+    assert!(near(part.scan.steps[0].t, 3.1) && near(part.scan.steps.last().unwrap().t, 7.0), "{:?}", part.scan.steps.last());
+    assert!((part.scan.integrated.unwrap() - quiet).abs() < 0.3);
+
+    assert!(pauses(&silences(&file, Quiet::default()).unwrap(), &[(2.0, 2.5), (5.0, 5.2)]));
+    let stop = std::sync::atomic::AtomicBool::new(true);
+    assert_eq!(measure(&file, None, Quiet::default(), &stop, &|_| {}).unwrap_err(), "cancelled");
+}
+
+/// A transparent picture says so, which is what tells an agent why it shows black: where
+/// it is clear the tracks below show, and the master's background where there are none.
+#[test]
+fn a_picture_with_an_alpha_channel_says_so_and_an_opaque_one_does_not() {
+    if !media::ffprobe_available() {
+        eprintln!("ffmpeg unavailable; skipping probe test");
+        return;
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    let clear = make(tmp.path(), "clear.png", &["-f", "lavfi", "-i", "color=c=red@0.5:size=64x48,format=rgba", "-frames:v", "1"]);
+    let opaque = make(tmp.path(), "opaque.png", &["-f", "lavfi", "-i", "color=c=red:size=64x48,format=rgb24", "-frames:v", "1"]);
+    let jpeg = make(tmp.path(), "photo.jpg", &["-f", "lavfi", "-i", "color=c=red:size=64x48", "-frames:v", "1"]);
+    let clip = make(tmp.path(), "clip.mov", &["-f", "lavfi", "-i", "testsrc=duration=1:size=64x48,format=rgba", "-c:v", "qtrle"]);
+    let alpha = |p: &std::path::Path| media::probe(p).unwrap().meta.alpha;
+    assert!(alpha(&clear) && alpha(&clip));
+    assert!(!alpha(&opaque) && !alpha(&jpeg));
+}
+
+#[test]
+fn a_folder_is_scanned_for_media_by_name() {
+    assert!(media::is_media_name(std::path::Path::new("a/Take 1.MOV")) && media::is_media_name(std::path::Path::new("x.wav")));
+    assert!(!media::is_media_name(std::path::Path::new("notes.txt")) && !media::is_media_name(std::path::Path::new("logo.svg")) && !media::is_media_name(std::path::Path::new("README")));
+}

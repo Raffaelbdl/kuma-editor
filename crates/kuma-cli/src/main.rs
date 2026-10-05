@@ -2,7 +2,7 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
 use clap::{Parser, Subcommand};
-use kuma_daemon::{default_library_dirs, find_repo_root, Config};
+use kuma_daemon::{default_library_dirs, locate_repo_root, Config, RepoRoot};
 
 mod skill;
 
@@ -86,6 +86,9 @@ enum Cmd {
         /// Columns of the sheet (about square by default).
         #[arg(long)]
         columns: Option<u32>,
+        /// Footage only: leave the overlays out, so nothing is baked first.
+        #[arg(long, conflicts_with = "overlay")]
+        no_overlays: bool,
     },
     /// Measure how loud a sequence is (EBU R128): overall, per chapter, its loudest moments
     /// and its silences. Renders the sound only, so no overlay is baked.
@@ -96,6 +99,34 @@ enum Cmd {
         /// Only `start,end` seconds of it.
         #[arg(long, value_delimiter = ',', num_args = 2)]
         range: Option<Vec<f64>>,
+        /// Track ids to silence for this measurement only, `a,b,…`.
+        #[arg(long, value_delimiter = ',')]
+        mute: Vec<String>,
+        /// Track ids to hear alone, wherever they are nested, `a,b,…`.
+        #[arg(long, value_delimiter = ',')]
+        solo: Vec<String>,
+    },
+    /// How loud one source is (LUFS, range, true peak, over time) and where it is quiet.
+    MeasureMedia {
+        /// Bin id of a media entry, or with --path a file in the project.
+        bin: Option<String>,
+        #[arg(long, conflicts_with = "bin")]
+        path: Option<String>,
+        /// Only `start,end` source seconds of it.
+        #[arg(long, value_delimiter = ',', num_args = 2)]
+        range: Option<Vec<f64>>,
+        /// `short_term` (default), `momentary` or `none`.
+        #[arg(long)]
+        curve: Option<String>,
+        /// Seconds between curve values (default: about 120 values).
+        #[arg(long)]
+        step: Option<f64>,
+        /// Quiet is every sample under this many dBFS (default -35).
+        #[arg(long, allow_hyphen_values = true)]
+        silence_db: Option<f64>,
+        /// …for at least this many seconds (default 0.15).
+        #[arg(long)]
+        silence_min: Option<f64>,
     },
     /// Show how big the project's `.kuma/` cache is, or prune it.
     Cache {
@@ -113,6 +144,14 @@ enum Cmd {
     },
     /// Validate the project and print issues (exit 1 on errors).
     Validate,
+    /// Print a project document in the form kuma stores it: upgraded, with every field at
+    /// its default left out. A script that builds a project canonicalises its own document
+    /// before diffing it against the stored one, so only real differences show.
+    Canonical {
+        /// The document to read; `-` (the default) is stdin.
+        #[arg(default_value = "-")]
+        file: PathBuf,
+    },
     /// Check the installation: repo, tools, engine, library, daemon, MCP config.
     Doctor,
     /// Scaffold a contract-abiding overlay folder in the project's `overlays/`. It is not
@@ -156,12 +195,27 @@ enum Cmd {
         #[arg(long)]
         force: bool,
     },
-    /// Probe a media file and add it to the project bin.
+    /// Probe media files and add them to the project bin, as one edit. A folder adds the
+    /// media files directly in it (by extension) and says what it skipped.
     AddMedia {
-        path: PathBuf,
+        #[arg(required = true)]
+        paths: Vec<PathBuf>,
+        /// Bin id, when adding one file (minted from the file name otherwise).
         #[arg(long)]
         id: Option<String>,
+        /// Bin id of the entry (usually a folder) to list them under.
+        #[arg(long)]
+        parent: Option<String>,
+        /// Also add what a folder's subfolders hold.
+        #[arg(long, short)]
+        recursive: bool,
     },
+    /// Probe media entries again (the given bin ids, or every one) after their files were
+    /// replaced, and write what changed as one edit. Prints each change.
+    Reprobe { bins: Vec<String> },
+    /// List bin entries the video does not use: placed by no clip, or placed only in
+    /// sequences the master never reaches. Changes nothing.
+    Unused,
     /// Transcribe a media entry with whisper.cpp and add the subtitles to the bin.
     Transcribe {
         /// Bin id of the media entry (the result is added to the bin, unplaced).
@@ -183,6 +237,15 @@ enum Cmd {
         /// Longest cue in characters: 1 (the default) is one cue per word, 0 keeps whisper's own sentences.
         #[arg(long, default_value_t = 1)]
         max_chars: u32,
+        /// Model: a file in the models folder or its size (`large-v3`, `medium`); `kuma doctor` lists them.
+        #[arg(long)]
+        model: Option<String>,
+        /// Seconds of transcript per entry, cut at pauses (default 60; 0 for one entry).
+        #[arg(long)]
+        split: Option<f64>,
+        /// Keep whisper's word times rather than moving cue edges onto the pauses.
+        #[arg(long)]
+        no_snap: bool,
     },
     /// Create a new empty project file (and, for Claude Code, a project-scoped `.mcp.json`
     /// and the `kuma-video` skill in `.claude/skills/`).
@@ -223,7 +286,18 @@ fn absolute(path: &Path) -> anyhow::Result<PathBuf> {
 }
 
 fn repo_root(cli: &Cli) -> anyhow::Result<PathBuf> {
-    cli.repo.clone().or_else(find_repo_root).ok_or_else(|| anyhow::anyhow!("cannot find the kuma repository root (node_modules/hyperframes); pass --repo or set KUMA_REPO"))
+    Ok(repo_root_found(cli)?.path)
+}
+
+/// The repository root and where it came from: `--repo` (or `KUMA_REPO`, which clap reads
+/// into it) as given, else whatever `locate_repo_root` finds for this project.
+fn repo_root_found(cli: &Cli) -> anyhow::Result<RepoRoot> {
+    if let Some(path) = &cli.repo {
+        return Ok(RepoRoot { path: path.clone(), from: "--repo or KUMA_REPO".into() });
+    }
+    locate_repo_root(absolute(&cli.project).ok().as_deref()).ok_or_else(|| {
+        anyhow::anyhow!("cannot find the kuma repository root (the checkout holding node_modules/hyperframes): pass --repo or set KUMA_REPO, or run `kuma mcp-config` so the project's .mcp.json names it")
+    })
 }
 
 fn config(cli: &Cli) -> anyhow::Result<Config> {
@@ -242,6 +316,37 @@ async fn running_daemon(cli: &Cli) -> Option<String> {
     let h = kuma_mcp::client::health(&url).await?;
     let theirs = h["project"].as_str().map(PathBuf::from).and_then(|p| p.canonicalize().ok())?;
     (theirs == absolute(&cli.project).ok()?).then_some(url)
+}
+
+/// Run a job on the daemon serving this project, when one does, so it shows in the editor's
+/// queue and waits its turn there: progress on stderr, Ctrl-C cancels it. Its result, or
+/// `None` when no daemon serves the project and the caller runs the job itself.
+async fn on_daemon(cli: &Cli, path: &str, body: serde_json::Value) -> anyhow::Result<Option<serde_json::Value>> {
+    let Some(url) = running_daemon(cli).await else { return Ok(None) };
+    let c = kuma_mcp::client::Client::new(&url);
+    let id = c.post(path, &body).await?["job"].as_u64().ok_or_else(|| anyhow::anyhow!("the daemon at {url} started no job"))?;
+    eprintln!("job {id} on the daemon at {url}");
+    let mut said = String::new();
+    let each = |j: serde_json::Value| {
+        let line = format!("[{:3}%] {}", j["percent"].as_u64().unwrap_or(0), j["message"].as_str().unwrap_or(""));
+        if line != said {
+            eprintln!("{line}");
+            said = line;
+        }
+        async {}
+    };
+    let j = tokio::select! {
+        j = c.poll_job(id, std::time::Duration::from_secs(7 * 24 * 3600), each) => j?,
+        _ = tokio::signal::ctrl_c() => {
+            c.post(&format!("/api/jobs/{id}/cancel"), &serde_json::json!({})).await?;
+            anyhow::bail!("cancelled job {id}");
+        }
+    };
+    if let Some(e) = kuma_mcp::client::failure(id, &j) {
+        return Err(e);
+    }
+    anyhow::ensure!(j["state"] == "done", "job {id} was {}", j["state"]);
+    Ok(Some(j["result"].clone()))
 }
 
 #[tokio::main]
@@ -278,14 +383,25 @@ async fn main() -> anyhow::Result<()> {
         }
         Cmd::Doctor => doctor(&cli).await?,
         Cmd::Render { preset, output, sequence } => {
-            let state = open(&cli)?;
             let req = kuma_daemon::jobs::RenderRequest { preset: preset.clone(), output: output.as_deref().map(absolute).transpose()?, sequence: sequence.clone(), ..Default::default() };
-            let out = tokio::task::spawn_blocking(move || kuma_daemon::jobs::render(&state, &req, &|p, m| eprintln!("[{p:3}%] {m}"), &Default::default())).await??;
+            let out = match on_daemon(&cli, "/api/render", serde_json::to_value(&req)?).await? {
+                Some(out) => out,
+                None => {
+                    let state = open(&cli)?;
+                    tokio::task::spawn_blocking(move || kuma_daemon::jobs::render(&state, &req, &|p, m| eprintln!("[{p:3}%] {m}"), &Default::default())).await??
+                }
+            };
             println!("{}", serde_json::to_string_pretty(&out)?);
         }
         Cmd::Bake { clips } => {
-            let state = open(&cli)?;
             let only = (!clips.is_empty()).then(|| clips.clone());
+            if let Some(out) = on_daemon(&cli, "/api/bake", serde_json::json!({ "clips": only })).await? {
+                for b in out["bakes"].as_array().into_iter().flatten() {
+                    println!("{}\t{}", b["clip"].as_str().unwrap_or(""), b["resource"].as_str().unwrap_or(""));
+                }
+                return Ok(());
+            }
+            let state = open(&cli)?;
             let bakes = tokio::task::spawn_blocking(move || {
                 let project = state.project.read().unwrap().clone();
                 kuma_daemon::jobs::bake_all(&state, &project, only.as_deref(), &|p, m| eprintln!("[{p:3}%] {m}"))
@@ -295,8 +411,7 @@ async fn main() -> anyhow::Result<()> {
                 println!("{k}\t{}", b.resource.display());
             }
         }
-        Cmd::Sample { t0, t1, count, rect, width, sequence, overlay, duration, backdrop, frame, times, tile, columns } => {
-            let state = open(&cli)?;
+        Cmd::Sample { t0, t1, count, rect, width, sequence, overlay, duration, backdrop, frame, times, tile, columns, no_overlays } => {
             let rect = rect
                 .as_deref()
                 .map(|s| {
@@ -327,17 +442,48 @@ async fn main() -> anyhow::Result<()> {
                 times: times.clone(),
                 tile: *tile,
                 columns: *columns,
+                overlays: (!*no_overlays).into(),
                 ..Default::default()
             };
-            let out = tokio::task::spawn_blocking(move || kuma_daemon::jobs::sample(&state, &req, &|_, _| {})).await??;
+            let out = match on_daemon(&cli, "/api/sample/job", serde_json::to_value(&req)?).await? {
+                Some(out) => out,
+                None => {
+                    let state = open(&cli)?;
+                    tokio::task::spawn_blocking(move || kuma_daemon::jobs::sample(&state, &req, &|_, _| {})).await??
+                }
+            };
             // The list of frames, as it always printed; with a sheet, the sheet beside it.
             let out = if *tile { out } else { out["samples"].clone() };
             println!("{}", serde_json::to_string_pretty(&out)?);
         }
-        Cmd::MeasureAudio { sequence, range } => {
-            let state = open(&cli)?;
-            let req = kuma_daemon::jobs::MeasureRequest { sequence: sequence.clone(), range: range.as_deref().map(|r| (r[0], r[1])), sections: None };
-            let out = tokio::task::spawn_blocking(move || kuma_daemon::jobs::measure_audio(&state, &req, &|p, m| eprintln!("[{p:3}%] {m}"), &Default::default())).await??;
+        Cmd::MeasureAudio { sequence, range, mute, solo } => {
+            let req = kuma_daemon::jobs::MeasureRequest { sequence: sequence.clone(), range: range.as_deref().map(|r| (r[0], r[1])), sections: None, mute: mute.clone(), solo: solo.clone() };
+            let out = match on_daemon(&cli, "/api/audio/measure", serde_json::to_value(&req)?).await? {
+                Some(out) => out,
+                None => {
+                    let state = open(&cli)?;
+                    tokio::task::spawn_blocking(move || kuma_daemon::jobs::measure_audio(&state, &req, &|p, m| eprintln!("[{p:3}%] {m}"), &Default::default())).await??
+                }
+            };
+            println!("{}", serde_json::to_string_pretty(&out)?);
+        }
+        Cmd::MeasureMedia { bin, path, range, curve, step, silence_db, silence_min } => {
+            let req = kuma_daemon::jobs::MediaMeasureRequest {
+                bin: bin.clone(),
+                path: path.clone(),
+                range: range.as_deref().map(|r| (r[0], r[1])),
+                curve: curve.clone(),
+                step: *step,
+                silence_db: *silence_db,
+                silence_min: *silence_min,
+            };
+            let out = match on_daemon(&cli, "/api/media/measure", serde_json::to_value(&req)?).await? {
+                Some(out) => out,
+                None => {
+                    let state = open(&cli)?;
+                    tokio::task::spawn_blocking(move || kuma_daemon::jobs::measure_media(&state, &req, &|p, m| eprintln!("[{p:3}%] {m}"), &Default::default())).await??
+                }
+            };
             println!("{}", serde_json::to_string_pretty(&out)?);
         }
         Cmd::Cache { action } => {
@@ -385,6 +531,11 @@ async fn main() -> anyhow::Result<()> {
             if kuma_core::validate::has_errors(&issues) {
                 std::process::exit(1);
             }
+        }
+        Cmd::Canonical { file } => {
+            // A document, not the project: no repository, no daemon, nothing loaded.
+            let text = if file.as_os_str() == "-" { std::io::read_to_string(std::io::stdin())? } else { std::fs::read_to_string(file)? };
+            println!("{}", kuma_core::canonical(&text).map_err(|e| anyhow::anyhow!("{}: {e}", file.display()))?);
         }
         Cmd::NewOverlay { id, name, description, blueprint } => {
             let state = open(&cli)?;
@@ -484,31 +635,64 @@ async fn main() -> anyhow::Result<()> {
             let n = install_library(&src, &dst, *force)?;
             println!("installed {n} entries into {}", dst.display());
         }
-        Cmd::AddMedia { path, id } => {
+        Cmd::AddMedia { paths, id, parent, recursive } => {
             // The daemon owns the project while it runs: route the edit through it rather
             // than writing the file underneath it.
-            let path = absolute(path)?;
-            let (id, rev) = if let Some(url) = running_daemon(&cli).await {
-                let body = serde_json::json!({ "path": path, "id": id, "origin": "cli: add media" });
-                let v = kuma_mcp::client::Client::new(&url).post("/api/bin", &body).await?;
-                (v["id"].as_str().unwrap_or_default().to_string(), v["revision"].as_u64().unwrap_or_default())
+            let paths = paths.iter().map(|p| absolute(p)).collect::<anyhow::Result<Vec<_>>>()?;
+            let v = if let Some(url) = running_daemon(&cli).await {
+                let body = serde_json::json!({ "paths": paths, "id": id, "parent": parent, "recursive": recursive, "origin": "cli: add media" });
+                kuma_mcp::client::Client::new(&url).post("/api/bin", &body).await?
             } else {
                 let state = open(&cli)?;
-                let (id, rev, _) = kuma_daemon::jobs::add_media(&state, &path, id.clone(), None, None, "cli")?;
-                (id, rev)
+                let how = kuma_daemon::media::AddHow { id: id.clone(), parent: parent.clone(), recursive: *recursive, files_only: false };
+                serde_json::to_value(kuma_daemon::media::add(&state, &paths, how, None, "cli")?)?
             };
-            println!("added bin entry `{id}` (revision {rev})");
+            for s in v["skipped"].as_array().into_iter().flatten() {
+                eprintln!("skipped {}: {}", s["path"].as_str().unwrap_or_default(), s["reason"].as_str().unwrap_or_default());
+            }
+            let ids: Vec<&str> = v["ids"].as_array().into_iter().flatten().filter_map(|i| i.as_str()).collect();
+            let rev = v["revision"].as_u64().unwrap_or_default();
+            match ids.as_slice() {
+                [id] => println!("added bin entry `{id}` (revision {rev})"),
+                ids => println!("added {} bin entries: {} (revision {rev})", ids.len(), ids.join(", ")),
+            }
         }
-        Cmd::Transcribe { bin, clip, id, replace, language, max_chars } => {
-            let options = kuma_overlay::TranscribeOptions { language: language.clone(), max_chars: Some(*max_chars) };
-            let out = if let Some(url) = running_daemon(&cli).await {
-                let body = serde_json::json!({ "bin": bin, "clip": clip, "id": id, "replace": replace, "language": options.language, "max_chars": options.max_chars, "origin": "cli: transcribe" });
-                let v = kuma_mcp::client::Client::new(&url).post("/api/transcribe", &body).await?;
-                kuma_mcp::client::Client::new(&url).wait_job(v["job"].as_u64().unwrap_or_default(), std::time::Duration::from_secs(3600)).await?
+        Cmd::Reprobe { bins } => {
+            let bins = (!bins.is_empty()).then(|| bins.clone());
+            let v = if let Some(url) = running_daemon(&cli).await {
+                let body = serde_json::json!({ "bins": bins, "origin": "cli: reprobe" });
+                kuma_mcp::client::Client::new(&url).post("/api/bin/reprobe", &body).await?
             } else {
                 let state = open(&cli)?;
-                let req = kuma_daemon::jobs::TranscribeRequest { bin: bin.clone(), clip: clip.clone(), id: id.clone(), replace: *replace, options, origin: "cli".into() };
-                tokio::task::spawn_blocking(move || kuma_daemon::jobs::transcribe(&state, &req, &|p, m| eprintln!("[{p:3}%] {m}"))).await??
+                serde_json::to_value(kuma_daemon::media::reprobe(&state, bins.as_deref(), None, "cli")?)?
+            };
+            for c in v["changed"].as_array().into_iter().flatten() {
+                for (field, change) in c["changes"].as_object().into_iter().flatten() {
+                    println!("{}: {field} {} → {}", c["id"].as_str().unwrap_or_default(), change["from"], change["to"]);
+                }
+            }
+            for f in v["failed"].as_array().into_iter().flatten() {
+                eprintln!("{}: not probed: {}", f["id"].as_str().unwrap_or_default(), f["reason"].as_str().unwrap_or_default());
+            }
+            let changed = v["changed"].as_array().map_or(0, Vec::len);
+            let unchanged = v["unchanged"].as_array().map_or(0, Vec::len);
+            println!("{changed} changed, {unchanged} unchanged (revision {})", v["revision"]);
+        }
+        Cmd::Unused => {
+            let state = open(&cli)?;
+            let project = state.project.read().unwrap().clone();
+            println!("{}", serde_json::to_string_pretty(&kuma_daemon::media::unused(&project))?);
+        }
+        Cmd::Transcribe { bin, clip, id, replace, language, max_chars, model, split, no_snap } => {
+            let options = kuma_overlay::TranscribeOptions { language: language.clone(), max_chars: Some(*max_chars), model: model.clone(), snap: no_snap.then_some(false), ..Default::default() };
+            let body = serde_json::json!({ "bin": bin, "clip": clip, "id": id, "replace": replace, "split": split, "language": options.language, "max_chars": options.max_chars, "model": options.model, "snap": options.snap, "origin": "cli: transcribe" });
+            let out = match on_daemon(&cli, "/api/transcribe", body).await? {
+                Some(out) => out,
+                None => {
+                    let state = open(&cli)?;
+                    let req = kuma_daemon::jobs::TranscribeRequest { bin: bin.clone(), clip: clip.clone(), id: id.clone(), replace: *replace, split: *split, options, origin: "cli".into() };
+                    tokio::task::spawn_blocking(move || kuma_daemon::jobs::transcribe(&state, &req, &|p, m| eprintln!("[{p:3}%] {m}"))).await??
+                }
             };
             println!("{}", serde_json::to_string_pretty(&out)?);
         }
@@ -535,7 +719,7 @@ async fn main() -> anyhow::Result<()> {
             };
             let p = kuma_core::Project::new_default(kuma_core::Project::name_from_path(&path), *width, *height, fps);
             std::fs::create_dir_all(path.parent().unwrap())?;
-            std::fs::write(&path, serde_json::to_string_pretty(&p)?)?;
+            std::fs::write(&path, kuma_core::project_text(&p)?)?;
             println!("created {}", path.display());
             let library = default_library_dirs().remove(0);
             if !library.join("blueprints").is_dir() {
@@ -562,7 +746,7 @@ async fn doctor(cli: &Cli) -> anyhow::Result<()> {
     let cfg = config(cli)?;
     let ok = |b: bool, yes: &str, no: &str| if b { yes.to_string() } else { format!("MISSING — {no}") };
     println!("binary        {} — version {VERSION}", std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_default());
-    println!("repo root     {}", cfg.repo_root.display());
+    println!("repo root     {} (from {})", cfg.repo_root.display(), repo_root_found(cli)?.from);
     println!("project       {} ({})", cfg.project_file.display(), if cfg.project_file.is_file() { "exists" } else { "will be created" });
     for d in cfg.blueprint_dirs() {
         let (loaded, errors) = kuma_core::OverlayManifest::load_all(&d);
@@ -582,6 +766,7 @@ async fn doctor(cli: &Cli) -> anyhow::Result<()> {
     println!("hyperframes   {}", baker.available().map(|v| format!("{v} ({})", baker.hyperframes.display())).unwrap_or_else(|e| format!("MISSING — npm install at the repo root ({e})")));
     let stt = kuma_overlay::Transcriber::discover(&cfg.repo_root, default_library_dirs().remove(0).join("models"));
     println!("whisper       {}", stt.available().map(|m| format!("{} with {}", stt.cli.display(), m.display())).unwrap_or_else(|e| format!("MISSING — {e}")));
+    println!("whisper models {}", if stt.models().is_empty() { format!("none in {}", stt.model_dir.display()) } else { stt.models().join(", ") });
     println!("browser       {}", baker.browser.as_ref().map(|p| p.display().to_string()).unwrap_or("not set — hyperframes will download Chrome headless shell on first bake".into()));
     let display = std::env::var_os("DISPLAY").is_some() || std::env::var_os("WAYLAND_DISPLAY").is_some();
     println!("display       {}", if display { "yes" } else if kuma_daemon::preview::has_bin("xvfb-run") { "none; xvfb-run available" } else { "NONE and no xvfb-run — melt/engine will fail (apt install xvfb)" });
@@ -714,4 +899,19 @@ async fn resolve_daemon(cli: &Cli) -> anyhow::Result<(String, Option<String>)> {
 
 fn port_busy(addr: SocketAddr) -> bool {
     std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_millis(500)).is_ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `--no-overlays` is the MCP tool's `overlays: false`: footage only, nothing baked.
+    #[test]
+    fn sample_can_leave_the_overlays_out() {
+        let Cmd::Sample { no_overlays, .. } = Cli::try_parse_from(["kuma", "sample", "1.5", "--no-overlays"]).unwrap().cmd else { panic!("a sample") };
+        assert!(no_overlays);
+        let Cmd::Sample { no_overlays, .. } = Cli::try_parse_from(["kuma", "sample", "1.5"]).unwrap().cmd else { panic!("a sample") };
+        assert!(!no_overlays, "overlays are in by default");
+        assert!(Cli::try_parse_from(["kuma", "sample", "--overlay", "title", "--no-overlays"]).is_err(), "an overlay without overlays is a picture of the backdrop");
+    }
 }

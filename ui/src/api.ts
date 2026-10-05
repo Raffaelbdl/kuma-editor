@@ -59,15 +59,27 @@ export const api = {
   strip: (bin: string) => json<{ strip: { count: number; step: number; width: number; height: number } }>(`/api/bin/${encodeURIComponent(bin)}/strip.json`),
   /** Check an overlay folder against the authoring contract. Reads only. */
   lintOverlay: (path: string) => json<LintReport>(`/api/overlays/lint?${new URLSearchParams({ path })}`),
-  /** Add a media file, or an overlay folder of the project (or its `overlay.json`). */
-  addMedia: (path: string, base_revision: number, parent?: string | null) =>
-    json<{ id: string; revision: number }>("/api/bin", { method: "POST", body: JSON.stringify({ path, base_revision, parent: parent ?? undefined, origin: "ui: add media" }) }),
+  /** Add a media file, a folder's media files (`ids`, and what it passed over in
+   *  `skipped`), or an overlay folder of the project (or its `overlay.json`). */
+  /** One edit for every file. A folder is passed over (a person dropping one is not asking
+   *  for all it holds), except an overlay folder on its own, which is imported. */
+  addMedia: (paths: string[], base_revision: number, parent?: string | null) =>
+    json<{ id: string | null; ids: string[]; skipped: { path: string; reason: string }[]; revision: number }>("/api/bin", {
+      method: "POST",
+      body: JSON.stringify({ ...(paths.length === 1 ? { path: paths[0] } : { paths }), files_only: true, base_revision, parent: parent ?? undefined, origin: "ui: add media" }),
+    }),
+  /** Probe media entries' files again and write what changed, as one edit. */
+  reprobe: (bins: string[]) =>
+    json<{ changed: { id: string; changes: Record<string, { from: unknown; to: unknown }> }[]; unchanged: string[]; failed: { id: string; reason: string }[]; revision: number }>(
+      "/api/bin/reprobe", { method: "POST", body: JSON.stringify({ bins, origin: "ui: reload media" }) }),
   /** Speech to text. From a `bin` entry the result is added unplaced; from a `clip` it is
    *  placed over that clip, aligned. `replace` overwrites the transcript of an entry that
    *  already exists instead of refusing, keeping its styling and where it is placed. No
    *  `base_revision`: the model runs for minutes, and the daemon composes the patch
    *  against the project as it is when the words are in. */
-  transcribe: (req: ({ bin: string } | { clip: string }) & { id?: string; language?: string; replace?: boolean }) =>
+  /** The whisper models installed, by file name; the first is the default. */
+  whisperModels: () => json<{ whisper_models?: string[] }>("/api/health").then((h) => h.whisper_models ?? []),
+  transcribe: (req: ({ bin: string } | { clip: string }) & { id?: string; language?: string; replace?: boolean; model?: string; snap?: boolean; split?: number }) =>
     json<{ job: number }>("/api/transcribe", { method: "POST", body: JSON.stringify({ ...req, origin: "ui: transcribe" }) }),
   /** Queue a render of `sequence`, or of the project's master when it is left out — the
    *  daemon's own default, so the two agree without the client having to know which is

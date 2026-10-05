@@ -161,10 +161,40 @@ impl Baker {
         b
     }
 
-    /// The `_vendor/` folder an overlay resolves `_vendor/...` against: its own, else its
-    /// sibling, else the shared library. The preview route serves exactly this folder.
-    pub fn vendor_for(&self, overlay_dir: &Path) -> Option<PathBuf> {
-        [overlay_dir.join("_vendor"), overlay_dir.parent()?.join("_vendor"), self.vendor_dir.clone()].into_iter().find(|p| p.is_dir())
+    /// The `_vendor/` folders an overlay resolves `_vendor/<file>` against, highest
+    /// precedence first: its own, the one beside it (a project's `overlays/_vendor/`), then
+    /// the shared library's. A file is looked for in each in turn, so a folder of the
+    /// project's own shared files adds to kuma's runtime rather than hiding all of it. The
+    /// bake stages, the lint reads and the preview serves the same files.
+    pub fn vendor_layers(&self, overlay_dir: &Path) -> Vec<PathBuf> {
+        let sibling = overlay_dir.parent().map(|p| p.join("_vendor"));
+        // A blueprint's sibling is usually the library's own `_vendor/`.
+        let mut seen = std::collections::HashSet::new();
+        [Some(overlay_dir.join("_vendor")), sibling, Some(self.vendor_dir.clone())]
+            .into_iter()
+            .flatten()
+            .filter(|dir| dir.is_dir() && seen.insert(dir.canonicalize().unwrap_or_else(|_| dir.clone())))
+            .collect()
+    }
+
+    /// The file `rel` is for this overlay: its own, else a `_vendor/` layer's — what the
+    /// lint reads and the preview serves.
+    pub fn overlay_file(&self, overlay_dir: &Path, rel: &str) -> Option<PathBuf> {
+        let own = overlay_dir.join(rel);
+        if own.is_file() {
+            return Some(own);
+        }
+        self.vendor_file(overlay_dir, rel.strip_prefix("_vendor/")?)
+    }
+
+    /// The file `_vendor/<rel>` is for this overlay: the first layer that has it.
+    pub fn vendor_file(&self, overlay_dir: &Path, rel: &str) -> Option<PathBuf> {
+        let rel = Path::new(rel);
+        // Only plain names, and none that staging leaves out.
+        if rel.components().any(|c| !matches!(c, std::path::Component::Normal(n) if !ignored(n))) {
+            return None;
+        }
+        self.vendor_layers(overlay_dir).into_iter().map(|d| d.join(rel)).find(|p| p.is_file())
     }
 
     /// Resolve `font` vars against these folders (lowest precedence first, each labelled).
@@ -220,8 +250,13 @@ impl Baker {
             h.update(format!("{} {:?} {:?}", b.display(), meta.as_ref().map(|m| m.len()), meta.and_then(|m| m.modified().ok())).as_bytes());
         }
         h.update(hash_dir(overlay_dir)?.as_bytes());
-        if let Some(v) = self.vendor_for(overlay_dir) {
-            h.update(hash_dir(&v)?.as_bytes());
+        // The `_vendor/` the bake stages, file by file. With one layer this is that
+        // folder's hash, as it was when a whole folder won: an overlay with no `_vendor/` of
+        // its own or beside it keeps its key, and so does one whose own shadows every file
+        // below it. One that now has a library file fall through to it is a new document.
+        let layers = self.vendor_layers(overlay_dir);
+        if !layers.is_empty() {
+            h.update(hash_layers(&layers)?.as_bytes());
         }
         Ok(hex::encode(h.finalize()))
     }
@@ -338,17 +373,17 @@ impl Baker {
         Slot(&self.slots)
     }
 
-    /// Stage an overlay into `src`: its own files, the shared `_vendor/` when it has none
-    /// of its own, and `index.html` with the contract injected — byte for byte what the
-    /// renderer opens. The bake renders this; the lint reads it, so what is checked is
+    /// Stage an overlay into `src`: its own files, every `_vendor/` file it resolves
+    /// (`vendor_layers`), and `index.html` with the contract injected — byte for byte what
+    /// the renderer opens. The bake renders this; the lint reads it, so what is checked is
     /// what would run rather than the source with the injection imagined on top.
     pub fn stage(&self, req: &BakeRequest, src: &Path) -> Result<Staged, BakeError> {
         // Shared libraries live in `_vendor/` and are referenced by overlays as
-        // `_vendor/...`; an overlay's own copy (already staged with it) wins, exactly as
-        // the preview serves it.
+        // `_vendor/...`; an overlay's own copy (already staged with it) wins, then the
+        // folder beside it, then the library, file by file, exactly as the preview serves it.
         copy_dir(req.overlay_dir, src)?;
-        if let Some(vendor) = self.vendor_for(req.overlay_dir).filter(|v| !v.starts_with(req.overlay_dir)) {
-            copy_dir(&vendor, &src.join("_vendor"))?;
+        for layer in self.vendor_layers(req.overlay_dir).iter().filter(|v| !v.starts_with(req.overlay_dir)) {
+            copy_tree(layer, &src.join("_vendor"), false)?;
         }
         let vars = req.manifest.resolve_vars(req.vars);
         let is_still = req.manifest.is_static;
@@ -372,7 +407,7 @@ impl Baker {
         }
         let faces = fonts.css(STAGED_FONTS);
         let fonts = FontCss { faces: &faces, vars: &fonts.vars };
-        let contract = Contract { vars: &vars, fps: req.fps, width: req.width, height: req.height, duration: internal_duration, speed: req.speed, bake: true, clip: None, head_extra: "", fonts };
+        let contract = Contract { vars: &vars, fps: req.fps, width: req.width, height: req.height, duration: internal_duration, speed: req.speed, bake: true, clip: None, head_extra: "", fonts, lang: req.manifest.lang(&vars) };
         std::fs::write(&entry, contract.apply(&html))?;
         Ok(Staged { dir: src.to_path_buf(), entry, is_still, speed })
     }
@@ -632,18 +667,24 @@ fn ignored(name: &std::ffi::OsStr) -> bool {
 /// Copy an overlay folder, leaving out dotfiles and what is generated from it (thumbnails,
 /// previews) at every depth. What the bake stages, and what a blueprint copy carries.
 pub fn copy_dir(src: &Path, dst: &Path) -> std::io::Result<()> {
+    copy_tree(src, dst, true)
+}
+
+/// [`copy_dir`]; without `overwrite`, only what `dst` does not have yet: a lower
+/// `_vendor/` layer under the ones already staged.
+fn copy_tree(src: &Path, dst: &Path, overwrite: bool) -> std::io::Result<()> {
     std::fs::create_dir_all(dst)?;
     for entry in std::fs::read_dir(src)? {
         let entry = entry?;
-        let p = entry.path();
-        let name = entry.file_name();
-        if ignored(&name) {
+        let (p, name) = (entry.path(), entry.file_name());
+        let to = dst.join(&name);
+        if ignored(&name) || (!overwrite && to.exists() && !(p.is_dir() && to.is_dir())) {
             continue;
         }
         if p.is_dir() {
-            copy_dir(&p, &dst.join(name))?;
+            copy_tree(&p, &to, overwrite)?;
         } else {
-            std::fs::copy(&p, dst.join(name))?;
+            std::fs::copy(&p, to)?;
         }
     }
     Ok(())
@@ -651,7 +692,13 @@ pub fn copy_dir(src: &Path, dst: &Path) -> std::io::Result<()> {
 
 /// Content hash of every file in a directory (sorted, path + bytes).
 fn hash_dir(dir: &Path) -> std::io::Result<String> {
-    fn walk(dir: &Path, base: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
+    hash_layers(&[dir.to_path_buf()])
+}
+
+/// [`hash_dir`] of the folder that `layers` make when each file is taken from the first
+/// layer that has it — what the bake stages. One layer hashes as that folder does.
+fn hash_layers(layers: &[PathBuf]) -> std::io::Result<String> {
+    fn walk(dir: &Path, base: &Path, out: &mut std::collections::BTreeMap<PathBuf, PathBuf>) -> std::io::Result<()> {
         for entry in std::fs::read_dir(dir)? {
             let p = entry?.path();
             if p.file_name().map(ignored).unwrap_or(false) {
@@ -660,19 +707,20 @@ fn hash_dir(dir: &Path) -> std::io::Result<String> {
             if p.is_dir() {
                 walk(&p, base, out)?;
             } else {
-                out.push(p.strip_prefix(base).unwrap_or(&p).to_path_buf());
+                out.entry(p.strip_prefix(base).unwrap_or(&p).to_path_buf()).or_insert(p);
             }
         }
         Ok(())
     }
-    let mut files = Vec::new();
-    walk(dir, dir, &mut files)?;
-    files.sort();
+    let mut files = std::collections::BTreeMap::new();
+    for dir in layers {
+        walk(dir, dir, &mut files)?;
+    }
     let mut h = Sha256::new();
-    for rel in files {
+    for (rel, path) in files {
         h.update(rel.to_string_lossy().as_bytes());
         h.update(b"\0");
-        h.update(std::fs::read(dir.join(&rel))?);
+        h.update(std::fs::read(path)?);
         h.update(b"\0");
     }
     Ok(hex::encode(h.finalize()))
@@ -723,6 +771,105 @@ mod tests {
         assert!(!dst.join("thumb.png").exists() && !dst.join("preview.webp").exists() && !dst.join(".DS_Store").exists());
     }
 
+
+    /// A library `_vendor/`, a project with an overlay, and a baker that knows no renderer
+    /// or browser, so a key is its folders and nothing about this machine.
+    fn vendor_fixture() -> (tempfile::TempDir, Baker, PathBuf) {
+        let tmp = tempfile::tempdir().unwrap();
+        let library = tmp.path().join("library/_vendor");
+        std::fs::create_dir_all(&library).unwrap();
+        std::fs::write(library.join("kuma.js"), "library kuma").unwrap();
+        std::fs::write(library.join("gsap.min.js"), "library gsap").unwrap();
+        let overlay = tmp.path().join("project/overlays/title");
+        std::fs::create_dir_all(&overlay).unwrap();
+        std::fs::write(overlay.join("overlay.json"), "{}").unwrap();
+        std::fs::write(overlay.join("index.html"), r#"<html><body><div data-composition-id="main" data-no-timeline></div></body></html>"#).unwrap();
+        let mut baker = Baker::discover(tmp.path(), library, tmp.path().join("cache"));
+        (baker.version, baker.browser) = (None, None);
+        (tmp, baker, overlay)
+    }
+
+    /// How the key hashed `_vendor/` while the first folder that existed won whole.
+    fn whole_folder_digest(overlay: &Path, vendor: &Path) -> String {
+        let mut h = Sha256::new();
+        h.update(b"kuma-bake-v5\n");
+        h.update(hash_dir(overlay).unwrap().as_bytes());
+        h.update(hash_dir(vendor).unwrap().as_bytes());
+        hex::encode(h.finalize())
+    }
+
+    /// Each `_vendor/` file comes from the first folder that has it — the overlay's own, the
+    /// one beside it, the library's — in what is staged and in what the preview resolves.
+    #[test]
+    fn a_vendor_file_falls_through_to_the_library_file_by_file() {
+        let (_tmp, baker, overlay) = vendor_fixture();
+        let beside = overlay.parent().unwrap().join("_vendor");
+        std::fs::create_dir_all(beside.join("fonts")).unwrap();
+        std::fs::write(beside.join("house.css"), "beside").unwrap();
+        std::fs::write(beside.join("fonts/house.ttf"), "beside font").unwrap();
+        std::fs::write(beside.join("kuma.js"), "beside kuma").unwrap();
+        std::fs::create_dir_all(overlay.join("_vendor")).unwrap();
+        std::fs::write(overlay.join("_vendor/kuma.js"), "own kuma").unwrap();
+        std::fs::write(overlay.join("_vendor/.notes"), "never staged").unwrap();
+
+        let manifest: OverlayManifest = serde_json::from_str("{}").unwrap();
+        let vars = Map::new();
+        let req = BakeRequest { overlay_dir: &overlay, manifest: &manifest, vars: &vars, fps: Fps::new(30, 1), width: 320, height: 240, duration: 1.0, frames: 30, speed: 1.0 };
+        let staged = tempfile::tempdir().unwrap();
+        baker.stage(&req, staged.path()).unwrap();
+        for (file, holds) in [("kuma.js", "own kuma"), ("house.css", "beside"), ("fonts/house.ttf", "beside font"), ("gsap.min.js", "library gsap")] {
+            assert_eq!(std::fs::read_to_string(staged.path().join("_vendor").join(file)).unwrap(), holds, "staged {file}");
+            assert_eq!(std::fs::read_to_string(baker.vendor_file(&overlay, file).unwrap()).unwrap(), holds, "served {file}");
+        }
+        assert!(!staged.path().join("_vendor/.notes").exists());
+        assert_eq!(baker.vendor_file(&overlay, ".notes"), None, "what is not staged is not served");
+        assert_eq!(baker.vendor_file(&overlay, "../title/index.html"), None);
+        assert_eq!(baker.vendor_file(&overlay, "nope.js"), None);
+    }
+
+    /// What is staged carries the entry's language on `<html lang>`, so the bake and the
+    /// lint read the page the preview shows. The key moves with it, since the vars are hashed.
+    #[test]
+    fn an_entry_stages_its_own_page_language() {
+        let (_tmp, baker, overlay) = vendor_fixture();
+        std::fs::write(overlay.join("index.html"), r#"<!doctype html><html lang="en"><body><div data-composition-id="main" data-no-timeline></div></body></html>"#).unwrap();
+        let manifest: OverlayManifest = serde_json::from_str(r#"{ "vars": { "lang": { "type": "lang", "default": "" } } }"#).unwrap();
+        let stage = |vars: serde_json::Value| {
+            let vars = vars.as_object().unwrap().clone();
+            let req = BakeRequest { overlay_dir: &overlay, manifest: &manifest, vars: &vars, fps: Fps::new(30, 1), width: 320, height: 240, duration: 1.0, frames: 30, speed: 1.0 };
+            let staged = tempfile::tempdir().unwrap();
+            baker.stage(&req, staged.path()).unwrap();
+            (std::fs::read_to_string(staged.path().join("index.html")).unwrap(), baker.key(&req).unwrap())
+        };
+        let (ja, ja_key) = stage(serde_json::json!({ "lang": "ja" }));
+        let (own, own_key) = stage(serde_json::json!({}));
+        assert!(ja.starts_with(r#"<!doctype html><html lang="ja">"#), "{ja}");
+        assert!(own.starts_with(r#"<!doctype html><html lang="en">"#), "{own}");
+        assert_ne!(ja_key, own_key);
+    }
+
+    /// The key hashes the `_vendor/` that is staged. Where that is the folder that used to
+    /// win whole — no `_vendor/` of the overlay's own or beside it, or one that shadows every
+    /// library file — the key is the one it always was, so no finished video re-bakes. One
+    /// that now takes a library file it did not have is a different document, and moves.
+    #[test]
+    fn a_key_moves_only_when_a_vendor_file_falls_through() {
+        let (tmp, baker, overlay) = vendor_fixture();
+        let library = tmp.path().join("library/_vendor");
+        assert_eq!(baker.folder_digest(&overlay).unwrap(), whole_folder_digest(&overlay, &library), "no own or sibling `_vendor/`");
+
+        let own = overlay.join("_vendor");
+        std::fs::create_dir_all(&own).unwrap();
+        std::fs::write(own.join("kuma.js"), "own kuma").unwrap();
+        std::fs::write(own.join("gsap.min.js"), "own gsap").unwrap();
+        assert_eq!(baker.folder_digest(&overlay).unwrap(), whole_folder_digest(&overlay, &own), "an own `_vendor/` that shadows every library file");
+
+        std::fs::remove_file(own.join("gsap.min.js")).unwrap();
+        let partial = baker.folder_digest(&overlay).unwrap();
+        assert_ne!(partial, whole_folder_digest(&overlay, &own), "the library's gsap is staged now, and hashed");
+        std::fs::write(library.join("gsap.min.js"), "library gsap, changed").unwrap();
+        assert_ne!(baker.folder_digest(&overlay).unwrap(), partial, "so a change to it moves the key");
+    }
 
     #[test]
     fn effective_fps_implements_speed() {

@@ -346,16 +346,22 @@ class Store {
       await this.refresh();
       return true;
     } catch (e) {
-      const err = e as Error & { status?: number; body?: { issues?: { message: string }[] } };
-      if (err.status === 409) {
-        toast("Project changed elsewhere — reloaded. Try again.", "err");
-        await this.refresh();
-      } else if (err.status === 422) {
-        toast(`Rejected: ${(err.body?.issues ?? []).map((i) => i.message).join("; ") || err.message}`, "err", 8000);
-      } else {
-        toast(err.message, "err");
-      }
+      await this.refused(e);
       return false;
+    }
+  }
+
+  /** Say why the daemon refused an edit; on a 409, refetch first. */
+  async refused(e: unknown): Promise<void> {
+    const err = e as Error & { status?: number; body?: { issues?: { severity?: string; message: string }[] } };
+    if (err.status === 409) {
+      toast("Project changed elsewhere — reloaded. Try again.", "err");
+      await this.refresh();
+    } else if (err.status === 422) {
+      const issues = (err.body?.issues ?? []).filter((i) => i.severity !== "warning");
+      toast(`Rejected: ${issues.map((i) => i.message).join("; ") || err.message}`, "err", 8000);
+    } else {
+      toast(err.message, "err");
     }
   }
 

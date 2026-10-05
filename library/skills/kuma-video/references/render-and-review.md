@@ -16,6 +16,10 @@
   - `threads`, `quality` and `speed` override the preset for one render.
 - Renders queue one at a time. Editing the project while one encodes is safe: it compiled
   its graph when it started. Overwriting a media file it reads is not.
+- A long `render`, `measure_audio` or `transcribe` comes back with its job id when the wait
+  runs out (Claude Code also moves any call past 120 s to the background, where it still
+  finishes). Keep waiting with `job_status`, its `id` and a `wait_seconds` of about 100;
+  `job_status` without an id lists the jobs.
 
 ## Versions and environment
 

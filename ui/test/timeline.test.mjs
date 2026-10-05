@@ -193,4 +193,24 @@ describe("the timeline's tracks", { skip: why ? `skipping: ${why}` : false }, ()
     assert.equal(await page.eval(STORED), "v1 v2 v3 o1 a1");
     assert.equal(await page.eval(DRAWN), "o1 v3 v2 v1 a1");
   });
+
+  it("marks a clip muted on its own, whose track's M stays off", async () => {
+    // As an agent mutes one: a patch to the clip, from outside the page.
+    const CLIP = `document.querySelector('#timeline .clip[data-id="c1"]')`;
+    const BADGE = `${CLIP}.querySelectorAll(".cname svg.mute-badge").length`;
+    assert.equal(await page.eval(BADGE), 0);
+    const ok = await page.eval(`fetch("/api/project").then(r => r.json()).then(p => fetch("/api/project/patch", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ base_revision: p.revision, patch: [{ op: "replace", path: "/bin/main/source/tracks/0/clips/0/muted", value: true }] }),
+    })).then(r => r.ok)`);
+    assert.equal(ok, true);
+    await page.until(`${BADGE} === 1`);
+    assert.equal(await page.eval(`${CLIP}.classList.contains("silenced")`), true);
+    assert.match(await page.eval(`${CLIP}.title`), /muted — this clip only/);
+    assert.equal(await page.eval(`document.querySelectorAll('#timeline .clip[data-id="c2"] .mute-badge').length`), 0, "its neighbour still sounds");
+    assert.equal(await page.eval(`document.querySelector('#timeline .tl-track[data-tid="v1"] .toggles button[title="Mute"]').className`), "", "the track is not muted, and its button says so");
+    // Undone, the badge goes with it.
+    await page.eval(key("z", { ctrlKey: true }));
+    await page.until(`${BADGE} === 0`);
+  });
 });

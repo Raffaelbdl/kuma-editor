@@ -18,12 +18,14 @@ pub mod validate;
 pub use edit::{apply_patch, EditError};
 pub use model::*;
 pub use manifest::{OverlayManifest, VarSpec, VarType};
-pub use upgrade::parse_project;
+pub use upgrade::{canonical, parse_project, project_text};
 pub use time::{ClipFrames, Fps};
 pub use validate::{validate, Issue, Severity, ValidationContext};
 
 /// Current on-disk project format version.
 ///
+/// 8 — a sequence carries `effects` on its mix (`volume`, `limiter`, `auto_level`); the
+///     effect kinds `limiter`, `auto_level` and `freeze` are new.
 /// 7 — an overlay entry names its own folder in the project (`overlay`), no longer a
 ///     library template id (`template`). Not upgraded: see `upgrade.rs`.
 /// 6 — a bin entry may carry a `volume`.
@@ -34,4 +36,4 @@ pub use validate::{validate, Issue, Severity, ValidationContext};
 ///     keyframed effect now uses.
 /// 2 — keyframes gained `ease` (`linear`, `hold`, `smooth`).
 /// 1 — the first format.
-pub const PROJECT_VERSION: u32 = 7;
+pub const PROJECT_VERSION: u32 = 8;

@@ -13,11 +13,11 @@ import { api } from "../api";
 import { desktop, dropMedia, pickAndAddMedia } from "../desktop";
 import { button, dragPayload, el, isFileDrag, row, setDragPayload } from "../dom";
 import { icon, type IconName } from "../icons";
-import { store } from "../store";
+import { store, toast } from "../store";
 import { blueprintActions, moveBinItem, newItems, promptNewFolder } from "../edits";
-import { menuBelow, showMenu } from "../menu";
+import { menuBelow, showMenu, type MenuItem } from "../menu";
 import type { BinItem, Project } from "../types";
-import { childrenMap, isFolderSource, isOverlaySource, isSequenceSource, itemKind, parentOf } from "../types";
+import { childrenMap, isFileSource, isFolderSource, isOverlaySource, isSequenceSource, itemKind, parentOf } from "../types";
 
 export class Library {
   constructor(private host: HTMLElement) {
@@ -37,7 +37,10 @@ export class Library {
     const id = (e.target as HTMLElement).closest<HTMLElement>(".bin-row")?.dataset.sel?.replace(/^bin:/, "");
     const parent = id ? (isFolderSource(p.bin[id]?.source) ? id : parentOf(p, id)) : null;
     const where = parent ? p.bin[parent]?.name || parent : null;
-    showMenu([{ heading: where ? `New in ${where}` : "New" }, ...newItems(parent)], e.clientX, e.clientY);
+    // A media row also offers to read its file again, for a file replaced on disk: the
+    // document cannot notice that by itself, and correcting it is one edit you ask for.
+    const media: MenuItem[] = id && p.bin[id] && isFileSource(p.bin[id].source) ? [{ label: "Reload from file", title: "Probe the file again and update its duration, size and kind", run: () => void reloadMedia(id) }, "separator"] : [];
+    showMenu([...media, { heading: where ? `New in ${where}` : "New" }, ...newItems(parent)], e.clientX, e.clientY);
   }
 
   /** Files from the desktop, dropped anywhere in the window, join the bin at the top level
@@ -164,6 +167,20 @@ export class Library {
       card.appendChild(blueprintActions(t.id));
       this.body.appendChild(card);
     }
+  }
+}
+
+/** Probe a media entry's file again and say what changed. The daemon writes the change
+ *  (one undoable edit) or nothing, and refuses a kind change that breaks a placement. */
+async function reloadMedia(id: string) {
+  try {
+    const r = await api.reprobe([id]);
+    if (r.failed.length) { toast(`${id}: ${r.failed[0].reason}`, "err", 8000); return; }
+    const changes = Object.entries(r.changed[0]?.changes ?? {}).map(([field, c]) => `${field.replace(/^meta\./, "")} ${JSON.stringify(c.from)} → ${JSON.stringify(c.to)}`);
+    if (changes.length) await store.refresh();
+    toast(changes.length ? `${id}: ${changes.join(", ")}` : `${id} is unchanged`, "ok", changes.length ? 6000 : 3500);
+  } catch (e) {
+    await store.refused(e);
   }
 }
 

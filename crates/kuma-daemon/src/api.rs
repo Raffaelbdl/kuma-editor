@@ -17,7 +17,7 @@ use serde_json::{json, Value};
 use tower_http::services::ServeDir;
 use tower_http::set_header::SetResponseHeaderLayer;
 
-use crate::jobs::{self, MeasureRequest, RenderRequest, SampleRequest, TranscribeRequest};
+use crate::jobs::{self, MeasureRequest, MediaMeasureRequest, RenderRequest, SampleRequest, TranscribeRequest};
 use crate::preview::{self, EngineEvent};
 use crate::state::{lock, read, AppState};
 
@@ -31,6 +31,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/project/undo", post(undo))
         .route("/api/project/redo", post(redo))
         .route("/api/project/validate", get(validate_project))
+        .route("/api/project/canonical", post(canonical_project))
         .route("/api/sequence", get(get_sequence).post(open_sequence))
         .route("/api/schema", get(schema))
         .route("/api/blueprints", get(blueprints).post(reload_blueprints))
@@ -51,6 +52,8 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/bin", post(add_media))
         .route("/api/transcribe", post(transcribe))
         .route("/api/bin/{id}/{file}", get(bin_asset))
+        .route("/api/bin/reprobe", post(reprobe_media))
+        .route("/api/bin/unused", get(unused_entries))
         .route("/api/presets", get(presets))
         .route("/api/render", post(render))
         .route("/api/render/target", get(render_target))
@@ -58,6 +61,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/sample", post(sample))
         .route("/api/sample/job", post(sample_job))
         .route("/api/audio/measure", post(measure_audio))
+        .route("/api/media/measure", post(measure_media))
         .route("/api/snapshot", get(snapshot))
         .route("/api/cache", get(cache_usage))
         .route("/api/cache/prune", post(cache_prune))
@@ -184,6 +188,8 @@ async fn health(State(st): S) -> Json<Value> {
         "sequence": st.current_sequence(),
         "preview_error": lock(&st.preview.last_error).clone(),
         "whisper": st.transcriber.available().map(|m| json!(m)).unwrap_or_else(|e| json!({ "error": e })),
+        // What `transcribe` can name as its `model`.
+        "whisper_models": st.transcriber.models(),
     }))
 }
 
@@ -229,8 +235,7 @@ async fn patch_project(State(st): S, Json(req): Json<PatchProject>) -> ApiResult
 /// or absolute and under it.
 fn read_patch(st: &AppState, path: &str) -> anyhow::Result<json_patch::Patch> {
     use anyhow::Context;
-    let file = jobs::resolve_path(st, std::path::Path::new(path)).canonicalize().with_context(|| format!("cannot read `{path}`"))?;
-    anyhow::ensure!(file.starts_with(st.config.project_root().canonicalize()?), "`{path}` is not inside the project");
+    let file = jobs::resolve_in_project(st, path)?;
     let text = std::fs::read_to_string(&file).with_context(|| format!("cannot read `{path}`"))?;
     serde_json::from_str(&text).with_context(|| format!("`{path}` is not a JSON Patch (an array of operations)"))
 }
@@ -273,6 +278,14 @@ async fn open_sequence(State(st): S, Json(req): Json<OpenSequence>) -> ApiResult
     // The engine holds one compiled timeline, so opening a sequence is a reload.
     let reloaded = preview::reload(&st).await.is_ok();
     Ok(Json(json!({ "current": current, "preview_reloaded": reloaded })))
+}
+
+/// A project document a client holds — a script's own, of any version — in the form this
+/// daemon stores one, so it can be diffed against `GET /api/project` without the noise of
+/// defaults one side spells out. The body is answered as text, exactly as the file holds it.
+async fn canonical_project(body: String) -> Result<Response, ApiError> {
+    let text = kuma_core::canonical(&body).map_err(ApiError::bad_request)?;
+    Ok(([(header::CONTENT_TYPE, "application/json")], text).into_response())
 }
 
 async fn schema() -> Json<Value> {
@@ -421,7 +434,7 @@ async fn fonts(State(st): S) -> ApiResult {
 
 #[derive(Deserialize)]
 struct AddFont {
-    /// A `.ttf`/`.otf` file, or a `.ttc`/`.otc` collection, relative to the project or absolute.
+    /// A `.ttf`/`.otf`/`.woff`/`.woff2` file, or a `.ttc`/`.otc` collection, relative to the project or absolute.
     path: PathBuf,
     /// Into the user library for every project, rather than this project's `fonts/`.
     #[serde(default)]
@@ -634,7 +647,18 @@ async fn probe_media(State(st): S, Query(q): Query<PathQuery>) -> ApiResult {
 
 #[derive(Deserialize)]
 struct AddMedia {
-    path: PathBuf,
+    /// One file, or a folder.
+    #[serde(default)]
+    path: Option<PathBuf>,
+    /// Several, files or folders, added with `path` in one edit.
+    #[serde(default)]
+    paths: Vec<PathBuf>,
+    /// A folder's subfolders too.
+    #[serde(default)]
+    recursive: bool,
+    /// Pass over folders rather than add what they hold (the editor's drop).
+    #[serde(default)]
+    files_only: bool,
     #[serde(default)]
     id: Option<String>,
     #[serde(default)]
@@ -645,25 +669,52 @@ struct AddMedia {
     origin: String,
 }
 
-/// Probe a media file and add it to the bin. The id defaults to the file stem.
+/// Probe media and add it to the bin, in one edit: a file, a list of them, or the media
+/// files of a folder. Ids are minted from the file names unless `id` names the one entry.
+/// `id` is the new entry's when exactly one was added, as it always was for one file; `ids`
+/// lists every one, and `skipped` what a folder held that is not media, with why.
 async fn add_media(State(st): S, Json(req): Json<AddMedia>) -> ApiResult {
-    let (id, rev, warnings) = blocking(move || jobs::add_media(&st, &req.path, req.id, req.parent, req.base_revision, &req.origin)).await?.map_err(edit_or_bad_request)?;
-    Ok(Json(json!({ "id": id, "revision": rev, "warnings": warnings })))
+    let paths: Vec<PathBuf> = req.path.into_iter().chain(req.paths).collect();
+    let how = crate::media::AddHow { id: req.id, parent: req.parent, recursive: req.recursive, files_only: req.files_only };
+    let added = blocking(move || crate::media::add(&st, &paths, how, req.base_revision, &req.origin)).await?.map_err(edit_or_bad_request)?;
+    let id = if let [id] = added.ids.as_slice() { Some(id.clone()) } else { None };
+    Ok(Json(json!({ "id": id, "ids": added.ids, "skipped": added.skipped, "revision": added.revision, "warnings": added.warnings })))
+}
+
+#[derive(Deserialize)]
+struct Reprobe {
+    /// The file entries to probe again; every one when left out.
+    #[serde(default)]
+    bins: Option<Vec<String>>,
+    #[serde(default)]
+    base_revision: Option<u64>,
+    #[serde(default = "default_origin")]
+    origin: String,
+}
+
+/// Probe file entries again and write what changed, as one undoable edit: for a file
+/// replaced on disk. Says per entry what changed, from what to what.
+async fn reprobe_media(State(st): S, Json(req): Json<Reprobe>) -> ApiResult {
+    let v = blocking(move || crate::media::reprobe(&st, req.bins.as_deref(), req.base_revision, &req.origin)).await?.map_err(edit_or_bad_request)?;
+    Ok(Json(json!(v)))
+}
+
+/// Entries no clip places, and entries placed only in sequences the master never reaches.
+/// Reads only.
+async fn unused_entries(State(st): S) -> Json<Value> {
+    Json(crate::media::unused(&read(&st.project)))
 }
 
 /// Speech to text on a media entry, as a job: whisper takes seconds to minutes. The
 /// result names the new `subtitles` bin entry.
 async fn transcribe(State(st): S, Json(req): Json<TranscribeRequest>) -> Json<Value> {
     let s2 = st.clone();
-    Json(json!({ "job": jobs::spawn(st, "transcribe", move |progress| jobs::transcribe(&s2, &req, progress)) }))
+    let params = json!({ "bin": req.bin, "clip": req.clip });
+    Json(json!({ "job": jobs::spawn_with(st, "transcribe", params, move |progress| jobs::transcribe(&s2, &req, progress)) }))
 }
 
 // ---------- jobs ----------
 
-/// `p` relative to the project when it is inside it: a path as a person would type it.
-fn project_relative(st: &AppState, p: &std::path::Path) -> std::path::PathBuf {
-    p.strip_prefix(st.config.project_root()).unwrap_or(p).to_path_buf()
-}
 
 /// `jobs::render_target` off the async threads: it can try a hardware encoder.
 async fn target(st: &Arc<AppState>, req: &RenderRequest) -> Result<(String, &'static kuma_mlt::ExportPreset, PathBuf), ApiError> {
@@ -676,7 +727,7 @@ async fn target(st: &Arc<AppState>, req: &RenderRequest) -> Result<(String, &'st
 async fn render(State(st): S, Json(mut req): Json<RenderRequest>) -> ApiResult {
     let (sequence, preset, output) = target(&st, &req).await?;
     let params = json!({
-        "sequence": sequence, "preset": preset.id, "output": output, "path": project_relative(&st, &output),
+        "sequence": sequence, "preset": preset.id, "output": output, "path": jobs::project_relative(&st, &output),
         "threads": req.threads, "quality": req.quality, "speed": req.speed,
     });
     req.sequence = Some(sequence);
@@ -693,7 +744,7 @@ async fn render_target(State(st): S, Query(req): Query<RenderRequest>) -> ApiRes
     let (sequence, preset, output) = target(&st, &req).await?;
     let threads = req.threads.unwrap_or_else(kuma_mlt::melt::render_threads);
     Ok(Json(json!({
-        "sequence": sequence, "preset": preset.id, "path": project_relative(&st, &output), "exists": output.exists(),
+        "sequence": sequence, "preset": preset.id, "path": jobs::project_relative(&st, &output), "exists": output.exists(),
         "pending": st.jobs.writing(&output), "output": output, "threads": threads, "max_threads": kuma_mlt::presets::MAX_THREADS,
     })))
 }
@@ -706,7 +757,7 @@ struct BakeReq {
 
 async fn bake(State(st): S, Json(req): Json<BakeReq>) -> Json<Value> {
     let s2 = st.clone();
-    let id = jobs::spawn(st, "bake", move |progress| {
+    let id = jobs::spawn_with(st, "bake", json!({ "clips": req.clips }), move |progress| {
         let project = read(&s2.project).clone();
         let bakes = jobs::bake_all(&s2, &project, req.clips.as_deref(), progress)?;
         Ok(json!({ "bakes": bakes.iter().map(|(k, b)| json!({ "clip": k, "resource": b.resource, "still": b.is_still })).collect::<Vec<_>>() }))
@@ -723,7 +774,10 @@ async fn sample(State(st): S, Json(req): Json<SampleRequest>) -> ApiResult {
 /// progress names the overlay baking, and the result is what `/api/sample` answers.
 async fn sample_job(State(st): S, Json(req): Json<SampleRequest>) -> Json<Value> {
     let s2 = st.clone();
-    let id = jobs::spawn(st, "sample", move |progress| jobs::sample(&s2, &req, progress));
+    // The sequence it samples, the master unless named, so the queue can say so.
+    let sequence = req.overlay.is_none().then(|| req.sequence.clone().unwrap_or_else(|| read(&st.project).master.clone()));
+    let params = json!({ "sequence": sequence, "overlay": req.overlay, "times": req.times });
+    let id = jobs::spawn_with(st, "sample", params, move |progress| jobs::sample(&s2, &req, progress));
     Json(json!({ "job": id }))
 }
 
@@ -731,8 +785,17 @@ async fn sample_job(State(st): S, Json(req): Json<SampleRequest>) -> Json<Value>
 /// for a long video. The result is `jobs::measure_audio`'s.
 async fn measure_audio(State(st): S, Json(req): Json<MeasureRequest>) -> Json<Value> {
     let s2 = st.clone();
-    let params = json!({ "sequence": req.sequence });
+    let params = json!({ "sequence": req.sequence, "mute": req.mute, "solo": req.solo });
     Json(json!({ "job": jobs::spawn_cancellable(st, "measure", params, move |progress, cancel| jobs::measure_audio(&s2, &req, progress, cancel)) }))
+}
+
+/// How loud one source is and where it is quiet, as a cancellable job: ffmpeg decodes the
+/// whole stretch, which takes a while for a long recording. The result is
+/// `jobs::measure_media`'s.
+async fn measure_media(State(st): S, Json(req): Json<MediaMeasureRequest>) -> Json<Value> {
+    let s2 = st.clone();
+    let params = json!({ "bin": req.bin, "path": req.path, "range": req.range });
+    Json(json!({ "job": jobs::spawn_cancellable(st, "measure-media", params, move |progress, cancel| jobs::measure_media(&s2, &req, progress, cancel)) }))
 }
 
 async fn cache_usage(State(st): S) -> ApiResult {
@@ -763,7 +826,7 @@ struct SnapshotQuery {
 async fn snapshot(State(st): S, Query(q): Query<SnapshotQuery>) -> Result<Response, ApiError> {
     // Same overlay scope as the engine preview this stands in for: nested sequences baked
     // in, the open sequence's own left to the live DOM the UI draws on top.
-    let req = SampleRequest { t0: q.t, width: q.width.or(Some(960)), overlays: jobs::OverlayScope::Nested, sequence: Some(st.current_sequence()), ..Default::default() };
+    let req = SampleRequest { t0: q.t, width: q.width, overlays: jobs::OverlayScope::Nested, sequence: Some(st.current_sequence()), ..Default::default() };
     let samples = blocking(move || jobs::sample_frames(&st, &req, &|_, _| {})).await??;
     let bytes = std::fs::read(&samples[0].path).map_err(|e| anyhow::anyhow!(e))?;
     Ok(([(header::CONTENT_TYPE, "image/png"), (header::CACHE_CONTROL, "no-store")], bytes).into_response())
@@ -1011,6 +1074,7 @@ fn overlay_document(
         clip,
         head_extra: &head_extra,
         fonts: kuma_overlay::FontCss { faces: &faces, vars: &fonts.vars },
+        lang: manifest.lang(&vars),
     }
     .apply(&html);
     Ok(([(header::CONTENT_TYPE, "text/html; charset=utf-8"), (header::CACHE_CONTROL, "no-store")], out).into_response())
@@ -1039,15 +1103,10 @@ async fn blueprint_static(State(st): S, Path((id, rest)): Path<(String, String)>
     serve_overlay_file(&st, &dir, &rest)
 }
 
-/// A file inside an overlay folder. `_vendor/...` resolves exactly as the bake stages it.
+/// A file inside an overlay folder, `_vendor/...` resolved as the bake stages it.
 fn serve_overlay_file(st: &AppState, dir: &std::path::Path, rest: &str) -> Result<Response, ApiError> {
-    let mut path = safe_join(dir, rest).ok_or(ApiError::bad_request("bad path"))?;
-    if !path.is_file() {
-        if let Some((vendor, v)) = rest.strip_prefix("_vendor/").and_then(|v| st.baker.vendor_for(dir).map(|d| (d, v))) {
-            path = safe_join(&vendor, v).ok_or(ApiError::bad_request("bad path"))?;
-        }
-    }
-    file_response(&path)
+    let path = safe_join(dir, rest).ok_or(ApiError::bad_request("bad path"))?;
+    file_response(&st.baker.overlay_file(dir, rest).unwrap_or(path))
 }
 
 /// The hyperframes runtime (from the repo's `node_modules`) and the shared `_vendor/`.

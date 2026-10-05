@@ -1,6 +1,7 @@
-// The top bar: project, sequence picker, frame size, undo/redo, Render. Buttons run
-// commands. Render opens the render dialog (`render.ts`), where the sequence and preset
-// are chosen and the queue of renders is watched and cancelled.
+// The top bar: project, sequence picker, frame size, undo/redo, Render and Queue. Buttons
+// run commands. Both open the render dialog (`render.ts`), on its own tab: Render to choose
+// a sequence and preset, Queue to watch and cancel every job the daemon runs, whoever asked
+// for it (the editor, an agent, the CLI).
 
 import { Cmd, command, run } from "../commands";
 import { button, el, options, plural } from "../dom";
@@ -32,6 +33,7 @@ export function mountTopbar(host: HTMLElement): void {
   const size = button("", () => run(Cmd.swapOrientation), "", "mono");
 
   command(Cmd.render, "Render…", () => openRenderDialog("render"));
+  command(Cmd.queue, "Job queue", () => openRenderDialog("queue"));
 
   // Spins while the reload it asked for is in flight: it can bake, and a button that does
   // nothing visible for five seconds reads as a button that did nothing.
@@ -41,7 +43,8 @@ export function mountTopbar(host: HTMLElement): void {
     reload.disabled = s.reloading;
   });
 
-  const render = button("Render…", () => run(Cmd.render), "Render a sequence, and see the queue of renders", "primary");
+  const render = button("Render", () => run(Cmd.render), "Render a sequence to a file", "primary");
+  const queue = button("Queue", () => run(Cmd.queue), "Every job: renders, samples, measurements, bakes, transcripts — from the editor, agents and the CLI");
   // What is running, and the way to the queue: a click on it is a click on the queue tab.
   const status = el("span", "status");
   status.onclick = () => openRenderDialog("queue");
@@ -54,6 +57,7 @@ export function mountTopbar(host: HTMLElement): void {
     button(icon("redo"), () => run(Cmd.redo), `Redo (${keysFor(Cmd.redo)})`, "icon"),
     el("span", "spacer"),
     render,
+    queue,
     reload,
     // Chosen once and then left alone, so it is an icon rather than a word: the bar is
     // for what you reach for while editing. The desktop shell's View menu names the same

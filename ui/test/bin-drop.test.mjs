@@ -1,5 +1,6 @@
 // Files dropped from the desktop, in a real browser, with the shell's `pathForFile` stood
-// in for: a drop anywhere adds to the bin, on a folder into it, one edit per file; the bin
+// in for: a drop anywhere adds to the bin, on a folder into it, in one edit, passing over a
+// dropped folder; the bin
 // is framed while a file is over the window, grey until the drag says it carries files.
 //
 // Skips, loudly, without a browser, a binary, `ui/dist` or ffmpeg to make the media.
@@ -85,13 +86,13 @@ describe("dropping files on the bin", { skip: why ? `skipping: ${why}` : false }
     assert.equal(await page.eval(REVISION), before);
   });
 
-  it("adds files dropped on the timeline to the bin, one edit each", async () => {
+  it("adds files dropped on the timeline to the bin, in one edit", async () => {
     await page.eval(`globalThis.kumaApp = { pathForFile: (f) => ${JSON.stringify(tmp + "/")} + f.name }; true`);
     const before = await page.eval(REVISION);
     const shown = await dragIn(["one.wav", "two.wav"], "#library", "#timeline");
     assert.match(shown.hint, /^Drop to add/);
     await page.until(`${MEDIA}.then(s => s === "one> two>")`);
-    assert.equal(await page.eval(REVISION), before + 2);
+    assert.equal(await page.eval(REVISION), before + 1);
     assert.equal(await page.eval(`!${HINT}`), true, "the frame outlived the drop");
   });
 
@@ -99,6 +100,14 @@ describe("dropping files on the bin", { skip: why ? `skipping: ${why}` : false }
     const shown = await dragIn(["three.wav"], "#timeline", FOLDER_ROW);
     assert.equal(shown.row, "Clips");
     await page.until(`${MEDIA}.then(s => s === "one> three>clips two>")`);
+  });
+
+  it("passes over a dropped folder and adds the files dropped with it", async () => {
+    fs.mkdirSync(path.join(tmp, "shots"), { recursive: true });
+    for (const f of ["shots/inside.wav", "five.wav"]) spawnSync("ffmpeg", ["-v", "error", "-f", "lavfi", "-i", "sine=duration=1", path.join(tmp, f)]);
+    await dragIn(["shots", "five.wav"], "#timeline");
+    await page.until(`${MEDIA}.then(s => s === "five> one> three>clips two>")`);
+    await page.until(`[...document.querySelectorAll("#toasts .toast")].some(t => t.textContent.includes("shots (a folder: add the files in it)"))`);
   });
 
   it("imports a dropped overlay.json as an overlay entry", async () => {

@@ -1,5 +1,6 @@
 // The render dialog, Kdenlive's two tabs: what to render, and the job queue. Renders are
-// daemon jobs run one at a time; this asks for them, watches them and cancels them. The
+// daemon jobs run one at a time; this asks for them. The queue lists every job the daemon
+// runs, whoever asked (the editor, an agent, the CLI), and cancels those that can stop. The
 // master is preselected, and the sequence picked is always sent. An Advanced section,
 // folded by default, changes this render's frames at once and its preset's quality and
 // speed; left empty, each is the preset's (or the machine's) own.
@@ -202,8 +203,10 @@ export function openRenderDialog(tab: Tab = "render"): void {
     list.replaceChildren(...(all.length ? all.map((j) => rows.get(j.id)!.root) : [empty]));
   };
 
-  dlg.append(el("h3", "", "Render"), row("tabs", tabs.render, tabs.queue), row("render-body", renderPane, queuePane));
+  const heading = el("h3");
+  dlg.append(heading, row("tabs", tabs.render, tabs.queue), row("render-body", renderPane, queuePane));
   function show(t: Tab) {
+    heading.textContent = t === "render" ? "Render" : "Job queue";
     renderPane.hidden = t !== "render";
     queuePane.hidden = t !== "queue";
     tabs.render.classList.toggle("on", t === "render");
@@ -253,6 +256,13 @@ function overwriteNote(t: RenderTarget): string {
 
 interface JobRow { root: HTMLElement; update: (j: Job) => void }
 
+/** What a job other than a render works on, as its params name it: `· Main`, `· talk`. */
+function subject(params: unknown): string {
+  const p = (params ?? {}) as { sequence?: string | null; overlay?: string | null; bin?: string | null; clip?: string | null; path?: string | null };
+  const what = p.overlay ?? p.bin ?? (p.sequence ? binName(p.sequence) : null) ?? (p.clip ? `clip ${p.clip}` : null) ?? p.path;
+  return what ? ` · ${what}` : "";
+}
+
 function jobRow(id: number): JobRow {
   const title = el("div", "job-title");
   const bar = el("progress");
@@ -263,7 +273,7 @@ function jobRow(id: number): JobRow {
   const cancel = button("Cancel", () => {
     cancel.disabled = true;
     api.cancelJob(id).catch((e) => { cancel.disabled = false; fail(e); });
-  }, "Stop this render; nothing it wrote is kept");
+  }, "Stop this job; a render keeps nothing it wrote");
   const reveal = button("Show file", () => void desktop()?.reveal(file), "Open the folder it was written to");
   const root = row("job", row("job-main", title, bar, state, path), row("job-actions", cancel, reveal));
   root.dataset.id = String(id);
@@ -274,7 +284,7 @@ function jobRow(id: number): JobRow {
       file = p.output ?? "";
       root.className = `job ${j.state}`;
       const asked = describe(p);
-      title.textContent = j.kind === "render" ? `#${j.id} · ${binName(p.sequence)} · ${p.preset ?? ""}${asked ? ` (${asked})` : ""}` : `#${j.id} · ${j.kind}`;
+      title.textContent = j.kind === "render" ? `#${j.id} · ${binName(p.sequence)} · ${p.preset ?? ""}${asked ? ` (${asked})` : ""}` : `#${j.id} · ${j.kind}${subject(j.params)}`;
       bar.value = j.state === "done" ? 100 : j.percent;
       state.textContent = j.state === "running" ? `${j.percent}% · ${j.message}` : j.state === "failed" ? `Failed: ${j.message}` : capitalize(j.state);
       path.textContent = p.path ?? file;

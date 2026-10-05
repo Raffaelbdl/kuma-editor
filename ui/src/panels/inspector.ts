@@ -15,12 +15,11 @@ import { askForm } from "../modal";
 import { store, toast } from "../store";
 import type { BinItem, Clip, Cue, Ease, Effect, FontFamily, PatchOp, Project, Streams, Transition, VarSpec } from "../types";
 import { blueprintActions, makeOverlayUnique, removeTransition, setTransitionDuration, setTransitionKind, updateTransition, manifestOf, moveBinItem, overlayError, placeBinItem, previewImg, renderPreview, saveAsBlueprint, sharersOf } from "../edits";
-import type { Animation } from "../keyframes";
-import { animationOf } from "../keyframes";
+import { Animation, animationOf } from "../keyframes";
 import { icon, svgEl } from "../icons";
 import type { NumberOpts } from "../props";
 import { keyStrip, numberField, showNumber, sliderField, vectorField } from "../props";
-import { LUMAS, sourceAfter, actsOn, ANIMATABLE, binItem, binPath, canPlace, canTimeWarp, childrenOf, clipStreams, covers, expandPreset, fpsValue, hasAudio, isColorSource, isFileSource, isFolderSource, isOverlaySource, isSequenceSource, isTimedMedia, placementsOf, seqDuration, streamsOf, wouldNest } from "../types";
+import { LUMAS, SEQUENCE_EFFECTS, sourceAfter, actsOn, ANIMATABLE, binItem, binPath, canPlace, canTimeWarp, childrenOf, clipStreams, covers, expandPreset, fpsValue, hasAudio, isColorSource, isFileSource, isFolderSource, isOverlaySource, isSequenceSource, isTimedMedia, placementsOf, seqDuration, seqPath, sequenceOf, sequenceStreams, streamsOf, wouldNest } from "../types";
 
 const presetsPromise = api.effectPresets().catch(() => []);
 
@@ -72,7 +71,7 @@ const EFFECTS: Partial<Record<Effect["type"], EffectSpec>> = {
         { key: "top", tag: "T", axis: "z", step: 0.01, min: 0, max: 1, title: "Fraction cut off the top edge" },
         { key: "bottom", tag: "B", axis: "w", step: 0.01, min: 0, max: 1, title: "Fraction cut off the bottom edge" },
       ] },
-      { kind: "slider", key: "radius", min: 0, max: 1, step: 0.01, title: "Corner radius, as a fraction of the shorter side" },
+      { kind: "slider", key: "radius", min: 0, max: 1, step: 0.01, title: "Corner radius, as a fraction of half the shorter side of what the crop leaves: 1 rounds a square into a circle. The crop is of the whole frame, so crop a letterboxed still to its edges first" },
     ],
   },
   blend: { add: { type: "blend", mode: "screen" }, props: [{ kind: "enum", key: "mode", options: BLEND_MODES }] },
@@ -100,8 +99,49 @@ const EFFECTS: Partial<Record<Effect["type"], EffectSpec>> = {
       { kind: "slider", key: "gain", min: 0, max: 2, step: 0.01, soft: true, title: "1 is the clip as recorded; it multiplies the clip's own Volume" },
     ],
   },
+  // Holds sample peaks at the ceiling and raises nothing: the gain in front of it does that.
+  limiter: {
+    add: { type: "limiter", ceiling: -1, attack: 5, release: 50 },
+    props: [
+      { kind: "num", key: "ceiling", step: 0.1, min: -24, max: 0, suffix: "dB", title: "The highest a sample may reach, in dBFS. True peaks land up to about a dB over it" },
+      { kind: "num", key: "attack", step: 0.5, min: 0.1, max: 80, suffix: "ms", title: "How far ahead it looks — and so how much later the sound comes out" },
+      { kind: "num", key: "release", step: 5, min: 1, max: 8000, suffix: "ms", title: "How long the gain takes to come back up" },
+    ],
+  },
+  auto_level: {
+    add: { type: "auto_level", target: -23, window: 3, max_gain: 15, min_gain: -15 },
+    props: [
+      { kind: "num", key: "target", step: 0.5, min: -50, max: -10, suffix: "LUFS", title: "The loudness it rides the gain toward" },
+      { kind: "num", key: "window", step: 0.5, min: 1, max: 60, suffix: "s", title: "How much of the past it measures: longer is steadier and slower to follow" },
+      { kind: "num", key: "max_gain", label: "Most up", step: 1, min: 0, max: 30, suffix: "dB" },
+      { kind: "num", key: "min_gain", label: "Most down", step: 1, min: -30, max: 0, suffix: "dB" },
+    ],
+  },
+  freeze: {
+    add: { type: "freeze", t: 0 },
+    props: [{ kind: "num", key: "t", label: "Hold at", step: 1 / 30, suffix: "s", title: "Seconds from the clip's start: the frame shown there is held for the whole clip, while the sound runs on" }],
+  },
   mlt: { add: { type: "mlt", service: "frei0r.vignette", properties: {} }, props: [{ kind: "text", key: "service" }, { kind: "json", key: "properties" }] },
 };
+
+/** What carries a list of effects — a clip, or a sequence on its mix — and how the panel
+ *  reaches it. One editor for both, so an effect looks and keys the same wherever it is. */
+interface EffectOwner {
+  /** Names it in view state (folds, curves): a clip id, or `seq:<id>`. */
+  key: string;
+  /** How a note says it: "the clip". */
+  what: string;
+  effects: Effect[];
+  /** Where its effects list is in the document. */
+  path: string;
+  /** What it can show and sound: an effect on neither is dimmed. */
+  carries: Streams;
+  /** The kinds `+ add effect` offers it. */
+  offers: (type: Effect["type"]) => boolean;
+  anim: (ei: number) => Animation | null;
+  /** What a new effect of a kind starts as, here. */
+  add: (type: Effect["type"]) => Effect;
+}
 
 /** Which effects have their curve view open, and on which parameter — by `clip/effect`,
  *  so the view survives the re-render every edit causes. View state; nothing saves it. */
@@ -372,6 +412,7 @@ export class Inspector {
       // Not a list of keys copied out here: there is one, it is the bindings themselves,
       // and two copies of it would disagree within a week.
       this.host.appendChild(button("Keyboard shortcuts", () => run(Cmd.shortcuts), `Every key and gesture the editor has (${keysFor(Cmd.shortcuts)})`));
+      this.renderSequenceEffects();
       return;
     }
     const { clip } = f;
@@ -416,7 +457,19 @@ export class Inspector {
       go.append(el("label", "", "Plays"), linkButton(`${item.name || clip.bin} →`, () => store.selectItem("bin", clip.bin), "Edit the bin entry (changes every clip that plays it)"));
       this.host.appendChild(go);
     }
-    this.renderEffects(clip, path, carries);
+    this.renderEffects({
+      key: clip.id,
+      what: "the clip",
+      effects: clip.effects,
+      path: `${path}/effects`,
+      carries,
+      // A freeze holds a frame of something that moves: a colour or a still is held already.
+      offers: (type) => actsOn(type, carries) && (type !== "freeze" || isTimedMedia(item) || (!!item && isOverlaySource(item.source))),
+      anim: (ei) => animationOf(clip.id, ei),
+      // A freeze starts on the frame under the playhead, when the playhead is on the clip.
+      add: (type) => (type === "freeze" && covers(clip, store.state.playhead) ? { type, t: store.snap(store.state.playhead - clip.start) } : EFFECTS[type]!.add),
+    });
+    this.host.appendChild(this.presetPicker(path));
 
     const actions = el("div", "insp-actions");
     // The command reads the selection: from a clip the subtitles land over it, aligned.
@@ -565,7 +618,7 @@ export class Inspector {
       this.host.appendChild(field("Path", textInput(item.source.path, (v) => store.patch([{ op: "replace", path: `${bp}/source/path`, value: v }], `path ${id}`))));
       const m = item.meta;
       const rate = m?.fps ? `${+fpsValue(m.fps).toFixed(3)} fps${m.variable_fps ? " (variable)" : ""}` : "";
-      const facts = [m?.duration ? `${m.duration.toFixed(2)}s` : "", m?.width ? `${m.width}×${m.height}` : "", rate, m?.has_audio ? "audio" : ""].filter(Boolean).join(" · ");
+      const facts = [m?.duration ? `${m.duration.toFixed(2)}s` : "", m?.width ? `${m.width}×${m.height}` : "", rate, m?.alpha ? "alpha" : "", m?.has_audio ? "audio" : ""].filter(Boolean).join(" · ");
       if (facts) this.host.appendChild(field("Probed", el("div", "mono muted", facts)));
       return;
     }
@@ -624,12 +677,41 @@ export class Inspector {
     }
   }
 
-  private renderEffects(clip: Clip, path: string, carries: Streams) {
-    this.host.appendChild(el("h3", "", "Effects"));
+  /**
+   * The open sequence's own effects, when nothing is selected: they act on its mix, so a
+   * gain and a limiter here are the master stage when the master is open. Keys count in the
+   * sequence's own seconds, which is what the playhead is while it is open.
+   */
+  private renderSequenceEffects() {
+    const p = store.state.project;
+    const id = store.state.sequence;
+    const seq = p && sequenceOf(p, id);
+    if (!seq) return;
+    const path = `${seqPath(id)}/effects`;
+    const span = { start: 0, end: seqDuration(p, id) };
+    const name = p.bin[id]?.name || id;
+    const carries = sequenceStreams(p, id);
+    this.renderEffects({
+      key: `seq:${id}`,
+      what: "the sequence",
+      effects: seq.effects ?? [],
+      path,
+      carries,
+      offers: (type) => SEQUENCE_EFFECTS.includes(type) && actsOn(type, carries),
+      anim: (ei) => {
+        const e = seq.effects?.[ei];
+        return e ? new Animation(e, span, (next, note) => void store.patch([{ op: "replace", path: `${path}/${ei}`, value: next }], `${e.type} ${note}`)) : null;
+      },
+      add: (type) => EFFECTS[type]!.add,
+    }, `${id === p.master ? "Master" : "Sequence"} “${name}” — on its mix`);
+  }
+
+  private renderEffects(owner: EffectOwner, heading = "Effects") {
+    this.host.appendChild(el("h3", "", heading));
     // Everything that follows the playhead without the panel being rebuilt for it.
     const followers: (() => void)[] = [];
-    clip.effects.forEach((e, ei) => {
-      const id = `${clip.id}/${ei}`;
+    owner.effects.forEach((e, ei) => {
+      const id = `${owner.key}/${ei}`;
       const box = el("div", `effect${closedEffects.has(id) ? " closed" : ""}`);
       // The fields live in a box of their own so that folding is one class on the effect,
       // and so the head — the one thing a closed effect still shows — is never part of it.
@@ -658,24 +740,24 @@ export class Inspector {
       // Not offered for this clip, but here — by patch, or because the clip moved to a
       // track that takes away what it acted on. The validator warns too; this says it where
       // the effect is, so it does not read as broken.
-      if (!actsOn(e.type, carries)) {
+      if (!actsOn(e.type, owner.carries)) {
         box.classList.add("inert");
         disclose.append(el("span", "inert-note", "no effect here"));
-        disclose.title = `This ${lower} does nothing: the clip ${streamsOf(e.type).video ? "shows no picture" : "has no sound"}`;
+        disclose.title = `This ${lower} does nothing: ${owner.what} ${streamsOf(e.type).video ? "shows no picture" : "has no sound"}`;
       }
       head.append(disclose);
-      const remove = button("×", () => store.patch([{ op: "remove", path: `${path}/effects/${ei}` }], `remove ${e.type}`), `Remove this ${lower}`);
+      const remove = button("×", () => store.patch([{ op: "remove", path: `${owner.path}/${ei}` }], `remove ${e.type}`), `Remove this ${lower}`);
       box.append(head, body);
       const rec = e as unknown as Record<string, unknown>;
       const defaults = spec.add as unknown as Record<string, unknown>;
       const cur = (key: string) => rec[key] ?? defaults[key];
-      const replace = (value: unknown, note: string) => void store.patch([{ op: "replace", path: `${path}/effects/${ei}`, value }], `${e.type} ${note}`);
+      const replace = (value: unknown, note: string) => void store.patch([{ op: "replace", path: `${owner.path}/${ei}`, value }], `${e.type} ${note}`);
       const set = (key: string, v: unknown) => replace({ ...e, [key]: v }, `${key}`);
 
       // Keyframes, when this kind takes them: an animatable field reads through the one
       // sampler (which is the static value until there are keys), and once there are keys
       // it writes the value *at the playhead* rather than a static one.
-      const anim = ANIMATABLE[e.type] ? animationOf(clip.id, ei) : null;
+      const anim = ANIMATABLE[e.type] ? owner.anim(ei) : null;
       const animatable = (key: string) => !!anim && anim.fields.includes(key);
       const timed = (key: string) => animatable(key) && anim!.animated;
       // Auto-key: with it on, a change to any animatable parameter is a key at the
@@ -701,15 +783,14 @@ export class Inspector {
     // Only what can act on this clip: a volume on a still, or a picture fade on a song,
     // would be accepted and do nothing, and that reads as a broken effect.
     const add = el("select");
-    const offered = (Object.keys(EFFECTS) as Effect["type"][]).filter((type) => actsOn(type, carries));
+    const offered = (Object.keys(EFFECTS) as Effect["type"][]).filter((type) => owner.offers(type));
     options(add, offered.map((value) => ({ value, label: title(value).toLowerCase() })), undefined, "+ add effect…");
     add.onchange = () => {
       const kind = add.value as Effect["type"] | "";
       add.value = "";
-      if (kind) store.patch([{ op: "add", path: `${path}/effects/-`, value: EFFECTS[kind]!.add }], `add ${kind}`);
+      if (kind) store.patch([{ op: "add", path: `${owner.path}/-`, value: owner.add(kind) }], `add ${kind}`);
     };
     this.host.appendChild(add);
-    this.host.appendChild(this.presetPicker(path));
     if (followers.length) this.off.push(store.select((s) => [s.playhead], () => { for (const f of followers) f(); }));
   }
 
@@ -856,7 +937,7 @@ function fontInput(cur: string, onChange: (v: string) => void): HTMLElement {
   s.value = cur;
   s.style.fontFamily = `"${cur}", system-ui`;
   s.onchange = () => onChange(s.value);
-  const add = button("+", () => void addFonts(onChange), "Add font files (.ttf, .otf, or a .ttc collection) to this project or to every project");
+  const add = button("+", () => void addFonts(onChange), "Add font files (.ttf, .otf, .woff, .woff2, or a .ttc collection) to this project or to every project");
   return row("row", s, add);
 }
 
@@ -880,7 +961,7 @@ async function addFonts(use: (family: string) => void): Promise<void> {
   ], "project", () => {});
   const ok = await askForm({
     title: paths.length > 1 ? `Add ${paths.length} fonts` : "Add a font",
-    note: "A .ttf or .otf file is copied in; a .ttc or .otc collection is split into its faces. A family's weights and italics are separate files in most fonts: add them together. A font in the project goes wherever the project goes; one in your library is there for every project on this machine.",
+    note: "A .ttf or .otf file is copied in; a .ttc or .otc collection is split into its faces, and a .woff or .woff2 web font is unwrapped into the font it holds. A family's weights and italics are separate files in most fonts: add them together. A font in the project goes wherever the project goes; one in your library is there for every project on this machine.",
     rows: [...(app ? [] : [{ label: "File", input: typed }]), { label: "For", input: where }],
     ok: "Add",
   });

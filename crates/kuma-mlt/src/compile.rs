@@ -34,6 +34,12 @@
 //! transparent, not black, so its gaps show the tracks underneath; only the master gets an
 //! opaque base. Speed on a sequence clip is refused by the validator. `docs/decisions.md`
 //! records why each of those is the shape it is, and what was measured to settle it.
+//!
+//! A sequence's own effects (its mix: gain, limiter, auto-level) hang on the root's
+//! tractor, and for a nested one on a playlist per placement over the whole tractor
+//! (`clip_c1_seq`), since a stateful filter on the shared tractor would be shared by every
+//! placement. A frozen clip's wrapper is a tractor of its sound and its held frame — see
+//! [`emit_clip_producer`].
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
@@ -239,6 +245,13 @@ fn emit_sequence(ctx: &Ctx, seq_id: &str, seq: &Sequence, is_root: bool, w: &mut
             }
         }
     }
+    // The sequence's own effects, on its mix — after the transitions, so they act on the
+    // tractor's output. Only the root's go here: nothing but the consumer plays the root,
+    // while a nested sequence's tractor is shared by its placements, so each placement
+    // carries its own copy of them (`emit_sequence_effects`).
+    if is_root {
+        emit_effects(ctx, w, &Span { id: "main_tractor".into(), f_in: 0, f_out: total - 1, pre: 0, post: 0 }, &seq.effects, 1.0);
+    }
     w.close("tractor");
     Ok(())
 }
@@ -275,6 +288,22 @@ enum Item {
     Entry { producer: String, in_: i64, out: i64 },
 }
 
+impl Item {
+    /// A cut of `producer` over `in_..=out` whose last `short` frames are a blank: MLT cuts
+    /// an entry that asks past its source's end short, which would move everything after it.
+    fn padded_cut(producer: &str, in_: i64, out: i64, short: i64) -> impl Iterator<Item = Item> {
+        let entry = (out - short >= in_).then(|| Item::Entry { producer: producer.to_string(), in_, out: out - short });
+        entry.into_iter().chain((short > 0).then_some(Item::Blank(short)))
+    }
+
+    fn write(&self, w: &mut XmlWriter) {
+        match self {
+            Item::Blank(n) => w.empty("blank", &[("length", n.to_string())]),
+            Item::Entry { producer, in_, out } => w.empty("entry", &[("producer", producer.clone()), ("in", in_.to_string()), ("out", out.to_string())]),
+        }
+    }
+}
+
 /// How a dissolve extends a clip: frames added before (as the `to` side) and after (as
 /// the `from` side) its own range.
 #[derive(Default, Clone, Copy)]
@@ -295,10 +324,17 @@ struct Plan<'a> {
     /// thing this clip plays.
     p_in: i64,
     p_out: i64,
-    /// True when this clip is emitted as a wrapper playlist that has already made the cut
-    /// (a sequence placement), rather than a producer the lane cuts directly. A wrapper
-    /// starts at its own zero, which is the whole of what [`Plan::entry`] decides.
+    /// True when this clip is emitted as a wrapper that has already made the cut (a
+    /// sequence placement, or any frozen clip), rather than a producer the lane cuts
+    /// directly. A wrapper starts at its own zero, which is the whole of what
+    /// [`Plan::entry`] decides.
     wrapped: bool,
+    /// Frames at the end of `p_in..=p_out` that the source does not have: emitted as a
+    /// blank rather than asked for, since MLT would cut the entry short and move every
+    /// later clip on the lane.
+    short: i64,
+    /// The producer frame a freeze holds, if the clip has one.
+    held: Option<i64>,
     /// Frames added before/after the clip's own range for a dissolve. Effects are
     /// measured from the clip's own start, so keyframes are offset by `pre`.
     pre: i64,
@@ -374,8 +410,19 @@ fn compile_track(ctx: &Ctx, track: &Track, total: i64, w: &mut XmlWriter) -> Res
         } else {
             (0, len - 1)
         };
+        // What the source has. MLT cuts an entry that asks for more down to what there is,
+        // which would shorten the lane and pull every later clip on it earlier, so the
+        // frames past the end are asked of nobody: they are padded with a blank instead.
+        let have = ctx.project.source_frames(clip);
+        let short = have.map_or(0, |h| p_out + 1 - h).clamp(0, len);
+        // A generated source starts at its own zero, `pre` frames before the clip.
+        let held = clip.effects.iter().find_map(|fx| match fx {
+            Effect::Freeze { t } => Some(ctx.project.held_frame(clip, *t, (e.before, e.after)).0 + if item.is_timed_media() { 0 } else { e.before }),
+            _ => None,
+        });
         let producer_id = format!("clip_{}", clip.id);
-        plans.push(Plan { clip, lane, tl_in, tl_out, p_in, p_out, wrapped: item.is_sequence(), pre: e.before, post: e.after, producer_id });
+        let wrapped = item.is_sequence() || held.is_some();
+        plans.push(Plan { clip, lane, tl_in, tl_out, p_in, p_out, wrapped, short, held, pre: e.before, post: e.after, producer_id });
     }
     if plans.is_empty() {
         return Ok(None);
@@ -406,7 +453,9 @@ fn compile_track(ctx: &Ctx, track: &Track, total: i64, w: &mut XmlWriter) -> Res
             lanes[l].push(Item::Blank(p.tl_in - cursor[l]));
         }
         let (in_, out) = p.entry();
-        lanes[l].push(Item::Entry { producer: p.producer_id.clone(), in_, out });
+        // A wrapper pads its own tail; a producer cut here is padded here.
+        let short = if p.wrapped { 0 } else { p.short };
+        lanes[l].extend(Item::padded_cut(&p.producer_id, in_, out, short));
         cursor[l] = p.tl_out + 1;
     }
     let two_lanes = !lanes[1].is_empty();
@@ -417,13 +466,7 @@ fn compile_track(ctx: &Ctx, track: &Track, total: i64, w: &mut XmlWriter) -> Res
         let suffix = if l == 0 { "a" } else { "b" };
         w.open("playlist", &[("id", format!("{tid}_{suffix}"))]);
         for it in items {
-            match it {
-                Item::Blank(n) => w.empty("blank", &[("length", n.to_string())]),
-                Item::Entry { producer, in_, out } => w.empty(
-                    "entry",
-                    &[("producer", producer.clone()), ("in", in_.to_string()), ("out", out.to_string())],
-                ),
-            }
+            it.write(w);
         }
         w.close("playlist");
     }
@@ -479,12 +522,90 @@ fn compile_track(ctx: &Ctx, track: &Track, total: i64, w: &mut XmlWriter) -> Res
     Ok(Some(CompiledTrack { id: tid.clone(), producer_id, hide, has_video, has_audio, blends }))
 }
 
+/// One clip's element: the producer the lane cuts, or — for a sequence placement or a
+/// frozen clip — a wrapper that makes the cut itself and starts at its own zero.
+///
+/// A freeze is a wrapper of its own, a tractor of two tracks over the clip's source: the
+/// clip's own cut with its picture hidden (the sound running on), and the held frame
+/// repeated with its sound hidden. Not MLT's `freeze` filter, which reads the "original
+/// producer" and so held black for a sequence and deadlocked on a still. The clip's
+/// filters go on the tractor, so they act on the held frame and keep moving.
 fn emit_clip_producer(ctx: &Ctx, p: &Plan, w: &mut XmlWriter) -> Result<(), CompileError> {
+    let clip = p.clip;
+    let len = p.p_out - p.p_in + 1;
+    let item = ctx.item(clip)?;
+    // What the cut is made into: this clip's own producer, a sequence's tractor, or a
+    // copy of the sequence carrying the sequence's own effects.
+    let source = match &item.source {
+        BinSource::Sequence(seq) => emit_sequence_effects(ctx, p, &clip.bin, seq, w),
+        _ => {
+            // A frozen clip's producer is its source and nothing more: the filters go on
+            // the wrapper.
+            let id = if p.held.is_some() { format!("{}_src", p.producer_id) } else { p.producer_id.clone() };
+            emit_source(ctx, p, &id, w)?;
+            id
+        }
+    };
+    let cut = |w: &mut XmlWriter| Item::padded_cut(&source, p.p_in, p.p_out, p.short).for_each(|it| it.write(w));
+    if let Some(frame) = p.held {
+        let (sound, held) = (format!("{}_sound", p.producer_id), format!("{}_held", p.producer_id));
+        w.open("playlist", &[("id", sound.clone())]);
+        cut(w);
+        w.close("playlist");
+        w.open("playlist", &[("id", held.clone())]);
+        w.empty("entry", &[("producer", source.clone()), ("in", frame.to_string()), ("out", frame.to_string()), ("repeat", len.to_string())]);
+        w.close("playlist");
+        w.open("tractor", &[("id", p.producer_id.clone()), ("in", "0".into()), ("out", (len - 1).to_string())]);
+        w.open("multitrack", &[]);
+        // No transition: a tractor shows its topmost track's picture and plays the sound of
+        // the one that has any, which with each hiding the other is exactly the two halves.
+        w.empty("track", &[("producer", sound), ("hide", "video".into())]);
+        w.empty("track", &[("producer", held), ("hide", "audio".into())]);
+        w.close("multitrack");
+        emit_filters(ctx, p, w);
+        w.close("tractor");
+    } else if item.is_sequence() {
+        // A sequence is already a producer (its tractor), emitted once for the whole
+        // document. This placement is a playlist that cuts it and hangs its own filters,
+        // so a second placement of the same sequence is unaffected by them.
+        w.open("playlist", &[("id", p.producer_id.clone())]);
+        cut(w);
+        emit_filters(ctx, p, w);
+        w.close("playlist");
+    }
+    Ok(())
+}
+
+/// What a placement of sequence `id` cuts: its tractor, or, when the sequence has effects
+/// for this graph, a playlist of the whole tractor carrying them, one per placement, since
+/// a limiter or an auto-level keeps state that two placements sharing one would interleave.
+fn emit_sequence_effects(ctx: &Ctx, p: &Plan, id: &str, seq: &Sequence, w: &mut XmlWriter) -> String {
+    let tractor = format!("seq_{id}");
+    if !seq.effects.iter().any(|e| e.streams().meets(ctx.opts.streams)) {
+        return tractor;
+    }
+    let total = ctx.fps.length(seq.duration());
+    let own = format!("{}_seq", p.producer_id);
+    w.open("playlist", &[("id", own.clone())]);
+    w.empty("entry", &[("producer", tractor), ("in", "0".into()), ("out", (total - 1).to_string())]);
+    emit_effects(ctx, w, &Span { id: own.clone(), f_in: 0, f_out: total - 1, pre: 0, post: 0 }, &seq.effects, 1.0);
+    w.close("playlist");
+    own
+}
+
+/// The producer for a clip's file, colour or overlay, as `id`: with the clip's filters,
+/// unless it is the source of a wrapper that carries them.
+fn emit_source(ctx: &Ctx, p: &Plan, id: &str, w: &mut XmlWriter) -> Result<(), CompileError> {
     let clip = p.clip;
     let len = p.p_out - p.p_in + 1;
     // The producer spans 0..=p_out; the playlist entry cuts it to p_in..=p_out. Putting
     // `in` on the producer too would clamp its playtime and freeze the clip on one frame.
-    let base = [("id", p.producer_id.clone()), ("in", "0".into()), ("out", p.p_out.to_string())];
+    let base = [("id", id.to_string()), ("in", "0".into()), ("out", p.p_out.to_string())];
+    let filters = |w: &mut XmlWriter| {
+        if !p.wrapped {
+            emit_filters(ctx, p, w);
+        }
+    };
 
     match &ctx.item(clip)?.source {
         BinSource::File { path: media, kind, proxy } => {
@@ -517,19 +638,11 @@ fn emit_clip_producer(ctx: &Ctx, p: &Plan, w: &mut XmlWriter) -> Result<(), Comp
             if !still && !ctx.opts.streams.video() {
                 w.property("video_index", "-1");
             }
-            emit_filters(ctx, p, w);
+            filters(w);
             w.close(tag);
         }
-        BinSource::Color { color } => emit_color(w, &base, &mlt_color(color), len, |w| emit_filters(ctx, p, w)),
-        // A sequence is already a producer (its tractor), emitted once for the whole
-        // document. This placement is a playlist that cuts it and hangs its own filters,
-        // so a second placement of the same sequence is unaffected by them.
-        BinSource::Sequence(_) => {
-            w.open("playlist", &[("id", p.producer_id.clone())]);
-            w.empty("entry", &[("producer", format!("seq_{}", clip.bin)), ("in", p.p_in.to_string()), ("out", p.p_out.to_string())]);
-            emit_filters(ctx, p, w);
-            w.close("playlist");
-        }
+        BinSource::Color { color } => emit_color(w, &base, &mlt_color(color), len, filters),
+        BinSource::Sequence(_) => return Err(CompileError::Internal(format!("clip `{}`: a sequence has no producer of its own", clip.id))),
         BinSource::Folder { .. } => return Err(CompileError::Internal(format!("clip `{}` places a folder", clip.id))),
         BinSource::Overlay { .. } => {
             let bake = ctx.opts.bakes.get(&clip.id).ok_or_else(|| CompileError::Unbaked(clip.id.clone()))?;
@@ -547,7 +660,7 @@ fn emit_clip_producer(ctx: &Ctx, p: &Plan, w: &mut XmlWriter) -> Result<(), Comp
             w.property("resource", bake.resource.to_string_lossy());
             w.property("length", len.to_string());
             w.property("mlt_image_format", "rgba");
-            emit_filters(ctx, p, w);
+            filters(w);
             w.close("producer");
         }
     }
@@ -565,25 +678,23 @@ fn emit_color(w: &mut XmlWriter, attrs: &[(&str, String)], resource: &str, lengt
     w.close("producer");
 }
 
+/// What effects are emitted against: the element whose id names the filters, the frames
+/// they span, and how many of those are dissolve handle before and after the owner's own
+/// range — which is where keyframe time and fades count from.
+struct Span {
+    id: String,
+    f_in: i64,
+    f_out: i64,
+    pre: i64,
+    post: i64,
+}
+
+/// A clip's filters: a sequence placement's mute, the placement's fader, then its effects.
 fn emit_filters(ctx: &Ctx, p: &Plan, w: &mut XmlWriter) {
     let clip = p.clip;
-    let fps = ctx.fps;
     let (f_in, f_out) = p.entry();
-    let len = f_out - f_in + 1;
-    let n = std::cell::Cell::new(0usize);
-    // Open a `<filter>` with a unique id over an explicit frame range; the caller adds
-    // properties and closes it.
-    let open_at = |w: &mut XmlWriter, name: &str, service: &str, in_: i64, out: i64| {
-        n.set(n.get() + 1);
-        w.open("filter", &[("id", format!("{}_{name}{}", p.producer_id, n.get())), ("in", in_.to_string()), ("out", out.to_string())]);
-        w.property("mlt_service", service);
-    };
-    let open = |w: &mut XmlWriter, name: &str, service: &str| open_at(w, name, service, f_in, f_out);
-    // Keyframe positions are relative to the clip's own start, i.e. `pre` frames in.
-    let at = |t: f64| (fps.frame(t) + p.pre).clamp(0, len - 1);
-    let streams = ctx.opts.streams;
-
-    if streams.audio() && clip.muted && ctx.item(clip).is_ok_and(|i| i.is_sequence()) {
+    let span = Span { id: p.producer_id.clone(), f_in, f_out, pre: p.pre, post: p.post };
+    if ctx.opts.streams.audio() && clip.muted && ctx.item(clip).is_ok_and(|i| i.is_sequence()) {
         // A sequence has no decoder to switch off, the way `audio_index=-1` does for a
         // media file, so muting one is a filter. `MUTE_DB` rather than the `db(0)` floor:
         // that is -60 dB, which is quiet but audible against silence, and it has to stay
@@ -594,16 +705,37 @@ fn emit_filters(ctx: &Ctx, p: &Plan, w: &mut XmlWriter) {
         w.close("filter");
     }
 
-    // Clip-level volume times the entry's (static) unless a Volume effect folds it in.
-    let volume = clip.volume * ctx.project.item(clip).map_or(1.0, |i| i.volume);
-    let has_volume_effect = clip.effects.iter().any(|e| matches!(e, Effect::Volume { .. }));
-    if streams.audio() && !has_volume_effect && (volume - 1.0).abs() > 1e-9 {
+    // Clip-level volume times the entry's (static).
+    let fader = clip.volume * ctx.project.item(clip).map_or(1.0, |i| i.volume);
+    emit_effects(ctx, w, &span, &clip.effects, fader);
+}
+
+/// `effects` as filters over `span`, those of them this graph carries, after a static
+/// `volume` filter for `fader` — a linear gain, folded into a `volume` effect when there is
+/// one, so a clip's own volume and the effect are one filter.
+fn emit_effects(ctx: &Ctx, w: &mut XmlWriter, span: &Span, effects: &[Effect], fader: f64) {
+    let fps = ctx.fps;
+    let n = std::cell::Cell::new(0usize);
+    let (f_in, f_out) = (span.f_in, span.f_out);
+    let len = f_out - f_in + 1;
+    // Open a `<filter>` with a unique id over an explicit frame range; the caller adds
+    // properties and closes it.
+    let open_at = |w: &mut XmlWriter, name: &str, service: &str, in_: i64, out: i64| {
+        n.set(n.get() + 1);
+        w.open("filter", &[("id", format!("{}_{name}{}", span.id, n.get())), ("in", in_.to_string()), ("out", out.to_string())]);
+        w.property("mlt_service", service);
+    };
+    let open = |w: &mut XmlWriter, name: &str, service: &str| open_at(w, name, service, f_in, f_out);
+    // Keyframe positions are relative to the owner's own start, i.e. `pre` frames in.
+    let at = |t: f64| (fps.frame(t) + span.pre).clamp(0, len - 1);
+    let streams = ctx.opts.streams;
+
+    if streams.audio() && !effects.iter().any(|e| matches!(e, Effect::Volume { .. })) && (fader - 1.0).abs() > 1e-9 {
         open(w, "vol", "volume");
-        w.property("level", num(db(volume)));
+        w.property("level", num(db(fader)));
         w.close("filter");
     }
-
-    for e in clip.effects.iter().filter(|e| e.streams().meets(streams)) {
+    for e in effects.iter().filter(|e| e.streams().meets(streams)) {
         match e {
             Effect::Transform { x, y, scale, rotation, opacity, keyframes } => {
                 open(w, "xform", "qtblend");
@@ -612,6 +744,12 @@ fn emit_filters(ctx: &Ctx, p: &Plan, w: &mut XmlWriter) {
                     rect_str(ctx, k.or("x", *x), k.or("y", *y), k.or("scale", *scale), k.or("opacity", *opacity))
                 }));
                 w.property("rotation", anim(keyframes, &at, num(*rotation), |k| num(k.or("rotation", *rotation))));
+                // qtblend turns about the rect's top-left corner unless told otherwise, and
+                // the preview turns about the centre. Written only when it ever turns, so a
+                // transform that does not compiles as it did.
+                if *rotation != 0.0 || keyframes.iter().any(|k| k.or("rotation", *rotation) != 0.0) {
+                    w.property("rotate_center", "1");
+                }
                 w.close("filter");
             }
             Effect::Crop { left, right, top, bottom, radius, keyframes } => {
@@ -661,7 +799,7 @@ fn emit_filters(ctx: &Ctx, p: &Plan, w: &mut XmlWriter) {
                     }
                     w.close("filter");
                 };
-                let (own_in, own_out) = (f_in + p.pre, f_out - p.post);
+                let (own_in, own_out) = (f_in + span.pre, f_out - span.post);
                 let own_len = own_out - own_in + 1;
                 // At least two frames. A one-frame fade on a clip whose range starts at
                 // frame 0 is a filter at `in="0" out="0"`, which MLT reads as no range at
@@ -684,7 +822,25 @@ fn emit_filters(ctx: &Ctx, p: &Plan, w: &mut XmlWriter) {
                 open(w, "vol", "volume");
                 // The clip's own volume folded in, so the placement's fader and this gain
                 // are one filter; a key without `gain` holds the static one.
-                w.property("level", anim(keyframes, &at, num(db(gain * volume)), |k| num(db(k.or("gain", *gain) * volume))));
+                w.property("level", anim(keyframes, &at, num(db(gain * fader)), |k| num(db(k.or("gain", *gain) * fader))));
+                w.close("filter");
+            }
+            Effect::Limiter { ceiling, attack, release } => {
+                open(w, "limit", "avfilter.alimiter");
+                w.property("av.limit", num(10f64.powf(ceiling / 20.0)));
+                w.property("av.attack", num(*attack));
+                w.property("av.release", num(*release));
+                // ffmpeg's default levels what it limited back up to the ceiling; making
+                // the sound louder is the gain stage's job, in front of this.
+                w.property("av.level", "0");
+                w.close("filter");
+            }
+            Effect::AutoLevel { target, window, max_gain, min_gain } => {
+                open(w, "level", "dynamic_loudness");
+                w.property("target_loudness", num(*target));
+                w.property("window", num(*window));
+                w.property("max_gain", num(*max_gain));
+                w.property("min_gain", num(*min_gain));
                 w.close("filter");
             }
             Effect::Mlt { service, properties } => {
@@ -695,6 +851,7 @@ fn emit_filters(ctx: &Ctx, p: &Plan, w: &mut XmlWriter) {
                 w.close("filter");
             }
             Effect::Blend { .. } => {} // handled on the track's compositing transition
+            Effect::Freeze { .. } => {} // handled by the clip's wrapper, `emit_clip_producer`
         }
     }
 }
@@ -862,6 +1019,7 @@ mod tests {
         let rect = xml.split(r#"<property name="rect">"#).nth(1).unwrap().split('<').next().unwrap();
         assert_eq!(rect.split(';').map(|s| s.split(' ').next().unwrap()).collect::<Vec<_>>(), ["0|=0", "30~=-960", "60=0"], "{xml}");
         assert!(xml.contains(r#"<property name="rotation">0|=0;30~=0;60=0</property>"#), "{xml}");
+        assert!(!xml.contains("rotate_center"), "nothing turns, so nothing says where about: {xml}");
         assert!(xml.contains(r#"<property name="level">0|=0;60=0</property>"#), "{xml}");
     }
 
@@ -1209,6 +1367,99 @@ mod tests {
         assert!(xml.contains(r#"id="mix_a1""#), "{xml}");
         assert!(wrapper("m1").contains(&format!("<property name=\"level\">{MUTE_DB}</property>")), "{}", wrapper("m1"));
         assert!(!wrapper("m2").contains("volume"), "{}", wrapper("m2"));
+    }
+
+    /// A sequence's own effects act on its mix: on the root's tractor, which nothing but the
+    /// consumer plays, and on each placement of a nested one through a playlist of its own
+    /// over the whole tractor — so the effects keep the sequence's clock (a key at 1 s is
+    /// frame 30 whatever the cut) and each placement keeps its own limiter state.
+    #[test]
+    fn a_sequences_effects_are_on_the_root_and_on_each_placement() {
+        let mut p = nested();
+        let fx = json!([ { "type": "volume", "gain": 1, "keyframes": [ { "t": 1, "gain": 1 }, { "t": 2, "gain": 0.5 } ] }, { "type": "limiter", "ceiling": -6 } ]);
+        for id in ["part", "main"] {
+            let BinSource::Sequence(s) = &mut p.bin.get_mut(id).unwrap().source else { unreachable!() };
+            s.effects = serde_json::from_value(fx.clone()).unwrap();
+        }
+        let xml = compile(&p, &CompileOptions::new("/proj")).unwrap();
+        // Each placement cuts its own copy, which spans the whole 6 s sequence.
+        for clip in ["s1", "s2"] {
+            assert!(xml.contains(&format!("<playlist id=\"clip_{clip}_seq\">\n    <entry producer=\"seq_part\" in=\"0\" out=\"179\"/>")), "{xml}");
+            assert!(xml.contains(&format!(r#"<filter id="clip_{clip}_seq_vol1" in="0" out="179">"#)), "{xml}");
+        }
+        assert!(xml.contains(r#"<entry producer="clip_s1_seq" in="30" out="89"/>"#), "{xml}");
+        assert_eq!(xml.matches(r#"<property name="level">30=0;60=-6.0206</property>"#).count(), 3, "the sequence's own clock, three times: {xml}");
+        assert_eq!(xml.matches(r#"<property name="av.limit">0.501187</property>"#).count(), 3, "{xml}");
+        assert_eq!(xml.matches(r#"<property name="av.level">0</property>"#).count(), 3, "never levelled back up: {xml}");
+        // The root's are the tractor's last children, after its transitions.
+        let root = xml.split(r#"<tractor id="main_tractor""#).nth(1).unwrap();
+        assert!(root.find("main_tractor_limit2") > root.rfind("</transition>"), "{xml}");
+        // They are all sound: the picture's half has none of them.
+        let mut picture = CompileOptions::new("/proj");
+        picture.streams = Streams::Video;
+        let video = compile(&p, &picture).unwrap();
+        assert!(!video.contains("_seq\"") && !video.contains("alimiter"), "{video}");
+    }
+
+    /// A freeze is a tractor over the clip's source: its own cut, sound only, and the held
+    /// frame repeated, picture only, with the clip's filters on the tractor so they act on
+    /// the held frame and still move. The frame is the one the clip shows at `t`, kept
+    /// inside what the source has.
+    #[test]
+    fn a_frozen_clip_is_its_sound_and_its_held_frame() {
+        let p = project(json!({
+            "fps": 30,
+            "bin": {
+                "x": { "source": { "path": "x.mp4" }, "meta": { "duration": 5.0, "has_audio": true } },
+                "part": { "source": { "tracks": [{ "id": "pv", "clips": [ { "id": "p1", "start": 0, "end": 6, "bin": "x" } ] }] } }
+            },
+            "tracks": [{ "id": "v1", "clips": [
+                { "id": "a", "start": 0, "end": 2, "bin": "x", "in": 1, "effects": [ { "type": "transform", "scale": 0.5 }, { "type": "freeze", "t": 0.5 } ] },
+                { "id": "b", "start": 2, "end": 4, "bin": "part", "in": 1, "effects": [ { "type": "freeze", "t": 1 } ] },
+                { "id": "c", "start": 4, "end": 5, "bin": "x", "effects": [ { "type": "freeze", "t": 9 } ] }
+            ]}]
+        }));
+        let xml = compile(&p, &CompileOptions::new("/proj")).unwrap();
+        let element = |tag: &str, id: &str| {
+            let s = xml.split(&format!("<{tag} id=\"{id}\"")).nth(1).unwrap_or_else(|| panic!("no {tag} {id}: {xml}"));
+            s[..s.find(&format!("</{tag}>")).unwrap()].to_string()
+        };
+        // The file's source carries no filters; its wrapper does, over the wrapper's frames.
+        assert!(!element("chain", "clip_a_src").contains("<filter"), "{xml}");
+        assert!(element("playlist", "clip_a_sound").contains(r#"<entry producer="clip_a_src" in="30" out="89"/>"#), "{xml}");
+        assert!(element("playlist", "clip_a_held").contains(r#"<entry producer="clip_a_src" in="45" out="45" repeat="60"/>"#), "{xml}");
+        let a = element("tractor", "clip_a");
+        assert!(a.contains(r#"<track producer="clip_a_sound" hide="video"/>"#) && a.contains(r#"<track producer="clip_a_held" hide="audio"/>"#), "{a}");
+        assert!(a.contains(r#"<filter id="clip_a_xform1" in="0" out="59">"#), "{a}");
+        assert!(xml.contains(r#"<entry producer="clip_a" in="0" out="59"/>"#), "the lane cuts the wrapper from its own zero: {xml}");
+        // A sequence placement holds a frame of the sequence's tractor.
+        assert!(element("playlist", "clip_b_held").contains(r#"<entry producer="seq_part" in="60" out="60" repeat="60"/>"#), "{xml}");
+        // 9 s into a clip of a 5 s file is past its end: the last frame it has is held.
+        assert!(element("playlist", "clip_c_held").contains(r#"in="149" out="149""#), "{xml}");
+    }
+
+    /// MLT cuts an entry that asks for more than its source has, which shortens the lane and
+    /// moves every later clip; so the frames past the end are a blank, on the lane for a
+    /// file and inside the wrapper for a sequence, and nothing after them moves.
+    #[test]
+    fn a_clip_past_its_sources_end_is_padded_not_cut() {
+        let p = project(json!({
+            "fps": 30,
+            "bin": {
+                "x": { "source": { "path": "x.mp4" }, "meta": { "duration": 0.3466, "has_audio": true } },
+                "part": { "source": { "tracks": [{ "id": "pv", "clips": [ { "id": "p1", "start": 0, "end": 0.3, "bin": "x" } ] }] } }
+            },
+            "tracks": [{ "id": "v1", "clips": [
+                { "id": "a", "start": 0, "end": 0.4, "bin": "x" },
+                { "id": "b", "start": 0.5, "end": 0.9, "bin": "part" }
+            ]}]
+        }));
+        let xml = compile(&p, &CompileOptions::new("/proj")).unwrap();
+        // 0.3466 s is 10 frames; the clip is 12.
+        assert!(xml.contains("<entry producer=\"clip_a\" in=\"0\" out=\"9\"/>\n    <blank length=\"2\"/>\n    <blank length=\"3\"/>"), "{xml}");
+        // The sequence is 9 frames; the placement keeps its 12 by padding inside.
+        assert!(xml.contains("<entry producer=\"seq_part\" in=\"0\" out=\"8\"/>\n    <blank length=\"3\"/>"), "{xml}");
+        assert!(xml.contains(r#"<entry producer="clip_b" in="0" out="11"/>"#), "{xml}");
     }
 
     /// Sound two levels down still needs an audio mix on the track carrying the sequence.

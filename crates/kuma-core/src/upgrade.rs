@@ -6,7 +6,8 @@
 //! before it is deserialized, because a struct that can no longer represent the old shape
 //! cannot be the thing that reads it.
 //!
-//! Every project is read through [`parse_project`]. Nothing else parses one.
+//! Every project is read through [`parse_project`]. Nothing else parses one; and every
+//! project file is written as [`project_text`] makes it.
 
 use serde_json::Value;
 
@@ -17,6 +18,20 @@ pub fn parse_project(text: &str) -> serde_json::Result<Project> {
     let mut v: Value = serde_json::from_str(text)?;
     upgrade(&mut v).map_err(serde::de::Error::custom)?;
     serde_json::from_value(v)
+}
+
+/// The text of a project file, as every writer of one writes it. Fields at their defaults
+/// are left out (a keyframe's `ease: "linear"`, an empty `group`), so a document a script
+/// built and the file kuma stored differ where they mean the same: compare [`canonical`]
+/// forms, never a hand-built document against a stored one.
+pub fn project_text(p: &Project) -> serde_json::Result<String> {
+    serde_json::to_string_pretty(p)
+}
+
+/// `text`, a project document of any version, in the form kuma stores it: parsed, brought
+/// forward and written back (`kuma canonical`, `POST /api/project/canonical`).
+pub fn canonical(text: &str) -> serde_json::Result<String> {
+    project_text(&parse_project(text)?)
 }
 
 /// Bring `v` forward to [`crate::PROJECT_VERSION`], one version at a time. A document
@@ -63,6 +78,11 @@ fn upgrade(v: &mut Value) -> Result<(), String> {
         }
         version = 7;
     }
+    if version == 7 {
+        // 7 → 8: a sequence may carry `effects`, defaulting to none, and `limiter`,
+        // `auto_level` and `freeze` are new kinds, so no older document has one. A stamp.
+        version = 8;
+    }
     v["version"] = Value::from(version);
     Ok(())
 }
@@ -96,7 +116,7 @@ mod tests {
     /// the current version too, not on 3-as-of-when-it-was-written.
     #[test]
     fn every_older_version_climbs_to_the_current_one() {
-        for from in [1, 2, 3, 4, 5, 6] {
+        for from in [1, 2, 3, 4, 5, 6, 7] {
             let text = V1.replace("\"version\": 1", &format!("\"version\": {from}"));
             assert_eq!(parse_project(&text).expect("parse").version, crate::PROJECT_VERSION, "from {from}");
         }
@@ -115,6 +135,26 @@ mod tests {
         assert_eq!(v["version"], 6, "not stamped");
         let e = parse_project(&text).expect_err("refused").to_string();
         assert!(e.contains("`tag`") && e.contains("overlays/location-tag"), "{e}");
+    }
+
+    /// What a script writes and what kuma stores agree once both are canonical: defaults
+    /// spelled out are dropped, the version is brought forward, and a canonical document
+    /// is its own canonical form.
+    #[test]
+    fn a_canonical_document_is_the_one_kuma_stores() {
+        let text = V1.replace(
+            r#""tracks": []"#,
+            r#""tracks": [{ "id": "v1", "kind": "video", "clips": [{ "id": "c1", "bin": "main", "start": 0, "end": 2, "effects": [
+                { "type": "transform", "keyframes": [{ "t": 0, "x": 0, "ease": "linear" }, { "t": 1, "x": 10, "ease": "hold" }] }] }] }]"#,
+        );
+        let once = canonical(&text).expect("canonical");
+        let v: Value = serde_json::from_str(&once).unwrap();
+        let keys = v.pointer("/bin/main/source/tracks/0/clips/0/effects/0/keyframes").unwrap();
+        assert!(keys[0].get("ease").is_none(), "linear is the default, so it is not stored: {keys}");
+        assert_eq!(keys[1]["ease"], "hold");
+        assert_eq!(v["version"], crate::PROJECT_VERSION);
+        assert_eq!(canonical(&once).unwrap(), once, "canonical twice is canonical once");
+        assert_eq!(once, project_text(&parse_project(&text).unwrap()).unwrap(), "what a project file holds");
     }
 
     #[test]

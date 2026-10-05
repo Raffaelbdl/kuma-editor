@@ -22,6 +22,16 @@ pub async fn health(base: &str) -> Option<Value> {
     r.json::<Value>().await.ok()
 }
 
+/// Whether job `j` has finished: done, failed or cancelled.
+pub fn is_final(j: &Value) -> bool {
+    matches!(j["state"].as_str(), Some("done" | "failed" | "cancelled"))
+}
+
+/// The error job `id` ended in, if it failed. Cancelled is an outcome, not a failure.
+pub fn failure(id: u64, j: &Value) -> Option<anyhow::Error> {
+    (j["state"] == "failed").then(|| anyhow::anyhow!("job {id} failed: {}", j["message"].as_str().unwrap_or("?")))
+}
+
 impl Client {
     pub fn new(base: impl Into<String>) -> Self {
         let base = base.into().trim_end_matches('/').to_string();
@@ -63,20 +73,25 @@ impl Client {
 
     /// Poll a job until it finishes (or `timeout` elapses, returning it still running).
     pub async fn wait_job(&self, id: u64, timeout: Duration) -> anyhow::Result<Value> {
+        let j = self.poll_job(id, timeout, |_| async {}).await?;
+        failure(id, &j).map_or(Ok(j), Err)
+    }
+
+    /// Poll a job until it is final or `timeout` elapses, and return it as it then is,
+    /// failed included: the caller decides what an outcome means. `each` sees every poll,
+    /// which is how a waiter reports progress while it waits.
+    pub async fn poll_job<F, Fut>(&self, id: u64, timeout: Duration, mut each: F) -> anyhow::Result<Value>
+    where
+        F: FnMut(Value) -> Fut,
+        Fut: std::future::Future<Output = ()>,
+    {
         let start = std::time::Instant::now();
         loop {
             let j = self.get(&format!("/api/jobs/{id}")).await?;
-            let state = j["state"].as_str().unwrap_or_default();
-            if matches!(state, "done" | "failed" | "cancelled") {
-                // Stopped on purpose is an outcome, not a failure.
-                if state != "failed" {
-                    return Ok(j);
-                }
-                anyhow::bail!("job {id} failed: {}", j["message"].as_str().unwrap_or("?"));
-            }
-            if start.elapsed() > timeout {
+            if is_final(&j) || start.elapsed() > timeout {
                 return Ok(j);
             }
+            each(j).await;
             tokio::time::sleep(Duration::from_millis(500)).await;
         }
     }

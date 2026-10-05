@@ -2647,6 +2647,255 @@ accepted because the browser tab is the second-class surface (the app is where p
 edit), and it lasts until the terminal lands. If a browser-only workflow turns up first,
 the answer is the terminal in the browser too, not the field back.
 
+## Field report: a thirteen-minute narrated essay
+
+An agent made a 12:46 essay in French through MCP: ~470 clips over 55 sequences nested three
+deep (master → a sequence per chapter → a sequence per paragraph of the script), voice-over
+sliced per paragraph, to-camera takes, stills and archive footage, music beds on the master,
+two dozen overlay components, a build script generating the project, and a person editing
+in the editor between turns. It sent thirty pain points and a playbook. Each point was
+checked against the code; what follows is what was done with it. The playbook's
+cross-project craft went into the skill (`narration.md` is new; `audio.md` was rewritten;
+`footage.md`, `overlays.md`, `storyboard-as-code.md` and `SKILL.md` grew), and nothing
+specific to that video did: its colours, fonts, components, house rules and site stay
+with it.
+
+### Sound
+
+1. **No master gain or limiter** — **built**, as effects on a sequence (format 8). A
+   `Sequence` carries `effects`, and on a sequence only `volume`, `limiter` and `auto_level`
+   are allowed (each once; anything else is refused, saying to put it on the clips that place
+   it). The master's are the master stage, and because they are in the document the preview
+   plays them, `measure_audio` measures after them and `render` renders them — the reason a
+   render-time option was turned down.
+   - **The root's are filters on its tractor; a nested sequence's are on one playlist per
+     placement** spanning the whole tractor (`clip_<id>_seq`), so they keep the sequence's
+     clock and each placement its own filter state. Measured: two placements of a limited
+     sequence playing at once differ from the two alone and summed by 6e-5 (16-bit
+     rounding); with the stage on the shared tractor, by 0.47.
+   - **`limiter` is `avfilter.alimiter` with `level=0`**: ffmpeg's default auto level pushed
+     the output to 0 dBFS. It holds *sample* peaks (pink noise at limit 0.25 came out at
+     exactly −12.0 dBFS and −11.1 dBTP); MLT's avfilter wrapper takes one input and no
+     true-peak limiter exists in its set, so the guide says to set the ceiling about a dB
+     under the true-peak target. It delays the sound by `attack` (5 ms, 239 samples), and
+     `latency=1` does not compensate inside the wrapper, so it is not used.
+   - The report's case, measured: a mix at −31.9 LUFS / −17.0 dBTP, master `volume` 7.852
+     and `limiter` −2.5 → −14.2 LUFS / −1.7 dBTP in `measure_audio`, and −14.3 / −1.7 in the
+     rendered file — what the report's ffmpeg post-pass gave.
+   - The inspector shows the open sequence's mix effects when no clip is selected.
+   - Tests: `a_limiter_holds_its_ceiling_on_the_master_and_on_each_placement`,
+     `a_sequences_effects_are_on_the_root_and_on_each_placement`,
+     `a_sequence_carries_only_effects_on_its_mix`; the stage is in the reference project, so
+     the half-graph and parallel-frames tests cover it.
+   - Open: a `measure_audio` over a range restarts the limiter, so its first 50 ms differ
+     from a full render.
+2. **No ducking** — **not built**. MLT has no sidechain here: `sidechaincompress` and
+   `sidechaingate` need a second input the avfilter wrapper does not give, there are no
+   LADSPA plugins, `mix` has no keying, and `audiolevel` writes a frame's level where no
+   service reads another track's. The shape that would work is a pre-pass like a bake:
+   render the key tracks' sound (as `measure_audio` does), follow its envelope in Rust with
+   attack and release, and compile it into `volume` keys on the ducked clip, cached by the
+   key subgraph's content (`duck { under: <track>, depth_db, attack, release }`). Until
+   then it is keyframes, and the skill gives the numbers that worked.
+3. **No auto-level** — **built**: `auto_level { target, window, max_gain, min_gain }`, MLT's
+   `dynamic_loudness`, on a clip or a sequence. A source drifting 16 dB over a minute came
+   out within 1.6 dB; two renders were byte-identical, four threads matched one, the largest
+   gain step at a frame boundary was 0.03 dB. It restarts on a seek and settles in about one
+   window (0.7 dB off in the first second, settled by 2 s). `an_auto_level_keeps_a_drifting_source_level`,
+   and it is in the reference project.
+4. **`measure_audio` could not solo** — **built**: `solo` and `mute` (track ids, nested
+   ones too) on the MCP tool, the API and `kuma measure-audio`, applied to the copy that is
+   compiled (`jobs::audition`), never to the document. A soloed track plays with all it
+   nests; a track that leads to a solo keeps only the clips that lead there; every other
+   track on the way is silenced; a sequence holding a solo plays only it wherever it is
+   placed, since it is one tractor. Unknown ids, unreachable tracks, overlay tracks, a solo
+   the document mutes, an id in both lists and a solo with no unmuted path are refused.
+   `a_track_is_heard_alone_wherever_it_is_nested`.
+5. **No loudness for a source** and 6. **no silence or onset detection** — **built** as
+   `measure_media` (MCP, `POST /api/media/measure` as a cancellable job, `kuma
+   measure-media`): integrated, range and true peak, a short-term or momentary `curve`, and
+   quiet stretches (`silence_db` −35, `silence_min` 0.15 s by default), whole file or a
+   range, in the file's own seconds, in one ffmpeg pass (`ebur128` + `silencedetect`,
+   parsed by the existing `loudness.rs`). The curve's step widens to keep about 120 values
+   (a 24-minute file: 15 s), at most 1200; at most 500 silences. A silence's end is an onset.
+   A 24-minute file takes 19 s, two thirds of it the true peak.
+   - **Not stored in `MediaMeta`**: it depends on the range and threshold asked for, costs a
+     full decode, and probed metadata in the document is what *Stale probed metadata* wants
+     out of it. If it is ever remembered, it is a cache keyed like the bake cache.
+   - `a_recording_is_metered_and_its_pauses_found_in_its_own_seconds`,
+     `a_source_is_measured_in_its_own_seconds`.
+7. **Per-clip mute was invisible** — **fixed**: a muted clip shows a crossed speaker before
+   its name, fades its waveform, and its tooltip says the track's M is another thing. `marks
+   a clip muted on its own, whose track's M stays off`.
+
+### Transcription
+
+8. **Contiguous word cues, a weak model** — **built**. Cue edges within 0.4 s of a pause
+   move onto it (`snap_to_pauses`, on by default; `silence_db` −35, `silence_min` 0.15 s, the names `measure_media` uses), so a
+   gap between cues is a real pause: on 150 s of audio whose word boundaries sat 0.3 s past
+   each pause, every pause came out within 0.02 s. `model` names a file in the models
+   folder or a size (`large-v3`); `health` lists `whisper_models`. The default model is
+   unchanged, since making the largest one the default would make every transcript much
+   slower without asking. Checked on synthetic audio only: the reach and the pause
+   definition come from the report's numbers and want a real French voice-over.
+9. **One entry per recording** — **built, on by default**: `split` (60 s) cuts at the best
+   pause near every minute (a sentence end preferred), `<id>-1…-n`, each with its own cues
+   and `offset`; from a clip, only the pieces it plays, each placed over its stretch. One
+   patch, one undo. `replace` overwrites one entry, so it defaults to no split and refuses
+   one; so does a reversed clip. The guide's "split it by hand" paragraph is gone.
+   `a_long_transcript_has_real_gaps_and_is_cut_into_pieces_of_about_a_minute`.
+   - A `language` asked for also sets the new entries' `lang` var (item 23), where their
+     folder declares one. A detected language does not: whisper guesses wrong on a short take.
+
+### Timeline and clips
+
+10. **No freeze frame** — **built**: `freeze { t }`, `t` in clip seconds like every
+    keyframe. MLT's `freeze` filter held the right frame on a chain, held black on a
+    sequence wrapper (it fetches the "original producer") and deadlocked on a still, so the
+    compiler builds the clip as a tractor of two tracks: its sound (`hide="video"`) and its
+    frame at `t` repeated (`<entry in=F out=F repeat=len>`, `hide="audio"`), the clip's
+    filters on the tractor. The local DTD now declares `entry/@repeat`, with the evidence
+    beside it. Verified on a grey ramp for a file with `in`, a still, and a sequence placed
+    with `in` inside a sequence placed with `in`; the sound is sample-identical; four threads
+    match one. A split keeps both halves on the frame. A `t` outside the source is a warning
+    and holds the nearest frame. `a_freeze_holds_the_frame_its_clip_shows_at_t`.
+11. **No ripple** — **not built**. The report's own answer was its build script, and
+    storyboard-as-code is where retiming lives (cuts, not edits); a ripple belongs in the
+    editor's UI, which has none yet. Recorded under *Still open*.
+12. **Overlay tracks always over video** — **made the rule**. The render stacks tracks in
+    document order whatever their kind, so a video track after an overlay track drew over it
+    (verified with a bake, top level and nested); but the editor has always put a new video
+    track under the first overlay track, and its live preview draws the open sequence's
+    overlays above the whole engine picture, so such a stack previewed wrong. The validator
+    now refuses a video track after an overlay track. What must sit under a picture draws the
+    picture itself: the report's timeline rail becomes one overlay drawing its thumbnails
+    and the shrinking still, rather than a rail full of holes over thumbnail clips. No
+    migration: no project the editor made has that order.
+13. **Overlays cannot use project media** — **answered in the skill, not built**. An
+    overlay uses a picture from its own folder; one shared by many can go in
+    `overlays/_vendor/` now that it falls through file by file (item 22), at the cost of every
+    file there being in every overlay's bake key. A path out of the folder cannot work: the
+    bake renders a copy of the folder, the key would not cover the file, and the preview
+    refuses `..`. **Rejected**: a `media` var naming a bin entry, staged and hashed like
+    fonts. It is a reference into the bin the validator cannot see (it does not load
+    manifests), so deleting the picture would silently break every overlay naming it, and
+    it would need a format bump or a daemon-side delete check — for what a copy does.
+14. **Clip ends against short sources** — **fixed, and a real bug was under the warning**.
+    When an entry asks MLT for more frames than its source has, MLT cuts the entry, the lane
+    gets shorter and **every later clip on the track slides earlier** (a 10-frame file placed
+    for 12 pulled the next clip 2 frames early). The compiler now pads what the source lacks
+    with a `<blank>`, on the lane or inside a sequence's wrapper, so those frames show the
+    tracks below and are silent and nothing moves. The validator counts in frames, as MLT
+    does (`Project::source_frames`, `Clip::source_span`, on `Fps` alone), and warns only
+    when a whole frame is missing; the report's 0.366 s sound and the 25.30 s sequence no
+    longer warn. `a_clip_past_its_sources_end_leaves_the_clips_after_it_in_place`. Open: the
+    dissolve-handle check still compares seconds.
+15. **Replaced media kept its old metadata** — **built**, as the explicit correction *Stale
+    probed metadata* asked for: `reprobe_media` (MCP), `POST /api/bin/reprobe`, `kuma
+    reprobe`, and "Reload from file" on a file entry's menu. One revision-checked, undoable
+    patch of what differs (`meta`, and `kind`), nothing when nothing does; a kind change that
+    breaks a placement is refused by the validator as any edit is.
+    `a_replaced_file_is_probed_again_on_asking_and_only_what_changed_is_written`.
+16. **`crop` `radius: 0.5` was not a circle** — **documented**. `qtcrop`'s radius is a
+    fraction of *half* the shorter side (1 is a circle on a square), not of the side as the
+    model said, and the rectangle is the clip's frame, so a still letterboxed in 16:9 is
+    rounded in the empty corners. The doc comment (and so the schema), the guide and the
+    inspector say so; the behaviour is unchanged, so finished videos render as they did.
+17. **`rotation: -5` had no visible effect** — **fixed, and it changes output**. `qtblend`
+    turns about the rect's top-left corner unless `rotate_center` is set, which reads as a
+    shift; the editor's live preview turns about the centre. The compiler now writes
+    `rotate_center=1` wherever a rotation is ever non-zero, so **a finished video with a
+    rotation renders differently on its next render** — the way its preview always showed
+    it. `a_rotation_turns_about_the_pictures_centre`.
+
+### Media
+
+18. **SVG rendered blank** — **refused**. ffprobe calls it `svg_pipe` with no duration, so
+    the probe filed it as video; as video it rendered an opaque white frame, as an image
+    nothing. `add_media` refuses `.svg`/`.svgz` saying how to rasterise it, and the validator
+    warns about one already in the bin (a warning, so the project stays editable).
+    Rasterising on import was not built: ffmpeg's SVG decoder is optional and Chrome may be
+    missing. Noticed: other single-image formats (`bmp_pipe`, `tiff_pipe`) probably probe as
+    video too; not checked.
+19. **A transparent PNG rendered over black** — **not a bug; documented**. Alpha
+    composites over the tracks below; with nothing below, it is the master's black. The
+    probe now records `alpha` (from the pix_fmt; not `pal8` PNGs or VP8/9 side alpha), the
+    inspector shows it, and the guide says to put a colour under a drawing made for a white
+    page.
+20. **`add_media` one file per call** — **built**: `paths`, or a folder (its media files by
+    extension, `recursive` for subfolders), one edit, ids minted against the project and
+    each other, `skipped` with a reason for each file passed over. Adding a folder again adds
+    only what is new. A file named outright that cannot be added refuses the whole call. A
+    taken default id is now minted free rather than refused. **The editor adds files only**
+    (`files_only`): a person dropping a folder is not asking for everything in it, so a
+    dropped folder is passed over and said, while a multi-file drop is one edit. Folders stay
+    for agents and the CLI.
+
+### Overlays and fonts
+
+21. **`add_font` took ttf/otf only** — **built**: a `.woff`/`.woff2` (decided by its magic,
+    not its name) is unwrapped into the `.ttf`/`.otf` it holds, so everything downstream is
+    unchanged and no bake key moves. **New dependency `wuff`** (pure Rust, MIT, a port of
+    Google's decoder that its README says is byte-identical on google/fonts; brings
+    `brotli-decompressor`): no other maintained pure-Rust decoder handles the WOFF2 glyf
+    transform, and the alternatives were C++ bindings. Checked against fontTools on Inter and
+    a 6886-character Noto Sans JP subset: identical faces. A web font dropped into a font
+    folder by hand is still not read (it would duplicate a family that has its `.ttf` too);
+    the lint names it.
+22. **`overlays/_vendor/` shadowed the library's** — **fixed**: `_vendor/<file>` resolves
+    file by file, the overlay's own, then beside it, then the library's, in the bake, the
+    lint and the preview alike (`Baker::vendor_file`, `vendor_layers`). The key hashes the
+    merged view, which is exactly the old hash with one layer: every blueprint copy keeps its
+    key, and keys move only for a hand-made `_vendor/` that lacked library files. A new lint,
+    `vendor_shadowed`, names a project file that replaces a library helper with other bytes.
+    The append-only rule is untouched: the library still serves every overlay that does not
+    shadow it, and a shadowing copy is hashed into its own keys.
+23. **Page language per folder** — **built**: a `lang` var type (a BCP 47 shape, or empty
+    for the page's own), at most one per manifest, written by the injection to `<html lang>`
+    and read by the `cjk_lang` check. `title`, `title-subtitle` and `subtitles` declare one;
+    no existing key moves (no manifest could declare one before). A real bake turns a
+    `:lang(ja)` rule red only with the injection.
+24. **Glyph warnings ignored bundled fonts** — **fixed**: `@font-face` rules in the
+    overlay's markup and the stylesheets it links (its own or `_vendor/`) are read for
+    coverage; if any rule's source cannot be read, the check says nothing rather than
+    claiming the text cannot be set. An overlay with bundled faces and no `font` var is now
+    checked against them.
+
+### Tools and workflow
+
+25. **`render` "stopped waiting" at 120 s** — **explained, and made robust**. It is Claude
+    Code's auto-background for MCP calls (`getMcpAutoBackgroundMs`, 120000, overridable on
+    the client by `CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS`), not rmcp, reqwest or kuma: the call
+    is moved to the background and finishes there. A separate idle limit (30 min for stdio)
+    *is* reset by progress, so the waiting tools now send MCP progress notifications (the
+    job's percent and message, a heartbeat every 20 s) when the call carries a token; an
+    unfinished job comes back with `next`, and `job_status` takes `wait_seconds` (and lists
+    jobs without an id). `bake_overlay` and `prune_cache` could have hit the idle limit
+    before. `a_wait_reports_progress_that_only_rises`, `an_unfinished_job_says_how_to_resume`.
+26. **The CLI needed `KUMA_REPO`** — **fixed**: after the flag, the environment and the
+    executable's and working directory's ancestors, it reads `KUMA_REPO` from the `.mcp.json`
+    beside the project, then the source tree it was built from while that still holds
+    `node_modules/hyperframes`. `kuma doctor` says which. `the_repo_root_is_found_in_order`.
+27. **`kuma sample` had no "without overlays"** — **built**: `--no-overlays`.
+28. **No merge between the editor and a script** — **built, the canonical form**:
+    `kuma_core::project_text` is now the one writer of a project file (the daemon's save and
+    `kuma init` use it), and `kuma canonical` / `POST /api/project/canonical` put any
+    document in that form. A "generated" marker on entries was **rejected**: a person's edits
+    land on generated entries, so provenance cannot say what to keep; the merge a script
+    needs is three-way against its own last output, which needs no model change.
+29. **Nothing listed unused entries** — **built**: `unused_entries` (MCP), `GET
+    /api/bin/unused`, `kuma unused`: entries no clip places, and entries placed only in
+    sequences the master never reaches. Folders, the master and parents are never listed.
+30. **Samples were full size by default** — **changed** in the MCP tool: several untiled
+    frames are 480 px each, like a sheet's; one frame stays 960. Tiling by default was turned
+    down: it would change the result's shape by the frame count.
+
+**Test status when this was merged:** everything passes except, in this container,
+`a_preset_whose_encoder_is_missing_cannot_be_tried` (its melt does not name a missing
+encoder), `renders_reference_project_with_melt` ("melt reported no progress"), the UI's
+`the render queue` (which waits for the same missing progress) and `titles from the bin`'s
+font picker, all of which fail the same way on the commit before this work.
+
 ## Still open
 
 Nested sequences are done and the editor is an application now, so this list is the whole
@@ -2911,7 +3160,11 @@ because it is the part deliberately left out.
 - "Make a sequence from the selected clips", the Kdenlive move that collapses part of a
   timeline into a new sequence in place. Everything under it exists — a sequence is one
   patch — but it is a UI affordance nobody has written.
-- A re-probe or reload action on a bin entry.
+- Ripple insert and trim in the editor (the field report's item 11): a storyboard
+  retimes with cuts, but a person editing by hand has no way to close or open a gap
+  across a sequence's tracks.
+- **Ducking from a key track** (field report item 2): a pre-pass that follows the key's
+  envelope and compiles it into `volume` keys, since MLT here has no sidechain.
 - `kuma add-media` resolves a relative path against the shell's directory rather than the
   project's, which surprises when run from elsewhere.
 - Overlays bake at full frame size; there is no per-overlay bake region.

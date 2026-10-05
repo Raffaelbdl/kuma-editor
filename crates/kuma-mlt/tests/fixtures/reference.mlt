@@ -192,11 +192,39 @@
     <blank length="120"/>
     <entry producer="clip_pip" in="0" out="149"/>
   </playlist>
+  <playlist id="clip_s1_seq">
+    <entry producer="seq_intro" in="0" out="179"/>
+    <filter id="clip_s1_seq_vol1" in="0" out="179">
+      <property name="mlt_service">volume</property>
+      <property name="level">-3.098039</property>
+    </filter>
+    <filter id="clip_s1_seq_limit2" in="0" out="179">
+      <property name="mlt_service">avfilter.alimiter</property>
+      <property name="av.limit">0.354813</property>
+      <property name="av.attack">5</property>
+      <property name="av.release">50</property>
+      <property name="av.level">0</property>
+    </filter>
+  </playlist>
   <playlist id="clip_s1">
-    <entry producer="seq_intro" in="0" out="119"/>
+    <entry producer="clip_s1_seq" in="0" out="119"/>
+  </playlist>
+  <playlist id="clip_s2_seq">
+    <entry producer="seq_intro" in="0" out="179"/>
+    <filter id="clip_s2_seq_vol1" in="0" out="179">
+      <property name="mlt_service">volume</property>
+      <property name="level">-3.098039</property>
+    </filter>
+    <filter id="clip_s2_seq_limit2" in="0" out="179">
+      <property name="mlt_service">avfilter.alimiter</property>
+      <property name="av.limit">0.354813</property>
+      <property name="av.attack">5</property>
+      <property name="av.release">50</property>
+      <property name="av.level">0</property>
+    </filter>
   </playlist>
   <playlist id="clip_s2">
-    <entry producer="seq_intro" in="120" out="179"/>
+    <entry producer="clip_s2_seq" in="120" out="179"/>
     <filter id="clip_s2_blur1" in="0" out="59">
       <property name="mlt_service">avfilter.gblur</property>
       <property name="av.sigma">1.5</property>
@@ -208,6 +236,90 @@
     <blank length="270"/>
     <entry producer="clip_s1" in="0" out="119"/>
     <entry producer="clip_s2" in="0" out="59"/>
+  </playlist>
+  <playlist id="clip_h1_seq">
+    <entry producer="seq_intro" in="0" out="179"/>
+    <filter id="clip_h1_seq_vol1" in="0" out="179">
+      <property name="mlt_service">volume</property>
+      <property name="level">-3.098039</property>
+    </filter>
+    <filter id="clip_h1_seq_limit2" in="0" out="179">
+      <property name="mlt_service">avfilter.alimiter</property>
+      <property name="av.limit">0.354813</property>
+      <property name="av.attack">5</property>
+      <property name="av.release">50</property>
+      <property name="av.level">0</property>
+    </filter>
+  </playlist>
+  <playlist id="clip_h1_sound">
+    <entry producer="clip_h1_seq" in="30" out="119"/>
+  </playlist>
+  <playlist id="clip_h1_held">
+    <entry producer="clip_h1_seq" in="60" out="60" repeat="90"/>
+  </playlist>
+  <tractor id="clip_h1" in="0" out="89">
+    <multitrack>
+      <track producer="clip_h1_sound" hide="video"/>
+      <track producer="clip_h1_held" hide="audio"/>
+    </multitrack>
+    <filter id="clip_h1_mute" in="0" out="89">
+      <property name="mlt_service">volume</property>
+      <property name="level">-200</property>
+    </filter>
+    <filter id="clip_h1_xform1" in="0" out="89">
+      <property name="mlt_service">qtblend</property>
+      <property name="compositing">0</property>
+      <property name="rect">8 32 384 216 1</property>
+      <property name="rotation">0</property>
+    </filter>
+  </tractor>
+  <chain id="clip_h2_src" in="0" out="119">
+    <property name="mlt_service">avformat-novalidate</property>
+    <property name="resource">/proj/media/cam.mp4</property>
+    <property name="audio_index">-1</property>
+  </chain>
+  <playlist id="clip_h2_sound">
+    <entry producer="clip_h2_src" in="30" out="119"/>
+  </playlist>
+  <playlist id="clip_h2_held">
+    <entry producer="clip_h2_src" in="45" out="45" repeat="90"/>
+  </playlist>
+  <tractor id="clip_h2" in="0" out="89">
+    <multitrack>
+      <track producer="clip_h2_sound" hide="video"/>
+      <track producer="clip_h2_held" hide="audio"/>
+    </multitrack>
+    <filter id="clip_h2_xform1" in="0" out="89">
+      <property name="mlt_service">qtblend</property>
+      <property name="compositing">0</property>
+      <property name="rect">0=1528 32 384 216 1;89=1624 86 192 108 1</property>
+      <property name="rotation">0=0;89=0</property>
+    </filter>
+  </tractor>
+  <playlist id="v4_a">
+    <entry producer="clip_h1" in="0" out="89"/>
+    <entry producer="clip_h2" in="0" out="89"/>
+  </playlist>
+  <chain id="clip_lvl" in="0" out="299">
+    <property name="mlt_service">avformat-novalidate</property>
+    <property name="resource">/proj/media/screen.mp4</property>
+    <filter id="clip_lvl_level1" in="30" out="299">
+      <property name="mlt_service">dynamic_loudness</property>
+      <property name="target_loudness">-20</property>
+      <property name="window">2</property>
+      <property name="max_gain">15</property>
+      <property name="min_gain">-15</property>
+    </filter>
+    <filter id="clip_lvl_limit2" in="30" out="299">
+      <property name="mlt_service">avfilter.alimiter</property>
+      <property name="av.limit">0.501187</property>
+      <property name="av.attack">5</property>
+      <property name="av.release">50</property>
+      <property name="av.level">0</property>
+    </filter>
+  </chain>
+  <playlist id="mus_a">
+    <entry producer="clip_lvl" in="30" out="299"/>
   </playlist>
   <producer id="clip_o_c1" in="0" out="89">
     <property name="mlt_service">avformat</property>
@@ -235,6 +347,8 @@
       <track producer="track_v1"/>
       <track producer="v2_a" hide="audio"/>
       <track producer="v3_a"/>
+      <track producer="v4_a" hide="audio"/>
+      <track producer="mus_a" hide="video"/>
       <track producer="o1_a" hide="audio"/>
     </multitrack>
     <transition id="mix_v1">
@@ -279,11 +393,35 @@
       <property name="b_track">3</property>
       <property name="always_active">1</property>
     </transition>
-    <transition id="comp_o1">
+    <transition id="comp_v4">
       <property name="mlt_service">qtblend</property>
       <property name="a_track">0</property>
       <property name="b_track">4</property>
       <property name="always_active">1</property>
     </transition>
+    <transition id="mix_mus">
+      <property name="mlt_service">mix</property>
+      <property name="a_track">0</property>
+      <property name="b_track">5</property>
+      <property name="always_active">1</property>
+      <property name="sum">1</property>
+    </transition>
+    <transition id="comp_o1">
+      <property name="mlt_service">qtblend</property>
+      <property name="a_track">0</property>
+      <property name="b_track">6</property>
+      <property name="always_active">1</property>
+    </transition>
+    <filter id="main_tractor_vol1" in="0" out="449">
+      <property name="mlt_service">volume</property>
+      <property name="level">0=1.583625;420=-1.9382</property>
+    </filter>
+    <filter id="main_tractor_limit2" in="0" out="449">
+      <property name="mlt_service">avfilter.alimiter</property>
+      <property name="av.limit">0.707946</property>
+      <property name="av.attack">5</property>
+      <property name="av.release">50</property>
+      <property name="av.level">0</property>
+    </filter>
   </tractor>
 </mlt>

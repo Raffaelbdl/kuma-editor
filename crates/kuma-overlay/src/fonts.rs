@@ -19,10 +19,16 @@ use std::time::SystemTime;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
-/// Extensions read as fonts. WOFF/WOFF2 are compressed and would need decoding to read
-/// their names; a font that ships only as one is rare enough to convert. A collection
-/// (`.ttc`/`.otc`) is split into these when it is added (`split_collection`).
+/// Extensions read as fonts. A collection (`.ttc`/`.otc`) is split into these when it is
+/// added (`split_collection`), and a web font unwrapped into one (`unwrap_web_font`).
 pub const EXTENSIONS: &[&str] = &["ttf", "otf"];
+
+/// Web fonts: an sfnt (or a collection) wrapped for the web — each table zlib-compressed
+/// in WOFF, all of them Brotli-compressed in WOFF2, which also re-encodes `glyf`/`loca`.
+/// `add_font` unwraps one into the font it holds, so a font folder only ever holds what
+/// `EXTENSIONS` names and nothing downstream (the rules, the staging, the bake key) has a
+/// second kind of file to know about.
+pub const WEB_FONTS: &[&str] = &["woff", "woff2"];
 
 /// Font collections: several faces sharing tables in one file, which is how CJK families
 /// usually ship. `@font-face` wants one face per file.
@@ -200,10 +206,32 @@ pub fn css_string(s: &str) -> String {
     format!("\"{clean}\"")
 }
 
-/// What a font file says about itself, or `None` when it is not one kuma can read.
+/// The font a WOFF or WOFF2 file wraps, as the sfnt it was made from (a collection, when
+/// that is what was wrapped); `None` when `data` is not a web font, which is the file's to
+/// say rather than its extension's. An `Err` is a web font that does not decode.
+pub fn unwrap_web_font(data: &[u8]) -> Option<Result<Vec<u8>, String>> {
+    let decoded = match data.get(..4)? {
+        b"wOFF" => wuff::decompress_woff1(data),
+        b"wOF2" => wuff::decompress_woff2(data),
+        _ => return None,
+    };
+    // The decoder's error says only that it failed.
+    Some(decoded.map_err(|_| "it is damaged, or not a WOFF/WOFF2 file after all".to_string()))
+}
+
+/// The extension an sfnt's outlines call for: `otf` for CFF, else `ttf`.
+pub fn sfnt_ext(data: &[u8]) -> &'static str {
+    if data.starts_with(b"OTTO") { "otf" } else { "ttf" }
+}
+
+/// What a font file says about itself, or `None` when it is not one kuma can read. A web
+/// font is read as the font it wraps.
 pub fn read_face(path: &Path) -> Option<(String, Face)> {
     let data = std::fs::read(path).ok()?;
-    let info = parse_face(&data)?;
+    let info = match unwrap_web_font(&data) {
+        Some(sfnt) => parse_face(&sfnt.ok()?)?,
+        None => parse_face(&data)?,
+    };
     let digest = hex::encode(Sha256::digest(&data));
     let face = Face { path: path.to_path_buf(), weight: info.weight, italic: info.italic, digest, scripts: info.scripts, aliases: info.aliases, coverage: info.coverage };
     Some((info.family, face))
@@ -338,9 +366,10 @@ impl FontLibrary {
         FontLibrary { dirs, cache: Arc::default() }
     }
 
-    /// A font file, from its stamp and the cache or, when it changed, read afresh. The
-    /// lock is held for the lookup and the insert, never for reading a file.
-    fn face(&self, path: &Path) -> Option<(String, Face)> {
+    /// A font file anywhere, web fonts included (what an overlay's own `@font-face` rules
+    /// point at), from its stamp and the cache or, when it changed, read afresh. `None`
+    /// when it is not a font kuma can read. The lock is never held while reading a file.
+    pub fn face(&self, path: &Path) -> Option<(String, Face)> {
         let meta = std::fs::metadata(path).ok()?;
         let stamp = (meta.modified().unwrap_or(SystemTime::UNIX_EPOCH), meta.len());
         let lock = || self.cache.lock().unwrap_or_else(|e| e.into_inner());
@@ -380,6 +409,12 @@ impl FontLibrary {
     /// own file (`add_font` splits one). Named where a missing family is reported.
     pub fn collections(&self) -> Vec<PathBuf> {
         self.dirs.iter().flat_map(|(dir, _)| font_files(dir, COLLECTIONS)).collect()
+    }
+
+    /// Web fonts left in a font folder as they are, copied in by hand: not read, since
+    /// `add_font` unwraps one into the font it holds. Named where a missing family is.
+    pub fn web_fonts(&self) -> Vec<PathBuf> {
+        self.dirs.iter().flat_map(|(dir, _)| font_files(dir, WEB_FONTS)).collect()
     }
 
     /// The file a font path names: `<slug>/<file>` as `Family::css` wrote it.
@@ -479,6 +514,24 @@ mod tests {
         assert_eq!(parse_face(&faces[1].0).unwrap().family, "Inter");
         assert!(split_collection(&fonts[0]).is_none(), "a single font is not a collection");
         assert!(split_collection(&collection(&fonts)[..40]).is_none(), "a truncated file is refused, not read past");
+    }
+
+    /// A web font unwraps into a font that reads exactly as the one it was made from: the
+    /// same family, weight, slant and characters. The fixtures are the starter set's Bebas
+    /// Neue as fontTools writes WOFF and WOFF2 (the latter with `glyf` transformed).
+    #[test]
+    fn a_web_font_unwraps_into_the_font_it_was_made_from() {
+        let original = parse_face(&std::fs::read(repo_fonts().join("Bebas Neue/BebasNeue-Regular.ttf")).unwrap()).unwrap();
+        let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/fonts");
+        for file in ["BebasNeue-Regular.woff", "BebasNeue-Regular.woff2"] {
+            let sfnt = unwrap_web_font(&std::fs::read(fixtures.join(file)).unwrap()).expect("a web font").unwrap();
+            assert_eq!(sfnt_ext(&sfnt), "ttf");
+            assert_eq!(parse_face(&sfnt), Some(original.clone()), "{file}");
+            let (family, face) = read_face(&fixtures.join(file)).unwrap();
+            assert_eq!((family.as_str(), face.coverage), ("Bebas Neue", original.coverage.clone()), "{file} is read as what it wraps");
+        }
+        assert!(unwrap_web_font(&std::fs::read(repo_fonts().join("Anton/Anton-Regular.ttf")).unwrap()).is_none(), "a font that is not a web font");
+        assert!(unwrap_web_font(b"wOF2 and then nothing").unwrap().is_err(), "a damaged one is refused, not read past");
     }
 
     /// A family read under its English name still answers to the localized one a var may

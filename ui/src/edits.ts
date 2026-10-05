@@ -334,19 +334,19 @@ const LANGUAGES: [string, string][] = [
   ["de", "German"], ["hi", "Hindi"], ["it", "Italian"], ["ja", "Japanese"], ["ko", "Korean"], ["pl", "Polish"],
   ["pt", "Portuguese"], ["ru", "Russian"], ["es", "Spanish"], ["sv", "Swedish"], ["tr", "Turkish"],
 ];
-const LANGUAGE_KEY = "kuma.transcribe.language";
+// Remembered, because a person's videos are usually in one language and one model.
 // A private window has no storage and throws on access, which must not cost the dialog.
-const savedLanguage = (): string => { try { return localStorage.getItem(LANGUAGE_KEY) ?? "auto"; } catch { return "auto"; } };
-const saveLanguage = (v: string) => { try { localStorage.setItem(LANGUAGE_KEY, v); } catch { /* no storage */ } };
+const saved = (key: string, fallback: string): string => { try { return localStorage.getItem(`kuma.transcribe.${key}`) ?? fallback; } catch { return fallback; } };
+const save = (key: string, v: string) => { try { localStorage.setItem(`kuma.transcribe.${key}`, v); } catch { /* no storage */ } };
 
 /**
  * Speech to text for the selection. From a clip the subtitles are placed over it, aligned
  * (the daemon copies its start, end and speed, and sets the entry's offset to its `in`);
  * from a bin entry they are listed under it, unplaced.
  *
- * The dialog asks the two things only a person can answer: which language to force, and —
- * when this media has been transcribed before — whether to overwrite that transcript or
- * keep it and add another.
+ * The dialog asks which language to force, which model to run when several are installed,
+ * whether to snap word edges to pauses, how long each subtitles entry may run, and — when
+ * this media has been transcribed before — whether to overwrite that transcript.
  */
 export async function transcribe() {
   const p = store.state.project!;
@@ -356,12 +356,23 @@ export async function transcribe() {
   const binId = clip?.bin ?? (sel?.kind === "bin" ? sel.id : null);
   if (!binId || !hasAudio(p.bin[binId])) { toast("Select a clip or a media entry to transcribe", ""); return; }
   // An entry listed under this media that carries cues is already a transcript of it,
-  // whatever folder it has since been pointed at.
-  const existing = childrenOf(p, binId).find(([, i]) => isOverlaySource(i.source) && "cues" in (i.source.vars ?? {}));
+  // whatever folder it has since been pointed at. A transcript cut into pieces is several
+  // such entries, and replacing overwrites the words of one: offered only when there is one.
+  const transcripts = childrenOf(p, binId).filter(([, i]) => isOverlaySource(i.source) && "cues" in (i.source.vars ?? {}));
+  const existing = transcripts.length === 1 ? transcripts[0] : undefined;
 
-  const language = selectInput(LANGUAGES.map(([value, label]) => ({ value, label })), savedLanguage(), () => {});
+  const models = await api.whisperModels().catch(() => [] as string[]);
+  const language = selectInput(LANGUAGES.map(([value, label]) => ({ value, label })), saved("language", "auto"), () => {});
+  // The daemon's default is the first installed; a remembered model that is gone falls back to it.
+  const model = selectInput(models.map((m) => ({ value: m, label: m.replace(/^ggml-|\.bin$/g, "") })), models.includes(saved("model", "")) ? saved("model", "") : models[0], () => {});
+  const snap = checkbox(true);
+  snap.title = "Move each word's edges onto the pauses in the sound, so a gap between words is a real pause";
+  const split = el("input");
+  Object.assign(split, { type: "number", min: "0", step: "1", value: saved("split", "60"), title: "Seconds of transcript per subtitles entry, cut at a pause; 0 keeps one entry" });
   const replace = checkbox(true);
   const rows = [{ label: "Language", input: language as HTMLElement }];
+  if (models.length > 1) rows.push({ label: "Model", input: model });
+  rows.push({ label: "Snap to pauses", input: snap }, { label: "Split every (s)", input: split });
   if (existing) rows.push({ label: "Replace", input: replace });
   const ok = await askForm({
     title: "Transcribe → subtitles",
@@ -370,13 +381,23 @@ export async function transcribe() {
     ok: "Transcribe",
   });
   if (!ok) return;
-  saveLanguage(language.value);
+  save("language", language.value);
+  if (models.length > 1) save("model", model.value);
+  // 0 keeps one entry; the daemon cuts no finer than 5 s.
+  const asked = Math.max(0, Number(split.value) || 0);
+  const seconds = asked > 0 ? Math.max(5, asked) : 0;
+  save("split", String(seconds));
 
   const replacing = !!existing && replace.checked;
   // An id is only needed to name the entry being replaced; a new transcript is the
   // daemon's to name, once the words are in and nothing can take the name meanwhile.
   const what = clip ? { clip: clip.id } : { bin: binId };
-  await startJob("Transcribe", () => api.transcribe({ ...what, id: replacing ? existing![0] : undefined, language: language.value, replace: replacing }));
+  await startJob("Transcribe", () => api.transcribe({
+    ...what, id: replacing ? existing![0] : undefined, language: language.value, replace: replacing,
+    model: models.length > 1 ? model.value : undefined, snap: snap.checked,
+    // Replacing overwrites one entry, which a split cannot; the daemon then keeps one.
+    split: replacing ? undefined : seconds,
+  }));
 }
 
 /** Landscape ⇄ portrait: swap the frame's width and height. Everything else follows — the

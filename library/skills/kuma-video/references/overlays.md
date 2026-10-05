@@ -18,6 +18,22 @@ contract does not say, or what bit anyway.
 - **Shared helpers** go in `overlays/_vendor/`: colour tokens and anchor classes (css), and
   `enter(tl, el, kind, at)` / `exit(tl, el, kind, duration)` so every component moves the
   same way. Changing them **re-bakes every overlay**, so settle motion and type early.
+  A file there is used where an overlay asks for `_vendor/<file>`, and anything it does
+  not hold still comes from the library's `_vendor/` (`kuma.js` and the rest), file by file.
+- **Pictures in an overlay** (a layer, a thumbnail, a map) are files the overlay's folder
+  holds: copy the media in (`overlays/timeline/thumb-03.jpg`) and reference it relatively. A
+  path out of the folder (`../../media/x.png`) does not bake, since the bake renders a copy
+  of the folder. A picture several overlays share can go in `overlays/_vendor/`, but every
+  file there is in every overlay's bake key: adding or replacing one re-bakes them all, so
+  keep that for small things that do not change. To choose the picture per entry, a string
+  var holds its file name. A copy does not follow the original: when a picture is replaced
+  on disk, copy it in again.
+- **A graphic that must sit under a picture**: draw the picture in the overlay. Overlays
+  always draw over video (a video track after an overlay track is refused), so a timeline
+  rail with the thumbnails of earlier scenes in its slots is one overlay drawing both, not
+  a rail full of holes over thumbnail clips, and a still shrinking into its slot is an
+  `<img>` the same overlay animates. Only moving footage has to stay an MLT clip under the
+  overlay: leave one hole for it.
 - Anchor with normalised positions plus an `origin` (`top-left`, `center`, …), size in the
   unit kuma injects, and check an overlay in the other orientation (`frame: [1080, 1920]`).
 - **Static** things: a texture or a logo as image media; a persistent frame (a HUD, a
@@ -36,9 +52,34 @@ contract does not say, or what bit anyway.
   private timeline fails the lint.
 - Draw on canvas through `kumaCanvas` with seeded Rough.js (`g.rough(key)`), never an
   unseeded `rough.canvas`.
+- Few easings for a whole video (an out-cubic, an in-out-cubic and one soft overshoot is
+  enough), and flash or shake only on percussive moments.
+
+## Transition overlays
+
+A wipe, a shutter, a page turn drawn by an overlay over a cut:
+
+- The clip is a window **centred on the cut**: placed at `[cut − d/2, cut + d/2]`, a cover
+  phase, then a reveal phase, and **the frame is fully covered at the midpoint**, which is
+  where the cut goes. Then the cut never shows, whatever is on either side.
+- Everything is a function of progress through the window alone, and nothing is drawn
+  outside it, so the clip can be lengthened or moved without re-authoring it.
+
+## Geometry
+
+- Author in the pixels of a 1920-wide frame and scale once: `--px: calc(100vw / 1920)`,
+  then `calc(24 * var(--px))`. Numbers then match what you measure on a sampled frame.
+- A geometry an overlay and a script both need (the slots of a timeline graphic that
+  footage shrinks into, say) is written in one place and read by both, never typed twice.
+- Marks drawn over footage (an arrow, a ring) need a dark line under the light one, or
+  they vanish on a white wall.
 
 ## Text
 
+- **A font is `add_font`, never a file in a folder**: it takes `.ttf`, `.otf`, `.ttc` and the
+  web fonts (`.woff`, `.woff2`) a design system often ships as, and every overlay names the
+  family through a `font` var. A face bundled with `@font-face` in one folder works, but
+  has to be copied into every folder that uses it.
 - **Ligatures**: mono fonts with programming ligatures draw `<!--`, `->` and `!=` as
   symbols. Put `font-variant-ligatures: none; font-feature-settings: "liga" 0, "calt" 0`
   on code.
@@ -48,7 +89,8 @@ contract does not say, or what bit anyway.
   if the video has a portrait cut.
 - Inline markup in text vars (`*emphasis*`, `` `code` ``) is parsed by one shared helper
   in `_vendor/`, not by each component, so it means the same everywhere.
-- CJK text: see `japanese-type.md`. In short, `lang="ja"` on the page and a `jp` fallback
+- CJK text: see `japanese-type.md`. In short, the entry's `lang` var set to `ja` (or
+  `lang="ja"` on the page) and a `jp` fallback
   font var in every font stack.
 
 ## Lint messages worth knowing

@@ -709,7 +709,8 @@ async fn unused_entries(State(st): S) -> Json<Value> {
 /// result names the new `subtitles` bin entry.
 async fn transcribe(State(st): S, Json(req): Json<TranscribeRequest>) -> Json<Value> {
     let s2 = st.clone();
-    Json(json!({ "job": jobs::spawn(st, "transcribe", move |progress| jobs::transcribe(&s2, &req, progress)) }))
+    let params = json!({ "bin": req.bin, "clip": req.clip });
+    Json(json!({ "job": jobs::spawn_with(st, "transcribe", params, move |progress| jobs::transcribe(&s2, &req, progress)) }))
 }
 
 // ---------- jobs ----------
@@ -756,7 +757,7 @@ struct BakeReq {
 
 async fn bake(State(st): S, Json(req): Json<BakeReq>) -> Json<Value> {
     let s2 = st.clone();
-    let id = jobs::spawn(st, "bake", move |progress| {
+    let id = jobs::spawn_with(st, "bake", json!({ "clips": req.clips }), move |progress| {
         let project = read(&s2.project).clone();
         let bakes = jobs::bake_all(&s2, &project, req.clips.as_deref(), progress)?;
         Ok(json!({ "bakes": bakes.iter().map(|(k, b)| json!({ "clip": k, "resource": b.resource, "still": b.is_still })).collect::<Vec<_>>() }))
@@ -773,7 +774,10 @@ async fn sample(State(st): S, Json(req): Json<SampleRequest>) -> ApiResult {
 /// progress names the overlay baking, and the result is what `/api/sample` answers.
 async fn sample_job(State(st): S, Json(req): Json<SampleRequest>) -> Json<Value> {
     let s2 = st.clone();
-    let id = jobs::spawn(st, "sample", move |progress| jobs::sample(&s2, &req, progress));
+    // The sequence it samples, the master unless named, so the queue can say so.
+    let sequence = req.overlay.is_none().then(|| req.sequence.clone().unwrap_or_else(|| read(&st.project).master.clone()));
+    let params = json!({ "sequence": sequence, "overlay": req.overlay, "times": req.times });
+    let id = jobs::spawn_with(st, "sample", params, move |progress| jobs::sample(&s2, &req, progress));
     Json(json!({ "job": id }))
 }
 

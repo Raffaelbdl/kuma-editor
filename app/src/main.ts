@@ -346,6 +346,7 @@ function rebuildMenu() {
         { type: "separator" },
         { label: "Reload Preview", click: () => sendCommand("reload-preview") },
         { label: "Render", accelerator: "CmdOrCtrl+Shift+E", click: () => sendCommand("render") },
+        { label: "Job Queue", click: () => sendCommand("queue") },
       ],
     },
     {

@@ -50,6 +50,7 @@ export const Cmd = {
   undo: "project.undo",
   redo: "project.redo",
   render: "project.render",
+  queue: "project.queue",
   newSequence: "project.new-sequence",
   newOverlay: "project.new-overlay",
   newTitle: "project.new-title",

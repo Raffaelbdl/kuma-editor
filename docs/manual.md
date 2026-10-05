@@ -429,6 +429,11 @@ kuma validate | thumbs | library | doctor  # validate also names text the entrie
 kuma canonical plan.json                   # a project document (any version; `-` for stdin) in the form kuma stores it, to diff against
 ```
 
+When a daemon serves the project (`--bind`, `127.0.0.1:7455` by default), `render`, `bake`,
+`sample`, `measure-audio`, `measure-media` and `transcribe` run as its jobs: they show in the
+editor's job queue (the **Queue** button), wait their turn with its renders, and print the
+same result; Ctrl-C cancels the job. Without one, they run in the `kuma` process itself.
+
 ## The project file
 
 ```json

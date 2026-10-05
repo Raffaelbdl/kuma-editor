@@ -145,7 +145,15 @@ pub fn spawn<F>(state: Arc<AppState>, kind: &str, f: F) -> u64
 where
     F: FnOnce(&dyn Fn(u8, &str)) -> anyhow::Result<serde_json::Value> + Send + 'static,
 {
-    spawn_inner(state, kind, serde_json::Value::Null, false, move |progress, _| f(progress))
+    spawn_with(state, kind, serde_json::Value::Null, f)
+}
+
+/// [`spawn`], with `params` saying what the job works on, for the queue to show.
+pub fn spawn_with<F>(state: Arc<AppState>, kind: &str, params: serde_json::Value, f: F) -> u64
+where
+    F: FnOnce(&dyn Fn(u8, &str)) -> anyhow::Result<serde_json::Value> + Send + 'static,
+{
+    spawn_inner(state, kind, params, false, move |progress, _| f(progress))
 }
 
 /// Spawn a cancellable job: `queued` until its first progress report. `f` watches the
@@ -510,8 +518,8 @@ pub type Bakes = HashMap<String, OverlayBake>;
 ///
 /// On the wire this is the bool it always was — `Nested` is for the daemon's own callers
 /// (the preview, and the snapshot that stands in for it), not for clients.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
-#[serde(from = "bool")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[serde(from = "bool", into = "bool")]
 pub enum OverlayScope {
     /// Footage only.
     None,
@@ -526,6 +534,12 @@ pub enum OverlayScope {
 impl From<bool> for OverlayScope {
     fn from(on: bool) -> Self {
         if on { OverlayScope::All } else { OverlayScope::None }
+    }
+}
+
+impl From<OverlayScope> for bool {
+    fn from(scope: OverlayScope) -> bool {
+        scope != OverlayScope::None
     }
 }
 
@@ -777,7 +791,7 @@ pub fn write_compiled(state: &AppState, xml: &str, name: &str) -> anyhow::Result
     Ok(path)
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct RenderRequest {
     #[serde(default = "default_preset")]
     pub preset: String,
@@ -899,7 +913,7 @@ fn render_now(state: &AppState, req: &RenderRequest, progress: &dyn Fn(u8, &str)
     Ok(serde_json::json!({ "output": output, "mlt": mlt, "preset": preset.id, "sequence": sequence, "warnings": warnings }))
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct MeasureRequest {
     /// Sequence to measure. The master when absent.
     #[serde(default)]
@@ -1085,7 +1099,7 @@ pub fn audition(project: &mut Project, root: &str, mute: &[String], solo: &[Stri
 }
 
 /// What to measure of one source, and how finely.
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct MediaMeasureRequest {
     /// A media entry of the bin.
     #[serde(default)]
@@ -1232,7 +1246,7 @@ pub fn overlay_entries<'p>(project: &'p Project, root: &str) -> Vec<&'p str> {
 
 /// One frame of the master at t=0, overlays included, by default. Callers name what they
 /// change; adding a field here no longer means visiting every construction.
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct SampleRequest {
     pub t0: f64,
     #[serde(default)]

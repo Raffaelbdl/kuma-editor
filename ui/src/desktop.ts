@@ -45,6 +45,7 @@ const MENU: Record<string, string> = {
   "undo": Cmd.undo,
   "redo": Cmd.redo,
   "render": Cmd.render,
+  "queue": Cmd.queue,
   "reload-preview": Cmd.reloadPreview,
   "new-sequence": Cmd.newSequence,
   "new-overlay": Cmd.newOverlay,

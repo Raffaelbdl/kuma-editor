@@ -32,6 +32,11 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/project/redo", post(redo))
         .route("/api/project/validate", get(validate_project))
         .route("/api/project/canonical", post(canonical_project))
+        .route("/api/history", get(history))
+        .route("/api/history/restore", post(restore))
+        .route("/api/activity", get(activity).post(report_activity))
+        .route("/api/pins", get(pins))
+        .route("/api/pins/done", post(tick_pin))
         .route("/api/sequence", get(get_sequence).post(open_sequence))
         .route("/api/schema", get(schema))
         .route("/api/blueprints", get(blueprints).post(reload_blueprints))
@@ -60,6 +65,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/bake", post(bake))
         .route("/api/sample", post(sample))
         .route("/api/sample/job", post(sample_job))
+        .route("/api/samples/{*file}", get(sample_file))
         .route("/api/audio/measure", post(measure_audio))
         .route("/api/media/measure", post(measure_media))
         .route("/api/snapshot", get(snapshot))
@@ -210,6 +216,9 @@ struct PatchProject {
     base_revision: Option<u64>,
     #[serde(default = "default_origin")]
     origin: String,
+    /// Ids of the pins this edit answers (`GET /api/pins`), recorded on its history entry.
+    #[serde(default)]
+    pins: Vec<String>,
 }
 fn default_origin() -> String {
     "ui".into()
@@ -224,7 +233,7 @@ async fn patch_project(State(st): S, Json(req): Json<PatchProject>) -> ApiResult
             (None, Some(path)) => read_patch(&st, &path).map_err(bad_request_err)?,
             _ => return Err(ApiError::bad_request("pass the operations as `patch`, or a file in the project holding them as `patch_path`: one of the two")),
         };
-        let (rev, warnings) = st.apply_patch(&patch.0, req.base_revision, &req.origin)?;
+        let (rev, warnings) = st.apply_patch_answering(&patch.0, req.base_revision, &req.origin, &req.pins)?;
         Ok(json!({ "revision": rev, "warnings": warnings, "ops": patch.0.len() }))
     })
     .await??;
@@ -240,11 +249,94 @@ fn read_patch(st: &AppState, path: &str) -> anyhow::Result<json_patch::Patch> {
     serde_json::from_str(&text).with_context(|| format!("`{path}` is not a JSON Patch (an array of operations)"))
 }
 
-async fn undo(State(st): S) -> ApiResult {
-    Ok(Json(json!({ "revision": blocking(move || st.undo()).await?? })))
+/// Who asks for an undo or redo (`ui`, `claude`), for the history to name. Optional: the
+/// step is the same whoever asks, and an empty body is still an undo.
+#[derive(Deserialize, Default)]
+struct StepBy {
+    #[serde(default)]
+    origin: Option<String>,
 }
-async fn redo(State(st): S) -> ApiResult {
-    Ok(Json(json!({ "revision": blocking(move || st.redo()).await?? })))
+
+async fn undo(State(st): S, body: Option<Json<StepBy>>) -> ApiResult {
+    let by = body.and_then(|b| b.0.origin);
+    Ok(Json(json!({ "revision": blocking(move || st.undo_by(by.as_deref())).await?? })))
+}
+async fn redo(State(st): S, body: Option<Json<StepBy>>) -> ApiResult {
+    let by = body.and_then(|b| b.0.origin);
+    Ok(Json(json!({ "revision": blocking(move || st.redo_by(by.as_deref())).await?? })))
+}
+
+// ---------- history, activity, pins (session state, never the document) ----------
+
+#[derive(Deserialize)]
+struct Limit {
+    #[serde(default)]
+    limit: Option<usize>,
+}
+
+/// Every revision made and patch refused, newest first, beside the current revision.
+async fn history(State(st): S, Query(q): Query<Limit>) -> Json<Value> {
+    let entries = lock(&st.history).newest(q.limit.unwrap_or(crate::history::ENTRIES));
+    Json(json!({ "current": read(&st.project).revision, "entries": entries }))
+}
+
+#[derive(Deserialize)]
+struct Restore {
+    revision: u64,
+    #[serde(default)]
+    origin: Option<String>,
+}
+
+/// The document as it was at a revision, as one new undoable edit.
+async fn restore(State(st): S, Json(req): Json<Restore>) -> ApiResult {
+    let (rev, warnings) = blocking(move || st.restore(req.revision, req.origin.as_deref())).await?.map_err(|e| match e {
+        crate::state::RestoreError::Unknown(_) => ApiError::not_found(e),
+        crate::state::RestoreError::Edit(e) => ApiError::from(e),
+    })?;
+    Ok(Json(json!({ "revision": rev, "warnings": warnings })))
+}
+
+/// The agent's recent tool calls, newest first.
+async fn activity(State(st): S, Query(q): Query<Limit>) -> Json<Value> {
+    Json(json!({ "activity": lock(&st.activity).newest(q.limit.unwrap_or(crate::activity::RECORDS)) }))
+}
+
+/// The MCP server reporting a tool call's start (answered with its id) or end.
+async fn report_activity(State(st): S, Json(report): Json<crate::activity::Report>) -> ApiResult {
+    use crate::activity::Report;
+    let revision = read(&st.project).revision;
+    let now = crate::history::now_ms();
+    let record = match report {
+        Report::Start { tool, client, args } => lock(&st.activity).start(tool, client, args, revision, now),
+        Report::End { id, ok, error, result } => lock(&st.activity)
+            .end(id, if ok { Ok(&result) } else { Err(error) }, revision, now, &st.config.samples_dir())
+            .ok_or_else(|| ApiError::not_found(format!("no activity {id}: it has ended or been forgotten")))?,
+    };
+    let id = record.id;
+    let _ = st.events.send(crate::state::Event::Activity(Box::new(record)));
+    Ok(Json(json!({ "id": id })))
+}
+
+/// Every pin, the master's first, each with whether it is done.
+async fn pins(State(st): S) -> Json<Value> {
+    let answers = st.pin_answers();
+    Json(json!({ "pins": crate::pins::list(&read(&st.project), &answers) }))
+}
+
+#[derive(Deserialize)]
+struct TickPin {
+    id: String,
+    done: bool,
+}
+
+/// Tick a pin done by hand, or untick it.
+async fn tick_pin(State(st): S, Json(req): Json<TickPin>) -> ApiResult {
+    let exists = crate::pins::list(&read(&st.project), &Default::default()).iter().any(|p| p.id == req.id);
+    if !exists {
+        return Err(ApiError::not_found(format!("no pin `{}`: `GET /api/pins` lists them", req.id)));
+    }
+    st.tick_pin(&req.id, req.done);
+    Ok(Json(json!({ "id": req.id, "done": req.done })))
 }
 
 /// The document's issues, and what its overlay entries will not be drawn in (fonts that are
@@ -714,6 +806,18 @@ async fn transcribe(State(st): S, Json(req): Json<TranscribeRequest>) -> Json<Va
 }
 
 // ---------- jobs ----------
+
+/// A sampled frame or contact sheet, from `.kuma/samples/`: what the editor shows of the
+/// frames the agent looked at. Holds the cache shared, as every reader of it does, so a
+/// prune cannot delete the file mid-read.
+async fn sample_file(State(st): S, Path(file): Path<String>) -> Result<Response, ApiError> {
+    let path = safe_join(&st.config.samples_dir(), &file).ok_or(ApiError::bad_request("bad path"))?;
+    blocking(move || {
+        let _cache = read(&st.cache_users);
+        file_response(&path)
+    })
+    .await?
+}
 
 
 /// `jobs::render_target` off the async threads: it can try a hardware encoder.

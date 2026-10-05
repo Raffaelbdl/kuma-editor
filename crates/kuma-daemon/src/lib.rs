@@ -4,12 +4,15 @@
 //! UI-relevant (project, revision, undo history, jobs, preview) lives here, which is what
 //! makes multi-window and agent+human editing trivial: there is nothing to sync.
 
+pub mod activity;
 pub mod api;
 pub mod cache;
 pub mod fonts;
+pub mod history;
 pub mod jobs;
 pub mod media;
 pub mod overlays;
+pub mod pins;
 pub mod preview;
 pub mod state;
 

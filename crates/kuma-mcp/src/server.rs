@@ -14,6 +14,7 @@ use rmcp::{schemars, tool, tool_handler, tool_router, ErrorData as McpError, Pee
 use serde::Deserialize;
 use serde_json::{json, Value};
 
+use crate::activity;
 use crate::client::{self, Client};
 
 /// What every agent sees. Clients truncate server instructions (Claude Code at 2048
@@ -140,9 +141,10 @@ impl KumaServer {
         }
     }
 
-    /// Undo/redo: the daemon answers `{"revision": null}` when there is nothing to do.
+    /// Undo/redo: the daemon answers `{"revision": null}` when there is nothing to do. Asked
+    /// as `claude`, so the history says the agent took the step.
     async fn step_history(&self, path: &str) -> Result<CallToolResult, McpError> {
-        let v = self.client.post(path, &json!({})).await.map_err(err)?;
+        let v = self.client.post(path, &json!({ "origin": "claude" })).await.map_err(err)?;
         if v["revision"].is_null() {
             return Err(McpError::invalid_request(format!("nothing to {}", path.rsplit('/').next().unwrap_or("undo")), None));
         }
@@ -246,6 +248,9 @@ pub struct ApplyEdits {
     /// Short human-readable label for the undo history, e.g. "add callout at 12s".
     #[serde(default)]
     pub note: Option<String>,
+    /// Ids of the pins (from `list_pins`) this edit answers, e.g. `["master@8.600"]`.
+    #[serde(default)]
+    pub pins: Option<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -632,7 +637,13 @@ impl KumaServer {
     #[tool(description = "Apply a JSON Patch to the project: `patch` inline, or `patch_path`, a file in the project holding it (for a patch a script wrote, of any size). Atomic: rejected entirely if the result is invalid or the base_revision is stale. Returns the new revision, the number of operations applied and any warnings.")]
     async fn apply_edits(&self, Parameters(p): Parameters<ApplyEdits>) -> Result<CallToolResult, McpError> {
         let origin = format!("claude: {}", p.note.unwrap_or_else(|| "edit".into()));
-        self.post("/api/project/patch", &json!({ "patch": p.patch, "patch_path": p.patch_path, "base_revision": p.base_revision, "origin": origin })).await
+        let body = json!({ "patch": p.patch, "patch_path": p.patch_path, "base_revision": p.base_revision, "origin": origin, "pins": p.pins.unwrap_or_default() });
+        self.post("/api/project/patch", &body).await
+    }
+
+    #[tool(description = "The user's pins: comments they left on frames for you, stored as sequence markers, each with an id (`<sequence>@<t>`), its sequence, time, label, and whether a revision answered it (`done`, `done_by`). When an edit answers one, pass its id in `apply_edits`' `pins`.")]
+    async fn list_pins(&self) -> Result<CallToolResult, McpError> {
+        self.get("/api/pins").await
     }
 
     #[tool(description = "Undo the last edit (yours or the user's). Returns the new revision; fails when there is nothing to undo.")]
@@ -872,9 +883,20 @@ impl KumaServer {
 
 #[tool_handler(router = self.tool_router)]
 impl ServerHandler for KumaServer {
-    /// Every tool, through the router, and told when this server is an old build.
+    /// Every tool, through the router, and told when this server is an old build. Each call
+    /// is reported to the daemon as it starts and ends, for the editor's activity feed: the
+    /// start waits at most a second (so the daemon reads the revision before the call
+    /// changes it), and the end is not waited on at all.
     async fn call_tool(&self, request: CallToolRequestParams, context: RequestContext<RoleServer>) -> Result<CallToolResponse, McpError> {
+        let tool = request.name.to_string();
+        let args = request.arguments.clone().map(Value::Object).unwrap_or(Value::Null);
+        let client = context.peer.peer_info().map(|i| i.client_info.name.clone()).filter(|n| !n.trim().is_empty()).unwrap_or_else(|| "agent".into());
+        let id = self.client.report(&activity::start(&tool, &client, &args)).await.and_then(|v| v["id"].as_u64());
         let response = self.tool_router.call(ToolCallContext::new(self, request, context)).await;
+        if let Some(id) = id {
+            let (reporter, end) = (self.client.clone(), activity::end(id, &tool, &response));
+            tokio::spawn(async move { reporter.report(&end).await });
+        }
         if self.build.replaced() { noted(response, REBUILT) } else { response }
     }
 

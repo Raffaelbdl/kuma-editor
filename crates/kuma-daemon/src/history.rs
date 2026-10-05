@@ -1,0 +1,364 @@
+//! The revision history: who changed what, in one list for every client.
+//!
+//! The undo stack holds whole documents and says nothing about them; this is the readable
+//! side of the same story — one entry per revision the daemon made, plus the patches it
+//! refused, each with its author and the clips and entries it touched. It is session state:
+//! never written into the document and gone with the daemon, like the undo stack itself.
+//!
+//! Snapshots of recent revisions live here too, so any of them can be restored as one new,
+//! undoable edit rather than by undoing everything since.
+
+use std::collections::{BTreeMap, VecDeque};
+
+use kuma_core::edit::EditError;
+use kuma_core::{Clip, Project};
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+
+/// Entries kept: enough for a long session's list, small enough to send whole.
+pub const ENTRIES: usize = 500;
+/// Revisions that can be restored. Whole documents, so fewer than the entries.
+pub const SNAPSHOTS: usize = 200;
+/// Field changes listed per entry: what a row in a list can show, not a diff.
+const MAX_CHANGES: usize = 8;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Kind {
+    Edit,
+    Undo,
+    Redo,
+    Restore,
+    /// A patch the daemon would not apply: listed so the person sees what the agent tried.
+    Refused,
+}
+
+/// One revision, or one refusal.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Entry {
+    /// The revision it made; `None` for a refusal, which made none.
+    pub revision: Option<u64>,
+    pub kind: Kind,
+    /// As the edit was labelled (`claude: …`, `ui`), or `undo:<label>` for a step.
+    pub origin: String,
+    /// `agent`, `user` or `other` ([`author`]).
+    pub author: String,
+    pub summary: String,
+    pub ops: usize,
+    /// Milliseconds since the epoch.
+    pub at: u64,
+    pub base_revision: Option<u64>,
+    pub error: Option<String>,
+    /// Clip ids and bin ids it touched.
+    pub targets: Vec<String>,
+    pub changes: Vec<Change>,
+    /// The pins this edit answers (`crate::pins`).
+    pub pins: Vec<String>,
+}
+
+/// A scalar field of a clip or bin entry that an edit changed.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Change {
+    pub target: String,
+    pub field: String,
+    pub from: Value,
+    pub to: Value,
+}
+
+#[derive(Default)]
+pub struct History {
+    entries: VecDeque<Entry>,
+    snapshots: BTreeMap<u64, Project>,
+}
+
+impl History {
+    pub fn push(&mut self, e: Entry) {
+        if self.entries.len() == ENTRIES {
+            self.entries.pop_front();
+        }
+        self.entries.push_back(e);
+    }
+
+    /// Keep `p` as the document at its revision, dropping the oldest beyond [`SNAPSHOTS`].
+    pub fn keep(&mut self, p: Project) {
+        self.snapshots.insert(p.revision, p);
+        while self.snapshots.len() > SNAPSHOTS {
+            self.snapshots.pop_first();
+        }
+    }
+
+    /// The document as it was at `revision`, if it is still kept.
+    pub fn snapshot(&self, revision: u64) -> Option<&Project> {
+        self.snapshots.get(&revision)
+    }
+
+    /// The last `limit` entries, newest first.
+    pub fn newest(&self, limit: usize) -> Vec<Entry> {
+        self.entries.iter().rev().take(limit).cloned().collect()
+    }
+}
+
+/// Who an origin speaks for. The editor labels its edits `ui…`, the MCP server `claude: …`.
+pub fn author(origin: &str) -> &'static str {
+    let head = origin.split([':', ' ']).next().unwrap_or_default();
+    match head {
+        "ui" => "user",
+        "claude" | "mcp" | "agent" => "agent",
+        _ => "other",
+    }
+}
+
+/// What an edit was, for a person: its origin without the `who: ` in front. A bare `ui`
+/// (the editor's default) says nothing more than that it was an edit.
+pub fn summary(origin: &str) -> String {
+    let rest = match origin.split_once(": ") {
+        Some((who, rest)) if !who.contains(char::is_whitespace) => rest,
+        _ => origin,
+    };
+    match rest.trim() {
+        "" | "ui" | "claude" | "mcp" | "agent" => "edit".into(),
+        s => s.to_string(),
+    }
+}
+
+/// What a refusal says in the list, shorter than the 409/422 body.
+pub fn refusal(e: &EditError) -> String {
+    match e {
+        EditError::RevisionMismatch { current, base } => format!("stale base r{base} (current r{current})"),
+        EditError::Invalid(issues) => {
+            let errors: Vec<&str> = issues.iter().filter(|i| i.severity == kuma_core::Severity::Error).map(|i| i.message.as_str()).take(3).collect();
+            format!("validation failed: {}", errors.join("; "))
+        }
+        other => other.to_string(),
+    }
+}
+
+pub fn now_ms() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
+}
+
+/// What an edit touched. Clips and bin entries share no namespace guarantee, so which one a
+/// target is travels with it until it is printed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Target {
+    Clip(String),
+    Bin(String),
+}
+
+impl Target {
+    pub fn id(&self) -> &str {
+        match self {
+            Target::Clip(id) | Target::Bin(id) => id,
+        }
+    }
+}
+
+/// The JSON pointer's tokens, unescaped.
+fn tokens(pointer: &str) -> Vec<String> {
+    pointer.split('/').skip(1).map(|t| t.replace("~1", "/").replace("~0", "~")).collect()
+}
+
+/// The clip or entry a pointer lands in, in `doc`: `/bin/<seq>/source/tracks/<i>/clips/<j>…`
+/// is clip `j`'s id (`-` is the last), any other `/bin/<id>…` is entry `<id>`, and the rest
+/// of the document (`/width`, `/master`) is nobody's.
+fn resolve(doc: &Project, pointer: &str) -> Option<Target> {
+    let t = tokens(pointer);
+    let (first, id) = (t.first()?, t.get(1)?);
+    if first != "bin" {
+        return None;
+    }
+    if let [_, _, source, tracks, i, clips, j, ..] = t.as_slice() {
+        if source == "source" && tracks == "tracks" && clips == "clips" {
+            let track = i.parse::<usize>().ok().and_then(|i| doc.seq(id)?.tracks.get(i));
+            let clip = track.and_then(|tr| if j == "-" { tr.clips.last() } else { tr.clips.get(j.parse::<usize>().ok()?) });
+            if let Some(c) = clip {
+                return Some(Target::Clip(c.id.clone()));
+            }
+        }
+    }
+    Some(Target::Bin(id.clone()))
+}
+
+/// The targets of a patch: what it read from in the document before (a replace, a remove,
+/// a move's source) and what it wrote into the document after (an add, a move's
+/// destination). A clip added whole is named by its own `id`, which survives later ops in
+/// the same patch shifting indexes. In order, each once.
+pub fn patch_targets(before: &Project, after: Option<&Project>, ops: &[json_patch::PatchOperation]) -> Vec<Target> {
+    use json_patch::PatchOperation as Op;
+    let mut out = Vec::new();
+    for op in ops {
+        let found = match op {
+            Op::Add(a) => {
+                let path = a.path.to_string();
+                let tk = tokens(&path);
+                let whole_clip = tk.len() == 7 && tk[0] == "bin" && tk[2] == "source" && tk[3] == "tracks" && tk[5] == "clips";
+                match a.value.get("id").and_then(Value::as_str) {
+                    Some(id) if whole_clip => vec![Some(Target::Clip(id.to_string()))],
+                    _ => vec![resolve(after.unwrap_or(before), &path)],
+                }
+            }
+            Op::Remove(r) => vec![resolve(before, &r.path.to_string())],
+            Op::Replace(r) => vec![resolve(before, &r.path.to_string())],
+            Op::Move(m) => vec![resolve(before, &m.from.to_string()), resolve(after.unwrap_or(before), &m.path.to_string())],
+            Op::Copy(c) => vec![resolve(before, &c.from.to_string()), resolve(after.unwrap_or(before), &c.path.to_string())],
+            Op::Test(_) => vec![],
+        };
+        for t in found.into_iter().flatten() {
+            if !out.contains(&t) {
+                out.push(t);
+            }
+        }
+    }
+    out
+}
+
+fn clips_by_id(p: &Project) -> BTreeMap<&str, &Clip> {
+    p.all_clips().map(|(_, _, c)| (c.id.as_str(), c)).collect()
+}
+
+/// A bin entry as JSON, without a sequence's tracks: those are its clips, which are diffed
+/// one by one, and would otherwise make every sequence "changed" by any clip edit.
+fn entry_value(p: &Project, id: &str) -> Option<Value> {
+    let mut v = serde_json::to_value(p.bin.get(id)?).ok()?;
+    if let Some(source) = v.get_mut("source").and_then(Value::as_object_mut) {
+        source.remove("tracks");
+    }
+    Some(v)
+}
+
+/// What changed between two whole documents, for a step that swaps one for the other
+/// (undo, redo, restore): clips added, removed or changed, by id, then bin entries likewise.
+pub fn diff_targets(before: &Project, after: &Project) -> Vec<Target> {
+    let (a, b) = (clips_by_id(before), clips_by_id(after));
+    let differs = |x: Option<&&Clip>, y: Option<&&Clip>| match (x, y) {
+        (Some(x), Some(y)) => serde_json::to_value(x).ok() != serde_json::to_value(y).ok(),
+        _ => true,
+    };
+    let mut ids: Vec<&str> = a.keys().chain(b.keys()).copied().collect();
+    ids.sort_unstable();
+    ids.dedup();
+    let mut out: Vec<Target> = ids.into_iter().filter(|id| differs(a.get(id), b.get(id))).map(|id| Target::Clip(id.to_string())).collect();
+    let mut entries: Vec<&String> = before.bin.keys().chain(after.bin.keys()).collect();
+    entries.sort_unstable();
+    entries.dedup();
+    out.extend(entries.into_iter().filter(|id| entry_value(before, id) != entry_value(after, id)).map(|id| Target::Bin(id.clone())));
+    out
+}
+
+/// A target's object in `p`, as JSON.
+fn value_of(p: &Project, t: &Target) -> Option<Value> {
+    match t {
+        Target::Clip(id) => p.find_clip(id).and_then(|(_, _, c)| serde_json::to_value(c).ok()),
+        Target::Bin(id) => entry_value(p, id),
+    }
+}
+
+/// The top-level scalar fields that differ on each target present on both sides, at most
+/// [`MAX_CHANGES`]. A field written only when it is not its default (`parent`, a clip's
+/// `group`) reads as null where it is absent.
+pub fn changes(before: &Project, after: &Project, targets: &[Target]) -> Vec<Change> {
+    let scalar = |v: &Value| !v.is_object() && !v.is_array();
+    let mut out = Vec::new();
+    for t in targets {
+        let (Some(Value::Object(x)), Some(Value::Object(y))) = (value_of(before, t), value_of(after, t)) else { continue };
+        let mut fields: Vec<&String> = x.keys().chain(y.keys()).collect();
+        fields.sort_unstable();
+        fields.dedup();
+        for f in fields {
+            let (from, to) = (x.get(f).cloned().unwrap_or(Value::Null), y.get(f).cloned().unwrap_or(Value::Null));
+            if from != to && scalar(&from) && scalar(&to) {
+                out.push(Change { target: t.id().to_string(), field: f.clone(), from, to });
+                if out.len() == MAX_CHANGES {
+                    return out;
+                }
+            }
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn project(clips: Value) -> Project {
+        serde_json::from_value(json!({
+            "bin": {
+                "a": { "name": "A", "source": { "color": "#000000" } },
+                "main": { "source": { "tracks": [{ "id": "v1", "clips": clips }] } }
+            }
+        }))
+        .unwrap()
+    }
+
+    fn clip(id: &str, start: f64, end: f64) -> Value {
+        json!({ "id": id, "start": start, "end": end, "bin": "a" })
+    }
+
+    fn ops(v: Value) -> Vec<json_patch::PatchOperation> {
+        serde_json::from_value(v).unwrap()
+    }
+
+    fn ids(t: &[Target]) -> Vec<&str> {
+        t.iter().map(Target::id).collect()
+    }
+
+    /// A clip is named by its id wherever the path lands in it; an entry by its bin id; the
+    /// rest of the document by nobody. A clip added whole is named by the id it carries.
+    #[test]
+    fn a_patch_names_the_clips_and_entries_it_touches() {
+        let before = project(json!([clip("c1", 0.0, 2.0), clip("c2", 2.0, 4.0)]));
+        let patch = ops(json!([
+            { "op": "replace", "path": "/bin/main/source/tracks/0/clips/1/start", "value": 2.5 },
+            { "op": "replace", "path": "/bin/a/name", "value": "Black" },
+            { "op": "add", "path": "/bin/main/source/tracks/0/clips/-", "value": clip("c3", 5.0, 6.0) },
+            { "op": "remove", "path": "/bin/main/source/tracks/0/clips/0/effects" },
+            { "op": "replace", "path": "/width", "value": 1280 },
+            { "op": "replace", "path": "/bin/main/source/tracks/0/clips/1/end", "value": 4.5 }
+        ]));
+        let after = kuma_core::edit::apply_patch(&before, None, &patch, &Default::default()).unwrap().project;
+        let t = patch_targets(&before, Some(&after), &patch);
+        assert_eq!(ids(&t), ["c2", "a", "c3", "c1"]);
+        assert_eq!(t[1], Target::Bin("a".into()));
+
+        let ch = changes(&before, &after, &t);
+        let got: Vec<(&str, &str, &Value, &Value)> = ch.iter().map(|c| (c.target.as_str(), c.field.as_str(), &c.from, &c.to)).collect();
+        assert_eq!(got, [("c2", "end", &json!(4.0), &json!(4.5)), ("c2", "start", &json!(2.0), &json!(2.5)), ("a", "name", &json!("A"), &json!("Black"))]);
+    }
+
+    /// A step that swaps documents is diffed by id, and a sequence is not "changed" just
+    /// because one of its clips was.
+    #[test]
+    fn two_documents_are_diffed_by_clip_id() {
+        let before = project(json!([clip("c1", 0.0, 2.0), clip("c2", 2.0, 4.0)]));
+        let after = project(json!([clip("c2", 2.0, 3.0), clip("c3", 3.0, 4.0)]));
+        let t = diff_targets(&before, &after);
+        assert_eq!(ids(&t), ["c1", "c2", "c3"]);
+        assert_eq!(changes(&before, &after, &t), [Change { target: "c2".into(), field: "end".into(), from: json!(4.0), to: json!(3.0) }]);
+        assert!(diff_targets(&before, &before).is_empty());
+    }
+
+    #[test]
+    fn origins_say_who_and_what() {
+        assert_eq!((author("ui"), summary("ui")), ("user", "edit".to_string()));
+        assert_eq!((author("ui: trim"), summary("ui: trim")), ("user", "trim".to_string()));
+        assert_eq!((author("claude: Moved + trimmed"), summary("claude: Moved + trimmed")), ("agent", "Moved + trimmed".to_string()));
+        assert_eq!((author("test"), summary("test")), ("other", "test".to_string()));
+        assert_eq!(refusal(&EditError::RevisionMismatch { current: 55, base: 53 }), "stale base r53 (current r55)");
+    }
+
+    #[test]
+    fn snapshots_and_entries_are_bounded() {
+        let mut h = History::default();
+        for r in 0..(SNAPSHOTS as u64 + 5) {
+            h.keep(Project { revision: r, ..Project::default() });
+        }
+        assert!(h.snapshot(4).is_none() && h.snapshot(5).is_some());
+        for r in 0..(ENTRIES as u64 + 1) {
+            h.push(Entry { revision: Some(r), kind: Kind::Edit, origin: "ui".into(), author: "user".into(), summary: "edit".into(), ops: 1, at: 0, base_revision: None, error: None, targets: vec![], changes: vec![], pins: vec![] });
+        }
+        let all = h.newest(usize::MAX);
+        assert_eq!((all.len(), all[0].revision, all.last().unwrap().revision), (ENTRIES, Some(ENTRIES as u64), Some(1)));
+    }
+}

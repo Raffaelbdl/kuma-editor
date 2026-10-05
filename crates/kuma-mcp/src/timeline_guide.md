@@ -69,7 +69,9 @@ changed, so "see the markers" or "I left comments" means: read every sequence's 
 `times` (pass `sequence` for a marker on a nested one; in the master it falls at the placing clip's
 `start` + `t` − `in`), and act on each note. Leave a marker in place unless you are asked to clear
 it, and say which ones you handled. You can add markers too, to point the person at moments to
-review.
+review. `list_pins` lists the labelled ones as **pins**, each with an id (`<sequence>@<t>`, e.g.
+`main@8.600`), its number in the editor and whether it is answered: when an edit answers one, pass
+its id in `apply_edits`' `pins`, and the editor ticks it off against that revision.
 
 If the project directory holds a `design-system/` folder, read `design-system/DESIGN.md` before
 authoring or restyling an overlay and take its colours, type, geometry and motion from there;

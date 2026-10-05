@@ -9,6 +9,8 @@ use kuma_core::edit::{self, EditError};
 use kuma_core::manifest::{ManifestError, OverlayManifest};
 use kuma_core::{Issue, Project, ValidationContext};
 use kuma_overlay::{Baker, Transcriber};
+
+use crate::history::{self, History, Kind, Target};
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 
@@ -183,6 +185,13 @@ pub enum Event {
     Job(crate::jobs::Job),
     /// Finished jobs were cleared from the table; clients drop them too.
     JobsCleared { ids: Vec<u64> },
+    /// An agent's tool call started or ended (`crate::activity`).
+    /// Boxed: a record is several times the size of every other event.
+    Activity(Box<crate::activity::Record>),
+    /// A revision was made, or a patch refused (`crate::history`).
+    History(crate::history::Entry),
+    /// Which pins are done changed; clients refetch `GET /api/pins`.
+    Pins,
 }
 
 pub struct UndoStack {
@@ -219,6 +228,38 @@ pub struct AppState {
     /// Shared by renders, samples, bakes and thumbnails while they read the cache;
     /// exclusive for a prune.
     pub cache_users: RwLock<()>,
+    /// Every revision made and patch refused, and recent documents to restore. Appended
+    /// under the edit lock, where the change happens, so its order is the revisions' order.
+    pub history: Mutex<History>,
+    /// The agent's recent tool calls, as the MCP server reports them.
+    pub activity: Mutex<crate::activity::Activity>,
+    /// Which pins are done, by id. Session state like the history it is derived from.
+    pins: Mutex<crate::pins::Answers>,
+}
+
+/// Why a revision could not be restored.
+#[derive(Debug, thiserror::Error)]
+pub enum RestoreError {
+    #[error("revision {0} is not kept: only the last {n} revisions this daemon made can be restored", n = crate::history::SNAPSHOTS)]
+    Unknown(u64),
+    #[error(transparent)]
+    Edit(#[from] EditError),
+}
+
+/// What an edit records about itself beyond its origin.
+#[derive(Default)]
+pub struct Step<'a> {
+    pub base_revision: Option<u64>,
+    /// The pins it answers.
+    pub pins: &'a [String],
+}
+
+/// An edit's result as `AppState::edit` wants it from the closure that makes it: the
+/// document, and what the history says it touched.
+struct Edited {
+    outcome: edit::EditOutcome,
+    targets: Vec<Target>,
+    ops: usize,
 }
 
 #[derive(Debug, Serialize)]
@@ -268,8 +309,13 @@ impl AppState {
             preview: crate::preview::PreviewHandle::default(),
             open_sequence: Mutex::new(None),
             cache_users: RwLock::new(()),
+            history: Mutex::new(History::default()),
+            activity: Mutex::new(Default::default()),
+            pins: Mutex::new(Default::default()),
             config,
         };
+        // The revision it opened at can be restored like any it makes.
+        lock(&st.history).keep(read(&st.project).clone());
         st.reload_blueprints();
         if !st.config.project_file.is_file() {
             st.save()?;
@@ -368,27 +414,91 @@ impl AppState {
         Ok(prev)
     }
 
-    fn edit<F>(&self, origin: &str, f: F) -> Result<(u64, Vec<Issue>), EditError>
+    fn edit<F>(&self, origin: &str, kind: Kind, step: &Step, f: F) -> Result<(u64, Vec<Issue>), EditError>
     where
-        F: FnOnce(&Project) -> Result<edit::EditOutcome, EditError>,
+        F: FnOnce(&Project) -> Result<Edited, EditError>,
     {
         let _guard = lock(&self.edit);
         // Validate on a copy: no user-facing code runs while the project lock is held.
         let current = read(&self.project).clone();
-        let out = f(&current)?;
-        let rev = out.project.revision;
-        let prev = self.commit(out.project, origin).map_err(|e| EditError::Patch(e.to_string()))?;
-        let mut u = lock(&self.undo);
-        u.past.push((prev, origin.to_string()));
-        if u.past.len() > 200 {
-            u.past.remove(0);
+        let Edited { outcome, targets, ops } = f(&current)?;
+        let rev = outcome.project.revision;
+        let next = outcome.project.clone();
+        let prev = self.commit(outcome.project, origin).map_err(|e| EditError::Patch(e.to_string()))?;
+        let changes = history::changes(&prev, &next, &targets);
+        {
+            let mut u = lock(&self.undo);
+            u.past.push((prev, origin.to_string()));
+            if u.past.len() > 200 {
+                u.past.remove(0);
+            }
+            u.future.clear();
         }
-        u.future.clear();
-        Ok((rev, out.warnings))
+        self.record(history::Entry {
+            revision: Some(rev),
+            kind,
+            origin: origin.to_string(),
+            author: history::author(origin).to_string(),
+            summary: history::summary(origin),
+            ops,
+            at: history::now_ms(),
+            base_revision: step.base_revision,
+            error: None,
+            changes,
+            targets: targets.iter().map(|t| t.id().to_string()).collect(),
+            pins: step.pins.to_vec(),
+        });
+        lock(&self.history).keep(next);
+        Ok((rev, outcome.warnings))
+    }
+
+    /// Append to the history and tell every client; an entry naming pins answers them.
+    fn record(&self, entry: history::Entry) {
+        if let (Some(revision), false) = (entry.revision, entry.pins.is_empty()) {
+            let mut answers = lock(&self.pins);
+            for id in &entry.pins {
+                answers.insert(id.clone(), crate::pins::Done { revision, by: entry.author.clone() });
+            }
+        }
+        let answered = entry.revision.is_some() && !entry.pins.is_empty();
+        lock(&self.history).push(entry.clone());
+        let _ = self.events.send(Event::History(entry));
+        if answered {
+            let _ = self.events.send(Event::Pins);
+        }
     }
 
     pub fn apply_patch(&self, patch: &[json_patch::PatchOperation], base: Option<u64>, origin: &str) -> Result<(u64, Vec<Issue>), EditError> {
-        self.edit(origin, |p| edit::apply_patch(p, base, patch, &self.validation_context()))
+        self.apply_patch_answering(patch, base, origin, &[])
+    }
+
+    /// A patch, naming the pins it answers. A refusal is recorded too: the person sees what
+    /// was tried and why it did not land, not only what did.
+    pub fn apply_patch_answering(&self, patch: &[json_patch::PatchOperation], base: Option<u64>, origin: &str, pins: &[String]) -> Result<(u64, Vec<Issue>), EditError> {
+        let step = Step { base_revision: base, pins };
+        let ctx = self.validation_context();
+        let applied = self.edit(origin, Kind::Edit, &step, |p| {
+            let outcome = edit::apply_patch(p, base, patch, &ctx)?;
+            Ok(Edited { targets: history::patch_targets(p, Some(&outcome.project), patch), ops: patch.len(), outcome })
+        });
+        if let Err(e) = &applied {
+            let current = read(&self.project).clone();
+            self.record(history::Entry {
+                revision: None,
+                kind: Kind::Refused,
+                origin: origin.to_string(),
+                author: history::author(origin).to_string(),
+                summary: history::summary(origin),
+                ops: patch.len(),
+                at: history::now_ms(),
+                base_revision: base,
+                error: Some(history::refusal(e)),
+                targets: history::patch_targets(&current, None, patch).iter().map(|t| t.id().to_string()).collect(),
+                changes: Vec::new(),
+                pins: pins.to_vec(),
+            });
+        }
+        applied
     }
 
     /// Compose a patch *from the project as it is now* and apply it, both under the edit
@@ -398,35 +508,104 @@ impl AppState {
     /// like any patch's.
     pub fn apply_built<T>(&self, origin: &str, base: Option<u64>, build: impl FnOnce(&Project) -> anyhow::Result<(Vec<json_patch::PatchOperation>, T)>) -> anyhow::Result<(T, u64, Vec<Issue>)> {
         let mut carried = None;
-        let (rev, warnings) = self.edit(origin, |p| {
+        let step = Step { base_revision: base, ..Default::default() };
+        let (rev, warnings) = self.edit(origin, Kind::Edit, &step, |p| {
             let (ops, value) = build(p).map_err(|e| EditError::Patch(format!("{e:#}")))?;
             carried = Some(value);
-            edit::apply_patch(p, base, &ops, &self.validation_context())
+            let outcome = edit::apply_patch(p, base, &ops, &self.validation_context())?;
+            Ok(Edited { targets: history::patch_targets(p, Some(&outcome.project), &ops), ops: ops.len(), outcome })
         })?;
         Ok((carried.expect("build ran"), rev, warnings))
+    }
+
+    /// Make the document what it was at `revision`, as one new edit: validated, undoable,
+    /// and at a new revision number, so no client mistakes it for the old one — the stance
+    /// undo takes. `origin` says who asked (`ui`, `claude`).
+    pub fn restore(&self, revision: u64, origin: Option<&str>) -> Result<(u64, Vec<Issue>), RestoreError> {
+        let doc = {
+            let h = lock(&self.history);
+            let snap = h.snapshot(revision).ok_or(RestoreError::Unknown(revision))?;
+            serde_json::to_value(snap).map_err(|e| EditError::Patch(e.to_string()))?
+        };
+        let label = format!("{}: restore r{revision}", origin.unwrap_or("other"));
+        let ctx = self.validation_context();
+        Ok(self.edit(&label, Kind::Restore, &Step::default(), |p| {
+            // `replace` sets the revision past the current one, whatever the snapshot says.
+            let outcome = edit::replace(p, None, doc, &ctx)?;
+            Ok(Edited { targets: history::diff_targets(p, &outcome.project), ops: 1, outcome })
+        })?)
+    }
+
+    /// Which pins are done, by id.
+    pub fn pin_answers(&self) -> crate::pins::Answers {
+        lock(&self.pins).clone()
+    }
+
+    /// Tick a pin by hand (the current revision, by the user), or untick it, which forgets
+    /// an edit's answer too. Clients are told to refetch.
+    pub fn tick_pin(&self, id: &str, done: bool) {
+        let revision = read(&self.project).revision;
+        let mut answers = lock(&self.pins);
+        if done {
+            answers.insert(id.to_string(), crate::pins::Done { revision, by: "user".into() });
+        } else {
+            answers.remove(id);
+        }
+        drop(answers);
+        let _ = self.events.send(Event::Pins);
     }
 
     /// Undo/redo swap whole snapshots; the revision keeps increasing so clients never
     /// confuse an undone state with an older one. `Ok(None)` means nothing to undo/redo.
     pub fn undo(&self) -> anyhow::Result<Option<u64>> {
-        self.swap(false)
+        self.swap(false, None)
     }
 
     pub fn redo(&self) -> anyhow::Result<Option<u64>> {
-        self.swap(true)
+        self.swap(true, None)
     }
 
-    fn swap(&self, redo: bool) -> anyhow::Result<Option<u64>> {
+    /// Undo on someone's behalf: `by` is the origin of the request (`ui`, `claude`), which
+    /// the history names as the step's author. The step itself is the same either way.
+    pub fn undo_by(&self, by: Option<&str>) -> anyhow::Result<Option<u64>> {
+        self.swap(false, by)
+    }
+
+    pub fn redo_by(&self, by: Option<&str>) -> anyhow::Result<Option<u64>> {
+        self.swap(true, by)
+    }
+
+    fn swap(&self, redo: bool, by: Option<&str>) -> anyhow::Result<Option<u64>> {
         let _guard = lock(&self.edit);
         let mut u = lock(&self.undo);
         let Some((mut restored, origin)) = (if redo { u.future.pop() } else { u.past.pop() }) else { return Ok(None) };
         let keep = restored.clone();
         restored.revision = read(&self.project).revision + 1;
         let rev = restored.revision;
-        let label = format!("{}:{origin}", if redo { "redo" } else { "undo" });
+        let next = restored.clone();
+        let verb = if redo { "redo" } else { "undo" };
+        let label = format!("{verb}:{origin}");
         match self.commit(restored, &label) {
             Ok(now) => {
-                if redo { &mut u.past } else { &mut u.future }.push((now, origin));
+                let targets = history::diff_targets(&now, &next);
+                let changes = history::changes(&now, &next, &targets);
+                if redo { &mut u.past } else { &mut u.future }.push((now, origin.clone()));
+                drop(u);
+                self.record(history::Entry {
+                    revision: Some(rev),
+                    kind: if redo { Kind::Redo } else { Kind::Undo },
+                    origin: label,
+                    author: by.map(history::author).unwrap_or("other").to_string(),
+                    summary: format!("{verb}: {}", history::summary(&origin)),
+                    ops: 0,
+                    at: history::now_ms(),
+                    base_revision: None,
+                    error: None,
+                    targets: targets.iter().map(|t| t.id().to_string()).collect(),
+                    changes,
+                    pins: Vec::new(),
+                });
+                lock(&self.history).keep(next);
                 Ok(Some(rev))
             }
             Err(e) => {

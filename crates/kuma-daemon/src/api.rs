@@ -656,6 +656,9 @@ struct AddMedia {
     /// A folder's subfolders too.
     #[serde(default)]
     recursive: bool,
+    /// Pass over folders rather than add what they hold (the editor's drop).
+    #[serde(default)]
+    files_only: bool,
     #[serde(default)]
     id: Option<String>,
     #[serde(default)]
@@ -672,7 +675,7 @@ struct AddMedia {
 /// lists every one, and `skipped` what a folder held that is not media, with why.
 async fn add_media(State(st): S, Json(req): Json<AddMedia>) -> ApiResult {
     let paths: Vec<PathBuf> = req.path.into_iter().chain(req.paths).collect();
-    let how = crate::media::AddHow { id: req.id, parent: req.parent, recursive: req.recursive };
+    let how = crate::media::AddHow { id: req.id, parent: req.parent, recursive: req.recursive, files_only: req.files_only };
     let added = blocking(move || crate::media::add(&st, &paths, how, req.base_revision, &req.origin)).await?.map_err(edit_or_bad_request)?;
     let id = if let [id] = added.ids.as_slice() { Some(id.clone()) } else { None };
     Ok(Json(json!({ "id": id, "ids": added.ids, "skipped": added.skipped, "revision": added.revision, "warnings": added.warnings })))

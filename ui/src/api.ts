@@ -61,11 +61,12 @@ export const api = {
   lintOverlay: (path: string) => json<LintReport>(`/api/overlays/lint?${new URLSearchParams({ path })}`),
   /** Add a media file, a folder's media files (`ids`, and what it passed over in
    *  `skipped`), or an overlay folder of the project (or its `overlay.json`). */
-  /** One edit for every path. A single path may be an overlay folder, which is imported. */
+  /** One edit for every file. A folder is passed over (a person dropping one is not asking
+   *  for all it holds), except an overlay folder on its own, which is imported. */
   addMedia: (paths: string[], base_revision: number, parent?: string | null) =>
     json<{ id: string | null; ids: string[]; skipped: { path: string; reason: string }[]; revision: number }>("/api/bin", {
       method: "POST",
-      body: JSON.stringify({ ...(paths.length === 1 ? { path: paths[0] } : { paths }), base_revision, parent: parent ?? undefined, origin: "ui: add media" }),
+      body: JSON.stringify({ ...(paths.length === 1 ? { path: paths[0] } : { paths }), files_only: true, base_revision, parent: parent ?? undefined, origin: "ui: add media" }),
     }),
   /** Probe media entries' files again and write what changed, as one edit. */
   reprobe: (bins: string[]) =>

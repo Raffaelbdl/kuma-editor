@@ -26,6 +26,9 @@ pub struct AddHow {
     pub parent: Option<String>,
     /// Add what a folder's subfolders hold too.
     pub recursive: bool,
+    /// Pass over a folder rather than add what it holds: a person dropping one is not
+    /// asking for everything in it. An overlay folder named alone is still imported.
+    pub files_only: bool,
 }
 
 /// What an add did: the entries it made, in the order of the paths and then of the
@@ -74,6 +77,8 @@ pub fn add(state: &AppState, paths: &[PathBuf], how: AddHow, base_revision: Opti
         let rel = project_relative(state, &abs);
         if is_overlay(&abs) {
             anyhow::bail!("{rel} is an overlay folder: add it on its own, or with import_overlay");
+        } else if abs.is_dir() && how.files_only {
+            skipped.push(Skipped { path: rel, reason: "a folder: add the files in it".into() });
         } else if abs.is_dir() {
             scan(state, &abs, how.recursive, &mut candidates, &mut skipped)?;
         } else if !abs.is_file() {

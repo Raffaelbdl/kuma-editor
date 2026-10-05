@@ -587,7 +587,7 @@ async fn main() -> anyhow::Result<()> {
                 kuma_mcp::client::Client::new(&url).post("/api/bin", &body).await?
             } else {
                 let state = open(&cli)?;
-                let how = kuma_daemon::media::AddHow { id: id.clone(), parent: parent.clone(), recursive: *recursive };
+                let how = kuma_daemon::media::AddHow { id: id.clone(), parent: parent.clone(), recursive: *recursive, files_only: false };
                 serde_json::to_value(kuma_daemon::media::add(&state, &paths, how, None, "cli")?)?
             };
             for s in v["skipped"].as_array().into_iter().flatten() {

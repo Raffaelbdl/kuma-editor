@@ -96,7 +96,7 @@ export async function dropMedia(files: FileList, parent: string | null): Promise
   await addMediaPaths([...files].map((f) => app.pathForFile(f)).filter(Boolean), parent);
 }
 
-/** Add the paths to the bin as one edit; a dropped folder adds the media in it. */
+/** Add the files to the bin as one edit, saying what was passed over (a folder). */
 async function addMediaPaths(paths: string[], parent: string | null): Promise<void> {
   const project = store.state.project;
   if (!paths.length || !project) return;

@@ -83,6 +83,12 @@ fn a_folder_of_media_is_added_in_one_edit_and_says_what_it_passed_over() {
     let nothing = media::add(&state, &[media], AddHow::default(), None, "test").unwrap_err().to_string();
     assert!(nothing.contains("no media to add") && nothing.contains("already in the bin"), "{nothing}");
     assert_eq!(revision(&state), before, "nothing to add is no edit");
+
+    // The editor's drop passes over a folder and adds the files dropped with it.
+    beep(&dir.path().join("loose.wav"), 1);
+    let dropped = media::add(&state, &[PathBuf::from("media"), PathBuf::from("loose.wav")], AddHow { files_only: true, ..Default::default() }, None, "test").unwrap();
+    assert_eq!(dropped.ids, ["loose"]);
+    assert_eq!(skipped(&dropped), [("media".to_string(), "a folder: add the files in it".to_string())]);
 }
 
 /// A list is one edit too, and a file it names that cannot be added refuses the call: it

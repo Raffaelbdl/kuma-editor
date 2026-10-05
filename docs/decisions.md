@@ -2826,7 +2826,10 @@ with it.
     extension, `recursive` for subfolders), one edit, ids minted against the project and
     each other, `skipped` with a reason for each file passed over. Adding a folder again adds
     only what is new. A file named outright that cannot be added refuses the whole call. A
-    taken default id is now minted free rather than refused.
+    taken default id is now minted free rather than refused. **The editor adds files only**
+    (`files_only`): a person dropping a folder is not asking for everything in it, so a
+    dropped folder is passed over and said, while a multi-file drop is one edit. Folders stay
+    for agents and the CLI.
 
 ### Overlays and fonts
 

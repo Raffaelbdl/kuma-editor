@@ -14,16 +14,18 @@ way it does, including what was tried and rejected, and what is still open.
 crates/kuma-core      project model (seconds, exclusive ends, rational fps), schema, validation, JSON Patch edits
 crates/kuma-mlt       JSON → MLT XML compiler (the only place MLT's rules live), melt driver, presets
 crates/kuma-overlay   hyperframes bake driver, content-hash cache, ffprobe helpers
-crates/kuma-daemon    HTTP/WS API, undo, jobs, overlay live-preview routes, preview engine transport
+crates/kuma-daemon    HTTP/WS API, undo, jobs, overlay live-preview routes, preview engine transport;
+                      the agent's activity, the history and pins (session state, `activity.rs`/`history.rs`/`pins.rs`)
 crates/kuma-mcp       rmcp stdio MCP server proxying the daemon
 crates/kuma-cli       `kuma` binary: serve | mcp | render | bake | sample | lint | design-system | library | …
 engine/               C++ libmlt++ preview engine (JPEG over stdout, SDL2-paced audio)
-ui/                   Vite + TypeScript editor (no framework)
+ui/                   Vite + TypeScript editor (no framework); den/power modes over one set of panels (`panelhost.ts`)
 app/                  Electron shell: project launcher, windows, daemon lifecycle
 library/blueprints/   starter blueprints (folder = blueprint) + `_vendor/{gsap.min.js,kuma.js,kuma-motion.js,kuma-canvas.js,rough.min.js,kuma.css}`
 library/presets/      starter effect presets (typed params + `$expr` substitution)
 library/design-systems/ design systems (`DESIGN.md` + `tokens.css`) copied into a project; none ship yet
 library/fonts/        starter font families (open licences) that `font` vars name
+docs/design/den-power/ the design handoff the editor's den and power modes were built from
 library/skills/       the agent skill (`kuma-video`) that `kuma init` / `kuma mcp-config` write into a
                       project's `.claude/skills/`; embedded by `crates/kuma-cli/src/skill.rs`, whose
                       `FILES` must list every file (a test checks)
@@ -166,5 +168,15 @@ Chrome headless shell if hyperframes should not download one.
   note the converse, which is easy to miss because it fails silently: Electron does not
   implement `prompt`, `alert` or `confirm`, so UI code that calls them works in a browser
   and throws in the app. Ask for text with `askText` in `ui/src/modal.ts`.
+- **A panel is one module in any container** (`ui/src/panelhost.ts`): docked in power,
+  floating in den, or a window of its own (`?panel=<id>`), and the panel never knows which.
+  Mode, summoned panels and where they float are view state in `localStorage`; a panel's
+  window is the same page, kept in step by `viewsync.ts` (view state only — the document
+  comes from the daemon in every window). The letters `B I T A H M R` and `P` are commands,
+  so ⌘K, the rail, den's keys and the shell's menus all reach a panel the same way.
+- **What the agent did is the daemon's, never a client's model**: tool calls reach the UI as
+  `/api/activity` (the MCP server reports each one; a report may never slow or fail a tool),
+  steps and refused patches as `/api/history`, pins as `/api/pins`. All session state: none
+  of it is in the project file, and a pin's done-ness never edits its marker.
 - Do not add a dependency on `mlt-sys`, `ffmpeg-next` or `wgpu` without a reason written
   in `docs/manual.md`; the PoC deliberately uses `melt`/`ffmpeg` as subprocesses.

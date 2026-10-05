@@ -304,7 +304,9 @@ export class Preview {
   private layout() {
     const p = store.state.project;
     if (!p) return;
-    const hw = this.host.clientWidth - 24, hh = this.host.clientHeight - 24;
+    // Den shows the frame full-bleed; power leaves it a margin inside the viewer.
+    const pad = document.getElementById("app")?.classList.contains("den") ? 0 : 56;
+    const hw = this.host.clientWidth - pad, hh = this.host.clientHeight - pad;
     // Hidden behind another tab: there is nothing to fit into, and sizing the stage to
     // zero would only have to be undone. The observer fires again when it comes back.
     if (hw <= 0 || hh <= 0) return;

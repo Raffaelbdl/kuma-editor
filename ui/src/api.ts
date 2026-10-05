@@ -1,4 +1,4 @@
-import type { BlueprintInfo, CacheUsage, DaemonEvent, EffectPreset, FontFamily, Issue, Job, LintReport, OverlayInfo, PatchOp, Preset, Project, SequenceState } from "./types";
+import type { Activity, BlueprintInfo, HistoryEntry, Pin, CacheUsage, DaemonEvent, EffectPreset, FontFamily, Issue, Job, LintReport, OverlayInfo, PatchOp, Preset, Project, SequenceState } from "./types";
 
 async function json<T>(url: string, init?: RequestInit): Promise<T> {
   const r = await fetch(url, { headers: { "content-type": "application/json" }, ...init });
@@ -25,8 +25,18 @@ export const api = {
   project: () => json<Project>("/api/project"),
   patch: (patch: PatchOp[], base_revision: number, origin = "ui") =>
     json<{ revision: number; warnings: Issue[] }>("/api/project/patch", { method: "POST", body: JSON.stringify({ patch, base_revision, origin }) }),
-  undo: () => json<{ revision: number | null }>("/api/project/undo", { method: "POST", body: "{}" }),
-  redo: () => json<{ revision: number | null }>("/api/project/redo", { method: "POST", body: "{}" }),
+  /** Who asked is recorded beside the step, for the history panel. */
+  undo: () => json<{ revision: number | null }>("/api/project/undo", { method: "POST", body: JSON.stringify({ origin: "ui" }) }),
+  redo: () => json<{ revision: number | null }>("/api/project/redo", { method: "POST", body: JSON.stringify({ origin: "ui" }) }),
+  /** What the agent has been doing, newest first: its tool calls over MCP. */
+  activity: (limit = 50) => json<{ activity: Activity[] }>(`/api/activity?limit=${limit}`),
+  /** The history, newest first, with the revision the document is at. */
+  history: (limit = 200) => json<{ current: number; entries: HistoryEntry[] }>(`/api/history?limit=${limit}`),
+  /** Make the document what it was at `revision`, as one new (undoable) edit. */
+  restore: (revision: number) => json<{ revision: number }>("/api/history/restore", { method: "POST", body: JSON.stringify({ revision, origin: "ui" }) }),
+  pins: () => json<{ pins: Pin[] }>("/api/pins"),
+  /** Tick a pin done by hand, or open it again. Session state, not an edit. */
+  pinDone: (id: string, done: boolean) => json<unknown>("/api/pins/done", { method: "POST", body: JSON.stringify({ id, done }) }),
   sequence: () => json<SequenceState>("/api/sequence"),
   openSequence: (sequence: string) =>
     json<{ current: string }>("/api/sequence", { method: "POST", body: JSON.stringify({ sequence }) }),

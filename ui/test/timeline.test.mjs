@@ -108,22 +108,22 @@ describe("the timeline's tracks", { skip: why ? `skipping: ${why}` : false }, ()
     }
   });
 
-  it("adds a marker with a comment on M, into the document an agent reads", async () => {
+  it("adds a pin — a marker with a comment — on P, into the document an agent reads", async () => {
     const MARKERS = `fetch("/api/project").then(r => r.json()).then(p => JSON.stringify(p.bin.main.source.markers))`;
     const FLAGS = `[...document.querySelectorAll("#timeline .tl-marker-flag")].map(f => f.textContent).join("|")`;
-    const DIALOG = `document.querySelector("dialog.modal textarea.comment")`;
-    /** Type into the open comment dialog and send it with Ctrl+Enter, as a person would. */
+    // P opens the pins panel's field at the playhead, focused; Enter sends it.
+    const DIALOG = `(document.activeElement?.matches(".pin-draft textarea") ? document.activeElement : null)`;
     const answer = (text) => `(() => {
       const t = ${DIALOG};
       t.value = ${JSON.stringify(text)};
-      t.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", ctrlKey: true, bubbles: true, cancelable: true }));
+      t.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
       return true;
     })()`;
 
     await page.eval(key("Home"));
     await page.eval(key("ArrowRight", { shiftKey: true }));
     await page.eval(key("ArrowRight", { shiftKey: true }));
-    await page.eval(key("m"));
+    await page.eval(key("p"));
     await page.until(DIALOG);
     await page.eval(answer("the title comes in too early\nwait for the beat"));
     await page.until(`${FLAGS} === "the title comes in too early"`);
@@ -131,14 +131,16 @@ describe("the timeline's tracks", { skip: why ? `skipping: ${why}` : false }, ()
       "the comment is in the project file, whole, at the playhead's time");
 
     // A second one earlier on stays in time order in the document, whatever order they came in.
+    await page.eval(`(document.activeElement?.blur(), true)`);
     await page.eval(key("Home"));
-    await page.eval(key("m"));
+    await page.eval(key("p"));
     await page.until(DIALOG);
     await page.eval(answer("cold open"));
     await page.until(`${FLAGS} === "cold open|the title comes in too early"`);
 
-    // M on a frame that has one edits it rather than stacking a second note on the same frame.
-    await page.eval(key("m"));
+    // P on a frame that has one edits it rather than stacking a second note on the same frame.
+    await page.eval(`(document.activeElement?.blur(), true)`);
+    await page.eval(key("p"));
     await page.until(DIALOG);
     assert.equal(await page.eval(`${DIALOG}.value`), "cold open");
     await page.eval(answer("cold open: cut the first second"));
@@ -162,7 +164,7 @@ describe("the timeline's tracks", { skip: why ? `skipping: ${why}` : false }, ()
   it("moves a marker by its flag, and edits it on a double-click", async () => {
     const MARKERS = `fetch("/api/project").then(r => r.json()).then(p => p.bin.main.source.markers.map(m => m.t).join(" "))`;
     const flagAt = (i) => page.eval(`(() => { const r = document.querySelector('#timeline .tl-marker-flag[data-i="${i}"]').getBoundingClientRect(); return [r.left + 6, r.top + r.height / 2]; })()`);
-    const pxPerSecond = await page.eval(`Number(document.querySelector("#transport input[type=range]").value)`);
+    const pxPerSecond = await page.eval(`Number(document.querySelector("#timeline .tl-corner input.zoom").value)`);
     assert.equal(await page.eval(MARKERS), "0 2");
 
     // Drag the marker at 2s one second right: the document moves it, and nothing else.
@@ -188,7 +190,7 @@ describe("the timeline's tracks", { skip: why ? `skipping: ${why}` : false }, ()
   it("puts a new track in its lane, wherever the patch adds it", async () => {
     // A video track is stored below the first overlay one (so it composites under it) and
     // is drawn at the top of the video group: one rule, seen from the two ends.
-    await page.eval(`(() => { const s = [...document.querySelectorAll("#transport select")].find(s => s.title === "Add a track"); s.value = "video"; s.dispatchEvent(new Event("change", { bubbles: true })); return true; })()`);
+    await page.eval(`(() => { const s = document.querySelector('#timeline select[title="Add a track"]'); s.value = "video"; s.dispatchEvent(new Event("change", { bubbles: true })); return true; })()`);
     await page.until(`document.querySelectorAll("#timeline .tl-track").length === 5`);
     assert.equal(await page.eval(STORED), "v1 v2 v3 o1 a1");
     assert.equal(await page.eval(DRAWN), "o1 v3 v2 v1 a1");

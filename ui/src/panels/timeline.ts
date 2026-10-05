@@ -1,7 +1,7 @@
 // Timeline: tracks, clips (move/trim), transitions, playhead, zoom.
 
 import { Cmd, run } from "../commands";
-import { button, dragPayload, dragPointer, el, isFileDrag } from "../dom";
+import { button, dragPayload, dragPointer, el, isFileDrag, options } from "../dom";
 import { addMarker, addTransition, renameTrack, editMarker, editTransitionDuration, joinedAfter, moveMarker, placeBinItem, placeBlueprint, removeMarker, removeTransition, setTransitionKind, splitAt, transitionBlocked } from "../edits";
 import { showMenu } from "../menu";
 import { icon } from "../icons";
@@ -12,10 +12,10 @@ import type { Clip, Marker, PatchOp, Project, Track, TrackKind, Transition } fro
 import { binItem, clipKind, hasAudio, isFileSource, isOverlaySource, isSequenceSource, isTimedMedia, seqDuration, sourceAfter } from "../types";
 import { drawStrip, drawWave } from "./clipmedia";
 
-const HEAD = 136;
+const HEAD = 150;
 
 /** Track heights, by kind, until one is dragged; a folded track is one line. */
-const TRACK_H: Record<TrackKind, number> = { video: 64, overlay: 40, audio: 44 };
+const TRACK_H: Record<TrackKind, number> = { video: 36, overlay: 36, audio: 36 };
 const FOLDED_H = 22;
 const MIN_H = 30;
 const MAX_H = 240;
@@ -73,8 +73,15 @@ export class Timeline {
   private folded(t: Track) { return this.rows.folded.includes(t.id); }
   private heightOf(t: Track) { return this.folded(t) ? FOLDED_H : this.rows.h[t.id] ?? TRACK_H[t.kind]; }
 
+  private zoomInput = el("input");
+  private cornerEl = this.corner();
+
   constructor(private host: HTMLElement) {
     this.root = el("div", "tl");
+    store.select((s) => [s.zoom], (s) => {
+      this.zoomInput.value = String(s.zoom);
+      this.zoomInput.title = `Zoom: ${Math.round(s.zoom)} px a second (Ctrl + wheel zooms round the pointer)`;
+    });
     host.appendChild(this.root);
     // Only the project, the open sequence and the zoom rebuild the DOM; selection and
     // playhead are cheap updates.
@@ -127,7 +134,7 @@ export class Timeline {
     const end = store.duration + 10;
     for (let i = 0; i * step <= end; i++) {
       const t = i * step; // by index, so float drift never turns "3s" into "3.0"
-      const tick = el("div", "tick", Number.isInteger(t) ? `${t}s` : t.toFixed(1));
+      const tick = el("div", "tick", Number.isInteger(t) ? `${t}` : t.toFixed(1));
       tick.style.left = `${this.x(t)}px`;
       ruler.appendChild(tick);
     }
@@ -140,6 +147,8 @@ export class Timeline {
         { label: "Move the playhead here", run: () => store.seek(at) },
       ], e.clientX, e.clientY);
     });
+    // The same element every render: a rebuild mid-drag would drop the slider's grip.
+    ruler.appendChild(this.cornerEl);
     this.root.appendChild(ruler);
     // A marker's flag, the part you hold, is in the ruler; its line runs down the tracks,
     // drawn after them so it lies over the clips.
@@ -165,6 +174,31 @@ export class Timeline {
     this.playhead = el("div", "tl-playhead");
     this.root.appendChild(this.playhead);
     this.movePlayhead(s.playhead);
+  }
+
+  /** The ruler's first cell, over the heads: the zoom, and a track to add. It stays put
+   *  while the timeline scrolls sideways (sticky), as the heads do. */
+  private corner(): HTMLDivElement {
+    const corner = el("div", "tl-corner");
+    corner.addEventListener("pointerdown", (e) => e.stopPropagation());
+    const zoomBy = (f: number) => store.set({ zoom: Math.min(600, Math.max(8, store.state.zoom * f)) });
+    const zoom = this.zoomInput;
+    // A slider wearing the word: "zoom" until you drag it, as the design writes it.
+    zoom.type = "range"; zoom.min = "8"; zoom.max = "600"; zoom.step = "1";
+    zoom.className = "zoom";
+    zoom.oninput = () => store.set({ zoom: Number(zoom.value) });
+    const add = el("select");
+    add.title = "Add a track";
+    options(add, ["video", "overlay", "audio"].map((value) => ({ value })), undefined, "+ track");
+    add.onchange = () => {
+      const kind = add.value as TrackKind | "";
+      add.value = "";
+      if (kind) run(Cmd.addTrack, kind);
+    };
+    const word = el("span", "zoom-word", "zoom");
+    word.appendChild(zoom);
+    corner.append(button("−", () => zoomBy(1 / 1.25), "Zoom out"), word, button("+", () => zoomBy(1.25), "Zoom in"), add);
+    return corner;
   }
 
   /**
@@ -224,6 +258,8 @@ export class Timeline {
     row.dataset.ti = String(ti);
     row.dataset.tid = t.id;
     row.style.height = `${this.heightOf(t)}px`;
+    // Too short for a second line: the clip says its name and nothing under it.
+    row.classList.toggle("short", this.heightOf(t) < 44);
     const head = el("div", "tl-head");
     head.title = `${t.name || t.id} — click a track to paste onto it (Ctrl/Cmd+V pastes at the playhead)`;
     // Anywhere on the head, buttons included: clicking a track is how a paste is aimed.
@@ -233,7 +269,7 @@ export class Timeline {
     const tname = el("div", "tname", t.name || t.id);
     tname.title = "Double-click to rename";
     tname.addEventListener("dblclick", () => void renameTrack(t.id));
-    label.append(fold, el("div", "kind", t.kind), tname);
+    label.append(fold, el("div", "kind", kindCode(store.tracks, t)), tname);
     head.addEventListener("contextmenu", (e) => {
       e.preventDefault();
       showMenu([
@@ -250,8 +286,8 @@ export class Timeline {
       b.className = on ? "on" : "";
       return b;
     };
-    if (t.kind !== "overlay") toggles.appendChild(toggle("M", t.muted, "muted"));
-    if (t.kind !== "audio") toggles.appendChild(toggle("H", t.hidden, "hidden"));
+    if (t.kind !== "overlay") toggles.appendChild(toggle("m", t.muted, "muted"));
+    if (t.kind !== "audio") toggles.appendChild(toggle("h", t.hidden, "hidden"));
     if (!t.clips.length) toggles.appendChild(button("×", () => store.patch([{ op: "remove", path: `${store.seqPath}/tracks/${ti}` }], `remove track ${t.id}`), "Remove this empty track"));
     head.append(label, toggles, this.resizer(row, t));
     row.appendChild(head);
@@ -692,6 +728,14 @@ export class Timeline {
 
 /** Which lane a kind is drawn in, top to bottom. */
 const LANE_ORDER: Record<TrackKind, number> = { overlay: 0, video: 1, audio: 2 };
+
+/** A track's short code in its head: `ov` for an overlay track, `v1`/`a1` for the first
+ *  video or audio track, counted the way they are drawn (the bottom one first). */
+function kindCode(tracks: Track[], t: Track): string {
+  if (t.kind === "overlay") return "ov";
+  const same = tracks.filter((x) => x.kind === t.kind);
+  return `${t.kind === "video" ? "v" : "a"}${same.indexOf(t) + 1}`;
+}
 
 function niceStep(zoom: number): number {
   const target = 80 / zoom; // seconds per ~80px

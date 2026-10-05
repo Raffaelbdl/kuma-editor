@@ -172,7 +172,7 @@ both clips play the same entry, which is what the model's split already means.
 
 **Right-click is where the timeline's actions are.** On a clip: split it at the pointer
 (`S` splits at the playhead), add a transition into the clip it touches, copy, cut, group,
-delete. On the ruler: a marker at that moment (`M` at the playhead). A **transition** joins
+delete. On the ruler: a marker at that moment (`P` leaves one at the playhead — a *pin*, below). A **transition** joins
 two clips that touch on one track and is centred on the cut, so it needs *handles* —
 material after the first clip's out point and before the second's in point; "Transition
 into the next clip" makes a one-second dissolve, or as long as the handles allow, and says
@@ -218,7 +218,7 @@ add), `‹ ›` step between them, `+ key` / `− key` add and remove one where 
 the diamond, filled **◆** now, stops animating while keeping the value you are looking at. The same keys are
 drawn along the bottom of the clip in the timeline, so an animated clip says so at a glance
 and you watch them go past while scrubbing — and can be dragged there too, or clicked to
-jump to. **Auto-key** (`R`, a red edge on the inspector while it is on) is record mode:
+jump to. **Auto-key** (`Shift+R`, a red edge on the inspector while it is on) is record mode:
 while it is on, changing any animatable value writes a key at the playhead, starting the
 animation if there was none. **curve** in the keys row opens a graph of one parameter over the clip, the shape
 between keys drawn as the render will produce it, with the keys as points you drag in both
@@ -227,8 +227,8 @@ axes at once. With the playhead outside the clip there is no
 
 **The overlay workbench.** The centre of the window is tabbed, Kdenlive style. A
 **sequence** tab is a timeline you have open — the engine's picture with that sequence's
-overlays live on top, driven by the timeline below; the topbar picker opens one and gives
-it a tab, and clicking between them switches which sequence is being edited (a round trip:
+overlays live on top, driven by the timeline below; double-clicking one in the bin (or ⌘K's
+*Open sequence*) opens it and gives it a tab, and clicking between them switches which sequence is being edited (a round trip:
 the daemon holds that choice, so switching recompiles, and the last tab stays put because
 something is always open). Every other tab is one **overlay entry**, open on its own. `+ overlay` (or the
 Blueprints tab's *Workbench*, or **New Overlay…** in the Project menu) copies a
@@ -296,7 +296,33 @@ bakes as one clip and is baked again after every correction. From a clip, the pi
 are made and each is placed over its stretch. **Replace** overwrites one entry's words, so it
 is offered when the media has one transcript, and the job refuses `replace` with `split`.
 
-**Themes.** The palette button in the top bar (or *View → Theme…* in the app) swaps the
+**Den and power.** The editor has two modes over one set of panels; the backquote key, the
+top bar's toggle or the status line's first cell switches between them, keeping the playhead
+and the selection. **Power** docks everything round the frame: a rail of letters on the left
+(`b` bin, `p` blueprints, `f` fonts, `m` pins, `h` history, `r` render queue) picks what the
+side panel shows, the inspector is on the right and the timeline at the bottom, and a status
+line along the bottom says the mode, the revision, the selection, the playhead, the frame and
+what the agent is doing. **Den** gives the frame the whole window and shows what the agent
+did and where it looked: the bear (asleep after a minute without a call, looking while it
+samples, at work while it edits), orange corners round the region its last `sample_frames`
+looked at, its last edit's summary as a caption, and a rail with its revisions placed where
+they edited and your pins. Panels are summoned there with the same letters (`B I T A H M
+R`), float, and dock to an edge dropped within 24 px of it. Any panel opens in a **window of
+its own** with ⧉ or by dragging it past the window's edge — in a browser a popup on
+`?panel=<id>`, in the app a frameless window — and keeps in step with the editor window: a
+clip selected in one is selected in the other. Which mode, which panels and where they float
+are this browser's, never the project's. **⌘K** (Ctrl+K) runs any command by name.
+
+The editor has no chat: you talk to the agent in your terminal. The one thing the editor
+writes to it is a **pin** — `P`, then type: a marker with a comment on the frame under the
+playhead, which the agent reads (`list_pins`) and can say it answered (`apply_edits`'
+`pins`). The pins panel shows each as open, being read, or done in the revision that
+answered it; you can tick one by hand. The **history** panel (`h`) is the one undo stack you
+and the agent share, newest first, with who made each step — ⟲ goes back to a revision as a
+new edit you can undo — and the patches the daemon refused, greyed. The inspector ends with
+the history of the clip or entry it shows.
+
+**Themes.** ⌘K's *Theme…* (or *View → Theme…* in the app) swaps the
 editor's colours: **Kuma**, the default, and **Tokyo Night**, retro neon on deep indigo.
 The choice lives in the browser, not the project, and stops at the editor's chrome — no
 overlay, bake or render sees it, so the video looks the same whichever one is on. Styling
@@ -368,7 +394,7 @@ claude mcp add --scope user    kuma -- kuma mcp --project /abs/path.kuma.json  #
 
 `kuma mcp` starts the daemon in-process if none is running on the port, so the browser UI
 and the agent always share one state. Tools: `timeline_guide`, `get_project`, `get_schema`, `apply_edits`,
-`undo`, `redo`, `validate_project`, `list_presets`, `add_media`, `probe_media`, `reprobe_media`, `unused_entries`,
+`undo`, `redo`, `list_pins`, `validate_project`, `list_presets`, `add_media`, `probe_media`, `reprobe_media`, `unused_entries`,
 `transcribe`, **`sample_frames`**, `measure_audio`, `measure_media`, `bake_overlay`, `render`, `job_status`, `cancel_job`,
 `prune_cache`, `health`, and for overlays `overlay_guide`, `new_overlay`, `check_overlay`,
 `import_overlay`, `make_overlay_unique`, `list_blueprints`, `add_blueprint`,
@@ -399,6 +425,33 @@ a client that gives up on a silent call does not. A server that outlives a rebui
 tools are the old build's. `overlay_guide` returns `library/blueprints/CLAUDE.md`, and
 `timeline_guide` returns `crates/kuma-mcp/src/timeline_guide.md`: the server's own
 instructions are kept under the 2048 characters a client shows and point at both.
+
+**What the editor sees of the agent.** Besides the patches it lands, the editor follows the
+agent through three kinds of session state the daemon keeps in memory — never in the project
+file, and gone when the daemon stops:
+
+- **Activity.** `kuma mcp` reports every tool call to `POST /api/activity` as it starts
+  (`{"phase":"start","tool","client","args"}`, answered `{"id"}`) and ends
+  (`{"phase":"end","id","ok","error","result"}`), with the arguments trimmed (a patch is its op
+  count) and the result reduced to a lint verdict, an edit's revision or a sample's frame
+  paths. A report waits a second at most and its failure is ignored: the feed is never what
+  slows or fails a tool. `GET /api/activity?limit=N` lists the last 100 calls newest first,
+  each with its state, the revisions either side, a sample's times and `rect`, and its
+  `frames`, served by `GET /api/samples/<file>` from `.kuma/samples/`.
+- **History.** One entry per revision the daemon makes — edits, undos, redos, restores — and
+  per patch it refuses, with its author (`agent`, `user` or `other`, from the origin; an
+  undo's is whoever asked, `{"origin": …}` in its body), the clips and entries it touched and
+  up to eight fields it changed: `GET /api/history?limit=N`, the last 500, newest first.
+  `POST /api/history/restore {"revision": n}` makes the document what it was at any of the
+  last 200 revisions as one new, validated, undoable edit, at a new revision number.
+- **Pins.** A marker with a label is a pin: `GET /api/pins` lists them, the master's first,
+  with an id `<sequence>@<t to 3 decimals>`, a number per sequence in time order, and `done`
+  — the revision of the latest edit that named it in `pins` (`apply_edits`' `pins`, or the
+  patch body's), or a tick by hand (`POST /api/pins/done {"id", "done"}`; unticking clears
+  both).
+
+Each change is broadcast on `/api/events` beside `project_changed` and `job`: `activity` and
+`history` carry the record, `pins` says only to refetch.
 
 ### CLI
 
@@ -485,7 +538,7 @@ clips.
 holds the tracks, and `master` names the one that gets rendered. A sequence placed on
 another sequence is a nested sequence — edit a part separately, place it in the final cut,
 trim into it and put effects on this placement without touching the other. The editor
-opens one sequence at a time (the picker in the topbar); the preview compiles whichever is
+opens one sequence at a time (its tab in the top bar); the preview compiles whichever is
 open, since the engine loads one timeline. Overlays on that sequence stay live DOM so edits
 show as you type; overlays inside the sequences it nests are baked into the preview, which
 is content you are not editing and is what the render will show. A sequence cannot contain itself, and cannot be
@@ -607,8 +660,8 @@ and the values live with the rest of the project's decisions.
 
 ## Troubleshooting
 
-- **The preview looks stale or an overlay is missing from it?** Press the top bar's reload
-  button (the circular arrow). It hands the engine the timeline again even if nothing in
+- **The preview looks stale or an overlay is missing from it?** Press the reload
+  button under the frame (the circular arrow). It hands the engine the timeline again even if nothing in
   the project changed (a media file replaced on disk, say), then says how many overlays are
   drawn live and how many were baked. Overlays of nested sequences that have not been baked
   yet are left out at first and baked by a `preview-bake` job in the job queue; the preview

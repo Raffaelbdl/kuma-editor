@@ -21,11 +21,13 @@ interface RenderParams { sequence?: string; preset?: string; output?: string; pa
 /** The open dialog's tab switch: asking again switches rather than stacking a second. */
 let showing: ((tab: Tab) => void) | null = null;
 let lastPreset = "";
+/** The preset last rendered with this session, for the queue panel's "render master". */
+export const lastRenderPreset = () => lastPreset;
 /** The Advanced section as last left: open or folded, and the values last rendered with.
  *  Quality and speed are `lastPreset`'s, and only come back with it. */
 let advanced = { open: false, threads: "", quality: "", speed: "" };
 
-const binName = (id?: string) => (id && store.state.project?.bin[id]?.name) || id || "?";
+export const binName = (id?: string) => (id && store.state.project?.bin[id]?.name) || id || "?";
 const fail = (e: unknown) => toast((e as Error).message, "err");
 
 export function openRenderDialog(tab: Tab = "render"): void {
@@ -257,7 +259,7 @@ function overwriteNote(t: RenderTarget): string {
 interface JobRow { root: HTMLElement; update: (j: Job) => void }
 
 /** What a job other than a render works on, as its params name it: `· Main`, `· talk`. */
-function subject(params: unknown): string {
+export function subject(params: unknown): string {
   const p = (params ?? {}) as { sequence?: string | null; overlay?: string | null; bin?: string | null; clip?: string | null; path?: string | null };
   const what = p.overlay ?? p.bin ?? (p.sequence ? binName(p.sequence) : null) ?? (p.clip ? `clip ${p.clip}` : null) ?? p.path;
   return what ? ` · ${what}` : "";

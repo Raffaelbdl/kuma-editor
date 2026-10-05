@@ -12,7 +12,7 @@ import { showInfo } from "./modal";
 import { SEQUENCE_TAB, store } from "./store";
 
 /** Which part of the shortcut list a binding belongs to, in the order they are shown. */
-const SECTIONS = ["Transport", "Editing", "Overlay workbench"] as const;
+const SECTIONS = ["Panels", "Transport", "Editing", "Overlay workbench"] as const;
 type Section = (typeof SECTIONS)[number];
 
 /** Matched top to bottom; the first whose `when` passes wins. */
@@ -28,11 +28,28 @@ interface Binding {
 }
 
 const mod = (e: KeyboardEvent) => e.ctrlKey || e.metaKey;
+/** A bare letter: no Ctrl, Cmd or Alt (Shift is its own binding). */
+const bare = (e: KeyboardEvent, k: string) => e.key.toLowerCase() === k && !mod(e) && !e.altKey && !e.shiftKey;
+/** The panel letters (`panelhost.ts`): in den they summon a panel, in power they bring it
+ *  forward. One binding each, so the rail's tooltips can read their key off this table. */
+const PANEL_BINDINGS: Binding[] = [
+  ["b", "bin", "The bin"], ["i", "inspector", "The inspector"], ["t", "timeline", "The timeline"], ["a", "agent", "The agent: what it is doing, its last calls"],
+  ["h", "history", "The history: every step, yours and the agent's"], ["m", "pins", "Your pins: notes on frames for the agent"], ["r", "queue", "The render queue"],
+].map(([k, id, what]) => ({ when: (e: KeyboardEvent) => bare(e, k), action: `panel.${id}`, list: { where: "Panels" as const, keys: k.toUpperCase(), what } }));
 const frame = () => 1 / store.fps;
 /** The overlay workbench is on screen, and has its own clock. */
 const onOverlay = () => store.state.tab !== SEQUENCE_TAB;
 
 const BINDINGS: Binding[] = [
+  { when: (e) => mod(e) && e.key.toLowerCase() === "k", action: Cmd.palette, preventDefault: true,
+    list: { where: "Panels", keys: "Ctrl + K", what: "Every command, by name" } },
+  { when: (e) => e.key === "`" && !mod(e) && !e.altKey, action: Cmd.toggleMode, preventDefault: true,
+    list: { where: "Panels", keys: "`", what: "Den or power: the frame and what the agent did, or every panel docked" } },
+  ...PANEL_BINDINGS,
+  // A pin is a note on the frame you are looking at; the workbench has no timeline to
+  // hold one.
+  { when: (e) => bare(e, "p") && !onOverlay(), action: Cmd.addPin, preventDefault: true,
+    list: { where: "Panels", keys: "P", what: "Pin the playhead: write a note on this frame for the agent" } },
   // Transport means the surface you are looking at: on the workbench it is that overlay's
   // own time, not the sequence's. Everything below here is the same key on the timeline.
   { when: (e) => e.code === "Space" && onOverlay(), action: Cmd.overlayTogglePlay, preventDefault: true,
@@ -58,12 +75,10 @@ const BINDINGS: Binding[] = [
   { when: (e) => e.key === "End", action: () => store.seek(store.duration), preventDefault: true },
   { when: (e) => e.key.toLowerCase() === "s" && !mod(e) && !e.altKey, action: Cmd.split,
     list: { where: "Editing", keys: "S", what: "Split the selected clips at the playhead" } },
-  // A marker is a note on the timeline you are looking at, so the workbench, which has
-  // none, leaves M alone.
-  { when: (e) => e.key.toLowerCase() === "m" && !mod(e) && !e.altKey && !onOverlay(), action: Cmd.addMarker,
-    list: { where: "Editing", keys: "M", what: "Add a marker at the playhead, with a comment for you or an agent (on a marker already there: edit it)" } },
-  { when: (e) => e.key.toLowerCase() === "r" && !mod(e) && !e.altKey && !onOverlay(), action: Cmd.autoKey,
-    list: { where: "Editing", keys: "R", what: "Auto-key: while on, changing an effect's value writes a keyframe at the playhead" } },
+  // Auto-key gave R to the render queue (the letters are the panels' now) and kept it with
+  // Shift: still R for record, as Kdenlive and Blender have it.
+  { when: (e) => e.key.toLowerCase() === "r" && e.shiftKey && !mod(e) && !e.altKey && !onOverlay(), action: Cmd.autoKey,
+    list: { where: "Editing", keys: "Shift + R", what: "Auto-key: while on, changing an effect's value writes a keyframe at the playhead" } },
   { when: (e) => e.key === "Delete" || e.key === "Backspace", action: Cmd.deleteClip,
     list: { where: "Editing", keys: "Del", what: "Delete the selected clips" } },
   // The clipboard is the timeline's, so it is bound off the workbench only: the workbench
@@ -105,7 +120,9 @@ const GESTURES: { section: Section; does: string; what: string }[] = [
   { section: "Editing", does: "Drag a marker's flag", what: "Move it; click it to go there" },
   { section: "Editing", does: "Double-click a marker's flag", what: "Edit its comment (right-click: delete it)" },
   { section: "Editing", does: "Right-click a clip", what: "Split it there, add a transition, copy, group, delete" },
-  { section: "Editing", does: "Right-click the ruler", what: "Add a marker there" },
+  { section: "Editing", does: "Right-click the ruler", what: "Add a marker there (a pin, when it has a comment)" },
+  { section: "Panels", does: "Drag a panel's title bar", what: "Move it; near an edge it docks there, past the window's edge it becomes a window" },
+  { section: "Panels", does: "⧉ on a panel", what: "Open it in a window of its own" },
   { section: "Editing", does: "Double-click a track's name", what: "Rename it (or right-click its head)" },
   { section: "Editing", does: "Drag a track's bottom edge", what: "Make it taller or shorter; its caret folds it to a line" },
   { section: "Transport", does: "Ctrl + wheel", what: "Zoom the timeline around the pointer" },

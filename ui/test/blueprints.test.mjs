@@ -63,7 +63,8 @@ describe("blueprints and overlays", { skip: why ? `skipping: ${why}` : false }, 
   });
 
   it("lists the library's blueprints, and none of the project's overlays", async () => {
-    await page.eval(`${buttonNamed("#library .tabs", "Blueprints")}.click()`);
+    // The rail's P: the blueprints, in the bin's place.
+    await page.eval(`document.querySelector('#rail .rail-key[data-panel="blueprints"]').click()`);
     await page.until(`document.querySelectorAll("#library .lib-item").length > 0`);
     assert.deepEqual(await page.eval(`[...document.querySelectorAll("#library .lib-item .title")].map(t => t.firstChild.textContent)`), ["Card"]);
   });
@@ -92,7 +93,7 @@ describe("blueprints and overlays", { skip: why ? `skipping: ${why}` : false }, 
   });
 
   it("says when an entry shares its folder, and makes it unique", async () => {
-    await page.eval(`${buttonNamed("#library .tabs", "Bin")}.click()`);
+    await page.eval(`document.querySelector('#rail .rail-key[data-panel="bin"]').click()`);
     await page.until(`[...document.querySelectorAll("#library .bin-row")].some(r => r.title === "Twin")`);
     await page.eval(`[...document.querySelectorAll("#library .bin-row")].find(r => r.title === "Twin").click()`);
     await page.until(`!!${buttonNamed("#inspector", "Make unique")}`);

@@ -32,6 +32,8 @@ export interface DesktopBridge {
   windowControl(action: "minimize" | "maximize" | "close"): Promise<{ maximized: boolean } | null>;
   windowState(): Promise<{ maximized: boolean; fullScreen: boolean }>;
   onWindowState(fn: (s: { maximized: boolean; fullScreen: boolean }) => void): () => void;
+  /** A panel in a frameless window of its own, on this project. Absent in an older shell. */
+  openPanel?(id: string, size: { width: number; height: number }): Promise<void>;
 }
 
 /** The bridge, or null when this is an ordinary browser tab. */
@@ -57,6 +59,9 @@ const MENU: Record<string, string> = {
   "paste-clip": Cmd.pasteClip,
   shortcuts: Cmd.shortcuts,
   theme: Cmd.theme,
+  palette: Cmd.palette,
+  den: Cmd.modeDen,
+  power: Cmd.modePower,
   "group-clips": Cmd.group,
   "ungroup-clips": Cmd.ungroup,
 };

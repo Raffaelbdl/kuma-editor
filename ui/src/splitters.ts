@@ -18,14 +18,17 @@ interface Seam {
   axis: "x" | "y";
   /** +1 when dragging right (or down) grows the panel, -1 when it shrinks it. */
   grow: 1 | -1;
+  /** Which seam, as a class: a slot that is empty hides its seam. */
+  cls: string;
   /** Where the seam is drawn, as CSS on the handle. */
   place: Partial<CSSStyleDeclaration>;
 }
 
 const SEAMS: Seam[] = [
-  { name: "--lib-w", fallback: 240, min: 160, share: 0.4, axis: "x", grow: 1, place: { left: "calc(var(--lib-w) - 3px)" } },
-  { name: "--insp-w", fallback: 300, min: 220, share: 0.45, axis: "x", grow: -1, place: { right: "calc(var(--insp-w) - 3px)" } },
-  { name: "--bottom-h", fallback: 300, min: 120, share: 0.75, axis: "y", grow: -1, place: { bottom: "calc(var(--bottom-h) - 3px)" } },
+  // The side slot sits after the 44px rail; the timeline above the 24px status line.
+  { name: "--lib-w", cls: "lib", fallback: 232, min: 160, share: 0.4, axis: "x", grow: 1, place: { left: "calc(44px + var(--lib-w) - 3px)" } },
+  { name: "--insp-w", cls: "insp", fallback: 288, min: 220, share: 0.45, axis: "x", grow: -1, place: { right: "calc(var(--insp-w) - 3px)" } },
+  { name: "--bottom-h", cls: "bottom", fallback: 300, min: 120, share: 0.75, axis: "y", grow: -1, place: { bottom: "calc(var(--bottom-h) + 24px - 3px)" } },
 ];
 
 const KEY = "kuma.layout.";
@@ -40,7 +43,7 @@ export function installSplitters(): void {
     let saved = NaN;
     try { saved = Number(localStorage.getItem(KEY + s.name)); } catch { /* no storage */ }
     set(s, saved || s.fallback);
-    const handle = el("div", `splitter ${s.axis}`);
+    const handle = el("div", `splitter ${s.axis} ${s.cls}`);
     Object.assign(handle.style, s.place);
     handle.title = "Drag to resize — double-click to reset";
     const size = () => parseFloat(getComputedStyle(app).getPropertyValue(s.name)) || s.fallback;

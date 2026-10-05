@@ -697,6 +697,24 @@ export async function addMarker(t = store.state.playhead) {
   await writeMarkers([...store.markers, { t, label }], `marker at ${at(t)}`);
 }
 
+/** The comment of the marker on `t`'s frame, if there is one: what the pin field starts
+ *  from, so a pin on a frame that has one edits it rather than stacking a second. */
+export const markerOn = (t: number): string | null => store.markers.find((m) => Math.abs(m.t - t) < store.halfFrame)?.label ?? null;
+
+/** A pin: a marker at `t` with a comment typed inline (the pins panel), rather than in the
+ *  marker dialog. On a frame that already has a marker, this is its comment now. */
+export async function addPin(t: number, label: string): Promise<boolean> {
+  const text = label.trim();
+  if (!text) return false;
+  const i = store.markers.findIndex((m) => Math.abs(m.t - t) < store.halfFrame);
+  if (i >= 0) {
+    if (store.markers[i].label !== text) await patchMarker(i, { label: text }, `pin at ${at(t)}`);
+    return true;
+  }
+  await writeMarkers([...store.markers, { t, label: text }], `pin at ${at(t)}`);
+  return true;
+}
+
 export async function editMarker(i: number) {
   const m = store.markers[i];
   if (!m) return;

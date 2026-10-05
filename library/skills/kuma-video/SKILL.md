@@ -89,10 +89,11 @@ difference: `references/storyboard-as-code.md`. In short:
 
 ## Review loop
 
-- **Feedback arrives as markers.** A person reviewing in the editor presses M and types a
-  comment; "see the markers" means every sequence's `markers` (`t`, `label`) in
-  `get_project`. Sample each one's moment before changing anything, answer per marker,
-  and leave them for the person to clear (`timeline_guide` has the details).
+- **Feedback arrives as pins.** A person reviewing in the editor presses P and types a
+  comment: a marker with a label, which `list_pins` lists with an id (and "see the markers"
+  means the same thing). Sample each one's moment before changing anything, answer per pin
+  — passing its id in `apply_edits`' `pins`, which marks it done in their editor — and leave
+  the markers for the person to clear (`timeline_guide` has the details).
 - **While building**, sample the part you are working on, or an overlay entry on its own,
   over a short range. Sampling the master bakes every changed overlay it shows:
   `sample_frames` with `times` bakes only what those frames show, and `tile` returns them

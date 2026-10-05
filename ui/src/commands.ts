@@ -28,11 +28,24 @@ export function label(id: string): string {
   return registry.get(id)?.label ?? id;
 }
 
+/** Every command, in the order registered: what the ⌘K palette offers. */
+export function list(): Command[] {
+  return [...registry.values()];
+}
+
+/** Where a command this page does not have goes instead: a panel in a window of its own
+ *  hands the transport's and the preview's to the editor window (`viewsync.ts`). */
+let forward: ((id: string, arg?: unknown) => boolean) | null = null;
+export function forwardUnknown(fn: typeof forward): void {
+  forward = fn;
+}
+
 /** Run a command. Unknown ids and failures toast: a silent one here is invisible, which
  *  is how "+ new sequence…" came to do nothing at all. */
 export function run(id: string, arg?: unknown): void {
   const c = registry.get(id);
   if (!c) {
+    if (forward?.(id, arg)) return;
     console.error(`no such command: ${id}`);
     toast(`Nothing is registered for "${id}"`, "err");
     return;
@@ -75,4 +88,9 @@ export const Cmd = {
   previewScale: "preview.scale",
   overlayTogglePlay: "overlay.toggle-play",
   overlayStep: "overlay.step",
+  palette: "view.palette",
+  modeDen: "view.den",
+  modePower: "view.power",
+  toggleMode: "view.toggle-mode",
+  addPin: "pins.add",
 } as const;

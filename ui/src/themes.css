@@ -26,8 +26,9 @@
   --fg: #e6e7eb;
   --fg-2: #9aa0ad;
   --accent: #ff4f00;
-  /* Text on top of `--accent` (the primary button, an active track toggle). */
-  --on-accent: #fff;
+  /* Text on top of `--accent` (the primary button, the status line, an active letter):
+     the app's own black, as the design has it, rather than white. */
+  --on-accent: #0b0c0f;
   --video: #3b6ea5;
   --overlay: #b0532a;
   --audio: #3f8a5c;
@@ -57,6 +58,30 @@
   /* The neon a theme can put on the playhead and the primary button. Off here: this
      palette is flat by design, and a glow would be the one thing shouting in it. */
   --glow: none;
+  /* The den/power redesign (`docs/design/den-power/`). The stage is the darkest thing on
+     screen, the bars a step above the app, and lines come in two weights. */
+  --bg-stage: #08090b;
+  --bg-bar: #0e0f12;
+  --line-2: #1a1c22;
+  /* Text in four steps: the value, body copy that is not the value, a label, and what is
+     there to be skipped (a ruler's numbers, a disabled row). */
+  --fg-body: #c4c8d2;
+  --fg-3: #5c616d;
+  /* The accent as text on the dark: a revision number, an agent's state. */
+  --accent-text: #ff7a3d;
+  /* Under a pin's flag: the selection colour, dimmed to a background. */
+  --pin-bg: #2a2615;
+  --ok: #3f8a5c;
+  --diff-add: #59c07a;
+  --diff-del: #d9576b;
+  /* What floats: panels summoned over the frame, and the shadow that lifts them off it. */
+  --float-bg: rgba(14, 15, 18, 0.94);
+  --float-shadow: 0 14px 40px rgba(0, 0, 0, 0.6);
+  /* Over the picture: the top of the frame darkened so the HUD reads, and the caption's box. */
+  --scrim: rgba(0, 0, 0, 0.55);
+  --caption-bg: rgba(0, 0, 0, 0.82);
+  /* The ring round the latest revision on den's rail. */
+  --accent-ring: rgba(255, 79, 0, 0.35);
 }
 
 /* ---------------------------------------------------------------- tokyo night
@@ -98,4 +123,19 @@
   --axis-z: #7aa2f7;
   --axis-w: #e0af68;
   --glow: 0 0 9px rgba(247, 118, 142, 0.55);
+  --bg-stage: #08080e;
+  --bg-bar: #13131c;
+  --line-2: #1f2030;
+  --fg-body: #a9b1d6;
+  --fg-3: #565f89;
+  --accent-text: #ff9eb0;
+  --pin-bg: #2c2618;
+  --ok: #3f7d6a;
+  --diff-add: #9ece6a;
+  --diff-del: #f7768e;
+  --float-bg: rgba(22, 22, 30, 0.94);
+  --float-shadow: 0 14px 40px rgba(0, 0, 0, 0.6), 0 0 12px rgba(247, 118, 142, 0.12);
+  --scrim: rgba(8, 8, 14, 0.55);
+  --caption-bg: rgba(12, 12, 20, 0.84);
+  --accent-ring: rgba(247, 118, 142, 0.4);
 }

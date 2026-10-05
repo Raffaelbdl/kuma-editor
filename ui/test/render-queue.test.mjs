@@ -69,7 +69,7 @@ describe("the render queue", { skip: why ? `skipping: ${why}` : false }, () => {
     await page.until(`${status(first)} === "running" && ${row(first)}.textContent.includes("frame")`, 60_000);
     assert.equal(await page.eval(status(second)), "queued", "a second render waits for the first");
     // The top bar counts rather than narrates.
-    assert.equal(await page.eval(`document.querySelector("#topbar .status").textContent`), "1 job running, 1 job queued");
+    assert.equal(await page.eval(`document.querySelector("#topbar .status").textContent`), "1 running · 1 queued");
 
     await page.eval(cancel(first));
     await page.until(`${status(first)} === "cancelled"`, 20_000);
@@ -77,7 +77,7 @@ describe("the render queue", { skip: why ? `skipping: ${why}` : false }, () => {
     await page.until(`${status(second)} === "running"`, 20_000);
     await page.eval(cancel(second));
     await page.until(`${status(second)} === "cancelled"`, 20_000);
-    await page.until(`document.querySelector("#topbar .status").textContent === "2 jobs cancelled"`);
+    await page.until(`document.querySelector("#topbar .status").textContent === "2 cancelled"`);
 
     // Nothing half-written is left behind, and the daemon agrees with the rows.
     assert.deepEqual(fs.readdirSync(path.join(tmp, "renders")).filter((f) => f.endsWith(".mp4")), []);
@@ -118,8 +118,10 @@ describe("the render queue", { skip: why ? `skipping: ${why}` : false }, () => {
 
   it("the queue a window opens on is the daemon's, not only what it saw happen", async () => {
     await page.eval(`location.reload()`);
-    await page.until(`document.querySelector("#topbar .status.link")`);
-    await page.eval(`document.querySelector("#topbar .status").click()`);
+    await page.until(`document.querySelector("#topbar .status").textContent !== ""`);
+    await page.eval(`document.querySelector("#topbar .queue-btn").click()`);
+    await page.until(`!!document.querySelector('.panel[data-panel="queue"] .q-cache')`);
+    await page.eval(`document.querySelector('.panel[data-panel="queue"] .q-cache').click()`);
     await page.until(`${dialog} && ${JOB_IDS}.length === 2 && ${dialog}.querySelector(".queue-pane").hidden === false`);
   });
 

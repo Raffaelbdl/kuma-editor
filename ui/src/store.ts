@@ -1,5 +1,5 @@
 import { api, subscribeEvents } from "./api";
-import type { BlueprintInfo, Clip, DaemonEvent, FontFamily, Job, Marker, OverlayInfo, PatchOp, Project, Track, TrackKind, Transition } from "./types";
+import type { Activity, BlueprintInfo, Clip, HistoryEntry, Pin, DaemonEvent, FontFamily, Job, Marker, OverlayInfo, PatchOp, Project, Track, TrackKind, Transition } from "./types";
 import { allClips, clipPathOf, fpsValue, freeId, isOverlaySource, nearest, seqDuration, seqPath, sequenceIds, sequenceOf } from "./types";
 
 /** A clip found in the project: where it is, as the record every edit of it starts from. */
@@ -69,12 +69,21 @@ export interface State {
   overlays: string[];
   connected: boolean;
   jobs: Record<number, Job>;
+  /** Power (panels docked round the frame) or den (the frame, panels summoned over it).
+   *  View state, this browser's (`panelhost.ts`). */
+  mode: "power" | "den";
+  /** The agent's tool calls, newest first, as the daemon heard of them over MCP. */
+  activity: Activity[];
+  /** The project's history, newest first: every step, who made it, and refused patches. */
+  history: HistoryEntry[];
+  /** Pins on every sequence: markers with a comment, and whether a revision answered them. */
+  pins: Pin[];
 }
 
 type Listener = (s: State) => void;
 
 class Store {
-  state: State = { project: null, blueprints: [], manifests: {}, fonts: [], previewStamp: 0, sequence: "", selection: null, track: null, clipboard: null, autoKey: false, reloading: false, playhead: 0, playing: false, zoom: 60, tab: SEQUENCE_TAB, sequences: [], overlays: [], connected: false, jobs: {} };
+  state: State = { project: null, blueprints: [], manifests: {}, fonts: [], previewStamp: 0, sequence: "", selection: null, track: null, clipboard: null, autoKey: false, reloading: false, playhead: 0, playing: false, zoom: 60, tab: SEQUENCE_TAB, sequences: [], overlays: [], connected: false, jobs: {}, mode: "power", activity: [], history: [], pins: [] };
   private listeners = new Set<Listener>();
   private refreshing: Promise<void> | null = null;
   private refreshAgain = false;
@@ -116,8 +125,26 @@ class Store {
       this.set({ connected });
       // Events only say what happens from now on: what is already queued or running (or
       // happened while the socket was down) comes from the daemon's own table.
-      if (connected) void this.loadJobs();
+      if (connected) { void this.loadJobs(); void this.loadAgent(); }
     });
+  }
+
+  /** The agent's side of the session — its calls, the history, the pins — from the daemon's
+   *  own tables, as jobs are: events only say what happens from now on. A daemon older
+   *  than these endpoints answers 404, and the panels say there is nothing yet. */
+  private async loadAgent() {
+    const [a, h] = await Promise.all([api.activity().catch(() => null), api.history().catch(() => null)]);
+    this.set({ ...(a ? { activity: a.activity } : {}), ...(h ? { history: h.entries } : {}) });
+    void this.loadPins();
+  }
+
+  private pinsTimer = 0;
+  /** Pins are markers, so any edit can change them; asked for at most every 300 ms. */
+  loadPins() {
+    clearTimeout(this.pinsTimer);
+    this.pinsTimer = window.setTimeout(() => {
+      api.pins().then((r) => this.set({ pins: r.pins })).catch(() => {});
+    }, 300);
   }
 
   private async loadJobs() {
@@ -164,6 +191,16 @@ class Store {
     if (e.type === "project_changed") {
       if (!this.state.project || e.revision !== this.state.project.revision) await this.refresh();
       toast(`${e.origin} → r${e.revision}`, "ok", 1200);
+      this.loadPins();
+    } else if (e.type === "activity") {
+      const { type: _, ...a } = e;
+      this.set({ activity: [a, ...this.state.activity.filter((x) => x.id !== a.id)].sort((x, y) => y.id - x.id).slice(0, 100) });
+    } else if (e.type === "history") {
+      const { type: _, ...h } = e;
+      this.set({ history: [h, ...this.state.history].slice(0, 500) });
+      if (h.pins.length) this.loadPins();
+    } else if (e.type === "pins") {
+      this.loadPins();
     } else if (e.type === "jobs_cleared") {
       const jobs = { ...this.state.jobs };
       for (const id of e.ids) delete jobs[id];

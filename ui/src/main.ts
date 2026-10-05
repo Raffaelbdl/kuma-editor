@@ -1,13 +1,24 @@
 // Bootstrap: load the project, mount the panels, wire the surfaces that drive them.
-// Nothing here knows how a panel works — they meet through `commands.ts`.
+// Nothing here knows how a panel works — they meet through `commands.ts`, and where each
+// one is on screen is `panelhost.ts`'s business.
 
 import { Cmd, command } from "./commands";
 import { desktop, initDesktop, pickAndAddMedia } from "./desktop";
+import { el } from "./dom";
 import { addMarker, addTrack, copySelection, createFromBlueprint, creatable, cutSelection, deleteSelectedClips, groupSelection, pasteClipboard, promptNewOverlay, promptNewSequence, splitAt, swapOrientation, transcribe, ungroupSelection } from "./edits";
+import { panelCommands, panels } from "./panelhost";
+import { installPalette } from "./palette";
+import { agentPanel } from "./panels/agentpanel";
+import { mountDen } from "./panels/den";
+import { fontsPanel } from "./panels/fonts";
+import { historyPanel } from "./panels/history";
 import { Inspector } from "./panels/inspector";
 import { Library } from "./panels/library";
+import { pinsPanel } from "./panels/pins";
 import { Preview } from "./panels/preview";
-import { mountTabs } from "./panels/tabs";
+import { queuePanel } from "./panels/queue";
+import { mountRail } from "./panels/rail";
+import { mountStatusline } from "./panels/statusline";
 import { mountTopbar } from "./panels/topbar";
 import { mountTransport } from "./panels/transport";
 import { installShortcuts } from "./shortcuts";
@@ -16,6 +27,7 @@ import { store, toast } from "./store";
 import { installTheme } from "./theme";
 import { Timeline } from "./panels/timeline";
 import { initTitlebar } from "./panels/titlebar";
+import { installViewSync } from "./viewsync";
 import { Workbench } from "./panels/workbench";
 import type { TrackKind } from "./types";
 
@@ -45,7 +57,7 @@ function projectCommands() {
   command(Cmd.ungroup, "Ungroup Clips", () => ungroupSelection());
   command(Cmd.addTrack, "Add Track", (kind) => addTrack(kind as TrackKind));
   // Record mode lost its button (see *Auto-key* in `docs/decisions.md`); a key keeps it
-  // reachable until it has a better home. The whole page says it is on: a red edge on the
+  // reachable until it has a better home — Shift+R now, R being the render queue's letter. The whole page says it is on: a red edge on the
   // panel where the recording edits are made.
   command(Cmd.autoKey, "Toggle Auto-key", () => {
     const on = !store.state.autoKey;
@@ -55,30 +67,76 @@ function projectCommands() {
   store.select((s) => [s.autoKey], (s) => document.body.classList.toggle("autokey", s.autoKey));
 }
 
+/** The panels, as modules: each draws into one element of its own, and the panel host
+ *  (`panelhost.ts`) moves that element between containers. */
+function registerPanels() {
+  const libraryEl = el("aside");
+  libraryEl.id = "library";
+  const library = new Library(libraryEl);
+  panels.register({ id: "bin", letter: "b", title: "bin", body: libraryEl, tools: library.tools, dock: "side", size: { w: 300, h: 420 }, show: () => library.setTab("bin") });
+  panels.register({ id: "blueprints", letter: "p", title: "blueprints", body: libraryEl, tools: library.tools, dock: "side", size: { w: 300, h: 420 }, show: () => library.setTab("blueprints") });
+  const fonts = fontsPanel();
+  panels.register({ id: "fonts", letter: "f", title: "fonts", body: fonts.body, tools: fonts.tools, dock: "side" });
+  const pins = pinsPanel();
+  panels.register({ id: "pins", letter: "m", title: "pins", body: pins.body, note: pins.note, dock: "side", size: { w: 300, h: 300 } });
+  const history = historyPanel();
+  panels.register({ id: "history", letter: "h", title: "history", body: history.body, tools: history.tools, dock: "side", size: { w: 380, h: 340 } });
+  const queue = queuePanel();
+  panels.register({ id: "queue", letter: "r", title: "render queue", body: queue.body, tools: queue.tools, dock: "side", size: { w: 330, h: 380 } });
+
+  const inspectorEl = el("aside");
+  inspectorEl.id = "inspector";
+  new Inspector(inspectorEl);
+  panels.register({ id: "inspector", letter: "i", title: "inspector", body: inspectorEl, dock: "right", head: false, size: { w: 300, h: 460 } });
+
+  const timelineEl = el("div");
+  timelineEl.id = "timeline";
+  new Timeline(timelineEl);
+  const seqNote = el("span");
+  store.select((s) => [s.project, s.sequence], (s) => { seqNote.textContent = s.project?.bin[s.sequence]?.name || s.sequence; });
+  panels.register({ id: "timeline", letter: "t", title: "timeline", body: timelineEl, note: seqNote, dock: "bottom", head: false, size: { w: 1180, h: 260 } });
+
+  const agent = agentPanel();
+  panels.register({ id: "agent", letter: "a", title: "agent", body: agent.body, note: agent.note, dock: null, size: { w: 300, h: 300 } });
+}
+
 async function main() {
   // First, before the document is painted with anything: a theme swapped after the panels
   // are up is a flash of the wrong colours. It needs nothing from the daemon — the choice
   // is this browser's, not the project's.
   installTheme();
-
-  installSplitters();
+  // A panel in a window of its own is this page with `?panel=<id>`: that panel, alone.
+  const solo = new URLSearchParams(location.search).get("panel");
+  store.set({ mode: panels.initialMode() });
+  if (!solo) installSplitters();
   await store.init();
   // Before the panels: the title bar adds a row to the grid, and settling the layout once
-  // is tidier than having every panel measure itself and then measure again.
+  // is tidier than having every panel measure itself and then measure again. A panel's
+  // own window has no menu: its head is its title bar.
   const app = desktop();
-  if (app) initTitlebar(app, store.state.project?.name || "kuma");
+  if (app && !solo) initTitlebar(app, store.state.project?.name || "kuma");
 
   projectCommands();
-  // `Preview` registers the transport and reload commands as it mounts.
-  new Preview(document.getElementById("preview")!);
-  new Workbench(document.getElementById("workbench")!);
-  mountTabs(document.getElementById("editor-tabs")!);
-  new Timeline(document.getElementById("timeline")!);
-  new Inspector(document.getElementById("inspector")!);
-  new Library(document.getElementById("library")!);
-  mountTopbar(document.getElementById("topbar")!);
-  mountTransport(document.getElementById("transport")!);
+  if (!solo) {
+    // `Preview` registers the transport and reload commands as it mounts.
+    new Preview(document.getElementById("preview")!);
+    new Workbench(document.getElementById("workbench")!);
+    mountTopbar(document.getElementById("topbar")!);
+    mountTransport(document.getElementById("transport")!);
+    mountStatusline(document.getElementById("statusline")!);
+  }
+  registerPanels();
+  panelCommands();
+  installPalette();
   installShortcuts();
+  if (solo) {
+    if (!panels.mountSolo(solo)) toast(`There is no panel called “${solo}”`, "err", 60000);
+  } else {
+    mountRail(document.getElementById("rail")!);
+    mountDen(document.getElementById("den")!);
+    panels.apply();
+  }
+  installViewSync(solo);
 
   // The desktop application menu drives the same commands as the toolbar; in a browser
   // this is a no-op and nothing above changes.

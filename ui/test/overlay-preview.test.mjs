@@ -91,9 +91,9 @@ describe("what an overlay can measure in the preview", { skip: why ? `skipping: 
   it("shows it when the playhead reaches the clip, and hides it again after", async () => {
     const seek = (t) => `(() => {
       const tl = document.querySelector(".tl"), ruler = document.querySelector(".tl-ruler");
-      const zoom = Number(document.querySelector("#transport input[type=range]").value);
+      const zoom = Number(document.querySelector("#timeline .tl-corner input.zoom").value);
       const r = tl.getBoundingClientRect();
-      ruler.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, clientX: r.left + 136 + ${t} * zoom, clientY: r.top + 2 }));
+      ruler.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, clientX: r.left + 150 + ${t} * zoom, clientY: r.top + 2 }));
       window.dispatchEvent(new PointerEvent("pointerup", { bubbles: true }));
       return true;
     })()`;

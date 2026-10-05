@@ -16,6 +16,7 @@ import { store, toast } from "../store";
 import type { BinItem, Clip, Cue, Ease, Effect, FontFamily, PatchOp, Project, Streams, Transition, VarSpec } from "../types";
 import { blueprintActions, makeOverlayUnique, removeTransition, setTransitionDuration, setTransitionKind, updateTransition, manifestOf, moveBinItem, overlayError, placeBinItem, previewImg, renderPreview, saveAsBlueprint, sharersOf } from "../edits";
 import { Animation, animationOf } from "../keyframes";
+import { historyFor } from "./history";
 import { icon, svgEl } from "../icons";
 import type { NumberOpts } from "../props";
 import { keyStrip, numberField, showNumber, sliderField, vectorField } from "../props";
@@ -394,7 +395,7 @@ export class Inspector {
     // selected clip decides what the panel can edit at all — a keyed value has no "now" to
     // write to from outside it — and that flips rarely. The values themselves follow the
     // playhead without a re-render; see `renderEffects`.
-    store.select((s) => [s.project, s.selection, s.manifests, s.fonts, s.blueprints, s.sequence, playheadInClip(), s.previewStamp], () => this.render());
+    store.select((s) => [s.project, s.selection, s.manifests, s.fonts, s.blueprints, s.sequence, playheadInClip(), s.previewStamp, s.history], () => this.render());
   }
 
   private render() {
@@ -419,16 +420,19 @@ export class Inspector {
     const path = store.clipPath(clip.id)!;
     const rep = (sub: string, value: unknown, note: string) => store.patch([{ op: "replace", path: `${path}${sub}`, value }], note);
 
-    const h = el("h3", "", "Clip ");
+    const item = binItem(store.state.project!, clip);
+    const h = el("h3", "insp-kicker", "Clip ");
     h.appendChild(el("span", "mono muted", clip.id));
-    this.host.appendChild(h);
+    // What it is and where: its label (or what it plays), then the kind and the track.
+    const head = el("div", "insp-head");
+    head.append(h, el("div", "insp-name", clip.label || item?.name || clip.bin), el("div", "insp-sub", `${f.track.kind} · ${f.track.name || f.track.id}`));
+    this.host.appendChild(head);
     // With several selected the panel still edits one — the last one clicked. Saying so is
     // the honest version: the alternative is fields that look like they apply to all of
     // them. Copy, cut, delete and split do apply to all of them, and say so in the strip.
     const n = store.selectedClips.length;
     this.host.appendChild(el("p", "muted tiny", n > 1 ? `This placement only — ${n} clips are selected, and this is the last one clicked.` : "This placement only."));
 
-    const item = binItem(store.state.project!, clip);
     const frame = 1 / store.fps;
     this.host.appendChild(field("Start", numberField(clip.start, (v) => void rep("/start", v, "start"), { step: frame, min: 0, suffix: "s" })));
     this.host.appendChild(field("End", numberField(clip.end, (v) => void rep("/end", v, "end"), { step: frame, min: 0, suffix: "s" })));
@@ -483,6 +487,8 @@ export class Inspector {
     }
     actions.appendChild(button("Delete clip", () => store.patch([{ op: "remove", path }], `delete ${clip.id}`)));
     this.host.appendChild(actions);
+    const past = historyFor([clip.id], "this clip");
+    if (past) this.host.appendChild(past);
   }
 
   /**
@@ -610,6 +616,8 @@ export class Inspector {
     remove.title = places ? "Remove its clips first" : "Delete this entry";
     actions.appendChild(remove);
     this.host.appendChild(actions);
+    const past = historyFor([id], "this entry");
+    if (past) this.host.appendChild(past);
   }
 
   /** The `source` half of an entry — the part that differs per kind. */

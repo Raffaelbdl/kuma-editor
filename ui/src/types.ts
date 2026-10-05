@@ -289,10 +289,57 @@ export interface CachePart { entries: number; bytes: number }
 /** How big the cache is, by part. */
 export interface CacheUsage { bakes: CachePart; samples: CachePart; thumbs: CachePart; bytes: number }
 
+/** One tool call an agent made over MCP, as the daemon was told of it (`/api/activity`).
+ *  Session state: the daemon's, never the document's. */
+export interface Activity {
+  id: number; tool: string; client: string;
+  state: "running" | "done" | "failed";
+  args: Record<string, unknown> | null;
+  /** What the call said it did: an `apply_edits` note. */
+  summary: string | null;
+  revision_before: number; revision_after: number | null;
+  /** Milliseconds since the epoch. */
+  started_at: number; ended_at: number | null;
+  error: string | null;
+  /** Where a `sample_frames` looked: its times, and the rect if it zoomed into one. */
+  sample: { sequence: string | null; overlay: string | null; times: number[]; rect: { x: number; y: number; w: number; h: number } | null } | null;
+  lint: { ok: boolean; errors: number; warnings: number } | null;
+  pins: string[];
+  /** A sample's frames, under `/api/samples/`. */
+  frames?: string[];
+}
+
+/** One step of the project's history: the daemon's undo stack, with who made each step,
+ *  and the patches it refused (`revision` null). */
+export interface HistoryEntry {
+  revision: number | null;
+  kind: "edit" | "undo" | "redo" | "restore" | "refused";
+  origin: string;
+  author: "agent" | "user" | "other";
+  summary: string; ops: number; at: number;
+  base_revision: number | null;
+  error: string | null;
+  /** Clip and bin ids the step touched. */
+  targets: string[];
+  changes: { target: string; field: string; from: unknown; to: unknown }[];
+  pins: string[];
+}
+
+/** A pin: a marker with a comment, which is how a person writes to the agent. Its id is
+ *  `<sequence>@<t>`, the format having no marker ids. */
+export interface Pin {
+  id: string; sequence: string; index: number; t: number; label: string; color: string | null;
+  /** The revision that answered it, and whether the agent did or a person ticked it. */
+  done: number | null; done_by: "agent" | "user" | null;
+}
+
 export type DaemonEvent =
   | { type: "project_changed"; revision: number; origin: string }
   | ({ type: "job" } & Job)
-  | { type: "jobs_cleared"; ids: number[] };
+  | { type: "jobs_cleared"; ids: number[] }
+  | ({ type: "activity" } & Activity)
+  | ({ type: "history" } & HistoryEntry)
+  | { type: "pins" };
 
 export const fpsValue = (f: Fps) => f.num / f.den;
 

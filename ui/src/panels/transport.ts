@@ -1,65 +1,56 @@
-// The transport strip: play, time, add track, preview quality, zoom. Runs
-// commands; the two pickers pass their value as the command's argument.
+// The transport, under the frame: back to the start, play, the time; then the preview's
+// resolution, a reload, and the frame size, which is also the control that flips it.
+// Zoom and "+ track" are the timeline's own, in its ruler's corner.
 
 import { Cmd, run } from "../commands";
-import { button, el, options, plural } from "../dom";
+import { button, el, options } from "../dom";
 import { icon } from "../icons";
 import { fmtTime, store } from "../store";
-import type { TrackKind } from "../types";
+import { orientation } from "../types";
 
 export function mountTransport(host: HTMLElement): void {
   const play = button(icon("play"), () => run(Cmd.togglePlay), "Play/pause (Space)", "icon");
-  // The icon is swapped only when the state changes: this panel is subscribed to the whole
-  // store, which ticks with the playhead 25 times a second during playback.
+  // The icon is swapped only when the state changes: the playhead ticks 25 times a second.
   const showPlaying = (playing: boolean) => {
     if (play.dataset.playing === String(playing)) return;
     play.dataset.playing = String(playing);
     play.replaceChildren(icon(playing ? "pause" : "play"));
   };
   const time = el("span", "time");
-
-  const zoom = el("input");
-  zoom.type = "range"; zoom.min = "8"; zoom.max = "600"; zoom.step = "1";
-  zoom.oninput = () => store.set({ zoom: Number(zoom.value) });
-
-  const addTrackSel = el("select");
-  addTrackSel.style.width = "auto";
-  addTrackSel.title = "Add a track";
-  options(addTrackSel, ["video", "overlay", "audio"].map((value) => ({ value })), undefined, "+ track…");
-  addTrackSel.onchange = () => {
-    const kind = addTrackSel.value as TrackKind | "";
-    addTrackSel.value = "";
-    if (kind) run(Cmd.addTrack, kind);
-  };
+  const now = el("span", "now");
+  const dur = el("span", "dur");
+  time.append(now, dur);
 
   const quality = el("select");
-  quality.style.width = "auto";
-  quality.title = "Preview resolution (fraction of the project size)";
-  options(quality, [{ value: "0.5", label: "preview ½" }, { value: "0.75", label: "preview ¾" }, { value: "1", label: "preview full" }]);
+  quality.title = "Preview resolution (a fraction of the project's size)";
+  options(quality, [{ value: "0.5", label: "½ res" }, { value: "0.75", label: "¾ res" }, { value: "1", label: "full res" }]);
   quality.onchange = () => run(Cmd.previewScale, Number(quality.value));
 
-  // How many clips a keypress would act on. Copy, cut and paste had buttons here and lost
-  // them: three more buttons for gestures everyone already knows the keys for, and the
-  // strip is a transport. What is worth saying is the thing the outlines make you count.
-  const selected = el("span", "muted sel-count");
+  // Spins while the reload it asked for is in flight: it can bake.
+  const reload = button(icon("refresh", 13), () => run(Cmd.reloadPreview), "Reload the preview: recompile the timeline, bake the overlays of nested sequences, and say how it went", "icon reload");
+  store.select((s) => [s.reloading], (s) => {
+    reload.classList.toggle("busy", s.reloading);
+    reload.disabled = s.reloading;
+  });
+
+  // Landscape or portrait is nothing but the frame size, so the control that shows it is
+  // the control that flips it: one click swaps width and height.
+  const size = button("", () => run(Cmd.swapOrientation), "", "size");
 
   host.append(
     button(icon("skip-back"), () => store.seek(0), "Back to the start (Home)", "icon"),
-    play, time,
-    // Split and marker are the clip's and the ruler's right-click now, and S and M.
-    selected,
-    addTrackSel, quality,
-    el("span", "muted", "zoom"), zoom,
+    play, time, el("span", "spacer"), quality, reload, size,
   );
 
+  store.select((s) => [s.project], (s) => {
+    if (!s.project) return;
+    const { width, height } = s.project;
+    size.textContent = `${width}×${height} ⇄`;
+    size.title = `Switch to ${orientation({ width: height, height: width })} (${height}×${width})`;
+  });
   store.subscribe((s) => {
     showPlaying(s.playing);
-    time.textContent = `${fmtTime(s.playhead, store.fps)} / ${fmtTime(store.duration, store.fps)}`;
-    zoom.value = String(s.zoom);
-    // One clip is visible as one outline; several are worth counting for you. The
-    // clipboard's own count stays out of it — it is not what this strip is about.
-    const n = store.selectedClips.length;
-    selected.textContent = n > 1 ? `${plural(n, "clip")} selected` : "";
-    selected.title = n > 1 ? "Copy, cut, delete and split act on all of them" : "";
+    now.textContent = fmtTime(s.playhead, store.fps);
+    dur.textContent = ` / ${fmtTime(store.duration, store.fps)}`;
   });
 }

@@ -2896,6 +2896,82 @@ encoder), `renders_reference_project_with_melt` ("melt reported no progress"), t
 `the render queue` (which waits for the same missing progress) and `titles from the bin`'s
 font picker, all of which fail the same way on the commit before this work.
 
+## Den and power: the editor around the agent
+
+The editor was redesigned from a handoff (`docs/design/den-power/`: the README is the spec,
+the `.dc.html` the visuals) around the agent that edits beside you over MCP. Two modes over
+one set of panels: **power**, every panel docked, styled as an IDE (a rail of letters, ⌘K, a
+status line); and **den**, the frame full-bleed with what the agent did and where it looked
+on it, and panels summoned over it.
+
+**A panel is a module; the container is view state** — adopted. `panelhost.ts` holds the
+panels (bin, blueprints, fonts, pins, history, render queue, inspector, timeline, agent) as
+elements that move between containers — a dock slot, the floating layer, the parking lot —
+and are never rebuilt, so their subscriptions and scroll positions live on. A panel never
+knows where it is. Mode, which panels are summoned and where they float are `localStorage`,
+per mode, beside the theme: a layout is not an edit and no agent or render reads it.
+
+**Den does not move the frame** — adopted, against the obvious implementation. Moving
+`#stages` into den's own container would reparent the overlay iframes, and an iframe that
+leaves the document reloads. Den is a class: the power chrome is hidden, the centre takes the
+window, and den's HUD and rail are drawn over it. Switching modes reloads nothing.
+
+**A panel's window is the same page** — adopted. `?panel=<id>` boots the editor with that
+panel alone; a browser opens it with `window.open`, the shell with a frameless
+`BrowserWindow` through the bridge (`openPanel`), which closes with its editor and is not a
+child window, so it can go to another screen. Each window has its own store; `viewsync.ts`
+sends the view state panels read (selection, playhead, open sequence and tabs, zoom) over a
+`BroadcastChannel`, and a command the panel's window does not have — play, reload — is run
+by the editor window. The document is never synced: every window reads it from the daemon.
+A panel's window says nothing until the editor window has told it where things are, or its
+defaults would overwrite the editor's selection and playhead.
+
+**Letters are commands** — adopted. `B I T A H M R` are `panel.<id>` commands and `P` is
+"pin at playhead", so the rail, den's keys, ⌘K and the shell's menus reach a panel one way,
+and ⌘K is the registry rather than a second list. Two keys moved to make room: **auto-key**
+is `Shift+R` (R is the render queue's letter; still R for record), and **`M`** shows the pins
+rather than opening the marker dialog — a pin is `P` and an inline field in the pins panel;
+the ruler's right-click and a flag's double-click still open the dialog. The backquote
+switches modes. Undo, redo, the theme, the shortcut list and the sequence picker left the top
+bar: they are commands, so ⌘K and the keys have them, and a sequence opens from the bin (or
+⌘K's *Open sequence*).
+
+**The agent's activity is reported by the MCP server, not inferred** — adopted. The UI used
+to see only the patches an agent landed. Now `kuma mcp` reports every tool call to the
+daemon as it starts and ends (`POST /api/activity`), with its arguments trimmed and its result
+reduced to what the editor draws: a lint verdict, an edit's revision, a sample's frames and
+rect. A report waits a second at most and its failure is ignored — the feed must never be the
+reason a tool is slow or fails. The bear's states, the status line and den's viewfinder are
+read off that feed (`ui/src/agent.ts`), with a clock for "asleep after a minute": what the
+agent was told it is doing, never a model of it.
+
+**History is the daemon's undo stack with authors** — adopted. Every revision the daemon
+makes, and every patch it refuses, is an entry recorded where it happens (under the edit
+lock), with its author from the origin (`ui` is you, `claude` the agent; an undo's is whoever
+asked, which the undo endpoint now takes), the clips and entries it touched and the fields it
+changed. Fields in the inspector are no longer meant to be coloured when they change: the
+inspector ends with that thing's history, which says what changed, when, and who. **⟲
+restores** a revision as one new, validated, undoable edit (a whole-document replace through
+the ordinary patch path), so going back is never destructive. All of it is session state,
+like the undo stack it extends: gone when the daemon stops.
+
+**A pin is a marker with a comment, and done-ness is not in the document** — adopted; the
+README left it open. The format has no marker ids and must not change for this, so a pin's id
+is `<sequence>@<t to the millisecond>`. It is done when an agent's edit names it
+(`apply_edits`' new `pins`) or you tick it — kept by the daemon for the session, and the latest
+of an answer, a tick and an untick wins. Writing "done" into the marker (its colour, say) was
+rejected: it would make answering a pin an edit of the note, and an agent's undo would reopen
+it. The costs are known: moving a marker changes its pin's id, and a restart forgets which
+were answered.
+
+**Fonts are bundled** — adopted. JetBrains Mono (chrome), IBM Plex Sans (sentences people and
+agents wrote) and Silkscreen (labels, the rail's letters, the wordmark) are woff2 files under
+`ui/src/fonts/` with their OFL licences, latin only: nothing is fetched at runtime.
+
+Still open here: the render queue cannot say a render was "asked by kuma" (a job does not
+record who asked for it); the agent panel's thumbnails are the sample's own PNGs, so a pruned
+cache leaves them blank; a pin whose marker is dragged starts over as a new pin.
+
 ## Still open
 
 Nested sequences are done and the editor is an application now, so this list is the whole

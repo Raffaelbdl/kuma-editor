@@ -75,7 +75,7 @@ describe("the open sequence", { skip: why ? `skipping: ${why}` : false }, () => 
   });
 
   it("opening another sequence gives it a tab and makes it the one being edited", async () => {
-    await page.eval(`(() => { const s = document.querySelector("#topbar select"); s.value = "intro"; s.dispatchEvent(new Event("change", { bubbles: true })); })()`);
+    await page.eval(`(() => { document.querySelector('#library .bin-row[data-sel="bin:intro"]').dispatchEvent(new MouseEvent("dblclick", { bubbles: true })); })()`);
     await page.until(`${TABS} === "Main | Intro*"`);
     assert.equal(await page.eval(OPEN_SEQUENCE), "intro", "the daemon must hold what the strip shows as open");
     // The timeline is the open sequence's, not the tab's neighbour's.
@@ -111,7 +111,7 @@ describe("the open sequence", { skip: why ? `skipping: ${why}` : false }, () => 
     const pick = (v) => `(() => { const t = ${seqSel}; t.value = ${JSON.stringify(v)}; t.dispatchEvent(new Event("change", { bubbles: true })); })()`;
 
     // Even while another sequence is being edited, the master is what is offered first.
-    await page.eval(`(() => { const s = document.querySelector("#topbar select"); s.value = "intro"; s.dispatchEvent(new Event("change", { bubbles: true })); })()`);
+    await page.eval(`(() => { document.querySelector('#library .bin-row[data-sel="bin:intro"]').dispatchEvent(new MouseEvent("dblclick", { bubbles: true })); })()`);
     await page.until(`${TABS} === "Main | Intro*"`);
     await page.eval(`${renderBtn}.click()`);
     await page.until(`${dialog} && ${dialog}.querySelector(".render-pane select:not([title]) option")`);

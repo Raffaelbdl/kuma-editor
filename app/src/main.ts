@@ -148,7 +148,7 @@ function panelWindowFor(editor: BrowserWindow, d: Daemon, id: string, size: { wi
     minWidth: 240,
     minHeight: 140,
     title: `${id} — ${nameOf(d.projectFile)} — kuma`,
-    backgroundColor: "#0b0c0f",
+    backgroundColor: "#121722",
     show: false,
     frame: false,
     webPreferences: editorPreferences(d),
@@ -171,7 +171,7 @@ function editorFor(d: Daemon): BrowserWindow {
     minWidth: 1000,
     minHeight: 640,
     title: `${nameOf(d.projectFile)} — kuma`,
-    backgroundColor: "#0b0c0f",
+    backgroundColor: "#121722",
     show: false,
     // The editor draws its own title bar, with the menu in it. The launcher keeps a
     // normal frame: it has no menu, so there would be nothing to gain.

@@ -25,7 +25,7 @@ export interface Theme {
  *  missing id falls back to. Every id needs a block in `themes.css`; the test holds the two
  *  together. */
 export const THEMES: Theme[] = [
-  { id: "kuma", label: "Kuma", note: "The default: warm orange on charcoal, and nothing on screen brighter than the picture." },
+  { id: "kuma", label: "Kuma", note: "The default: warm orange on deep slate blue, and nothing on screen brighter than the picture." },
   { id: "tokyo-night", label: "Tokyo Night", note: "Retro neon on deep indigo — hot pink playhead, violet overlays, and a glow where you look for the time." },
 ];
 

@@ -14,17 +14,18 @@
  */
 
 /* ---------------------------------------------------------------- kuma (the default)
-   The original palette: warm orange on charcoal, with the track kinds in muted blue,
+   Warm orange on a deep slate blue (lifted from the first cut's near-black charcoal, which
+   read as heavy over a long session), with the track kinds in muted blue,
    rust and green so they sit beside a picture whose colours are the work. */
 :root,
 :root[data-theme="kuma"] {
-  --bg-0: #0b0c0f;
-  --bg: #121317;
-  --bg-2: #1a1c22;
-  --bg-3: #23262e;
-  --line: #2e323c;
+  --bg-0: #121722;
+  --bg: #19202d;
+  --bg-2: #212938;
+  --bg-3: #2a3345;
+  --line: #354055;
   --fg: #e6e7eb;
-  --fg-2: #9aa0ad;
+  --fg-2: #9ea7ba;
   --accent: #ff4f00;
   /* Text on top of `--accent` (the primary button, the status line, an active letter):
      the app's own black, as the design has it, rather than white. */
@@ -43,8 +44,8 @@
   /* The brightest thing on screen: a keyframe under the pointer. */
   --hot: #fff;
   /* Alpha's checkerboard — what a video would show through. */
-  --check-a: #1b1d23;
-  --check-b: #262a33;
+  --check-a: #1b2230;
+  --check-b: #252e3e;
   /* A clip's own edge, the brighter edge a grouped clip gets, and its second line. */
   --clip-edge: rgba(255, 255, 255, 0.15);
   --clip-edge-strong: rgba(255, 255, 255, 0.55);
@@ -60,22 +61,22 @@
   --glow: none;
   /* The den/power redesign (`docs/design/den-power/`). The stage is the darkest thing on
      screen, the bars a step above the app, and lines come in two weights. */
-  --bg-stage: #08090b;
-  --bg-bar: #0e0f12;
-  --line-2: #1a1c22;
+  --bg-stage: #0c1018;
+  --bg-bar: #151b27;
+  --line-2: #222a39;
   /* Text in four steps: the value, body copy that is not the value, a label, and what is
      there to be skipped (a ruler's numbers, a disabled row). */
   --fg-body: #c4c8d2;
-  --fg-3: #5c616d;
+  --fg-3: #66718a;
   /* The accent as text on the dark: a revision number, an agent's state. */
   --accent-text: #ff7a3d;
   /* Under a pin's flag: the selection colour, dimmed to a background. */
-  --pin-bg: #2a2615;
+  --pin-bg: #2c2a22;
   --ok: #3f8a5c;
   --diff-add: #59c07a;
   --diff-del: #d9576b;
   /* What floats: panels summoned over the frame, and the shadow that lifts them off it. */
-  --float-bg: rgba(14, 15, 18, 0.94);
+  --float-bg: rgba(21, 27, 39, 0.94);
   --float-shadow: 0 14px 40px rgba(0, 0, 0, 0.6);
   /* Over the picture: the top of the frame darkened so the HUD reads, and the caption's box. */
   --scrim: rgba(0, 0, 0, 0.55);

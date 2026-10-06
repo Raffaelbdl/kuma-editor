@@ -210,6 +210,57 @@ async fn a_revision_is_restored_as_one_undoable_edit() {
     assert!(status.contains("404") && v["error"].as_str().unwrap().contains("9999"), "{status} {v}");
 }
 
+/// The undo stack and the history keep documents as JSON, shared between them: undo walks
+/// back as far as the stack goes (the oldest steps past its 200 dropped), redo forward, and a
+/// revision an undo made restores to what that undo left.
+#[tokio::test(flavor = "multi_thread")]
+async fn undo_walks_back_through_many_edits() {
+    let (state, _addr, _dir) = daemon().await;
+    let name = |s: &AppState| s.project.read().unwrap().bin["black"].name.clone();
+    let rename = |i: usize| serde_json::from_value::<Vec<json_patch::PatchOperation>>(json!([{ "op": "replace", "path": "/bin/black/name", "value": format!("n{i}") }])).unwrap();
+    for i in 0..205 {
+        state.apply_patch(&rename(i), None, "ui", &[]).unwrap();
+    }
+    let edited = revision(&state);
+    for back in 1..=200 {
+        let r = state.undo(Some("ui")).unwrap();
+        assert_eq!((r, name(&state)), (Some(edited + back), format!("n{}", 204 - back)), "undo {back}");
+    }
+    assert_eq!(state.undo(None).unwrap(), None, "the oldest steps are dropped");
+    let undone = revision(&state);
+    assert_eq!(state.redo(None).unwrap(), Some(undone + 1));
+    assert_eq!(name(&state), "n5");
+
+    // r(edited + 10) is what the tenth undo left; its snapshot holds that document.
+    let (rev, _) = state.restore(edited + 10, Some("ui")).unwrap();
+    assert_eq!((rev, name(&state)), (undone + 2, "n194".to_string()));
+    state.undo(None).unwrap();
+    assert_eq!(name(&state), "n5", "the restore undoes");
+}
+
+/// The lists are written from their locks rather than copied into a `Value` first, and
+/// read byte for byte as the `json!` they used to be built into.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_lists_read_as_they_always_did() {
+    let (state, addr, _dir) = daemon().await;
+    post(&addr, "/api/activity", json!({ "phase": "start", "tool": "apply_edits", "client": "claude-code", "args": { "note": "rename", "pins": ["main@8.600"] } }));
+    post(&addr, "/api/project/patch", json!({ "patch": [{ "op": "replace", "path": "/bin/black/name", "value": "Ink" }], "origin": "claude: rename", "pins": ["main@8.600"] }));
+    post(&addr, "/api/project/undo", json!({ "origin": "ui" }));
+    let (status, _) = call(&addr, "POST", "/api/project/patch", json!({ "patch": [{ "op": "remove", "path": "/bin/nowhere" }] }));
+    assert!(status.contains("422") || status.contains("409") || status.contains("400"), "{status}");
+
+    let raw = |path: &str| {
+        let (status, body) = request(&addr, "GET", path, "");
+        assert!(status.contains("200"), "{path}: {status}");
+        String::from_utf8(body).unwrap()
+    };
+    let history = json!({ "current": revision(&state), "entries": state.history.lock().unwrap().newest(kuma_daemon::history::ENTRIES) }).to_string();
+    assert_eq!(raw("/api/history"), history);
+    let activity = json!({ "activity": state.activity.lock().unwrap().newest(kuma_daemon::activity::RECORDS) }).to_string();
+    assert_eq!(raw("/api/activity"), activity);
+    assert_eq!(raw("/api/pins"), json!({ "pins": state.pin_list() }).to_string());
+}
+
 /// Pins are labelled markers, numbered in time order per sequence, the master's first; an
 /// edit naming one answers it, and a tick by hand marks or clears it. Each of those sends
 /// the whole list, as `GET /api/pins` has it.

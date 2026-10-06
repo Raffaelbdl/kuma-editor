@@ -2986,7 +2986,10 @@ changed. Fields in the inspector are no longer meant to be coloured when they ch
 inspector ends with that thing's history, which says what changed, when, and who. **⟲
 restores** a revision as one new, validated, undoable edit (a whole-document replace through
 the ordinary patch path), so going back is never destructive. All of it is session state,
-like the undo stack it extends: gone when the daemon stops.
+like the undo stack it extends: gone when the daemon stops. The documents both keep are
+compact JSON, one shared copy per revision, parsed only when someone goes back: typed, the
+200 snapshots and 200 undo steps of a 300-clip project with a long transcript held half a
+gigabyte, and parsing a snapshot proved cheaper than the two copies an undo made of a typed one.
 
 **A pin is a marker with a comment, and done-ness is not in the document** — adopted; the
 README left it open. The format has no marker ids and must not change for this, so a pin's id

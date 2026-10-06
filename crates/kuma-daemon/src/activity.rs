@@ -146,9 +146,9 @@ impl Activity {
         Some(r.clone())
     }
 
-    /// The last `limit` calls, newest first.
-    pub fn newest(&self, limit: usize) -> Vec<Record> {
-        self.records.iter().rev().take(limit).cloned().collect()
+    /// The last `limit` calls, newest first. Borrowed: a list is serialised as it is read.
+    pub fn newest(&self, limit: usize) -> Vec<&Record> {
+        self.records.iter().rev().take(limit).collect()
     }
 }
 

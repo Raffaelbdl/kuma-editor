@@ -12,7 +12,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use kuma_core::edit::EditError;
 use kuma_core::{BinSource, Project};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tower_http::services::ServeDir;
 use tower_http::set_header::SetResponseHeaderLayer;
@@ -274,10 +274,26 @@ struct Limit {
     limit: Option<usize>,
 }
 
+/// `body` as a JSON response, serialised now rather than once the handler has returned
+/// (which is when `Json` does it), so a list can be written straight from the lock it is
+/// read under instead of copied out first.
+fn json_now(body: &impl Serialize) -> Result<Response, ApiError> {
+    let bytes = serde_json::to_vec(body).map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    Ok(([(header::CONTENT_TYPE, "application/json")], bytes).into_response())
+}
+
+#[derive(Serialize)]
+struct HistoryList<'a> {
+    current: u64,
+    entries: Vec<&'a crate::history::Entry>,
+}
+
 /// Every revision made and patch refused, newest first, beside the current revision.
-async fn history(State(st): S, Query(q): Query<Limit>) -> Json<Value> {
-    let entries = lock(&st.history).newest(q.limit.unwrap_or(crate::history::ENTRIES));
-    Json(json!({ "current": read(&st.project).revision, "entries": entries }))
+async fn history(State(st): S, Query(q): Query<Limit>) -> Result<Response, ApiError> {
+    let h = lock(&st.history);
+    // The history's lock is taken before the project's, never after.
+    let current = read(&st.project).revision;
+    json_now(&HistoryList { current, entries: h.newest(q.limit.unwrap_or(crate::history::ENTRIES)) })
 }
 
 #[derive(Deserialize)]
@@ -296,9 +312,15 @@ async fn restore(State(st): S, Json(req): Json<Restore>) -> ApiResult {
     Ok(Json(json!({ "revision": rev, "warnings": warnings })))
 }
 
+#[derive(Serialize)]
+struct ActivityList<'a> {
+    activity: Vec<&'a crate::activity::Record>,
+}
+
 /// The agent's recent tool calls, newest first.
-async fn activity(State(st): S, Query(q): Query<Limit>) -> Json<Value> {
-    Json(json!({ "activity": lock(&st.activity).newest(q.limit.unwrap_or(crate::activity::RECORDS)) }))
+async fn activity(State(st): S, Query(q): Query<Limit>) -> Result<Response, ApiError> {
+    let a = lock(&st.activity);
+    json_now(&ActivityList { activity: a.newest(q.limit.unwrap_or(crate::activity::RECORDS)) })
 }
 
 /// The MCP server reporting a tool call's start (answered with its id) or end.
@@ -319,9 +341,14 @@ async fn report_activity(State(st): S, Json(report): Json<crate::activity::Repor
     Ok(Json(json!({ "id": id })))
 }
 
+#[derive(Serialize)]
+struct PinList {
+    pins: Vec<crate::pins::Pin>,
+}
+
 /// Every pin, the master's first, each with whether it is done.
-async fn pins(State(st): S) -> Json<Value> {
-    Json(json!({ "pins": st.pin_list() }))
+async fn pins(State(st): S) -> Json<PinList> {
+    Json(PinList { pins: st.pin_list() })
 }
 
 #[derive(Deserialize)]
@@ -976,7 +1003,12 @@ async fn events_ws(State(st): S, ws: WebSocketUpgrade) -> Response {
                     Ok(ev) => {
                         if socket.send(Message::Text(serde_json::to_string(&ev).unwrap().into())).await.is_err() { break; }
                     }
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                    // Events were dropped, and a client appends history and activity
+                    // from them: close, and it reconnects and reloads everything.
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                        let _ = socket.send(Message::Close(None)).await;
+                        break;
+                    }
                     Err(_) => break,
                 },
                 msg = socket.recv() => match msg {

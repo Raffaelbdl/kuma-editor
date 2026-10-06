@@ -469,7 +469,9 @@ Each change is broadcast on `/api/events` beside `project_changed` and `job`: `a
 `history` carry the record, and `pins` carries the whole list as `GET /api/pins` has it
 (`{"type":"pins","pins":[…]}`), sent at most once per operation whenever it can have
 changed — an edit, undo, redo or restore that changes a labelled marker (or the master), an
-edit that names pins, a tick or untick.
+edit that names pins, a tick or untick. A subscriber that falls too far behind is
+disconnected rather than skipped ahead, since a client appends `history` and `activity` as
+they come: it reconnects and reloads.
 
 ### CLI
 

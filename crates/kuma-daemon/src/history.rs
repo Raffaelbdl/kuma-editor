@@ -8,7 +8,8 @@
 //! Snapshots of recent revisions live here too, so any of them can be restored as one new,
 //! undoable edit rather than by undoing everything since.
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::sync::Arc;
 
 use kuma_core::edit::EditError;
 use json_patch::jsonptr::Pointer;
@@ -20,6 +21,22 @@ use serde_json::Value;
 pub const ENTRIES: usize = 500;
 /// Revisions that can be restored. Whole documents, so fewer than the entries.
 pub const SNAPSHOTS: usize = 200;
+
+/// A whole document as compact JSON: how the history and the undo stack keep past revisions.
+/// A typed [`Project`] takes several times its JSON in memory — a few hundred clips and a
+/// long transcript are over a megabyte each, kept hundreds of times — and these are read
+/// only when someone goes back. Shared, so a revision both of them keep is held once.
+pub type Snapshot = Arc<str>;
+
+/// `p` as a [`Snapshot`].
+pub fn snapshot(p: &Project) -> serde_json::Result<Snapshot> {
+    serde_json::to_string(p).map(Snapshot::from)
+}
+
+/// The document a [`Snapshot`] holds. One this daemon made, so it is current: no upgrade.
+pub fn parse(s: &str) -> serde_json::Result<Project> {
+    serde_json::from_str(s)
+}
 /// Field changes listed per entry: what a row in a list can show, not a diff.
 const MAX_CHANGES: usize = 8;
 
@@ -90,7 +107,7 @@ pub struct Change {
 #[derive(Default)]
 pub struct History {
     entries: VecDeque<Entry>,
-    snapshots: BTreeMap<u64, Project>,
+    snapshots: BTreeMap<u64, Snapshot>,
 }
 
 impl History {
@@ -101,22 +118,23 @@ impl History {
         self.entries.push_back(e);
     }
 
-    /// Keep `p` as the document at its revision, dropping the oldest beyond [`SNAPSHOTS`].
-    pub fn keep(&mut self, p: Project) {
-        self.snapshots.insert(p.revision, p);
+    /// Keep `doc` as the document at `revision`, dropping the oldest beyond [`SNAPSHOTS`].
+    pub fn keep(&mut self, revision: u64, doc: Snapshot) {
+        self.snapshots.insert(revision, doc);
         while self.snapshots.len() > SNAPSHOTS {
             self.snapshots.pop_first();
         }
     }
 
-    /// The document as it was at `revision`, if it is still kept.
-    pub fn snapshot(&self, revision: u64) -> Option<&Project> {
-        self.snapshots.get(&revision)
+    /// The document as it was at `revision`, if it is still kept. A shared handle, so it is
+    /// parsed after the history is let go of.
+    pub fn snapshot(&self, revision: u64) -> Option<Snapshot> {
+        self.snapshots.get(&revision).cloned()
     }
 
-    /// The last `limit` entries, newest first.
-    pub fn newest(&self, limit: usize) -> Vec<Entry> {
-        self.entries.iter().rev().take(limit).cloned().collect()
+    /// The last `limit` entries, newest first. Borrowed: a list is serialised as it is read.
+    pub fn newest(&self, limit: usize) -> Vec<&Entry> {
+        self.entries.iter().rev().take(limit).collect()
     }
 }
 
@@ -233,8 +251,12 @@ pub fn patch_targets(before: &Project, after: Option<&Project>, ops: &[json_patc
     out
 }
 
-fn clips_by_id(p: &Project) -> BTreeMap<&str, &Clip> {
-    p.all_clips().map(|(_, _, c)| (c.id.as_str(), c)).collect()
+/// A document's clips by id.
+type Clips<'a> = BTreeMap<&'a str, &'a Clip>;
+
+/// Every clip of `p` by id, or only those `only` names, found in one pass.
+fn clips_by_id<'a>(p: &'a Project, only: Option<&BTreeSet<&str>>) -> Clips<'a> {
+    p.all_clips().filter(|(_, _, c)| only.is_none_or(|ids| ids.contains(c.id.as_str()))).map(|(_, _, c)| (c.id.as_str(), c)).collect()
 }
 
 /// A bin entry as what it is beside its clips: a sequence's tracks are those, which are
@@ -263,7 +285,19 @@ fn entry_value(e: &BinItem) -> Option<Value> {
 /// What changed between two whole documents, for a step that swaps one for the other
 /// (undo, redo, restore): clips added, removed or changed, by id, then bin entries likewise.
 pub fn diff_targets(before: &Project, after: &Project) -> Vec<Target> {
-    let (a, b) = (clips_by_id(before), clips_by_id(after));
+    targets_between(before, after, &clips_by_id(before, None), &clips_by_id(after, None))
+}
+
+/// [`diff_targets`] and the [`changes`] on them, for a step that swaps documents: every clip
+/// is indexed once for both.
+pub fn diff(before: &Project, after: &Project) -> (Vec<Target>, Vec<Change>) {
+    let (a, b) = (clips_by_id(before, None), clips_by_id(after, None));
+    let targets = targets_between(before, after, &a, &b);
+    let changes = changes_between(before, after, &a, &b, &targets);
+    (targets, changes)
+}
+
+fn targets_between(before: &Project, after: &Project, a: &Clips, b: &Clips) -> Vec<Target> {
     let mut ids: Vec<&str> = a.keys().chain(b.keys()).copied().collect();
     ids.sort_unstable();
     ids.dedup();
@@ -279,16 +313,22 @@ pub fn diff_targets(before: &Project, after: &Project) -> Vec<Target> {
 /// [`MAX_CHANGES`]. A field written only when it is not its default (`parent`, a clip's
 /// `group`) reads as null where it is absent.
 pub fn changes(before: &Project, after: &Project, targets: &[Target]) -> Vec<Change> {
+    // Only the clips named: an edit touches a few of a timeline's hundreds.
+    let ids: BTreeSet<&str> = targets.iter().filter_map(|t| if let Target::Clip(id) = t { Some(id.as_str()) } else { None }).collect();
+    changes_between(before, after, &clips_by_id(before, Some(&ids)), &clips_by_id(after, Some(&ids)), targets)
+}
+
+/// [`changes`], with each side's clips already indexed (at least those `targets` names).
+fn changes_between(before: &Project, after: &Project, a: &Clips, b: &Clips, targets: &[Target]) -> Vec<Change> {
     let scalar = |v: &Value| !v.is_object() && !v.is_array();
-    let (a, b) = (clips_by_id(before), clips_by_id(after));
     // A target's object on one side, as JSON.
-    let value_of = |p: &Project, clips: &BTreeMap<&str, &Clip>, t: &Target| match t {
+    let value_of = |p: &Project, clips: &Clips, t: &Target| match t {
         Target::Clip(id) => clips.get(id.as_str()).and_then(|c| serde_json::to_value(c).ok()),
         Target::Bin(id) => p.bin.get(id).and_then(entry_value),
     };
     let mut out = Vec::new();
     for t in targets {
-        let (Some(Value::Object(x)), Some(Value::Object(y))) = (value_of(before, &a, t), value_of(after, &b, t)) else { continue };
+        let (Some(Value::Object(x)), Some(Value::Object(y))) = (value_of(before, a, t), value_of(after, b, t)) else { continue };
         let mut fields: Vec<&String> = x.keys().chain(y.keys()).collect();
         fields.sort_unstable();
         fields.dedup();
@@ -363,7 +403,9 @@ mod tests {
         let after = project(json!([clip("c2", 2.0, 3.0), clip("c3", 3.0, 4.0)]));
         let t = diff_targets(&before, &after);
         assert_eq!(ids(&t), ["c1", "c2", "c3"]);
-        assert_eq!(changes(&before, &after, &t), [Change { target: "c2".into(), field: "end".into(), from: json!(4.0), to: json!(3.0) }]);
+        let ch = [Change { target: "c2".into(), field: "end".into(), from: json!(4.0), to: json!(3.0) }];
+        assert_eq!(changes(&before, &after, &t), ch);
+        assert_eq!(diff(&before, &after), (t, ch.to_vec()), "one index for both says the same");
         assert!(diff_targets(&before, &before).is_empty());
     }
 
@@ -380,9 +422,10 @@ mod tests {
     fn snapshots_and_entries_are_bounded() {
         let mut h = History::default();
         for r in 0..(SNAPSHOTS as u64 + 5) {
-            h.keep(Project { revision: r, ..Project::default() });
+            h.keep(r, snapshot(&Project { revision: r, ..Project::default() }).unwrap());
         }
-        assert!(h.snapshot(4).is_none() && h.snapshot(5).is_some());
+        assert!(h.snapshot(4).is_none());
+        assert_eq!(parse(&h.snapshot(5).unwrap()).unwrap().revision, 5, "a snapshot parses back into its document");
         for r in 0..(ENTRIES as u64 + 1) {
             h.push(Entry::new(Kind::Edit, "ui", Some(r), &[]));
         }

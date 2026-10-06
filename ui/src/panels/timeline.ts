@@ -472,7 +472,7 @@ export class Timeline {
 
   private clipEl(p: Project, t: Track, ti: number, c: Clip): HTMLDivElement {
     const w = Math.max(4, (c.end - c.start) * store.state.zoom);
-    const box = el("div", `clip ${clipKind(p, c, t)}${store.selectedClip === c.id ? " selected" : ""}${w < 24 ? " tiny" : ""}${c.group ? " grouped" : ""}${c.muted ? " silenced" : ""}`);
+    const box = el("div", `clip ${clipKind(p, c, t)}${store.selectedClips.includes(c.id) ? " selected" : ""}${w < 24 ? " tiny" : ""}${c.group ? " grouped" : ""}${c.muted ? " silenced" : ""}`);
     box.dataset.id = c.id;
     box.style.left = `${this.x(c.start) - HEAD}px`;
     box.style.width = `${w}px`;

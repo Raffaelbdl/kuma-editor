@@ -5,7 +5,7 @@
 import { Cmd, command } from "./commands";
 import { desktop, initDesktop, pickAndAddMedia } from "./desktop";
 import { el } from "./dom";
-import { addMarker, addTrack, copySelection, createFromBlueprint, creatable, cutSelection, deleteSelectedClips, groupSelection, pasteClipboard, promptNewOverlay, promptNewSequence, splitAt, swapOrientation, transcribe, ungroupSelection } from "./edits";
+import { addTrack, copySelection, createFromBlueprint, creatable, cutSelection, deleteSelectedClips, groupSelection, pasteClipboard, promptNewOverlay, promptNewSequence, splitAt, swapOrientation, transcribe, ungroupSelection } from "./edits";
 import { panelCommands, panels } from "./panelhost";
 import { installPalette } from "./palette";
 import { agentPanel } from "./panels/agentpanel";
@@ -14,7 +14,7 @@ import { fontsPanel } from "./panels/fonts";
 import { historyPanel } from "./panels/history";
 import { Inspector } from "./panels/inspector";
 import { Library } from "./panels/library";
-import { pinsPanel } from "./panels/pins";
+import { markersPanel } from "./panels/markers";
 import { Preview } from "./panels/preview";
 import { queuePanel } from "./panels/queue";
 import { mountRail } from "./panels/rail";
@@ -48,7 +48,6 @@ function projectCommands() {
   command(Cmd.split, "Split at Playhead", () => splitAt(store.state.playhead));
   command(Cmd.seekEdge, "Go to Clip Edge", (dir) => store.seekEdge(Number(dir) < 0 ? -1 : 1));
   command(Cmd.deleteClip, "Delete Clips", () => deleteSelectedClips());
-  command(Cmd.addMarker, "Add Marker…", () => addMarker());
   command(Cmd.copyClip, "Copy Clips", () => copySelection());
   command(Cmd.cutClip, "Cut Clips", () => cutSelection());
   command(Cmd.pasteClip, "Paste Clips", () => pasteClipboard());
@@ -96,8 +95,8 @@ function registerPanels() {
   panels.register({ id: "blueprints", letter: "p", title: "blueprints", body: blueprintsEl, tools: blueprints.tools, dock: "side", size: { w: 300, h: 420 } });
   const fonts = fontsPanel();
   panels.register({ id: "fonts", letter: "f", title: "fonts", body: fonts.body, tools: fonts.tools, dock: "side" });
-  const pins = pinsPanel();
-  panels.register({ id: "pins", letter: "m", key: "Your pins: notes on frames for the agent", title: "pins", body: pins.body, note: pins.note, dock: "side", size: { w: 300, h: 300 } });
+  const markers = markersPanel();
+  panels.register({ id: "markers", letter: "m", key: "The markers: notes on frames, for the agent or for you", title: "markers", body: markers.body, note: markers.note, dock: "side", size: { w: 300, h: 300 } });
   const history = historyPanel();
   panels.register({ id: "history", letter: "h", key: "The history: every step, yours and the agent's", title: "history", body: history.body, tools: history.tools, dock: "side", size: { w: 380, h: 340 } });
   const queue = queuePanel();

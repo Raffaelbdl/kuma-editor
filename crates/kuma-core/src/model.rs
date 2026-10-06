@@ -1125,6 +1125,12 @@ pub struct Marker {
     /// Colour of the marker in the editor (CSS), or null for the default.
     #[serde(default)]
     pub color: Option<String>,
+    /// Who left it: the head of the origin of the edit that added it (`ui`, `mcp`, `cli`,
+    /// `agent`…), stamped by the daemon. Absent on an older file's marker, which is read as
+    /// a person's. What tells a person's comment, a request for the agent, from the agent's
+    /// own note.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<String>,
 }
 
 #[cfg(test)]
@@ -1220,6 +1226,17 @@ mod tests {
         }
         let s: Sequence = serde_json::from_value(json!({ "tracks": [] })).unwrap();
         assert_eq!(serde_json::to_value(&s).unwrap()["effects"], json!([]));
+    }
+
+    /// A marker says who left it when it is known, and an older one, which does not, is
+    /// written back exactly as it was read.
+    #[test]
+    fn a_marker_carries_its_origin_only_when_it_has_one() {
+        let old: Marker = serde_json::from_value(json!({ "t": 1.0, "label": "too dark" })).unwrap();
+        assert_eq!(old.origin, None);
+        assert_eq!(serde_json::to_value(&old).unwrap(), json!({ "t": 1.0, "label": "too dark", "color": null }));
+        let mine: Marker = serde_json::from_value(json!({ "t": 2.0, "label": "TODO", "origin": "mcp" })).unwrap();
+        assert_eq!(serde_json::to_value(&mine).unwrap()["origin"], "mcp");
     }
 
     /// Which effects can act on a clip: picture where the track draws one and the source

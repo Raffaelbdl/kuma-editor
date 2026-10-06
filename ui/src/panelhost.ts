@@ -1,7 +1,7 @@
 // Panels and the containers they sit in.
 //
 // Every panel is one module — the bin, the inspector, the timeline, the agent, the
-// history, the pins, the render queue — and the same module whichever container holds it:
+// history, the markers, the render queue — and the same module whichever container holds it:
 // a **group** in power's dock (`dock.ts`: splits and tabs round the frame, rearranged by
 // dragging a tab), **floating** over the frame (den, or power when torn off), or a
 // **window** of its own (`?panel=<id>`). Only the container changes, so a panel is written

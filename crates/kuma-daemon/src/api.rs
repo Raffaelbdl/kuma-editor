@@ -35,8 +35,8 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/history", get(history))
         .route("/api/history/restore", post(restore))
         .route("/api/activity", get(activity).post(report_activity))
-        .route("/api/pins", get(pins))
-        .route("/api/pins/done", post(tick_pin))
+        .route("/api/markers", get(markers))
+        .route("/api/markers/done", post(tick_marker))
         .route("/api/sequence", get(get_sequence).post(open_sequence))
         .route("/api/schema", get(schema))
         .route("/api/blueprints", get(blueprints).post(reload_blueprints))
@@ -216,9 +216,10 @@ struct PatchProject {
     base_revision: Option<u64>,
     #[serde(default = "default_origin")]
     origin: String,
-    /// Ids of the pins this edit answers (`GET /api/pins`), recorded on its history entry.
+    /// Ids of the markers this edit answers (`GET /api/markers`), recorded on its history
+    /// entry.
     #[serde(default)]
-    pins: Vec<String>,
+    answers: Vec<String>,
 }
 fn default_origin() -> String {
     "ui".into()
@@ -233,7 +234,7 @@ async fn patch_project(State(st): S, Json(req): Json<PatchProject>) -> ApiResult
             (None, Some(path)) => read_patch(&st, &path).map_err(bad_request_err)?,
             _ => return Err(ApiError::bad_request("pass the operations as `patch`, or a file in the project holding them as `patch_path`: one of the two")),
         };
-        let (rev, warnings) = st.apply_patch(&patch.0, req.base_revision, &req.origin, &req.pins)?;
+        let (rev, warnings) = st.apply_patch(&patch.0, req.base_revision, &req.origin, &req.answers)?;
         Ok(json!({ "revision": rev, "warnings": warnings, "ops": patch.0.len() }))
     })
     .await??;
@@ -266,7 +267,7 @@ async fn redo(State(st): S, body: Option<Json<StepBy>>) -> ApiResult {
     Ok(Json(json!({ "revision": blocking(move || st.redo(by.as_deref())).await?? })))
 }
 
-// ---------- history, activity, pins (session state, never the document) ----------
+// ---------- history, activity, markers' answers (session state, never the document) ----------
 
 #[derive(Deserialize)]
 struct Limit {
@@ -334,25 +335,25 @@ async fn report_activity(State(st): S, Json(report): Json<crate::activity::Repor
 }
 
 #[derive(Serialize)]
-struct PinList {
-    pins: Vec<crate::pins::Pin>,
+struct MarkerList {
+    markers: Vec<crate::markers::MarkerInfo>,
 }
 
-/// Every pin, the master's first, each with whether it is done.
-async fn pins(State(st): S) -> Json<PinList> {
-    Json(PinList { pins: st.pin_list() })
+/// Every marker, the master's first, each with who left it and whether it is done.
+async fn markers(State(st): S) -> Json<MarkerList> {
+    Json(MarkerList { markers: st.marker_list() })
 }
 
 #[derive(Deserialize)]
-struct TickPin {
+struct TickMarker {
     id: String,
     done: bool,
 }
 
-/// Tick a pin done by hand, or untick it.
-async fn tick_pin(State(st): S, Json(req): Json<TickPin>) -> ApiResult {
-    if !st.tick_pin(&req.id, req.done) {
-        return Err(ApiError::not_found(format!("no pin `{}`: `GET /api/pins` lists them", req.id)));
+/// Tick a marker done by hand, or untick it.
+async fn tick_marker(State(st): S, Json(req): Json<TickMarker>) -> ApiResult {
+    if !st.tick_marker(&req.id, req.done) {
+        return Err(ApiError::not_found(format!("no marker `{}`: `GET /api/markers` lists them", req.id)));
     }
     Ok(Json(json!({ "id": req.id, "done": req.done })))
 }

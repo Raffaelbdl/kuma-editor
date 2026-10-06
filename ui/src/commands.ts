@@ -75,7 +75,7 @@ export const Cmd = {
   split: "timeline.split",
   seekEdge: "timeline.seek-edge",
   deleteClip: "timeline.delete-clip",
-  addMarker: "timeline.add-marker",
+  addMarker: "markers.add",
   autoKey: "timeline.auto-key",
   shortcuts: "help.shortcuts",
   theme: "view.theme",
@@ -92,7 +92,6 @@ export const Cmd = {
   modeDen: "view.den",
   modePower: "view.power",
   toggleMode: "view.toggle-mode",
-  addPin: "pins.add",
   resetDock: "view.reset-dock",
   movablePanels: "view.movable-panels",
 } as const;

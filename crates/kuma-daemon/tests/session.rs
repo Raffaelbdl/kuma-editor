@@ -1,5 +1,5 @@
 //! The session state the editor reads beside the document: the agent's activity, the
-//! revision history (with refusals and restores), and pins. None of it is in the project
+//! revision history (with refusals and restores), and the markers' answers. None of it is in the project
 //! file, all of it is over HTTP, and every change of it is broadcast.
 //!
 //! Needs no browser and no engine: a daemon on a loopback port and raw requests.
@@ -11,7 +11,7 @@ use kuma_daemon::{serve, AppState, Config};
 use serde_json::{json, Value};
 
 const PROJECT: &str = r##"{
-  "version": 8, "name": "t", "master": "main",
+  "version": 9, "name": "t", "master": "main",
   "fps": { "num": 30, "den": 1 }, "width": 320, "height": 240, "sample_rate": 48000,
   "bin": {
     "black": { "name": "Black", "source": { "color": "#000000" } },
@@ -97,7 +97,7 @@ async fn a_call_is_reported_once_it_has_ended() {
     let frames = json!({ "paths": [samples.join("x/1.png"), samples.join("x/2.png")], "sheet": null });
     let args = json!({ "t0": 46.0, "t1": 49.0, "rect": { "x": 0, "y": 0, "w": 960, "h": 540 } });
     let sample = post(&addr, "/api/activity", json!({ "phase": "call", "tool": "sample_frames", "client": "claude-code", "args": args, "ok": true, "error": null, "result": frames, "revision": null, "started_at": 1 }));
-    let edit = post(&addr, "/api/activity", json!({ "phase": "call", "tool": "apply_edits", "args": { "patch": { "ops": 2 }, "note": "Moved + trimmed the umbrella", "pins": ["main@8.600"] }, "ok": false, "error": "409: stale", "result": null }));
+    let edit = post(&addr, "/api/activity", json!({ "phase": "call", "tool": "apply_edits", "args": { "patch": { "ops": 2 }, "note": "Moved + trimmed the umbrella", "answers": ["main@8.600"] }, "ok": false, "error": "409: stale", "result": null }));
     let (a, b) = (sample["id"].as_u64().unwrap(), edit["id"].as_u64().unwrap());
     assert!(b > a);
 
@@ -105,7 +105,7 @@ async fn a_call_is_reported_once_it_has_ended() {
     assert_eq!(all.iter().map(|r| r["id"].as_u64().unwrap()).collect::<Vec<_>>(), [b, a], "newest first");
     let (e, s) = (&all[0], &all[1]);
     assert_eq!((e["state"].as_str(), e["client"].as_str(), e["summary"].as_str()), (Some("failed"), Some("agent"), Some("Moved + trimmed the umbrella")));
-    assert_eq!((e["error"].as_str(), &e["args"]["pins"], &e["job"]), (Some("409: stale"), &json!(["main@8.600"]), &Value::Null));
+    assert_eq!((e["error"].as_str(), &e["args"]["answers"], &e["job"]), (Some("409: stale"), &json!(["main@8.600"]), &Value::Null));
     assert_eq!((s["state"].as_str(), s["client"].as_str(), s["revision_before"].as_u64(), s["revision_after"].as_u64()), (Some("done"), Some("claude-code"), Some(rev), Some(rev)));
     assert_eq!(s["sample"], json!({ "sequence": null, "overlay": null, "times": [46.0, 49.0], "rect": { "x": 0, "y": 0, "w": 960, "h": 540 } }));
     assert_eq!(s["frames"], json!(["x/1.png", "x/2.png"]));
@@ -371,8 +371,8 @@ async fn undo_walks_back_through_many_edits() {
 #[tokio::test(flavor = "multi_thread")]
 async fn the_lists_read_as_they_always_did() {
     let (state, addr, _dir) = daemon().await;
-    post(&addr, "/api/activity", json!({ "phase": "call", "tool": "apply_edits", "client": "claude-code", "args": { "note": "rename", "pins": ["main@8.600"] }, "ok": true, "revision": 1 }));
-    post(&addr, "/api/project/patch", json!({ "patch": [{ "op": "replace", "path": "/bin/black/name", "value": "Ink" }], "origin": "mcp: rename", "pins": ["main@8.600"] }));
+    post(&addr, "/api/activity", json!({ "phase": "call", "tool": "apply_edits", "client": "claude-code", "args": { "note": "rename", "answers": ["main@8.600"] }, "ok": true, "revision": 1 }));
+    post(&addr, "/api/project/patch", json!({ "patch": [{ "op": "replace", "path": "/bin/black/name", "value": "Ink" }], "origin": "mcp: rename", "answers": ["main@8.600"] }));
     post(&addr, "/api/project/undo", json!({ "origin": "ui" }));
     let (status, _) = call(&addr, "POST", "/api/project/patch", json!({ "patch": [{ "op": "remove", "path": "/bin/nowhere" }] }));
     assert!(status.contains("422") || status.contains("409") || status.contains("400"), "{status}");
@@ -386,46 +386,49 @@ async fn the_lists_read_as_they_always_did() {
     assert_eq!(raw("/api/history"), history);
     let activity = json!({ "activity": state.activity.lock().unwrap().newest(kuma_daemon::activity::RECORDS) }).to_string();
     assert_eq!(raw("/api/activity"), activity);
-    assert_eq!(raw("/api/pins"), json!({ "pins": state.pin_list() }).to_string());
+    assert_eq!(raw("/api/markers"), json!({ "markers": state.marker_list() }).to_string());
 }
 
-/// Pins are labelled markers, numbered in time order per sequence, the master's first; an
+/// Every marker is listed, numbered in time order per sequence, the master's first; an
 /// edit naming one answers it, and a tick by hand marks or clears it. Each of those sends
-/// the whole list, as `GET /api/pins` has it.
+/// the whole list, as `GET /api/markers` has it.
 #[tokio::test(flavor = "multi_thread")]
-async fn pins_are_listed_answered_and_ticked() {
+async fn markers_are_listed_answered_and_ticked() {
     let (state, addr, _dir) = daemon().await;
-    let pins = || get(&addr, "/api/pins")["pins"].as_array().unwrap().clone();
-    let all = pins();
-    let listed: Vec<(&str, u64)> = all.iter().map(|p| (p["id"].as_str().unwrap(), p["index"].as_u64().unwrap())).collect();
-    assert_eq!(listed, [("main@1.000", 1), ("main@8.600", 2), ("intro@0.500", 1)]);
-    assert_eq!((&all[1]["label"], &all[1]["done"], &all[1]["t"]), (&json!("this HUD corner fights with the subtitles"), &Value::Null, &json!(8.6)));
+    let markers = || get(&addr, "/api/markers")["markers"].as_array().unwrap().clone();
+    let all = markers();
+    let listed: Vec<(&str, u64, bool)> = all.iter().map(|m| (m["id"].as_str().unwrap(), m["index"].as_u64().unwrap(), m["waiting"].as_bool().unwrap())).collect();
+    assert_eq!(listed, [("main@1.000", 1, true), ("main@3.000", 2, false), ("main@8.600", 3, true), ("intro@0.500", 1, true)], "an empty label waits for nothing");
+    assert_eq!((&all[2]["label"], &all[2]["done"], &all[2]["t"]), (&json!("this HUD corner fights with the subtitles"), &Value::Null, &json!(8.6)));
+    assert_eq!((&all[2]["origin"], &all[2]["author"]), (&Value::Null, &json!("user")), "an older file's marker is a person's");
 
     let mut events = state.events.subscribe();
-    let r = post(&addr, "/api/project/patch", json!({ "patch": [{ "op": "replace", "path": "/bin/black/name", "value": "Ink" }], "origin": "mcp: quieter HUD", "pins": ["main@8.600"] }));
-    let hud = &pins()[1];
-    assert_eq!((hud["done"].as_u64(), hud["done_by"].as_str()), (r["revision"].as_u64(), Some("agent")));
-    assert_eq!(get(&addr, "/api/history?limit=1")["entries"][0]["pins"], json!(["main@8.600"]));
+    let r = post(&addr, "/api/project/patch", json!({ "patch": [{ "op": "replace", "path": "/bin/black/name", "value": "Ink" }], "origin": "mcp: quieter HUD", "answers": ["main@8.600"] }));
+    let hud = &markers()[2];
+    assert_eq!((hud["done"].as_u64(), hud["done_by"].as_str(), hud["waiting"].as_bool()), (r["revision"].as_u64(), Some("agent"), Some(false)));
+    assert_eq!(get(&addr, "/api/history?limit=1")["entries"][0]["answers"], json!(["main@8.600"]));
 
-    post(&addr, "/api/pins/done", json!({ "id": "main@1.000", "done": true }));
-    let dark = &pins()[0];
+    post(&addr, "/api/markers/done", json!({ "id": "main@1.000", "done": true }));
+    let dark = &markers()[0];
     assert_eq!((dark["done"].as_u64(), dark["done_by"].as_str()), (Some(revision(&state)), Some("user")));
-    post(&addr, "/api/pins/done", json!({ "id": "main@8.600", "done": false }));
-    assert_eq!(pins()[1]["done"], Value::Null, "an untick forgets the answer too");
-    let (status, _) = call(&addr, "POST", "/api/pins/done", json!({ "id": "main@3.000", "done": true }));
-    assert!(status.contains("404"), "an unlabelled marker is no pin: {status}");
+    post(&addr, "/api/markers/done", json!({ "id": "main@8.600", "done": false }));
+    assert_eq!((&markers()[2]["done"], &markers()[2]["waiting"]), (&Value::Null, &json!(true)), "an untick forgets the answer too");
+    post(&addr, "/api/markers/done", json!({ "id": "main@3.000", "done": true }));
+    assert_eq!(markers()[1]["done_by"], "user", "any marker can be ticked");
+    let (status, _) = call(&addr, "POST", "/api/markers/done", json!({ "id": "main@9.000", "done": true }));
+    assert!(status.contains("404"), "no marker there: {status}");
 
     let sent = drain(&mut events);
     let types: Vec<&str> = sent.iter().map(|v| v["type"].as_str().unwrap()).collect();
-    assert_eq!(types, ["project_changed", "history", "pins", "pins", "pins"]);
-    assert_eq!(sent[2]["pins"][1]["done"], r["revision"], "the answer is in the list sent");
-    assert_eq!(sent[4], json!({ "type": "pins", "pins": pins() }), "the last list sent is the list");
+    assert_eq!(types, ["project_changed", "history", "markers", "markers", "markers", "markers"]);
+    assert_eq!(sent[2]["markers"][2]["done"], r["revision"], "the answer is in the list sent");
+    assert_eq!(sent[5], json!({ "type": "markers", "markers": markers() }), "the last list sent is the list");
 }
 
-/// The pins are sent when an edit, an undo or a redo changes a labelled marker, and not
-/// for an edit that leaves them alone.
+/// The markers are sent when an edit, an undo or a redo changes one, and not for an edit
+/// that leaves them alone.
 #[tokio::test(flavor = "multi_thread")]
-async fn the_pins_are_sent_when_the_markers_change() {
+async fn the_markers_are_sent_when_they_change() {
     let (state, addr, _dir) = daemon().await;
     let mut events = state.events.subscribe();
     let types = |sent: &[Value]| sent.iter().map(|v| v["type"].as_str().unwrap().to_string()).collect::<Vec<_>>();
@@ -435,16 +438,52 @@ async fn the_pins_are_sent_when_the_markers_change() {
 
     post(&addr, "/api/project/patch", json!({ "patch": [{ "op": "replace", "path": "/bin/main/source/markers/1/label", "value": "far too dark" }] }));
     let sent = drain(&mut events);
-    assert_eq!(types(&sent), ["project_changed", "history", "pins"]);
-    assert_eq!(sent[2]["pins"][0]["label"], "far too dark");
+    assert_eq!(types(&sent), ["project_changed", "history", "markers"]);
+    assert_eq!(sent[2]["markers"][0]["label"], "far too dark");
 
     post(&addr, "/api/project/undo", json!({ "origin": "ui" }));
     let sent = drain(&mut events);
-    assert_eq!(types(&sent), ["project_changed", "history", "pins"]);
-    assert_eq!(sent[2]["pins"][0]["label"], "too dark");
+    assert_eq!(types(&sent), ["project_changed", "history", "markers"]);
+    assert_eq!(sent[2]["markers"][0]["label"], "too dark");
 
     post(&addr, "/api/project/undo", json!({ "origin": "ui" }));
     assert_eq!(types(&drain(&mut events)), ["project_changed", "history"], "undoing the rename");
+}
+
+/// A marker says who left it: the daemon stamps the adding edit's origin into the
+/// document, keeps it whoever edits the marker after, and carries it over when a client
+/// writes the whole array back without it — so the agent's own markers are never read back
+/// to it as requests.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_marker_says_who_left_it() {
+    let (state, addr, dir) = daemon().await;
+    let at = |t: f64| get(&addr, "/api/markers")["markers"].as_array().unwrap().iter().find(|m| m["t"] == json!(t)).cloned().unwrap();
+    let add = |t: f64, label: &str, origin: &str| post(&addr, "/api/project/patch", json!({ "patch": [{ "op": "add", "path": "/bin/main/source/markers/-", "value": { "t": t, "label": label } }], "origin": origin }));
+
+    add(5.0, "cut the pause", "ui: marker at 0:05");
+    add(6.0, "TODO: the zone starts here", "mcp: mark the zone");
+    add(7.0, "a note", "");
+    let ours = at(5.0);
+    assert_eq!((&ours["origin"], &ours["author"], &ours["waiting"]), (&json!("ui"), &json!("user"), &json!(true)));
+    let theirs = at(6.0);
+    assert_eq!((&theirs["origin"], &theirs["author"], &theirs["waiting"]), (&json!("mcp"), &json!("agent"), &json!(false)), "the agent's own waits for nobody");
+    assert_eq!(at(7.0)["origin"], "ui", "an origin-less edit is the editor's");
+    let saved: Value = serde_json::from_str(&std::fs::read_to_string(dir.path().join("t.kuma.json")).unwrap()).unwrap();
+    assert_eq!(saved["bin"]["main"]["source"]["markers"][4]["origin"], "mcp", "stamped in the file");
+    assert!(saved["bin"]["main"]["source"]["markers"][0].get("origin").is_none(), "an older marker is left unattributed");
+
+    // The other party edits each: the creator stays.
+    post(&addr, "/api/project/patch", json!({ "patch": [{ "op": "replace", "path": "/bin/main/source/markers/3/label", "value": "cut the whole pause" }], "origin": "mcp: reword" }));
+    post(&addr, "/api/project/patch", json!({ "patch": [{ "op": "replace", "path": "/bin/main/source/markers/4/color", "value": "#0f0" }], "origin": "ui" }));
+    assert_eq!((&at(5.0)["origin"], &at(6.0)["origin"]), (&json!("ui"), &json!("mcp")));
+
+    // A client rewriting the whole array without origins re-attributes nothing.
+    let bare: Vec<Value> = state.project.read().unwrap().seq("main").unwrap().markers.iter().map(|m| json!({ "t": m.t, "label": m.label, "color": m.color })).collect();
+    post(&addr, "/api/project/patch", json!({ "patch": [{ "op": "replace", "path": "/bin/main/source/markers", "value": bare }], "origin": "ui" }));
+    assert_eq!((&at(5.0)["origin"], &at(6.0)["origin"], &at(1.0)["origin"]), (&json!("ui"), &json!("mcp"), &Value::Null));
+    let kept = state.history.lock().unwrap().snapshot(revision(&state)).unwrap();
+    let kept = kuma_daemon::history::parse(&kept).unwrap();
+    assert_eq!(kept.seq("main").unwrap().markers[4].origin.as_deref(), Some("mcp"), "the document the history kept is the stamped one");
 }
 
 /// Every event sent so far, as JSON.

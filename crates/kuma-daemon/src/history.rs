@@ -70,13 +70,13 @@ pub struct Entry {
     /// Clip ids and bin ids it touched.
     pub targets: Vec<String>,
     pub changes: Vec<Change>,
-    /// The pins this edit answers (`crate::pins`).
-    pub pins: Vec<String>,
+    /// The markers this edit answers, by id (`crate::markers`).
+    pub answers: Vec<String>,
 }
 
 impl Entry {
     /// An entry with what follows from its origin and targets filled in, made now; the
-    /// rest (ops, base, error, changes, pins) is the caller's to set.
+    /// rest (ops, base, error, changes, answers) is the caller's to set.
     pub fn new(kind: Kind, origin: &str, revision: Option<u64>, targets: &[Target]) -> Entry {
         Entry {
             revision,
@@ -90,7 +90,7 @@ impl Entry {
             error: None,
             targets: targets.iter().map(|t| t.id().to_string()).collect(),
             changes: Vec::new(),
-            pins: Vec::new(),
+            answers: Vec::new(),
         }
     }
 }
@@ -138,12 +138,17 @@ impl History {
     }
 }
 
+/// An origin's head, the part before its first `:` or space: `ui: marker at 0:08` is `ui`,
+/// `mcp: note` is `mcp`, `undo:ui` is `undo`. What a marker records as who left it.
+pub fn head(origin: &str) -> &str {
+    origin.split([':', ' ']).next().unwrap_or_default()
+}
+
 /// Who an origin speaks for — an edit's, or a job's. The editor labels its own `ui…`,
 /// `kuma mcp` its `mcp: …`; anything else, the command line's `cli: …` among them, is
 /// `other`.
 pub fn author(origin: &str) -> &'static str {
-    let head = origin.split([':', ' ']).next().unwrap_or_default();
-    match head {
+    match head(origin) {
         "ui" => "user",
         "mcp" | "agent" => "agent",
         _ => "other",

@@ -89,11 +89,15 @@ difference: `references/storyboard-as-code.md`. In short:
 
 ## Review loop
 
-- **Feedback arrives as pins.** A person reviewing in the editor presses P and types a
-  comment: a marker with a label, which `list_pins` lists with an id (and "see the markers"
-  means the same thing). Sample each one's moment before changing anything, answer per pin
-  — passing its id in `apply_edits`' `pins`, which marks it done in their editor — and leave
-  the markers for the person to clear (`timeline_guide` has the details).
+- **Feedback arrives as markers.** A person reviewing in the editor presses P and types a
+  comment: a marker with a label, which `list_markers` lists with an id (and "see the
+  markers" means the same thing); the ones still `waiting` are what is asked of you. Sample
+  each one's moment before changing anything, answer per marker — passing its id in
+  `apply_edits`' `answers`, which marks it done in their editor — and leave the markers for
+  the person to clear (`timeline_guide` has the details).
+- **Your own notes are markers too**: a moment to review, a TODO, a zone (two markers, its
+  edges). The daemon marks the ones your edits add as yours (`author: "agent"`, never
+  `waiting`), so they are not read back to you as feedback; never answer your own.
 - **While building**, sample the part you are working on, or an overlay entry on its own,
   over a short range. Sampling the master bakes every changed overlay it shows:
   `sample_frames` with `times` bakes only what those frames show, and `tile` returns them

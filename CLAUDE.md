@@ -15,7 +15,7 @@ crates/kuma-core      project model (seconds, exclusive ends, rational fps), sch
 crates/kuma-mlt       JSON → MLT XML compiler (the only place MLT's rules live), melt driver, presets
 crates/kuma-overlay   hyperframes bake driver, content-hash cache, ffprobe helpers
 crates/kuma-daemon    HTTP/WS API, undo, jobs, overlay live-preview routes, preview engine transport;
-                      the agent's activity, the history and pins (session state, `activity.rs`/`history.rs`/`pins.rs`)
+                      the agent's activity, the history and markers' answers (session state, `activity.rs`/`history.rs`/`markers.rs`)
 crates/kuma-mcp       rmcp stdio MCP server proxying the daemon
 crates/kuma-cli       `kuma` binary: serve | mcp | render | bake | sample | lint | design-system | library | …
 engine/               C++ libmlt++ preview engine (JPEG over stdout, SDL2-paced audio)
@@ -188,7 +188,10 @@ before checking a UI change by eye: it lists the traps (stale `ui/dist`, leftove
   daemon with the job; every job says who asked (`asked_by`, read off its request's `origin`
   as an edit's author is), and only an agent's opens a record; any other call the MCP server
   reports once it has ended, and a report may never slow or fail a tool —
-  steps and refused patches as `/api/history`, pins as `/api/pins`. All session state: none
-  of it is in the project file, and a pin's done-ness never edits its marker.
+  steps and refused patches as `/api/history`, markers and their answers as `/api/markers`.
+  All session state: none of it is in the project file, and a marker's done-ness never edits
+  it. Who left a marker is in the document (`origin`), and the daemon stamps it as the edit
+  that added it lands — never a client — so the agent's own markers are not read back to it
+  as requests.
 - Do not add a dependency on `mlt-sys`, `ffmpeg-next` or `wgpu` without a reason written
   in `docs/manual.md`; the PoC deliberately uses `melt`/`ffmpeg` as subprocesses.

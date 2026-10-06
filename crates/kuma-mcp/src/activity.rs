@@ -48,7 +48,7 @@ pub fn call(tool: &str, client: Option<&str>, args: Value, started_at: u64, resp
 }
 
 /// A call's arguments, small: `patch` as `{"ops": n}` (its `note`, `base_revision` and
-/// `pins` are kept beside it), and every string, list and object capped. Built from the
+/// `answers` are kept beside it), and every string, list and object capped. Built from the
 /// arguments as they are, never a copy of them whole.
 pub fn trim_args(args: Option<&Map<String, Value>>) -> Value {
     let Some(args) = args else { return Value::Null };
@@ -132,10 +132,10 @@ mod tests {
     fn arguments_are_reported_small() {
         let patch: Vec<Value> = (0..500).map(|i| json!({ "op": "remove", "path": format!("/bin/c{i}") })).collect();
         let cues: Vec<Value> = (0..100).map(|i| json!({ "start": i, "text": "word" })).collect();
-        let args = json!({ "patch": patch, "note": "x".repeat(300), "base_revision": 41, "pins": ["main@8.600"], "vars": { "cues": cues, "deep": { "a": { "b": { "c": 1 } } } } });
+        let args = json!({ "patch": patch, "note": "x".repeat(300), "base_revision": 41, "answers": ["main@8.600"], "vars": { "cues": cues, "deep": { "a": { "b": { "c": 1 } } } } });
         let t = trim_args(args.as_object());
         assert_eq!(t["patch"], json!({ "ops": 500 }));
-        assert_eq!((t["base_revision"].as_u64(), &t["pins"]), (Some(41), &json!(["main@8.600"])));
+        assert_eq!((t["base_revision"].as_u64(), &t["answers"]), (Some(41), &json!(["main@8.600"])));
         assert_eq!(t["note"].as_str().unwrap().chars().count(), MAX_STRING + 1);
         assert_eq!(t["vars"]["cues"].as_array().unwrap().len(), MAX_ITEMS);
         assert_eq!(t["vars"]["deep"]["a"]["b"], json!("…"));

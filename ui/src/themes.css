@@ -70,8 +70,8 @@
   --fg-3: #66718a;
   /* The accent as text on the dark: a revision number, an agent's state. */
   --accent-text: #ff7a3d;
-  /* Under a pin's flag: the selection colour, dimmed to a background. */
-  --pin-bg: #2c2a22;
+  /* Under a marker being read: the selection colour, dimmed to a background. */
+  --marker-bg: #2c2a22;
   --ok: #3f8a5c;
   --diff-add: #59c07a;
   --diff-del: #d9576b;
@@ -130,7 +130,7 @@
   --fg-body: #a9b1d6;
   --fg-3: #565f89;
   --accent-text: #ff9eb0;
-  --pin-bg: #2c2618;
+  --marker-bg: #2c2618;
   --ok: #3f7d6a;
   --diff-add: #9ece6a;
   --diff-del: #f7768e;

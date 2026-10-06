@@ -2,7 +2,7 @@
 
 import { Cmd, run } from "../commands";
 import { button, dragPayload, dragPointer, el, isFileDrag, loadLocalJSON, options, saveLocal } from "../dom";
-import { addMarker, addTransition, renameTrack, editMarker, editTransitionDuration, joinedAfter, moveMarker, placeBinItem, placeBlueprint, removeMarker, removeTransition, setTransitionKind, splitAt, transitionBlocked } from "../edits";
+import { addTransition, renameTrack, editMarker, editTransitionDuration, joinedAfter, moveMarker, placeBinItem, placeBlueprint, removeMarker, removeTransition, setTransitionKind, splitAt, transitionBlocked } from "../edits";
 import { showMenu } from "../menu";
 import { icon } from "../icons";
 import { animationOf, keysOf } from "../keyframes";
@@ -149,7 +149,7 @@ export class Timeline {
       e.preventDefault();
       const at = store.snap(Math.max(0, this.t(e.clientX - this.root.getBoundingClientRect().left)));
       showMenu([
-        { label: "Add marker here…", keys: keysFor(Cmd.addMarker), run: () => void addMarker(at), title: "A comment on this moment, for you or an agent reading the project" },
+        { label: "Marker here", run: () => run(Cmd.addMarker, at), title: "A note on this moment, for the agent or for you — or none" },
         { label: "Move the playhead here", run: () => store.seek(at) },
       ], e.clientX, e.clientY);
     });

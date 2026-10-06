@@ -108,11 +108,11 @@ describe("the timeline's tracks", { skip: why ? `skipping: ${why}` : false }, ()
     }
   });
 
-  it("adds a pin — a marker with a comment — on P, into the document an agent reads", async () => {
+  it("adds a marker with a comment on P, into the document an agent reads, saying who left it", async () => {
     const MARKERS = `fetch("/api/project").then(r => r.json()).then(p => JSON.stringify(p.bin.main.source.markers))`;
     const FLAGS = `[...document.querySelectorAll("#timeline .tl-marker-flag")].map(f => f.textContent).join("|")`;
-    // P opens the pins panel's field at the playhead, focused; Enter sends it.
-    const DIALOG = `(document.activeElement?.matches(".pin-draft textarea") ? document.activeElement : null)`;
+    // P opens the markers panel's field at the playhead, focused; Enter sends it.
+    const DIALOG = `(document.activeElement?.matches(".mk-draft textarea") ? document.activeElement : null)`;
     const answer = (text) => `(() => {
       const t = ${DIALOG};
       t.value = ${JSON.stringify(text)};
@@ -127,8 +127,8 @@ describe("the timeline's tracks", { skip: why ? `skipping: ${why}` : false }, ()
     await page.until(DIALOG);
     await page.eval(answer("the title comes in too early\nwait for the beat"));
     await page.until(`${FLAGS} === "the title comes in too early"`);
-    assert.deepEqual(JSON.parse(await page.eval(MARKERS)), [{ t: 2, label: "the title comes in too early\nwait for the beat", color: null }],
-      "the comment is in the project file, whole, at the playhead's time");
+    assert.deepEqual(JSON.parse(await page.eval(MARKERS)), [{ t: 2, label: "the title comes in too early\nwait for the beat", color: null, origin: "ui" }],
+      "the comment is in the project file, whole, at the playhead's time, and the daemon says you left it");
 
     // A second one earlier on stays in time order in the document, whatever order they came in.
     await page.eval(`(document.activeElement?.blur(), true)`);

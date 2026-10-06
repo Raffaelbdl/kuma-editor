@@ -1,6 +1,6 @@
 // `a` — the agent: what it is doing now, and its last five calls. Read-only on purpose: the
 // agent is outside the editor (Claude Code, over MCP), you talk to it in your terminal, and
-// the one thing the editor can write to it is a pin.
+// the one thing the editor can write to it is a marker with a comment.
 
 import { ago, bear, sampleSpan, setBear, watchAgent } from "../agent";
 import { el, reconcile } from "../dom";

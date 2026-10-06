@@ -190,10 +190,10 @@ pub enum Event {
     Activity(Box<crate::activity::Record>),
     /// A revision was made, or a patch refused (`crate::history`).
     History(crate::history::Entry),
-    /// The pin list, whole and as `GET /api/pins` lists it, sent whenever it can have
-    /// changed: a marker edited (by an edit, a step or a restore), a pin answered, ticked or
+    /// The marker list, whole and as `GET /api/markers` lists it, sent whenever it can
+    /// have changed: a marker edited (by an edit, a step or a restore), answered, ticked or
     /// unticked. At most one per operation, after its `history`.
-    Pins { pins: Vec<crate::pins::Pin> },
+    Markers { markers: Vec<crate::markers::MarkerInfo> },
 }
 
 /// Documents to step back and forward to, each with the origin of the edit that left it.
@@ -238,8 +238,8 @@ pub struct AppState {
     pub history: Mutex<History>,
     /// The agent's recent tool calls, as the MCP server reports them.
     pub activity: Mutex<crate::activity::Activity>,
-    /// Which pins are done, by id. Session state like the history it is derived from.
-    pins: Mutex<crate::pins::Answers>,
+    /// Which markers are done, by id. Session state like the history it is derived from.
+    answers: Mutex<crate::markers::Answers>,
 }
 
 /// Why a revision could not be restored.
@@ -255,8 +255,8 @@ pub enum RestoreError {
 #[derive(Default)]
 pub struct Step<'a> {
     pub base_revision: Option<u64>,
-    /// The pins it answers.
-    pub pins: &'a [String],
+    /// The markers it answers, by id.
+    pub answers: &'a [String],
 }
 
 /// An edit's result as `AppState::edit` wants it from the closure that makes it: the
@@ -326,7 +326,7 @@ impl AppState {
             cache_users: RwLock::new(()),
             history: Mutex::new(History::default()),
             activity: Mutex::new(Default::default()),
-            pins: Mutex::new(Default::default()),
+            answers: Mutex::new(Default::default()),
             config,
         };
         // The revision it opened at can be restored like any it makes.
@@ -443,15 +443,20 @@ impl AppState {
         // lock held here, so the read lock blocks nobody while `f` runs. Let go before the
         // commit takes the write lock.
         let current = read(&self.project);
-        let Edited { outcome, targets, changes, ops } = f(&current)?;
-        let pins_differ = crate::pins::differ(&current, &outcome.project);
+        let Edited { mut outcome, targets, changes, ops } = f(&current)?;
+        // A step restores a document as it was; an edit's new markers say who left them,
+        // in what is saved and what the history keeps.
+        if kind == Kind::Edit {
+            crate::markers::stamp(&current, &mut outcome.project, origin);
+        }
+        let markers_differ = crate::markers::differ(&current, &outcome.project);
         drop(current);
         let rev = outcome.project.revision;
         let next = history::snapshot(&outcome.project).map_err(|e| EditError::Patch(e.to_string()))?;
         let prev = self.commit(outcome.project, origin).map_err(|e| EditError::Patch(e.to_string()))?;
         let prev = self.kept(&prev);
-        let entry = history::Entry { ops, base_revision: step.base_revision, changes, pins: step.pins.to_vec(), ..history::Entry::new(kind, origin, Some(rev), &targets) };
-        self.landed(rev, next, entry, pins_differ, |u| {
+        let entry = history::Entry { ops, base_revision: step.base_revision, changes, answers: step.answers.to_vec(), ..history::Entry::new(kind, origin, Some(rev), &targets) };
+        self.landed(rev, next, entry, markers_differ, |u| {
             u.past.push((prev, origin.to_string()));
             if u.past.len() > 200 {
                 u.past.remove(0);
@@ -470,27 +475,27 @@ impl AppState {
     }
 
     /// What every step does once committed at `revision`, the history's entry and whether
-    /// the pins changed worked out from the two documents before: `push` onto the undo
-    /// stack, record `entry`, send the pins if they can have changed, keep `next` (the
+    /// the markers changed worked out from the two documents before: `push` onto the undo
+    /// stack, record `entry`, send the markers if they can have changed, keep `next` (the
     /// committed document) to restore.
-    fn landed(&self, revision: u64, next: Snapshot, entry: history::Entry, pins_differ: bool, push: impl FnOnce(&mut UndoStack)) {
+    fn landed(&self, revision: u64, next: Snapshot, entry: history::Entry, markers_differ: bool, push: impl FnOnce(&mut UndoStack)) {
         push(&mut lock(&self.undo));
         let answered = self.record(entry);
-        if answered || pins_differ {
-            self.send_pins(&lock(&self.pins));
+        if answered || markers_differ {
+            self.send_markers(&lock(&self.answers));
         }
         lock(&self.history).keep(revision, next);
     }
 
-    /// Append to the history and tell every client; an entry naming pins answers them.
-    /// Returns whether it did, for the caller to send the pins once with whatever else
+    /// Append to the history and tell every client; an entry naming markers answers them.
+    /// Returns whether it did, for the caller to send the markers once with whatever else
     /// changed them.
     fn record(&self, entry: history::Entry) -> bool {
-        let answering = entry.revision.filter(|_| !entry.pins.is_empty());
+        let answering = entry.revision.filter(|_| !entry.answers.is_empty());
         if let Some(revision) = answering {
-            let mut answers = lock(&self.pins);
-            for id in &entry.pins {
-                answers.insert(id.clone(), crate::pins::Done { revision, by: entry.author.clone() });
+            let mut answers = lock(&self.answers);
+            for id in &entry.answers {
+                answers.insert(id.clone(), crate::markers::Done { revision, by: entry.author.clone() });
             }
         }
         lock(&self.history).push(entry.clone());
@@ -498,30 +503,31 @@ impl AppState {
         answering.is_some()
     }
 
-    /// Every pin, the master's first, each with whether it is done: `GET /api/pins`.
-    pub fn pin_list(&self) -> Vec<crate::pins::Pin> {
-        let answers = lock(&self.pins);
-        crate::pins::list(&read(&self.project), &answers)
+    /// Every marker, the master's first, each with who left it and whether it is done:
+    /// `GET /api/markers`.
+    pub fn marker_list(&self) -> Vec<crate::markers::MarkerInfo> {
+        let answers = lock(&self.answers);
+        crate::markers::list(&read(&self.project), &answers)
     }
 
-    /// Broadcast the pin list. Built and sent while `answers` (the pins lock) is held, so
+    /// Broadcast the marker list. Built and sent while `answers` (its lock) is held, so
     /// whichever list is sent last was built last and clients end on the current one. The
-    /// pins lock is always taken before the project's.
-    fn send_pins(&self, answers: &crate::pins::Answers) {
-        let pins = crate::pins::list(&read(&self.project), answers);
-        let _ = self.events.send(Event::Pins { pins });
+    /// answers lock is always taken before the project's.
+    fn send_markers(&self, answers: &crate::markers::Answers) {
+        let markers = crate::markers::list(&read(&self.project), answers);
+        let _ = self.events.send(Event::Markers { markers });
     }
 
-    /// A patch, naming the pins it answers (none: `&[]`). A refusal is recorded too: the
+    /// A patch, naming the markers it answers (none: `&[]`). A refusal is recorded too: the
     /// person sees what was tried and why it did not land, not only what did.
-    pub fn apply_patch(&self, patch: &[json_patch::PatchOperation], base: Option<u64>, origin: &str, pins: &[String]) -> Result<(u64, Vec<Issue>), EditError> {
-        let step = Step { base_revision: base, pins };
+    pub fn apply_patch(&self, patch: &[json_patch::PatchOperation], base: Option<u64>, origin: &str, answers: &[String]) -> Result<(u64, Vec<Issue>), EditError> {
+        let step = Step { base_revision: base, answers };
         let ctx = self.validation_context();
         let applied = self.edit(origin, Kind::Edit, &step, |p| Ok(Edited::patch(p, edit::apply_patch(p, base, patch, &ctx)?, patch)));
         if let Err(e) = &applied {
             let targets = history::patch_targets(&read(&self.project), None, patch);
             // Answers nothing: it made no revision.
-            self.record(history::Entry { ops: patch.len(), base_revision: base, error: Some(history::refusal(e)), pins: pins.to_vec(), ..history::Entry::new(Kind::Refused, origin, None, &targets) });
+            self.record(history::Entry { ops: patch.len(), base_revision: base, error: Some(history::refusal(e)), answers: answers.to_vec(), ..history::Entry::new(Kind::Refused, origin, None, &targets) });
         }
         applied
     }
@@ -560,23 +566,23 @@ impl AppState {
         })?)
     }
 
-    /// Tick a pin by hand (the current revision, by the user), or untick it, which forgets
-    /// an edit's answer too, and send the list. `false` when there is no such pin.
-    pub fn tick_pin(&self, id: &str, done: bool) -> bool {
-        let mut answers = lock(&self.pins);
+    /// Tick a marker done by hand (the current revision, by the user), or untick it, which
+    /// forgets an edit's answer too, and send the list. `false` when there is no such marker.
+    pub fn tick_marker(&self, id: &str, done: bool) -> bool {
+        let mut answers = lock(&self.answers);
         let revision = {
             let p = read(&self.project);
-            if !crate::pins::exists(&p, id) {
+            if !crate::markers::exists(&p, id) {
                 return false;
             }
             p.revision
         };
         if done {
-            answers.insert(id.to_string(), crate::pins::Done { revision, by: "user".into() });
+            answers.insert(id.to_string(), crate::markers::Done { revision, by: "user".into() });
         } else {
             answers.remove(id);
         }
-        self.send_pins(&answers);
+        self.send_markers(&answers);
         true
     }
 
@@ -609,11 +615,11 @@ impl AppState {
             let mut restored = history::parse(&snap)?;
             restored.revision = current.revision + 1;
             let (targets, changes) = history::diff(&current, &restored);
-            let pins_differ = crate::pins::differ(&current, &restored);
+            let markers_differ = crate::markers::differ(&current, &restored);
             drop(current);
-            anyhow::Ok((history::snapshot(&restored)?, restored, targets, changes, pins_differ))
+            anyhow::Ok((history::snapshot(&restored)?, restored, targets, changes, markers_differ))
         })();
-        let (next, restored, targets, changes, pins_differ) = match ready {
+        let (next, restored, targets, changes, markers_differ) = match ready {
             Ok(r) => r,
             Err(e) => return Err(self.unpop(redo, snap, origin, e)),
         };
@@ -629,7 +635,7 @@ impl AppState {
             changes,
             ..history::Entry::new(if redo { Kind::Redo } else { Kind::Undo }, &label, Some(rev), &targets)
         };
-        self.landed(rev, next, entry, pins_differ, |u| if redo { &mut u.past } else { &mut u.future }.push((now, origin)));
+        self.landed(rev, next, entry, markers_differ, |u| if redo { &mut u.past } else { &mut u.future }.push((now, origin)));
         Ok(Some(rev))
     }
 

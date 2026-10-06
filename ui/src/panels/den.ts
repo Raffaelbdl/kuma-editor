@@ -3,10 +3,10 @@
 // Over the picture: the bear and the mode, the sequence and what the agent is doing (top
 // left); a way back to power (top right); orange corners round the region the agent last
 // sampled; and the summary of its last edit as a caption. Under it, a rail: play, the time,
-// the sequence with its revisions placed where they edited and its pins, and the keys that
+// the sequence with its revisions placed where they edited and its markers, and the keys that
 // summon the panels. Everything here reads the store; none of it is the document.
 
-import { agentView, bear, pinsOn, setBear, watchAgent } from "../agent";
+import { agentView, bear, markersOn, setBear, watchAgent } from "../agent";
 import { Cmd, run } from "../commands";
 import { button, dragPointer, el, setText } from "../dom";
 import { panels } from "../panelhost";
@@ -106,9 +106,9 @@ export function mountDen(host: HTMLElement): void {
   const keys = el("div", "den-keys");
   // The panels that have a key, in the order they were registered.
   keys.append(...panelKeys(panels.all.filter((spec) => spec.key), "den-key", (b, spec) => { b.title = `${spec.title} (${keysFor(`panel.${spec.id}`)})`; }));
-  const pin = button("", () => run(Cmd.addPin), `Leave a pin at the playhead: a note on this frame for the agent (${keysFor(Cmd.addPin)})`, "den-pin");
-  pin.append(el("span", "dot"), "pin");
-  rail.append(play, now, track, end, keys, pin);
+  const mark = button("", () => run(Cmd.addMarker), `A marker at the playhead: a note on this frame for the agent, or for you (${keysFor(Cmd.addMarker)})`, "den-marker");
+  mark.append(el("span", "dot"), "marker");
+  rail.append(play, now, track, end, keys, mark);
   host.appendChild(rail);
 
   // The sequence's length, taken once per redraw: `store.duration` walks every clip.
@@ -134,7 +134,7 @@ export function mountDen(host: HTMLElement): void {
   };
   store.select((s) => [s.playhead], drawHead);
   let ticked = 0;
-  store.select((s) => [s.project, s.sequence, s.history, s.pins, s.mode], (s) => {
+  store.select((s) => [s.project, s.sequence, s.history, s.markerList, s.mode], (s) => {
     if (!den()) return;
     d = Math.max(store.duration, 1);
     end.textContent = fmtTime(d, store.fps);
@@ -170,8 +170,9 @@ export function mountDen(host: HTMLElement): void {
       m.onpointerdown = (e) => e.stopPropagation();
       marks.appendChild(m);
     });
-    for (const m of pinsOn(s.pins, s.sequence)) {
-      const p = el("div", "dr-pin");
+    // Every marker; the agent's own in its colour, so a note it left itself is not one for it.
+    for (const m of markersOn(s.markerList, s.sequence)) {
+      const p = el("div", `dr-marker${m.author === "agent" ? " agent" : ""}`);
       p.style.left = x(m.t);
       p.title = m.label;
       p.onpointerdown = (e) => e.stopPropagation();

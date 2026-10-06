@@ -278,9 +278,10 @@ pub struct ApplyEdits {
     /// Short human-readable label for the undo history, e.g. "add callout at 12s".
     #[serde(default)]
     pub note: Option<String>,
-    /// Ids of the pins (from `list_pins`) this edit answers, e.g. `["master@8.600"]`.
+    /// Ids of the markers (from `list_markers`) this edit answers — a person's comments,
+    /// `waiting` there — e.g. `["master@8.600"]`.
     #[serde(default)]
-    pub pins: Option<Vec<String>>,
+    pub answers: Option<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -667,13 +668,13 @@ impl KumaServer {
     #[tool(description = "Apply a JSON Patch to the project: `patch` inline, or `patch_path`, a file in the project holding it (for a patch a script wrote, of any size). Atomic: rejected entirely if the result is invalid or the base_revision is stale. Returns the new revision, the number of operations applied and any warnings.")]
     async fn apply_edits(&self, Parameters(p): Parameters<ApplyEdits>) -> Result<CallToolResult, McpError> {
         let origin = format!("mcp: {}", p.note.unwrap_or_else(|| "edit".into()));
-        let body = json!({ "patch": p.patch, "patch_path": p.patch_path, "base_revision": p.base_revision, "origin": origin, "pins": p.pins.unwrap_or_default() });
+        let body = json!({ "patch": p.patch, "patch_path": p.patch_path, "base_revision": p.base_revision, "origin": origin, "answers": p.answers.unwrap_or_default() });
         self.post("/api/project/patch", &body).await
     }
 
-    #[tool(description = "The user's pins: comments they left on frames for you, stored as sequence markers, each with an id (`<sequence>@<t>`), its sequence, time, label, and whether a revision answered it (`done`, `done_by`). When an edit answers one, pass its id in `apply_edits`' `pins`.")]
-    async fn list_pins(&self) -> Result<CallToolResult, McpError> {
-        self.get("/api/pins").await
+    #[tool(description = "The markers of every sequence (the master's first), each with an id (`<sequence>@<t>`), its sequence, number, time, label, who left it (`origin`, `author`: `user`, `agent` or `other`) and whether a revision answered it (`done`, `done_by`). The ones a person left with a comment are requests for you: `waiting` until answered — answer them by passing their ids in `apply_edits`' `answers`. Markers with `author: \"agent\"` are yours (notes, TODOs, zone edges — two markers for a zone; the daemon marks the ones your edits add): never answer your own.")]
+    async fn list_markers(&self) -> Result<CallToolResult, McpError> {
+        self.get("/api/markers").await
     }
 
     #[tool(description = "Undo the last edit (yours or the user's). Returns the new revision; fails when there is nothing to undo.")]

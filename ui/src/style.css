@@ -169,7 +169,7 @@ body.has-titlebar #titlebar {
 }
 .rail-key:hover { color: var(--fg); background: var(--bg-2); }
 .rail-key.on { background: var(--accent); color: var(--on-accent); }
-/* A pin is open: the letter and a dot in the selection colour. */
+/* A marker is waiting: the letter and a dot in the selection colour. */
 .rail-key.flag:not(.on) { color: var(--sel); }
 .rail-key.flag::after { content: ""; position: absolute; right: 2px; top: 3px; width: 6px; height: 6px; border-radius: 50%; background: var(--sel); }
 /* The tooltip is drawn, not the browser's: it says the key, and it is the design's. */
@@ -759,16 +759,17 @@ body.has-titlebar #app.den { grid-template-rows: var(--titlebar-h) minmax(0, 1fr
 .dr-rev span { position: absolute; bottom: 13px; left: 50%; transform: translateX(-50%); font-size: 10px; color: var(--fg-2); white-space: nowrap; }
 .dr-rev.latest { width: 11px; height: 11px; margin-left: -5.5px; top: 19px; box-shadow: 0 0 0 3px var(--accent-ring); }
 .dr-rev.latest span { color: var(--accent-text); }
-.dr-pin { position: absolute; top: 44px; width: 9px; height: 9px; margin-left: -4.5px; border-radius: 50%; background: var(--sel); cursor: pointer; }
+.dr-marker { position: absolute; top: 44px; width: 9px; height: 9px; margin-left: -4.5px; border-radius: 50%; background: var(--sel); cursor: pointer; }
+.dr-marker.agent { background: var(--accent); }
 .den-keys { display: flex; gap: 4px; flex: none; }
 .den-key { width: 30px; height: 30px; padding: 0; border-radius: 0; background: none; border: 1px solid var(--line); color: var(--fg-body); }
 .den-key.on { background: var(--fg); border-color: var(--fg); color: var(--bg-0); }
 .den-key[data-panel="agent"].on { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
-.den-pin { display: flex; align-items: center; gap: 7px; flex: none; background: none; border: 1px solid var(--sel); border-radius: 0; color: var(--sel); padding: 5px 12px; }
-.den-pin .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--sel); }
+.den-marker { display: flex; align-items: center; gap: 7px; flex: none; background: none; border: 1px solid var(--sel); border-radius: 0; color: var(--sel); padding: 5px 12px; }
+.den-marker .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--sel); }
 
-/* ---- the new panels: agent, history, pins, render queue, fonts */
-.agent-panel, .history-panel, .pins-panel, .queue-panel, .fonts-panel { overflow: auto; padding: 10px 14px 14px; display: flex; flex-direction: column; gap: 4px; }
+/* ---- the new panels: agent, history, markers, render queue, fonts */
+.agent-panel, .history-panel, .markers-panel, .queue-panel, .fonts-panel { overflow: auto; padding: 10px 14px 14px; display: flex; flex-direction: column; gap: 4px; }
 .ag-now { display: flex; align-items: center; gap: 12px; padding: 4px 0 12px; }
 .ag-state { color: var(--accent-text); font-size: 13px; }
 .ag-doing { color: var(--fg-2); font-size: 11px; }
@@ -803,22 +804,25 @@ button.hist-restore { background: none; border: 0; padding: 0 2px; color: var(--
 button.hist-restore:hover { color: var(--accent-text); }
 .hist-row.refused .rev, .hist-row.refused .hist-what, .hist-row.refused .hist-meta { color: var(--fg-3); }
 
-.pin-list { display: flex; flex-direction: column; gap: 10px; }
-.pin-card { display: grid; grid-template-columns: 22px minmax(0, 1fr) auto; gap: 10px; align-items: start; padding: 10px; border: 1px solid var(--line); cursor: pointer; }
-.pin-card:hover { border-color: var(--fg-3); }
-.pin-card.reading { border-color: var(--sel); background: var(--pin-bg); }
-.pin-n { width: 20px; height: 20px; border-radius: 50%; background: var(--sel); color: var(--bg-0); display: grid; place-items: center; font-size: 10.5px; font-weight: 700; }
-.pin-card.done .pin-n { background: none; border: 1px solid var(--sel); color: var(--sel); }
-.pin-text { font: 13px/1.35 var(--sans); color: var(--fg); overflow-wrap: anywhere; white-space: pre-line; }
-.pin-meta { font-size: 10.5px; color: var(--sel); }
-.pin-card.done .pin-meta { color: var(--ok); }
-.pin-card:not(.done):not(.reading) .pin-meta { color: var(--fg-2); }
-button.pin-tick { background: none; border: 0; padding: 0 2px; color: var(--fg-3); }
-button.pin-tick:hover { color: var(--fg); }
-.pin-draft { display: flex; align-items: center; gap: 10px; margin-top: 10px; padding: 9px 10px; border: 1px dashed var(--line); color: var(--fg-2); cursor: text; }
-.pin-draft kbd { margin-left: auto; }
-.pin-draft textarea { border: 0; padding: 0; background: none; font: 13px/1.35 var(--sans); min-height: 0; resize: none; field-sizing: content; }
-.pin-plus { width: 20px; height: 20px; border-radius: 50%; border: 1px dashed var(--sel); color: var(--sel); display: grid; place-items: center; flex: none; }
+.mk-list { display: flex; flex-direction: column; gap: 10px; }
+.mk-card { display: grid; grid-template-columns: 22px minmax(0, 1fr) auto; gap: 10px; align-items: start; padding: 10px; border: 1px solid var(--line); cursor: pointer; }
+.mk-card:hover { border-color: var(--fg-3); }
+.mk-card.reading { border-color: var(--sel); background: var(--marker-bg); }
+.mk-n { width: 20px; height: 20px; border-radius: 50%; background: var(--sel); color: var(--bg-0); display: grid; place-items: center; font-size: 10.5px; font-weight: 700; }
+.mk-card.done .mk-n { background: none; border: 1px solid var(--sel); color: var(--sel); }
+.mk-text { font: 13px/1.35 var(--sans); color: var(--fg); overflow-wrap: anywhere; white-space: pre-line; }
+.mk-meta { font-size: 10.5px; color: var(--sel); }
+.mk-card.done .mk-meta { color: var(--ok); }
+.mk-card:not(.done):not(.reading) .mk-meta { color: var(--fg-2); }
+button.mk-tick { background: none; border: 0; padding: 0 2px; color: var(--fg-3); }
+button.mk-tick:hover { color: var(--fg); }
+/* The agent's own markers: its notes, in its colour, never waiting for it. */
+.mk-card.agent .mk-n { background: var(--accent); color: var(--on-accent); }
+.mk-card.agent .mk-meta { color: var(--accent-text); }
+.mk-draft { display: flex; align-items: center; gap: 10px; margin-top: 10px; padding: 9px 10px; border: 1px dashed var(--line); color: var(--fg-2); cursor: text; }
+.mk-draft kbd { margin-left: auto; }
+.mk-draft textarea { border: 0; padding: 0; background: none; font: 13px/1.35 var(--sans); min-height: 0; resize: none; field-sizing: content; }
+.mk-plus { width: 20px; height: 20px; border-radius: 50%; border: 1px dashed var(--sel); color: var(--sel); display: grid; place-items: center; flex: none; }
 
 .q-job { border: 1px solid var(--line); padding: 10px 12px; margin-bottom: 8px; display: flex; flex-direction: column; gap: 6px; }
 .q-job.queued .q-title { color: var(--fg-body); }

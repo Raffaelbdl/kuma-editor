@@ -8,7 +8,7 @@ import bearLook from "./assets/bear-look.png";
 import bearSleep from "./assets/bear-sleep.png";
 import { el } from "./dom";
 import { store, type State } from "./store";
-import type { Activity, Pin } from "./types";
+import type { Activity, MarkerInfo } from "./types";
 
 /** Asleep after this long without a call. */
 const IDLE_MS = 60_000;
@@ -21,12 +21,12 @@ export interface AgentView {
   bear: BearState;
   /** The MCP client's name (`claude-code`), or empty when no agent has called. */
   client: string;
-  /** One word or phrase: `looking`, `editing`, `reading pin 2`, `asleep`. */
+  /** One word or phrase: `looking`, `editing`, `reading marker 2`, `asleep`. */
   doing: string;
   /** The call it is on, or last made. */
   last: Activity | null;
-  /** The pin it is reading, while it lists them. */
-  pin?: Pin;
+  /** The marker it is reading, while it lists them. */
+  marker?: MarkerInfo;
 }
 
 const BEARS: Record<BearState, string> = { idle: bearSleep, awake: bearAwake, editing: bearAwake, looking: bearLook };
@@ -57,17 +57,17 @@ export function sampleSpan(a: Activity): string {
   return lo === hi ? `${f(lo)}s` : `${f(lo)}–${f(hi)}s`;
 }
 
-/** The pins on `sequence`, in order. */
-export const pinsOn = (pins: Pin[], sequence: string): Pin[] => pins.filter((p) => p.sequence === sequence);
-/** The pins on `sequence` not yet answered, in order. */
-export const openPins = (pins: Pin[], sequence: string): Pin[] => pinsOn(pins, sequence).filter((p) => p.done === null);
+/** The markers on `sequence`, in order. */
+export const markersOn = (list: MarkerInfo[], sequence: string): MarkerInfo[] => list.filter((m) => m.sequence === sequence);
+/** The markers on `sequence` waiting for the agent: a person's comments not yet answered. */
+export const waitingOn = (list: MarkerInfo[], sequence: string): MarkerInfo[] => markersOn(list, sequence).filter((m) => m.waiting);
 
 /** What a call is, as a phrase: what the agent is doing while it runs. */
-function phrase(a: Activity, pin: Pin | undefined): string {
+function phrase(a: Activity, marker: MarkerInfo | undefined): string {
   switch (a.tool) {
     case "sample_frames": return "looking";
     case "apply_edits": return "editing";
-    case "list_pins": return pin ? `reading pin ${pin.index}` : "reading pins";
+    case "list_markers": return marker ? `reading marker ${marker.index}` : "reading markers";
     case "get_project": return "reading the project";
     case "check_overlay": return "checking an overlay";
     case "render": return "rendering";
@@ -89,8 +89,8 @@ export function agentView(s: State, now = Date.now()): AgentView {
   const at = last.ended_at ?? last.started_at;
   if (!running.length && now - at > IDLE_MS) return { bear: "idle", client, doing: "asleep", last };
   const call = running[0] ?? last;
-  const pin = call.tool === "list_pins" ? openPins(s.pins, s.sequence)[0] ?? s.pins.find((p) => p.done === null) : undefined;
-  return { bear: "awake", client, doing: phrase(call, pin), last: call, pin };
+  const marker = call.tool === "list_markers" ? waitingOn(s.markerList, s.sequence)[0] ?? s.markerList.find((m) => m.waiting) : undefined;
+  return { bear: "awake", client, doing: phrase(call, marker), last: call, marker };
 }
 
 const watchers: ((v: AgentView) => void)[] = [];
@@ -110,7 +110,7 @@ function tick() {
  *  changes — one clock and one subscription for all of them. */
 export function watchAgent(fn: (v: AgentView) => void): void {
   if (!watchers.length) {
-    store.select((s) => [s.activity, s.pins, s.sequence], tick);
+    store.select((s) => [s.activity, s.markerList, s.sequence], tick);
     setInterval(tick, 1000);
   }
   watchers.push(fn);

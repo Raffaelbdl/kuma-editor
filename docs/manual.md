@@ -172,7 +172,7 @@ both clips play the same entry, which is what the model's split already means.
 
 **Right-click is where the timeline's actions are.** On a clip: split it at the pointer
 (`S` splits at the playhead), add a transition into the clip it touches, copy, cut, group,
-delete. On the ruler: a marker at that moment (`P` leaves one at the playhead — a *pin*, below). A **transition** joins
+delete. On the ruler: a marker at that moment (`P` leaves one at the playhead — a comment for the agent, below). A **transition** joins
 two clips that touch on one track and is centred on the cut, so it needs *handles* —
 material after the first clip's out point and before the second's in point; "Transition
 into the next clip" makes a one-second dissolve, or as long as the handles allow, and says
@@ -309,13 +309,13 @@ the space differently, × closes a panel, and its letter brings it back where it
 off the dock (over the top bar), or *Float* on its tab's right-click, it floats; a floating
 panel dragged onto the dock docks again. *Reset the dock* (⌘K, or a tab's right-click) puts
 everything back. The rail of letters on the left (`b` bin, `p` blueprints, `f` fonts, `m`
-pins, `h` history, `r` render queue) brings a panel to the front, and a status line along the
+markers, `h` history, `r` render queue) brings a panel to the front, and a status line along the
 bottom says the mode, the revision, the selection, the playhead, the frame and what the agent
 is doing. **Den** gives the frame the whole window and shows what the agent
 did and where it looked: the bear (asleep after a minute without a call, looking while it
 samples, at work while it edits), orange corners round the region its last `sample_frames`
 looked at, its last edit's summary as a caption, and a rail with its revisions placed where
-they edited and your pins. Panels are summoned there with the same letters (`B I T A H M
+they edited and your markers. Panels are summoned there with the same letters (`B I T A H M
 R`), float, and dock to an edge dropped within 24 px of it. Any panel opens in a **window of
 its own** with ⧉ or by dragging it past the window's edge — in a browser a popup on
 `?panel=<id>`, in the app a frameless window — and keeps in step with the editor window: a
@@ -323,10 +323,12 @@ clip selected in one is selected in the other. Which mode, which panels and wher
 are this browser's, never the project's. **⌘K** (Ctrl+K) runs any command by name.
 
 The editor has no chat: you talk to the agent in your terminal. The one thing the editor
-writes to it is a **pin** — `P`, then type: a marker with a comment on the frame under the
-playhead, which the agent reads (`list_pins`) and can say it answered (`apply_edits`'
-`pins`). The pins panel shows each as open, being read, or done in the revision that
-answered it; you can tick one by hand. The **history** panel (`h`) is the one undo stack you
+writes to it is a **marker** — `P`, then type: a comment on the frame under the playhead,
+which the agent reads (`list_markers`) and can say it answered (`apply_edits`' `answers`).
+The agent leaves markers too — a moment to look at, a TODO, a zone's two edges — and each
+marker says who left it, so its own are never read back to it as your requests. The markers
+panel shows yours as open, being read, or done in the revision that answered it; you can
+tick one by hand. The **history** panel (`h`) is the one undo stack you
 and the agent share, newest first, with who made each step — ⟲ goes back to a revision as a
 new edit you can undo — and the patches the daemon refused, greyed. The inspector ends with
 the history of the clip or entry it shows.
@@ -405,7 +407,7 @@ claude mcp add --scope user    kuma -- kuma mcp --project /abs/path.kuma.json  #
 
 `kuma mcp` starts the daemon in-process if none is running on the port, so the browser UI
 and the agent always share one state. Tools: `timeline_guide`, `get_project`, `get_schema`, `apply_edits`,
-`undo`, `redo`, `list_pins`, `validate_project`, `list_presets`, `add_media`, `probe_media`, `reprobe_media`, `unused_entries`,
+`undo`, `redo`, `list_markers`, `validate_project`, `list_presets`, `add_media`, `probe_media`, `reprobe_media`, `unused_entries`,
 `transcribe`, **`sample_frames`**, `measure_audio`, `measure_media`, `bake_overlay`, `render`, `job_status`, `cancel_job`,
 `prune_cache`, `health`, and for overlays `overlay_guide`, `new_overlay`, `check_overlay`,
 `import_overlay`, `make_overlay_unique`, `list_blueprints`, `add_blueprint`,
@@ -479,17 +481,30 @@ file, and gone when the daemon stops:
   up to eight fields it changed: `GET /api/history?limit=N`, the last 500, newest first.
   `POST /api/history/restore {"revision": n}` makes the document what it was at any of the
   last 200 revisions as one new, validated, undoable edit, at a new revision number.
-- **Pins.** A marker with a label is a pin: `GET /api/pins` lists them, the master's first,
-  with an id `<sequence>@<t to 3 decimals>`, a number per sequence in time order, and `done`
-  — the revision of the latest edit that named it in `pins` (`apply_edits`' `pins`, or the
-  patch body's), or a tick by hand (`POST /api/pins/done {"id", "done"}`; unticking clears
-  both).
+- **Markers' answers.** The markers are the document's (a sequence's `markers`,
+  `{"t", "label", "color", "origin"}`), and each says who left it: `origin` is the head of
+  the origin of the edit that added it (`ui`, `mcp`, `cli`…), which the daemon stamps as the
+  edit lands — on every marker the new document has without one, carrying over the origin of
+  the marker at the same time of the same sequence before the edit if there was one (so a
+  client writing the whole array back re-attributes nothing, and an older file's marker
+  stays without), else the edit's (`ui` when it has none). A marker without an `origin` is
+  read as a person's. Undo, redo and restore put documents back as they were. What is
+  session state is whether one is answered: `GET /api/markers` lists every marker of every
+  sequence, the master's first, each in time order —
+  `{"id", "sequence", "index", "t", "label", "color", "origin", "author", "waiting", "done", "done_by"}`
+  with `id` `<sequence>@<t to 3 decimals>`, `index` its number in its sequence, `author`
+  `user`, `agent` or `other` (read off `origin` as an edit's is; none is `user`), `done` the
+  revision of the latest edit that named it in `answers` (`apply_edits`' `answers`, or the
+  patch body's) or of a tick by hand (`POST /api/markers/done {"id", "done"}`; unticking
+  clears both), `done_by` who did, and `waiting` whether it is a request still open: a
+  label, an author other than the agent, and not done.
 
 Each change is broadcast on `/api/events` beside `project_changed` and `job`: `activity` and
-`history` carry the record, and `pins` carries the whole list as `GET /api/pins` has it
-(`{"type":"pins","pins":[…]}`), sent at most once per operation whenever it can have
-changed — an edit, undo, redo or restore that changes a labelled marker (or the master), an
-edit that names pins, a tick or untick. A subscriber that falls too far behind is
+`history` carry the record (an entry's `answers` the markers it answered), and `markers`
+carries the whole list as `GET /api/markers` has it (`{"type":"markers","markers":[…]}`),
+sent at most once per operation whenever it can have changed — an edit, undo, redo or
+restore that changes a marker (or the master), an edit that names markers in `answers`, a
+tick or untick. A subscriber that falls too far behind is
 disconnected rather than skipped ahead, since a client appends `history` and `activity` as
 they come: it reconnects and reloads.
 

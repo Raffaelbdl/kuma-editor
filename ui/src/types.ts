@@ -152,7 +152,10 @@ export interface Transition { from: string; to: string; kind: "dissolve" | "wipe
  *  PGM/PNG under the project, which the inspector keeps but does not offer. */
 export const LUMAS = ["wipe_left", "wipe_right", "wipe_up", "wipe_down", "iris", "diagonal"];
 
-export interface Marker { t: number; label: string; color?: string | null }
+/** A marker: a moment on a sequence, with a comment or none. `origin` says who left it
+ *  (`ui`, `mcp`, `cli`…), stamped by the daemon from the edit that added it; absent on an
+ *  older file's, which read as a person's. */
+export interface Marker { t: number; label: string; color?: string | null; origin?: string | null }
 
 /** There is no project-level `tracks`: every timeline is a sequence entry in the bin, and
  *  `master` names the one that gets rendered. */
@@ -335,13 +338,18 @@ export interface HistoryEntry {
   /** Clip and bin ids the step touched. */
   targets: string[];
   changes: { target: string; field: string; from: unknown; to: unknown }[];
-  pins: string[];
+  /** Ids of the markers this step answered. */
+  answers: string[];
 }
 
-/** A pin: a marker with a comment, which is how a person writes to the agent. Its id is
- *  `<sequence>@<t>`, the format having no marker ids. */
-export interface Pin {
+/** A marker as the daemon lists it (`/api/markers`): every sequence's, with an id
+ *  (`<sequence>@<t>`, the format having no marker ids), who left it, and whether it is
+ *  waiting — a person's comment for the agent, not yet answered. The agent's own markers
+ *  (its notes, the edges of a zone) never wait. */
+export interface MarkerInfo {
   id: string; sequence: string; index: number; t: number; label: string; color: string | null;
+  origin: string | null; author: "user" | "agent" | "other";
+  waiting: boolean;
   /** The revision that answered it, and whether the agent did or a person ticked it. */
   done: number | null; done_by: "agent" | "user" | null;
 }
@@ -352,8 +360,8 @@ export type DaemonEvent =
   | { type: "jobs_cleared"; ids: number[] }
   | ({ type: "activity" } & Activity)
   | ({ type: "history" } & HistoryEntry)
-  /** The pin list, whenever it may have changed: a marker edited, a pin answered or ticked. */
-  | { type: "pins"; pins: Pin[] };
+  /** The marker list, whenever it may have changed: a marker edited, answered or ticked. */
+  | { type: "markers"; markers: MarkerInfo[] };
 
 export const fpsValue = (f: Fps) => f.num / f.den;
 

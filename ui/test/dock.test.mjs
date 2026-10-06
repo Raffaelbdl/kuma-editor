@@ -57,7 +57,7 @@ describe("the dock", { skip: why ? `skipping: ${why}` : false }, () => {
   });
 
   it("starts as power always was: the side panels as tabs, the inspector, the timeline", async () => {
-    assert.equal(await page.eval(GROUPS), "bin*+blueprints+fonts+pins+history+queue | inspector* | timeline*");
+    assert.equal(await page.eval(GROUPS), "bin*+blueprints+fonts+markers+history+queue | inspector* | timeline*");
   });
 
   it("holds still until the panels are let move, from the foot of the rail", async () => {
@@ -65,7 +65,7 @@ describe("the dock", { skip: why ? `skipping: ${why}` : false }, () => {
     const [x, y, w, h] = await group("timeline");
     await drag(await tab("queue"), [x + w / 2, y + h / 2]);
     await new Promise((r) => setTimeout(r, 300));
-    assert.equal(await page.eval(GROUPS), "bin+blueprints+fonts+pins+history+queue* | inspector* | timeline*");
+    assert.equal(await page.eval(GROUPS), "bin+blueprints+fonts+markers+history+queue* | inspector* | timeline*");
     assert.equal(await page.eval(`!!document.querySelector("#app.dock-locked")`), true);
     await page.eval(`document.querySelector("#rail .rail-key.lock").click()`);
     await page.until(`!document.querySelector("#app.dock-locked") && document.querySelector("#rail .rail-key.lock.free")`);
@@ -76,13 +76,13 @@ describe("the dock", { skip: why ? `skipping: ${why}` : false }, () => {
   it("joins a group when a tab is dropped on its middle", async () => {
     const [x, y, w, h] = await group("timeline");
     await drag(await tab("queue"), [x + w / 2, y + h / 2]);
-    await page.until(`${GROUPS} === "bin*+blueprints+fonts+pins+history | inspector* | timeline+queue*"`);
+    await page.until(`${GROUPS} === "bin*+blueprints+fonts+markers+history | inspector* | timeline+queue*"`);
   });
 
   it("splits a group when a tab is dropped on its edge", async () => {
     const [x, y, w, h] = await group("inspector");
     await drag(await tab("history"), [x + w / 2, y + h - 8]);
-    await page.until(`${GROUPS} === "bin*+blueprints+fonts+pins | inspector* | history* | timeline+queue*"`);
+    await page.until(`${GROUPS} === "bin*+blueprints+fonts+markers | inspector* | history* | timeline+queue*"`);
     // Under the inspector, sharing its column: both on screen, one above the other.
     const [, iy, , ih] = await group("inspector");
     const [, hy, , hh] = await group("history");
@@ -92,11 +92,11 @@ describe("the dock", { skip: why ? `skipping: ${why}` : false }, () => {
 
   it("goes beside the frame when dropped on the frame's edge", async () => {
     const [x, y, , h] = await box("#center");
-    await drag(await tab("pins"), [x + 12, y + h / 2]);
-    await page.until(`${GROUPS} === "bin*+blueprints+fonts | pins* | inspector* | history* | timeline+queue*"`);
-    const [px, , pw] = await group("pins");
+    await drag(await tab("markers"), [x + 12, y + h / 2]);
+    await page.until(`${GROUPS} === "bin*+blueprints+fonts | markers* | inspector* | history* | timeline+queue*"`);
+    const [px, , pw] = await group("markers");
     const [cx] = await box("#center");
-    assert.ok(px + pw <= cx + 2, "pins is left of the frame");
+    assert.ok(px + pw <= cx + 2, "markers is left of the frame");
   });
 
   it("is resized by the seam beside it", async () => {
@@ -109,7 +109,7 @@ describe("the dock", { skip: why ? `skipping: ${why}` : false }, () => {
 
   it("comes back where it was closed from, by its letter", async () => {
     await page.eval(`document.querySelector('.dock-group:has(.dock-tab[data-panel="inspector"]) .dock-head button[title^="Close"]').click()`);
-    await page.until(`${GROUPS} === "bin*+blueprints+fonts | pins* | history* | timeline+queue*"`);
+    await page.until(`${GROUPS} === "bin*+blueprints+fonts | markers* | history* | timeline+queue*"`);
     await key("i");
     await page.until(`${GROUPS}.includes("inspector*")`);
     // Its group was gone, so it goes beside the frame on the right, where it lives.

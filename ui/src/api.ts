@@ -1,4 +1,4 @@
-import type { Activity, BlueprintInfo, HistoryEntry, Pin, CacheUsage, DaemonEvent, EffectPreset, FontFamily, Issue, Job, LintReport, OverlayInfo, PatchOp, Preset, Project, SequenceState } from "./types";
+import type { Activity, BlueprintInfo, HistoryEntry, MarkerInfo, CacheUsage, DaemonEvent, EffectPreset, FontFamily, Issue, Job, LintReport, OverlayInfo, PatchOp, Preset, Project, SequenceState } from "./types";
 
 async function json<T>(url: string, init?: RequestInit): Promise<T> {
   const r = await fetch(url, { headers: { "content-type": "application/json" }, ...init });
@@ -34,9 +34,9 @@ export const api = {
   history: (limit = 200) => json<{ current: number; entries: HistoryEntry[] }>(`/api/history?limit=${limit}`),
   /** Make the document what it was at `revision`, as one new (undoable) edit. */
   restore: (revision: number) => json<{ revision: number }>("/api/history/restore", { method: "POST", body: JSON.stringify({ revision, origin: "ui" }) }),
-  pins: () => json<{ pins: Pin[] }>("/api/pins"),
-  /** Tick a pin done by hand, or open it again. Session state, not an edit. */
-  pinDone: (id: string, done: boolean) => json<unknown>("/api/pins/done", { method: "POST", body: JSON.stringify({ id, done }) }),
+  markers: () => json<{ markers: MarkerInfo[] }>("/api/markers"),
+  /** Tick a marker answered by hand, or open it again. Session state, not an edit. */
+  markerDone: (id: string, done: boolean) => json<unknown>("/api/markers/done", { method: "POST", body: JSON.stringify({ id, done }) }),
   sequence: () => json<SequenceState>("/api/sequence"),
   openSequence: (sequence: string) =>
     json<{ current: string }>("/api/sequence", { method: "POST", body: JSON.stringify({ sequence }) }),

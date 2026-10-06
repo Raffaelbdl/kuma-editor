@@ -49,10 +49,10 @@ const BINDINGS: Binding[] = [
   { when: (e) => e.key === "`" && !mod(e) && !e.altKey, action: Cmd.toggleMode, preventDefault: true,
     list: { where: "Panels", keys: "`", what: "Den or power: the frame and what the agent did, or every panel docked" } },
   PANELS,
-  // A pin is a note on the frame you are looking at; the workbench has no timeline to
+  // A marker is a note on the frame you are looking at; the workbench has no timeline to
   // hold one.
-  { when: (e) => bare(e, "p") && !onOverlay(), action: Cmd.addPin, preventDefault: true,
-    list: { where: "Panels", keys: "P", what: "Pin the playhead: write a note on this frame for the agent" } },
+  { when: (e) => bare(e, "p") && !onOverlay(), action: Cmd.addMarker, preventDefault: true,
+    list: { where: "Panels", keys: "P", what: "A marker at the playhead: a note on this frame — for the agent, or for you" } },
   // Transport means the surface you are looking at: on the workbench it is that overlay's
   // own time, not the sequence's. Everything below here is the same key on the timeline.
   { when: (e) => e.code === "Space" && onOverlay(), action: Cmd.overlayTogglePlay, preventDefault: true,
@@ -123,7 +123,7 @@ const GESTURES: { section: Section; does: string; what: string }[] = [
   { section: "Editing", does: "Drag a marker's flag", what: "Move it; click it to go there" },
   { section: "Editing", does: "Double-click a marker's flag", what: "Edit its comment (right-click: delete it)" },
   { section: "Editing", does: "Right-click a clip", what: "Split it there, add a transition, copy, group, delete" },
-  { section: "Editing", does: "Right-click the ruler", what: "Add a marker there (a pin, when it has a comment)" },
+  { section: "Editing", does: "Right-click the ruler", what: "A marker there, with a note or none" },
   { section: "Panels", does: "Drag a panel's title bar", what: "Move it; near an edge it docks there, past the window's edge it becomes a window" },
   { section: "Panels", does: "⧉ on a panel", what: "Open it in a window of its own" },
   { section: "Editing", does: "Double-click a track's name", what: "Rename it (or right-click its head)" },

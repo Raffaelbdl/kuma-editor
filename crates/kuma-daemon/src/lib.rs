@@ -10,9 +10,9 @@ pub mod cache;
 pub mod fonts;
 pub mod history;
 pub mod jobs;
+pub mod markers;
 pub mod media;
 pub mod overlays;
-pub mod pins;
 pub mod preview;
 pub mod state;
 

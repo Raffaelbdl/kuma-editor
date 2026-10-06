@@ -2905,7 +2905,7 @@ status line); and **den**, the frame full-bleed with what the agent did and wher
 on it, and panels summoned over it.
 
 **A panel is a module; the container is view state** — adopted. `panelhost.ts` holds the
-panels (bin, blueprints, fonts, pins, history, render queue, inspector, timeline, agent) as
+panels (bin, blueprints, fonts, markers, history, render queue, inspector, timeline, agent) as
 elements that move between containers — a dock slot, the floating layer, the parking lot —
 and are never rebuilt, so their subscriptions and scroll positions live on. A panel never
 knows where it is. Mode, which panels are summoned and where they float are `localStorage`,
@@ -2960,10 +2960,10 @@ A panel's window says nothing until the editor window has told it where things a
 defaults would overwrite the editor's selection and playhead.
 
 **Letters are commands** — adopted. `B I T A H M R` are `panel.<id>` commands and `P` is
-"pin at playhead", so the rail, den's keys, ⌘K and the shell's menus reach a panel one way,
+"marker at playhead", so the rail, den's keys, ⌘K and the shell's menus reach a panel one way,
 and ⌘K is the registry rather than a second list. Two keys moved to make room: **auto-key**
-is `Shift+R` (R is the render queue's letter; still R for record), and **`M`** shows the pins
-rather than opening the marker dialog — a pin is `P` and an inline field in the pins panel;
+is `Shift+R` (R is the render queue's letter; still R for record), and **`M`** shows the markers
+rather than opening the marker dialog — a comment is `P` and an inline field in the markers panel;
 the ruler's right-click and a flag's double-click still open the dialog. The backquote
 switches modes. Undo, redo, the theme, the shortcut list and the sequence picker left the top
 bar: they are commands, so ⌘K and the keys have them, and a sequence opens from the bin (or
@@ -3019,14 +3019,39 @@ compact JSON, one shared copy per revision, parsed only when someone goes back: 
 200 snapshots and 200 undo steps of a 300-clip project with a long transcript held half a
 gigabyte, and parsing a snapshot proved cheaper than the two copies an undo made of a typed one.
 
-**A pin is a marker with a comment, and done-ness is not in the document** — adopted; the
-README left it open. The format has no marker ids and must not change for this, so a pin's id
-is `<sequence>@<t to the millisecond>`. It is done when an agent's edit names it
-(`apply_edits`' new `pins`) or you tick it — kept by the daemon for the session, and the latest
-of an answer, a tick and an untick wins. Writing "done" into the marker (its colour, say) was
-rejected: it would make answering a pin an edit of the note, and an agent's undo would reopen
-it. The costs are known: moving a marker changes its pin's id, and a restart forgets which
-were answered.
+**One name, marker; a marker says who left it, and done-ness is not in the document** —
+adopted, revising an earlier "a pin is a marker with a comment". That entry kept the format
+unchanged and called a labelled marker a *pin* on the agent's side (`list_pins`, `/api/pins`,
+`apply_edits`' `pins`) while the editor and the document said marker — two names for one
+thing. And the agent leaves markers of its own (a TODO, a moment to review, a zone's two
+edges), which came back to it from `list_pins` as feedback it was meant to answer. Now it is
+**marker** everywhere (`list_markers`, `GET /api/markers`, `POST /api/markers/done`, the
+`markers` event, `apply_edits`' and the patch body's `answers`, a history entry's `answers`),
+with no aliases for the old names, and a marker carries `origin`: the head of the origin of
+the edit that added it (`ui`, `mcp`, `cli`…), which is what tells a request from the agent's
+own note. That is a format change, so `PROJECT_VERSION` went 8 → 9 with an upgrade step that
+changes nothing: the bump is only so that an older kuma refuses a v9 file instead of loading it
+and dropping the origins when it saves. A marker without one is an older file's, and reads as a
+person's, which every older marker was.
+
+Clients do not write `origin`: **the daemon stamps it** in the edit path, as an edit (a patch, or
+work composed under the edit lock) lands and before it is saved, so the stamped document is the
+one on disk and the one the history keeps. Every marker of the new document without an origin
+takes that of the marker at the same time (to the millisecond) of the same sequence before the
+edit, if there was one — a client that writes the whole `markers` array back without origins
+re-attributes nothing, and an older marker stays unattributed rather than becoming whoever
+edited next — or else the edit's own (`ui` when it has none, the editor's default). A marker
+that has one keeps it, so editing someone else's marker never makes it yours. Undo, redo and
+restore put documents back as they were and stamp nothing. The list then says, per marker,
+`author` (as an edit's author: `user`, `agent`, `other`) and `waiting` — a label, not the
+agent's, not answered — which is what the editor counts and the agent reads as asked of it.
+
+Done-ness stays session state. A marker's id is `<sequence>@<t to the millisecond>`, since the
+format has no marker ids; it is done when an edit names it in `answers` or you tick it — kept
+by the daemon for the session, and the latest of an answer, a tick and an untick wins. Writing
+"done" into the marker (its colour, say) was rejected: it would make answering a comment an
+edit of the note, and an agent's undo would reopen it. The costs are known: moving a marker
+changes its id, and a restart forgets which were answered.
 
 **Fonts are bundled** — adopted. JetBrains Mono (chrome), IBM Plex Sans (sentences people and
 agents wrote) and Silkscreen (labels, the rail's letters, the wordmark) are woff2 files under
@@ -3043,7 +3068,7 @@ is the editor's view state, in another origin's storage.
 
 Still open here: the render queue cannot say a render was "asked by kuma" (a job does not
 record who asked for it); the agent panel's thumbnails are the sample's own PNGs, so a pruned
-cache leaves them blank; a pin whose marker is dragged starts over as a new pin.
+cache leaves them blank; a marker that is dragged starts over unanswered (its id is where it is).
 
 ## Still open
 

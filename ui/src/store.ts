@@ -1,5 +1,5 @@
 import { api, subscribeEvents } from "./api";
-import type { Activity, BlueprintInfo, Clip, HistoryEntry, Pin, DaemonEvent, FontFamily, Job, Marker, OverlayInfo, PatchOp, Project, Track, TrackKind, Transition } from "./types";
+import type { Activity, BlueprintInfo, Clip, HistoryEntry, MarkerInfo, DaemonEvent, FontFamily, Job, Marker, OverlayInfo, PatchOp, Project, Track, TrackKind, Transition } from "./types";
 import { allClips, clipPathOf, fpsValue, freeId, isOverlaySource, nearest, seqDuration, seqPath, sequenceIds, sequenceOf } from "./types";
 
 /** A clip found in the project: where it is, as the record every edit of it starts from. */
@@ -77,13 +77,15 @@ export interface State {
   /** The project's history, newest first: every step, who made it, and refused patches. */
   history: HistoryEntry[];
   /** Pins on every sequence: markers with a comment, and whether a revision answered them. */
-  pins: Pin[];
+  /** Every sequence's markers as the daemon lists them: who left each, and whether it is
+   *  waiting for the agent. The open sequence's own are also `store.markers`, the document's. */
+  markerList: MarkerInfo[];
 }
 
 type Listener = (s: State) => void;
 
 class Store {
-  state: State = { project: null, blueprints: [], manifests: {}, fonts: [], previewStamp: 0, sequence: "", selection: null, track: null, clipboard: null, autoKey: false, reloading: false, playhead: 0, playing: false, zoom: 60, tab: SEQUENCE_TAB, sequences: [], overlays: [], connected: false, jobs: {}, mode: "power", activity: [], history: [], pins: [] };
+  state: State = { project: null, blueprints: [], manifests: {}, fonts: [], previewStamp: 0, sequence: "", selection: null, track: null, clipboard: null, autoKey: false, reloading: false, playhead: 0, playing: false, zoom: 60, tab: SEQUENCE_TAB, sequences: [], overlays: [], connected: false, jobs: {}, mode: "power", activity: [], history: [], markerList: [] };
   private listeners = new Set<Listener>();
   private refreshing: Promise<void> | null = null;
   private refreshAgain = false;
@@ -129,14 +131,14 @@ class Store {
     });
   }
 
-  /** The agent's side of the session — its calls, the history, the pins — from the daemon's
+  /** The agent's side of the session — its calls, the history, the markers — from the daemon's
    *  own tables, as jobs are: events only say what happens from now on. A daemon older
    *  than these endpoints answers 404, and the panels say there is nothing yet. */
   private async loadAgent() {
     const [a, h] = await Promise.all([api.activity().catch(() => null), api.history().catch(() => null)]);
     this.set({ ...(a ? { activity: a.activity } : {}), ...(h ? { history: h.entries } : {}) });
-    // After this, every change to them comes as a `pins` event carrying the list.
-    api.pins().then((r) => this.set({ pins: r.pins })).catch(() => {});
+    // After this, every change to them comes as a `markers` event carrying the list.
+    api.markers().then((r) => this.set({ markerList: r.markers })).catch(() => {});
   }
 
   private async loadJobs() {
@@ -193,8 +195,8 @@ class Store {
     } else if (e.type === "history") {
       const { type: _, ...h } = e;
       this.set({ history: [h, ...this.state.history].slice(0, 500) });
-    } else if (e.type === "pins") {
-      this.set({ pins: e.pins });
+    } else if (e.type === "markers") {
+      this.set({ markerList: e.markers });
     } else if (e.type === "jobs_cleared") {
       const jobs = { ...this.state.jobs };
       for (const id of e.ids) delete jobs[id];

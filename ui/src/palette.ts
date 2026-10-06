@@ -1,10 +1,10 @@
 // ⌘K: every command by name. The list is the registry (`commands.ts`) — what the keys, the
-// rail, the toolbar and the shell's menus run — plus the sequences to open and the pins to
+// rail, the toolbar and the shell's menus run — plus the sequences to open and the markers to
 // go to, so there is nothing here that is not reachable some other way, and nothing that
 // is reachable some other way and missing here.
 
 import { Cmd, command, list, run } from "./commands";
-import { pinsOn } from "./agent";
+import { markersOn } from "./agent";
 import { el } from "./dom";
 import { keysFor } from "./shortcuts";
 import { sequenceLabel, store } from "./store";
@@ -24,7 +24,7 @@ function entries(): Entry[] {
   const p = store.state.project;
   if (p) {
     for (const id of sequenceIds(p)) out.push({ label: `Open sequence: ${sequenceLabel(id)}`, run: () => void store.openSequence(id) });
-    for (const pin of pinsOn(store.state.pins, store.state.sequence)) out.push({ label: `Go to pin: ${pin.label.split("\n")[0]}`, run: () => store.seek(pin.t) });
+    for (const m of markersOn(store.state.markerList, store.state.sequence)) out.push({ label: `Go to marker: ${m.label.split("\n")[0] || `#${m.index}`}`, run: () => store.seek(m.t) });
   }
   return out;
 }

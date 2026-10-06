@@ -56,6 +56,27 @@ pub struct Entry {
     pub pins: Vec<String>,
 }
 
+impl Entry {
+    /// An entry with what follows from its origin and targets filled in, made now; the
+    /// rest (ops, base, error, changes, pins) is the caller's to set.
+    pub fn new(kind: Kind, origin: &str, revision: Option<u64>, targets: &[Target]) -> Entry {
+        Entry {
+            revision,
+            kind,
+            origin: origin.to_string(),
+            author: author(origin).to_string(),
+            summary: summary(origin),
+            ops: 0,
+            at: now_ms(),
+            base_revision: None,
+            error: None,
+            targets: targets.iter().map(|t| t.id().to_string()).collect(),
+            changes: Vec::new(),
+            pins: Vec::new(),
+        }
+    }
+}
+
 /// A scalar field of a clip or bin entry that an edit changed.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Change {
@@ -184,7 +205,7 @@ fn resolve(doc: &Project, pointer: &str) -> Option<Target> {
 /// destination). A clip added whole is named by its own `id`, which survives later ops in
 /// the same patch shifting indexes. In order, each once.
 pub fn patch_targets(before: &Project, after: Option<&Project>, ops: &[json_patch::PatchOperation]) -> Vec<Target> {
-    use json_patch::PatchOperation as Op;
+    use json_patch::{CopyOperation, MoveOperation, PatchOperation as Op, RemoveOperation, ReplaceOperation};
     let mut out = Vec::new();
     for op in ops {
         let found = match op {
@@ -197,10 +218,10 @@ pub fn patch_targets(before: &Project, after: Option<&Project>, ops: &[json_patc
                     _ => vec![resolve(after.unwrap_or(before), &path)],
                 }
             }
-            Op::Remove(r) => vec![resolve(before, &r.path.to_string())],
-            Op::Replace(r) => vec![resolve(before, &r.path.to_string())],
-            Op::Move(m) => vec![resolve(before, &m.from.to_string()), resolve(after.unwrap_or(before), &m.path.to_string())],
-            Op::Copy(c) => vec![resolve(before, &c.from.to_string()), resolve(after.unwrap_or(before), &c.path.to_string())],
+            Op::Remove(RemoveOperation { path }) | Op::Replace(ReplaceOperation { path, .. }) => vec![resolve(before, &path.to_string())],
+            Op::Move(MoveOperation { from, path }) | Op::Copy(CopyOperation { from, path }) => {
+                vec![resolve(before, &from.to_string()), resolve(after.unwrap_or(before), &path.to_string())]
+            }
             Op::Test(_) => vec![],
         };
         for t in found.into_iter().flatten() {
@@ -356,7 +377,7 @@ mod tests {
         }
         assert!(h.snapshot(4).is_none() && h.snapshot(5).is_some());
         for r in 0..(ENTRIES as u64 + 1) {
-            h.push(Entry { revision: Some(r), kind: Kind::Edit, origin: "ui".into(), author: "user".into(), summary: "edit".into(), ops: 1, at: 0, base_revision: None, error: None, targets: vec![], changes: vec![], pins: vec![] });
+            h.push(Entry::new(Kind::Edit, "ui", Some(r), &[]));
         }
         let all = h.newest(usize::MAX);
         assert_eq!((all.len(), all[0].revision, all.last().unwrap().revision), (ENTRIES, Some(ENTRIES as u64), Some(1)));

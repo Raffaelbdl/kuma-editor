@@ -30,8 +30,8 @@ export function historyPanel(): { body: HTMLElement; tools: HTMLElement } {
   const draw = () => {
     for (const c of chips) c.classList.toggle("on", c.dataset.f === filter);
     const s = store.state;
-    const current = s.project?.revision ?? 0;
-    tools.textContent = `r${current}`;
+    // Every revision this session is a step here, so the newest one that landed is now.
+    const current = s.history.find((h) => h.revision !== null)?.revision ?? s.project?.revision ?? 0;
     const rows = s.history.filter((h) => filter === "all" || h.author === filter);
     if (!rows.length) {
       list.replaceChildren(el("p", "muted tiny", s.history.length ? "Nothing by them yet." : "No steps yet this session. Every edit, yours and the agent's, lands here."));
@@ -39,7 +39,8 @@ export function historyPanel(): { body: HTMLElement; tools: HTMLElement } {
     }
     list.replaceChildren(...rows.map((h) => entryRow(h, current)));
   };
-  store.select((s) => [s.history, s.project?.revision], draw);
+  store.select((s) => [s.history], draw);
+  store.select((s) => [s.project?.revision], (s) => { tools.textContent = `r${s.project?.revision ?? 0}`; });
   return { body, tools };
 }
 
@@ -69,11 +70,13 @@ function entryRow(h: HistoryEntry, current: number): HTMLElement {
 
 /** What a step did, in a line: its own words, then the values it changed. */
 function describe(h: HistoryEntry): string {
-  const changes = h.changes.slice(0, 2).map((c) => `${c.field} ${fmt(c.from)}→${fmt(c.to)}`).join(", ");
+  const changes = h.changes.slice(0, 2).map(change).join(", ");
   return [h.summary || h.kind, changes].filter(Boolean).join(" · ");
 }
 
-export const fmt = (v: unknown): string => (typeof v === "number" ? String(+v.toFixed(2)) : typeof v === "string" ? v : JSON.stringify(v));
+const fmt = (v: unknown): string => (typeof v === "number" ? String(+v.toFixed(2)) : typeof v === "string" ? v : JSON.stringify(v));
+/** `x 0→120`: one value a step changed. */
+const change = (c: HistoryEntry["changes"][number]): string => `${c.field} ${fmt(c.from)}→${fmt(c.to)}`;
 
 function shortError(h: HistoryEntry): string {
   const e = h.error ?? "";
@@ -82,22 +85,22 @@ function shortError(h: HistoryEntry): string {
 
 /** The bottom of the inspector: the steps that touched these clips or entries, newest
  *  first, saying what each changed of *them* and who made it. Fields are not coloured when
- *  they change; this is where that is said. */
-export function historyFor(ids: string[], label: string): HTMLElement | null {
+ *  they change; this is where that is said. It follows the history itself, so a step does
+ *  not rebuild the inspector round it; `off` stops it. */
+export function historyFor(ids: string[], label: string): { box: HTMLElement; off: () => void } {
   const want = new Set(ids);
-  const steps = store.state.history.filter((h) => h.kind !== "refused" && h.targets.some((t) => want.has(t))).slice(0, 6);
   const box = el("div", "insp-history");
-  box.appendChild(el("h3", "", `history · ${label}`));
-  if (!steps.length) {
-    box.appendChild(el("p", "muted tiny", "Nothing has changed it this session."));
-    return box;
-  }
-  for (const h of steps) {
-    const mine = h.changes.filter((c) => want.has(c.target)).slice(0, 3).map((c) => `${c.field} ${fmt(c.from)}→${fmt(c.to)}`).join(" · ");
-    const row = el("div", "hist-mini");
-    row.append(el("span", "rev", `r${h.revision}`), el("span", "what", mine || h.summary || h.kind), el("span", "who", who(h.author)));
-    row.title = h.origin;
-    box.appendChild(row);
-  }
-  return box;
+  const off = store.select((s) => [s.history], (s) => {
+    const steps = s.history.filter((h) => h.kind !== "refused" && h.targets.some((t) => want.has(t))).slice(0, 6);
+    box.replaceChildren(el("h3", "", `history · ${label}`));
+    if (!steps.length) box.appendChild(el("p", "muted tiny", "Nothing has changed it this session."));
+    for (const h of steps) {
+      const mine = h.changes.filter((c) => want.has(c.target)).slice(0, 3).map(change).join(" · ");
+      const row = el("div", "hist-mini");
+      row.append(el("span", "rev", `r${h.revision}`), el("span", "what", mine || h.summary || h.kind), el("span", "who", who(h.author)));
+      row.title = h.origin;
+      box.appendChild(row);
+    }
+  });
+  return { box, off };
 }

@@ -3003,10 +3003,11 @@ agents wrote) and Silkscreen (labels, the rail's letters, the wordmark) are woff
 
 **The launcher wears the editor's files, not a copy of them** — adopted. The desktop shell's
 launcher page (`app/launcher/`) had its own palette, kept "in step" by hand, and it had already
-drifted. Now `app/scripts/copy-assets.mjs` copies `themes.css`, `fonts.css`, the fonts and the
-bear from `ui/src` into `dist/launcher` at build time, and the page is the editor's shapes: the
-top bar with the bear and the wordmark, square corners, pixel-face labels, the orange status
-line saying which `kuma` it will run. It always shows the default theme — the theme you picked
+drifted. Now `app/scripts/copy-assets.mjs` copies `themes.css`, `fonts.css`, `chrome.css` (the
+faces, the scrollbars, the top bar and the status line, which the editor's `style.css` imports
+too), the fonts and the bear from `ui/src` into `dist/launcher` at build time. The page is the
+editor's shapes: the top bar with the bear and the wordmark, square corners, pixel-face labels,
+the orange status line saying which `kuma` it will run. It always shows the default theme — the theme you picked
 is the editor's view state, in another origin's storage.
 
 Still open here: the render queue cannot say a render was "asked by kuma" (a job does not

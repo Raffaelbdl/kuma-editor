@@ -38,6 +38,8 @@ pub struct Record {
     /// `apply_edits`' note.
     pub summary: Option<String>,
     pub revision_before: u64,
+    /// Set when it ends: the revision it made, or `revision_before` when it made none, so
+    /// the two differ exactly when the call edited — whatever else landed meanwhile.
     pub revision_after: Option<u64>,
     /// Milliseconds since the epoch.
     pub started_at: u64,
@@ -80,6 +82,10 @@ pub enum Report {
         error: Option<String>,
         #[serde(default)]
         result: Value,
+        /// The revision the call made, read off its own answer. Absent (an older `kuma
+        /// mcp`, or a call that edited nothing) reads as none made.
+        #[serde(default)]
+        revision: Option<u64>,
     },
 }
 
@@ -117,12 +123,12 @@ impl Activity {
         r
     }
 
-    /// Call `id` has ended, at `revision`: with its result summary, or failed with its error
-    /// (a failed call has no verdict or frames to show). `None` when it is not (or no
-    /// longer) kept.
-    pub fn end(&mut self, id: u64, outcome: Result<&Value, Option<String>>, revision: u64, now: u64, samples_dir: &Path) -> Option<Record> {
+    /// Call `id` has ended, having made `revision` (`None`: none): with its result summary,
+    /// or failed with its error (a failed call has no verdict or frames to show). `None`
+    /// when it is not (or no longer) kept.
+    pub fn end(&mut self, id: u64, outcome: Result<&Value, Option<String>>, revision: Option<u64>, now: u64, samples_dir: &Path) -> Option<Record> {
         let r = self.records.iter_mut().find(|r| r.id == id)?;
-        r.revision_after = Some(revision);
+        r.revision_after = Some(revision.unwrap_or(r.revision_before));
         r.ended_at = Some(now);
         match outcome {
             Ok(result) => {
@@ -212,13 +218,13 @@ mod tests {
         let dir = Path::new("/s");
         let first = a.start("apply_edits".into(), Some("claude-code".into()), json!({ "note": "trim", "pins": ["main@1.000"] }), 4, 10);
         assert_eq!((first.summary.as_deref(), first.pins.as_slice(), first.state), (Some("trim"), &["main@1.000".to_string()][..], State::Running));
-        let ended = a.end(first.id, Err(Some("409".into())), 4, 11, dir).unwrap();
+        let ended = a.end(first.id, Err(Some("409".into())), None, 11, dir).unwrap();
         assert_eq!((ended.state, ended.error.as_deref(), ended.revision_after), (State::Failed, Some("409"), Some(4)));
         for _ in 0..RECORDS {
             a.start("health".into(), None, Value::Null, 4, 12);
         }
         let all = a.newest(usize::MAX);
         assert_eq!((all.len(), all[0].id, all[0].client.as_str()), (RECORDS, RECORDS as u64 + 1, "agent"));
-        assert!(a.end(first.id, Ok(&Value::Null), 5, 13, dir).is_none(), "evicted");
+        assert!(a.end(first.id, Ok(&Value::Null), Some(5), 13, dir).is_none(), "evicted");
     }
 }

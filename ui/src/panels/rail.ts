@@ -9,11 +9,11 @@ import { keysFor } from "../shortcuts";
 import { panels } from "../panelhost";
 import { store } from "../store";
 
-/** The side panels, top down. `m` lights up while a pin is open. */
-const RAIL = ["bin", "blueprints", "fonts", "pins", "history", "queue"];
-
 export function mountRail(host: HTMLElement): void {
-  const keys = RAIL.map((id) => {
+  // The side panels, top down, in the order they were registered. `m` lights up while a
+  // pin is open.
+  const side = panels.all.filter((s) => s.dock === "side").map((s) => s.id);
+  const keys = side.map((id) => {
     const spec = panels.spec(id)!;
     const b = el("button", "rail-key", spec.letter);
     const key = keysFor(`panel.${id}`);
@@ -33,7 +33,7 @@ export function mountRail(host: HTMLElement): void {
     lock.classList.toggle("free", free);
     for (const b of keys) b.classList.toggle("on", panels.isVisible(b.dataset.panel!));
     const open = store.state.pins.some((p) => p.done === null);
-    keys[RAIL.indexOf("pins")].classList.toggle("flag", open);
+    keys[side.indexOf("pins")]?.classList.toggle("flag", open);
   };
   document.addEventListener("kuma:panels", mark);
   store.select((s) => [s.pins], mark);

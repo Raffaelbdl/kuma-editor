@@ -688,9 +688,12 @@ async function askComment(t: number, value: string, ok: string): Promise<string 
 
 /** Add a marker at the playhead with a comment — or, when one is already on that frame,
  *  edit that one's: two markers on one frame are one note written twice. */
+/** Which marker is on `t`'s frame, or -1. */
+const markerAt = (t: number): number => store.markers.findIndex((m) => Math.abs(m.t - t) < store.halfFrame);
+
 /** A marker at `t` — the playhead for M, the pointer for the ruler's right-click. */
 export async function addMarker(t = store.state.playhead) {
-  const there = store.markers.findIndex((m) => Math.abs(m.t - t) < store.halfFrame);
+  const there = markerAt(t);
   if (there >= 0) return editMarker(there);
   const label = await askComment(t, "", "Add");
   if (label === null) return;
@@ -699,14 +702,14 @@ export async function addMarker(t = store.state.playhead) {
 
 /** The comment of the marker on `t`'s frame, if there is one: what the pin field starts
  *  from, so a pin on a frame that has one edits it rather than stacking a second. */
-export const markerOn = (t: number): string | null => store.markers.find((m) => Math.abs(m.t - t) < store.halfFrame)?.label ?? null;
+export const markerOn = (t: number): string | null => store.markers[markerAt(t)]?.label ?? null;
 
 /** A pin: a marker at `t` with a comment typed inline (the pins panel), rather than in the
  *  marker dialog. On a frame that already has a marker, this is its comment now. */
 export async function addPin(t: number, label: string): Promise<boolean> {
   const text = label.trim();
   if (!text) return false;
-  const i = store.markers.findIndex((m) => Math.abs(m.t - t) < store.halfFrame);
+  const i = markerAt(t);
   if (i >= 0) {
     if (store.markers[i].label !== text) await patchMarker(i, { label: text }, `pin at ${at(t)}`);
     return true;

@@ -10,7 +10,7 @@ import { desktop } from "../desktop";
 import { button, capitalize, el, options, plural, row } from "../dom";
 import { icon } from "../icons";
 import { askForm, openDialog } from "../modal";
-import { store, toast } from "../store";
+import { binName, sequenceLabel, store, toast } from "../store";
 import { isFinal, sequenceIds, type CacheUsage, type Job, type Preset } from "../types";
 
 type Tab = "render" | "queue";
@@ -27,7 +27,6 @@ export const lastRenderPreset = () => lastPreset;
  *  Quality and speed are `lastPreset`'s, and only come back with it. */
 let advanced = { open: false, threads: "", quality: "", speed: "" };
 
-export const binName = (id?: string) => (id && store.state.project?.bin[id]?.name) || id || "?";
 const fail = (e: unknown) => toast((e as Error).message, "err");
 
 export function openRenderDialog(tab: Tab = "render"): void {
@@ -43,7 +42,7 @@ export function openRenderDialog(tab: Tab = "render"): void {
   const sequence = el("select");
   sequence.title = "Which timeline to render";
   const ids = [project.master, ...sequenceIds(project).filter((id) => id !== project.master)];
-  options(sequence, ids.map((id) => ({ value: id, label: `${binName(id)}${id === project.master ? " (master)" : ""}` })), project.master);
+  options(sequence, ids.map((id) => ({ value: id, label: sequenceLabel(id) })), project.master);
   const preset = el("select");
   const output = el("input");
   output.type = "text";
@@ -179,10 +178,9 @@ export function openRenderDialog(tab: Tab = "render"): void {
   // Prunes seen running, so each result is reported once.
   const pruning = new Set<number>();
   const queuePane = row("queue-pane", list, row("modal-actions", clear, cacheSize, prune, button("Close", close)));
-  const rows = new Map<number, JobRow>();
-  let order = "";
+  const rows = jobList(list, jobRow, empty);
   const draw = (jobs: Record<number, Job>) => {
-    const all = Object.values(jobs).sort((a, b) => b.id - a.id);
+    const all = rows(jobs);
     clear.disabled = !all.some(isFinal);
     const prunes = all.filter((j) => j.kind === "prune");
     prune.disabled = prunes.some((j) => !isFinal(j));
@@ -194,15 +192,6 @@ export function openRenderDialog(tab: Tab = "render"): void {
       toast(`Freed ${bytes(done.freed.bytes)}`, "ok");
       cacheSize.textContent = cacheNote(done.kept);
     }
-    for (const j of all) {
-      if (!rows.has(j.id)) rows.set(j.id, jobRow(j.id));
-      rows.get(j.id)!.update(j);
-    }
-    const now = all.map((j) => j.id).join();
-    if (now === order) return;
-    order = now;
-    for (const id of rows.keys()) if (!(id in jobs)) rows.delete(id);
-    list.replaceChildren(...(all.length ? all.map((j) => rows.get(j.id)!.root) : [empty]));
   };
 
   const heading = el("h3");
@@ -256,7 +245,31 @@ function overwriteNote(t: RenderTarget): string {
   return `${name} already exists${jobs ? `, and ${jobs} will also write it` : ""}. Rendering replaces it.`;
 }
 
-interface JobRow { root: HTMLElement; update: (j: Job) => void }
+export interface JobRow { root: HTMLElement; update: (j: Job) => void }
+
+/**
+ * Jobs in `list`, newest first, one row each kept by id: updated in place, and re-placed only
+ * when the set of jobs changes, so a click on a row's Cancel is never lost to a redraw. The
+ * dialog's queue and the queue panel draw rows of their own through it. Returns the jobs.
+ */
+export function jobList(list: HTMLElement, make: (id: number) => JobRow, empty: HTMLElement): (jobs: Record<number, Job>) => Job[] {
+  const rows = new Map<number, JobRow>();
+  let order = "";
+  return (jobs) => {
+    const all = Object.values(jobs).sort((a, b) => b.id - a.id);
+    for (const j of all) {
+      if (!rows.has(j.id)) rows.set(j.id, make(j.id));
+      rows.get(j.id)!.update(j);
+    }
+    const now = all.map((j) => j.id).join();
+    if (now !== order) {
+      order = now;
+      for (const id of rows.keys()) if (!(id in jobs)) rows.delete(id);
+      list.replaceChildren(...(all.length ? all.map((j) => rows.get(j.id)!.root) : [empty]));
+    }
+    return all;
+  };
+}
 
 /** What a job other than a render works on, as its params name it: `· Main`, `· talk`. */
 export function subject(params: unknown): string {

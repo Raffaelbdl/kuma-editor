@@ -36,6 +36,8 @@ export function installViewSync(panel: string | null): void {
   // A panel's window says nothing until the editor window has told it where things are, or
   // its defaults (playhead 0, nothing selected) would overwrite the editor's.
   let ready = !panel;
+  /** What this window last told the others. */
+  let sent: Partial<Shared> = {};
   const snapshot = (): Partial<Shared> => {
     const s = store.state;
     const out: Partial<Shared> = Object.fromEntries(KEYS.map((k) => [k, s[k]]));
@@ -49,12 +51,17 @@ export function installViewSync(panel: string | null): void {
     if (!m || m.from === me) return;
     if (m.type === "state") {
       ready = true;
+      // The channel copies what it carries, so an object (the selection) arrives as a new
+      // one every time: only what differs is set, or every panel keyed on it redraws.
+      const s = store.state as unknown as Record<string, unknown>;
+      const changed = Object.fromEntries(Object.entries(m.state).filter(([k, v]) => JSON.stringify(s[k]) !== JSON.stringify(v)));
+      if (!Object.keys(changed).length) return;
       applying = true;
-      try { store.set(m.state); } finally { applying = false; }
+      try { store.set(changed); } finally { applying = false; }
     } else if (m.type === "hello") {
       // A new window: tell it where things are, and, if it is a panel, take ours away.
       if (!panel) {
-        post({ type: "state", from: me, state: snapshot() });
+        post({ type: "state", from: me, state: (sent = snapshot()) });
         if (m.panel) panels.claimed(m.panel);
       }
     } else if (m.type === "bye") {
@@ -73,11 +80,15 @@ export function installViewSync(panel: string | null): void {
     }
   };
 
-  // Every change of these, from here, goes to the others. The playhead ticks 25 times a
-  // second while playing; a channel message is cheap, and a timeline in another window
-  // that lags the picture is the thing this exists to prevent.
+  // Every change of these, from here, goes to the others — what changed, not the lot. The
+  // playhead ticks 25 times a second while playing; a channel message is cheap, and a
+  // timeline in another window that lags the picture is the thing this exists to prevent.
   store.select((s) => KEYS.map((k) => s[k]).concat(panel ? [] : [s.playing]), () => {
-    if (!applying && ready) post({ type: "state", from: me, state: snapshot() });
+    if (applying || !ready) return;
+    const now = snapshot();
+    const state = Object.fromEntries(Object.entries(now).filter(([k, v]) => sent[k as keyof Shared] !== v)) as Partial<Shared>;
+    sent = now;
+    if (Object.keys(state).length) post({ type: "state", from: me, state });
   });
 
   // A panel's window closes itself only after saying so: a message posted while the page
@@ -103,8 +114,8 @@ export function installViewSync(panel: string | null): void {
     // lost — its heartbeat stops, and the panel comes back here.
     setInterval(() => {
       const now = Date.now();
-      for (const id of panels.outIds) {
-        const last = Math.max(heard.get(id) ?? 0, panels.outSince.get(id) ?? 0);
+      for (const [id, since] of panels.out) {
+        const last = Math.max(heard.get(id) ?? 0, since);
         const wait = heard.has(id) ? LOST : GRACE;
         if (now - last > wait) { heard.delete(id); gone.set(id, now); panels.returned(id); }
       }

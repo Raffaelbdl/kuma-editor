@@ -886,12 +886,12 @@ impl ServerHandler for KumaServer {
     /// Every tool, through the router, and told when this server is an old build. Each call
     /// is reported to the daemon as it starts and ends, for the editor's activity feed: the
     /// start waits at most a second (so the daemon reads the revision before the call
-    /// changes it), and the end is not waited on at all.
+    /// changes it), and the end, which names the revision the call made, is not waited on at
+    /// all.
     async fn call_tool(&self, request: CallToolRequestParams, context: RequestContext<RoleServer>) -> Result<CallToolResponse, McpError> {
         let tool = request.name.to_string();
-        let args = request.arguments.clone().map(Value::Object).unwrap_or(Value::Null);
-        let client = context.peer.peer_info().map(|i| i.client_info.name.clone()).filter(|n| !n.trim().is_empty()).unwrap_or_else(|| "agent".into());
-        let id = self.client.report(&activity::start(&tool, &client, &args)).await.and_then(|v| v["id"].as_u64());
+        let client = context.peer.peer_info().map(|i| i.client_info.name.clone());
+        let id = self.client.report(&activity::start(&tool, client.as_deref(), request.arguments.as_ref())).await.and_then(|v| v["id"].as_u64());
         let response = self.tool_router.call(ToolCallContext::new(self, request, context)).await;
         if let Some(id) = id {
             let (reporter, end) = (self.client.clone(), activity::end(id, &tool, &response));

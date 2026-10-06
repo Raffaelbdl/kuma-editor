@@ -304,11 +304,13 @@ async fn activity(State(st): S, Query(q): Query<Limit>) -> Json<Value> {
 /// The MCP server reporting a tool call's start (answered with its id) or end.
 async fn report_activity(State(st): S, Json(report): Json<crate::activity::Report>) -> ApiResult {
     use crate::activity::Report;
-    let revision = read(&st.project).revision;
     let now = crate::history::now_ms();
     let record = match report {
-        Report::Start { tool, client, args } => lock(&st.activity).start(tool, client, args, revision, now),
-        Report::End { id, ok, error, result } => lock(&st.activity)
+        Report::Start { tool, client, args } => {
+            let revision = read(&st.project).revision;
+            lock(&st.activity).start(tool, client, args, revision, now)
+        }
+        Report::End { id, ok, error, result, revision } => lock(&st.activity)
             .end(id, if ok { Ok(&result) } else { Err(error) }, revision, now, &st.config.samples_dir())
             .ok_or_else(|| ApiError::not_found(format!("no activity {id}: it has ended or been forgotten")))?,
     };
@@ -319,8 +321,7 @@ async fn report_activity(State(st): S, Json(report): Json<crate::activity::Repor
 
 /// Every pin, the master's first, each with whether it is done.
 async fn pins(State(st): S) -> Json<Value> {
-    let answers = st.pin_answers();
-    Json(json!({ "pins": crate::pins::list(&read(&st.project), &answers) }))
+    Json(json!({ "pins": st.pin_list() }))
 }
 
 #[derive(Deserialize)]
@@ -331,11 +332,9 @@ struct TickPin {
 
 /// Tick a pin done by hand, or untick it.
 async fn tick_pin(State(st): S, Json(req): Json<TickPin>) -> ApiResult {
-    let exists = crate::pins::list(&read(&st.project), &Default::default()).iter().any(|p| p.id == req.id);
-    if !exists {
+    if !st.tick_pin(&req.id, req.done) {
         return Err(ApiError::not_found(format!("no pin `{}`: `GET /api/pins` lists them", req.id)));
     }
-    st.tick_pin(&req.id, req.done);
     Ok(Json(json!({ "id": req.id, "done": req.done })))
 }
 

@@ -34,6 +34,11 @@ interface Member { clip: Clip; ti: number; start: number; end: number; ghost: HT
 /** …and where its ghost came to rest, read off at the drop. */
 interface Landed { m: Member; start: number; end: number }
 
+/** Pixels per second, at the widest and the closest. */
+const ZOOM_MIN = 8;
+const ZOOM_MAX = 600;
+const clampZoom = (z: number) => Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, z));
+
 export class Timeline {
   private root: HTMLDivElement;
   private playhead: HTMLDivElement | null = null;
@@ -103,7 +108,7 @@ export class Timeline {
         // Around the pointer: the moment under it stays under it, as in every editor.
         const t = Math.max(0, this.t(e.clientX - this.root.getBoundingClientRect().left));
         const at = e.clientX - host.getBoundingClientRect().left;
-        const z = Math.min(600, Math.max(8, store.state.zoom * (e.deltaY < 0 ? 1.15 : 1 / 1.15)));
+        const z = clampZoom(store.state.zoom * (e.deltaY < 0 ? 1.15 : 1 / 1.15));
         store.set({ zoom: z });
         host.scrollLeft = this.x(t) - at;
       }
@@ -181,10 +186,10 @@ export class Timeline {
   private corner(): HTMLDivElement {
     const corner = el("div", "tl-corner");
     corner.addEventListener("pointerdown", (e) => e.stopPropagation());
-    const zoomBy = (f: number) => store.set({ zoom: Math.min(600, Math.max(8, store.state.zoom * f)) });
+    const zoomBy = (f: number) => store.set({ zoom: clampZoom(store.state.zoom * f) });
     const zoom = this.zoomInput;
     // A slider wearing the word: "zoom" until you drag it, as the design writes it.
-    zoom.type = "range"; zoom.min = "8"; zoom.max = "600"; zoom.step = "1";
+    zoom.type = "range"; zoom.min = String(ZOOM_MIN); zoom.max = String(ZOOM_MAX); zoom.step = "1";
     zoom.className = "zoom";
     zoom.oninput = () => store.set({ zoom: Number(zoom.value) });
     const add = el("select");

@@ -4,14 +4,8 @@
    through here. `@import` has to come first in the file. */
 @import "./themes.css";
 @import "./fonts.css";
+@import "./chrome.css";
 
-/* Type is not palette: the same three faces in every theme. Mono is the chrome, sans the
-   sentences people and agents wrote, and the pixel face labels, letters and the wordmark. */
-:root {
-  --mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
-  --sans: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
-  --label: "Silkscreen", var(--mono);
-}
 * { box-sizing: border-box; }
 /* Dark built-in controls — select popups, checkboxes, spinners.
    **Not on :root.** A dark root makes every overlay iframe composite against an opaque
@@ -22,15 +16,6 @@
 button, input, select, textarea, option { color-scheme: dark; }
 html, body { height: 100%; margin: 0; background: var(--bg-0); color: var(--fg); font: 12px/1.4 var(--mono); }
 
-/* Scrollbars, themed. `scrollbar-*` is the standard property; the `::-webkit-` rules are
-   what Chromium actually honours, and they allow the inset thumb this palette wants. */
-* { scrollbar-width: thin; scrollbar-color: var(--bg-3) transparent; }
-::-webkit-scrollbar { width: 11px; height: 11px; }
-::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: var(--bg-3); border: 3px solid transparent; background-clip: content-box; border-radius: 8px; }
-::-webkit-scrollbar-thumb:hover { background: var(--line); background-clip: content-box; }
-::-webkit-scrollbar-thumb:active { background: var(--fg-2); background-clip: content-box; }
-::-webkit-scrollbar-corner { background: transparent; }
 button, input, select, textarea { font: inherit; color: inherit; }
 button { background: var(--bg-0); border: 1px solid var(--line); border-radius: 2px; padding: 3px 9px; cursor: pointer; }
 button:hover { border-color: var(--fg-2); }
@@ -88,11 +73,7 @@ body.has-titlebar #titlebar {
 .tb-btn.close:hover { background: var(--danger); color: #fff; }
 
 /* ---- the top bar: bear, wordmark, editor tabs, ⌘K, mode, render, queue */
-#topbar { display: flex; align-items: center; gap: 12px; padding: 0 14px; background: var(--bg-bar); border-bottom: 1px solid var(--line-2); min-width: 0; }
 #topbar .spacer { flex: 1 1 0; min-width: 8px; }
-/* The bear is 12×10 and only ever scaled by whole numbers, so its pixels stay pixels. */
-.bear { image-rendering: pixelated; flex: none; display: block; }
-.wordmark { font: 400 14px var(--label); color: var(--fg); flex: none; }
 #editor-tabs { display: flex; align-items: stretch; gap: 2px; margin-left: 10px; min-width: 0; overflow-x: auto; overflow-y: hidden; scrollbar-width: none; }
 .etab {
   display: flex; align-items: center; gap: 8px; padding: 6px 12px; cursor: pointer;
@@ -147,7 +128,7 @@ body.has-titlebar #titlebar {
 .dock-grip:hover, .dock-grip.on { background: var(--accent); }
 .dock-group { display: flex; flex-direction: column; overflow: hidden; background: var(--bg-0); }
 .dock-group[hidden] { display: none; }
-.dock-group.flash { box-shadow: inset 0 0 0 1px var(--accent); }
+.dock-group.flash, .panel.flash { box-shadow: inset 0 0 0 1px var(--accent); }
 /* A group's head is its tabs — the letter, and the title of the one in front — then the
    front panel's note and tools. The head's empty part, like a tab, is what you drag. */
 /* It wraps rather than clipping: a tab out of sight is a panel nobody finds, so in a narrow
@@ -157,26 +138,28 @@ body.has-titlebar #titlebar {
 .dock-tabs { display: flex; flex-wrap: wrap; gap: 3px; min-width: 0; }
 .dock-tab { display: flex; align-items: center; gap: 6px; height: 22px; padding: 0 1px; cursor: pointer; color: var(--fg-2); flex: none; }
 .dock-tab.on { padding: 0 6px 0 1px; }
-.dock-tab .ptile { width: 16px; height: 16px; display: grid; place-items: center; font: 400 10px var(--label); background: var(--bg-3); color: var(--fg-2); }
+/* A panel's letter, as its tab, its title bar and the dragged ghost show it. */
+.ptile { width: 16px; height: 16px; display: grid; place-items: center; font: 400 10px var(--label); background: var(--fg); color: var(--bg-0); flex: none; }
+.dock-tab .ptile { background: var(--bg-3); color: var(--fg-2); }
 .dock-tab .ptitle { display: none; font: 400 10px var(--label); text-transform: lowercase; white-space: nowrap; }
 .dock-tab:hover .ptile { color: var(--fg); }
 .dock-tab.on .ptile { background: var(--fg); color: var(--bg-0); }
 .dock-tab.on .ptitle { display: inline; color: var(--fg); }
 /* In a window of its own: its tab stays, so you know where it comes back to. */
 .dock-tab.out .ptile { background: none; outline: 1px dashed var(--fg-3); color: var(--fg-3); }
-.dock-tab[data-panel="agent"].on .ptile { background: var(--accent); color: var(--on-accent); }
-.dock-note { color: var(--fg-3); font-size: 10.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
-.dock-tools { display: flex; align-items: center; gap: 2px; }
-.dock-head button.pbtn { background: none; border: 0; padding: 2px 4px; color: var(--fg-3); line-height: 1; font-size: 12px; display: none; }
+/* The agent's tile is the accent: it is the one panel about somebody else. */
+.dock-tab[data-panel="agent"].on .ptile, .panel[data-panel="agent"] .ptile { background: var(--accent); color: var(--on-accent); }
+.dock-note, .dock-tools { display: flex; align-items: center; gap: 2px; }
+.dock-head button.pbtn, .panel-head button.pbtn { background: none; border: 0; padding: 2px 4px; color: var(--fg-2); line-height: 1; font-size: 12px; }
+.dock-head button.pbtn:hover, .panel-head button.pbtn:hover { color: var(--fg); }
+.dock-head button.pbtn { color: var(--fg-3); display: none; }
 /* ⧉ and × only while the head is under the pointer: a narrow group needs the room for its tabs. */
 .dock-head:hover button.pbtn { display: block; }
-.dock-head button.pbtn:hover { color: var(--fg); }
 .dock-body { flex: 1; min-height: 0; min-width: 0; display: flex; flex-direction: column; }
 .dock-body > .panel { flex: 1; min-height: 0; }
 .dock-body > .panel[hidden] { display: none; }
 /* Dragging a panel: what follows the pointer, and where it would land. */
 .dock-ghost { position: fixed; z-index: 2000; pointer-events: none; display: flex; align-items: center; gap: 6px; padding: 3px 8px 3px 3px; background: var(--bg-2); border: 1px solid var(--line); box-shadow: var(--float-shadow); font: 400 10px var(--label); color: var(--fg); }
-.dock-ghost .ptile { width: 16px; height: 16px; display: grid; place-items: center; background: var(--fg); color: var(--bg-0); }
 #dock-drop { position: fixed; z-index: 1999; pointer-events: none; background: color-mix(in srgb, var(--accent) 18%, transparent); outline: 2px solid var(--accent); outline-offset: -2px; }
 
 /* The rail: a letter per panel, the same keys that summon them in den. */
@@ -214,17 +197,15 @@ body.has-titlebar #titlebar {
    window's title bar. */
 .panel { display: flex; flex-direction: column; min-width: 0; min-height: 0; height: 100%; background: var(--bg-0); }
 .panel-head { flex: none; display: flex; align-items: center; gap: 8px; padding: 0 10px; height: 34px; min-width: 0; }
-.panel-head .ptile { display: none; width: 16px; height: 16px; place-items: center; font: 400 10px var(--label); background: var(--fg); color: var(--bg-0); flex: none; }
+.panel-head .ptile { display: none; }
 .panel-head .ptitle { font: 400 10px var(--label); color: var(--fg-2); white-space: nowrap; }
 .panel-head .pnote { color: var(--fg-3); font-size: 10.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 .panel-head .spacer { flex: 1; }
 .panel-head .ptools { display: flex; align-items: center; gap: 2px; }
-.panel-head button.pbtn { background: none; border: 0; padding: 2px 4px; color: var(--fg-2); line-height: 1; font-size: 12px; }
-.panel-head button.pbtn:hover { color: var(--fg); }
 .panel-body { flex: 1; min-height: 0; min-width: 0; position: relative; display: flex; flex-direction: column; }
 .panel-body > * { flex: 1; min-height: 0; }
-.panel.docked .panel-head .pfloat-only, .panel.docked .panel-head .pop { display: none; }
-.panel.docked.nohead > .panel-head { display: none; }
+/* Docked, its group's head is its head. */
+.panel.docked > .panel-head { display: none; }
 /* Floating: over whatever is behind it, and the only thing in the editor with a shadow. */
 #floating { position: absolute; left: 0; right: 0; top: 44px; bottom: 24px; pointer-events: none; z-index: 30; }
 body.has-titlebar #floating { top: 76px; }
@@ -235,10 +216,8 @@ body.has-titlebar #floating { top: 76px; }
 .panel.floating > .panel-head, .panel.solo > .panel-head { height: 28px; padding: 0 8px; background: var(--bg-2); cursor: grab; user-select: none; }
 .panel.floating > .panel-head .ptile, .panel.solo > .panel-head .ptile { display: grid; }
 .panel.floating > .panel-head .ptitle, .panel.solo > .panel-head .ptitle { color: var(--fg); }
-.panel.floating .panel-body, .panel.floating .slot-like { background: transparent; }
+.panel.floating .panel-body { background: transparent; }
 .panel.floating.dragging { opacity: 0.92; }
-/* The agent's tile is the accent: it is the one panel about somebody else. */
-.panel[data-panel="agent"] .ptile { background: var(--accent); color: var(--on-accent); }
 /* Resizing a floating panel: a strip along each side and a square at each corner, inside
    its border (the panel clips what is outside it). Only while it floats. */
 .prs { position: absolute; z-index: 3; display: none; }
@@ -281,18 +260,11 @@ body.solo #floating { position: static; height: 100%; pointer-events: auto; }
 #transport .size { color: var(--fg-2); }
 
 /* ---- the status line, vim's: the mode, then what you have, then what the agent is doing */
-#statusline {
-  display: flex; align-items: stretch; background: var(--accent); color: var(--on-accent);
-  font-size: 11px; line-height: 24px; white-space: nowrap; overflow: hidden; min-width: 0;
-}
-#statusline > * { padding: 0 12px; border-right: 1px solid color-mix(in srgb, var(--on-accent) 25%, transparent); }
-#statusline .mode { font: 400 10px/24px var(--label); background: var(--on-accent); color: var(--accent); cursor: pointer; }
-#statusline .grow { flex: 1; border-right: 1px solid color-mix(in srgb, var(--on-accent) 25%, transparent); }
+#statusline .mode { cursor: pointer; }
 #statusline .agent::before { content: "● "; }
 #statusline .agent.idle::before { content: "○ "; }
 #statusline .clickable { cursor: pointer; }
 #statusline .clickable:hover { background: color-mix(in srgb, var(--on-accent) 12%, transparent); }
-#statusline .last { border-right: 0; }
 #statusline :empty { display: none; }
 
 /* The overlay workbench: head, stage, transport — and nothing of the timeline. */
@@ -362,9 +334,8 @@ button.tool:hover { color: var(--fg); }
 .hist-mini .what { color: var(--fg); overflow-wrap: anywhere; }
 .hist-mini .who { color: var(--fg-2); }
 
-#timeline { position: relative; overflow: auto; user-select: none; }
+#timeline { position: relative; overflow: auto; user-select: none; background: var(--bg-bar); }
 .tl { position: relative; min-width: 100%; }
-#timeline { background: var(--bg-bar); }
 .tl-ruler { position: sticky; top: 0; height: 24px; background: var(--bg-bar); border-bottom: 1px solid var(--line-2); z-index: 3; }
 .tl-ruler .tick { position: absolute; top: 0; height: 100%; border-left: 1px solid var(--line-2); padding: 5px 0 0 6px; font: 10px var(--mono); color: var(--fg-3); }
 /* The ruler's first cell, over the track heads: zoom and a new track. */
@@ -547,10 +518,6 @@ button.linkish:hover { text-decoration: underline; }
 .lib-item .title { display: flex; align-items: center; gap: 6px; justify-content: space-between; }
 .badge-kind { font: 9px var(--mono); text-transform: uppercase; letter-spacing: 0.06em; padding: 1px 5px; border-radius: 3px; background: var(--line); color: var(--fg-2); font-weight: 400; flex: none; }
 .badge-kind.overlay { background: var(--overlay); color: #fff; }
-.badge-kind.video, .badge-kind.image { background: var(--video); color: #fff; }
-.badge-kind.audio { background: var(--audio); color: #fff; }
-.badge-kind.sequence { background: var(--sequence); color: #fff; }
-.badge-kind.folder { background: var(--folder); color: #fff; }
 .bin-row .caret { width: 12px; padding: 0; font-size: 9px; line-height: 1; background: none; border: 0; color: var(--fg-2); text-align: center; }
 .bin-row.drop { border-color: var(--accent); background: var(--bg-3); }
 .bin-row.drop-before { box-shadow: 0 -2px 0 0 var(--accent); }
@@ -714,8 +681,6 @@ dialog.modal.render .field { grid-template-columns: 80px 1fr; }
 .render-advanced .field input[type="number"] { width: 110px; flex: 0 0 110px; }
 .render-advanced .field .row select { flex: 0 0 140px; }
 .render-fixed { margin: 0 0 6px 88px; }
-#topbar .status.link { cursor: pointer; }
-#topbar .status.link:hover { color: var(--fg); text-decoration: underline; }
 
 #toasts { position: fixed; right: 12px; bottom: 36px; display: flex; flex-direction: column; gap: 6px; z-index: 10; }
 .toast { background: var(--bg-3); border: 1px solid var(--line); border-left: 3px solid var(--accent); padding: 8px 10px; border-radius: 6px; max-width: 360px; font-size: 12px; }
@@ -805,7 +770,6 @@ body.has-titlebar #app.den #den { top: 32px; }
 .den-key.agent.on { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
 .den-pin { display: flex; align-items: center; gap: 7px; flex: none; background: none; border: 1px solid var(--sel); border-radius: 0; color: var(--sel); padding: 5px 12px; }
 .den-pin .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--sel); }
-.panel.flash { box-shadow: inset 0 0 0 1px var(--accent); }
 
 /* ---- the new panels: agent, history, pins, render queue, fonts */
 .agent-panel, .history-panel, .pins-panel, .queue-panel, .fonts-panel { overflow: auto; padding: 10px 14px 14px; display: flex; flex-direction: column; gap: 4px; }

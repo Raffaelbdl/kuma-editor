@@ -25,6 +25,8 @@ export interface AgentView {
   doing: string;
   /** The call it is on, or last made. */
   last: Activity | null;
+  /** The pin it is reading, while it lists them. */
+  pin?: Pin;
 }
 
 const BEARS: Record<BearState, string> = { idle: bearSleep, awake: bearAwake, editing: bearAwake, looking: bearLook };
@@ -59,14 +61,11 @@ export function sampleSpan(a: Activity): string {
 export const openPins = (pins: Pin[], sequence: string): Pin[] => pins.filter((p) => p.sequence === sequence && p.done === null);
 
 /** What a call is, as a phrase: what the agent is doing while it runs. */
-function phrase(a: Activity, s: State): string {
+function phrase(a: Activity, pin: Pin | undefined): string {
   switch (a.tool) {
     case "sample_frames": return "looking";
     case "apply_edits": return "editing";
-    case "list_pins": {
-      const open = openPins(s.pins, s.sequence)[0] ?? s.pins.find((p) => p.done === null);
-      return open ? `reading pin ${open.index}` : "reading pins";
-    }
+    case "list_pins": return pin ? `reading pin ${pin.index}` : "reading pins";
     case "get_project": return "reading the project";
     case "check_overlay": return "checking an overlay";
     case "render": return "rendering";
@@ -87,22 +86,33 @@ export function agentView(s: State, now = Date.now()): AgentView {
   if (edit && (edit.state === "running" || now - (edit.ended_at ?? now) < EDIT_AFTERGLOW_MS)) return { bear: "editing", client, doing: "editing", last: edit };
   const at = last.ended_at ?? last.started_at;
   if (!running.length && now - at > IDLE_MS) return { bear: "idle", client, doing: "asleep", last };
-  return { bear: "awake", client, doing: phrase(running[0] ?? last, s), last: running[0] ?? last };
+  const call = running[0] ?? last;
+  const pin = call.tool === "list_pins" ? openPins(s.pins, s.sequence)[0] ?? s.pins.find((p) => p.done === null) : undefined;
+  return { bear: "awake", client, doing: phrase(call, pin), last: call, pin };
+}
+
+const watchers: ((v: AgentView) => void)[] = [];
+let view: AgentView | null = null;
+let said = "";
+function tick() {
+  const v = agentView(store.state);
+  const key = `${v.bear}|${v.client}|${v.doing}|${v.last?.id ?? ""}|${v.last?.state ?? ""}`;
+  if (key === said) return;
+  said = key;
+  view = v;
+  for (const fn of watchers) fn(v);
 }
 
 /** The agent's view, kept in step with the clock as well as the calls: "editing" fades and
- *  "asleep" arrives with nobody calling. Subscribers get `fn` when what it says changes. */
+ *  "asleep" arrives with nobody calling. Watchers get `fn` now and when what it says
+ *  changes — one clock and one subscription for all of them. */
 export function watchAgent(fn: (v: AgentView) => void): void {
-  let said = "";
-  const tick = () => {
-    const v = agentView(store.state);
-    const key = `${v.bear}|${v.client}|${v.doing}|${v.last?.id ?? ""}|${v.last?.state ?? ""}`;
-    if (key === said) return;
-    said = key;
-    fn(v);
-  };
-  store.select((s) => [s.activity, s.pins, s.sequence], tick);
-  setInterval(tick, 1000);
+  if (!watchers.length) {
+    store.select((s) => [s.activity, s.pins, s.sequence], tick);
+    setInterval(tick, 1000);
+  }
+  watchers.push(fn);
+  fn(view ?? agentView(store.state));
 }
 
 /** `14s`, `2m`, `1h`: how long ago, as the agent panel says it. */

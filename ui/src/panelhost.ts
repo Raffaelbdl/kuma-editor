@@ -14,7 +14,7 @@
 import { Cmd, command } from "./commands";
 import { button, dragPointer, el } from "./dom";
 import { desktop } from "./desktop";
-import { defaultTree, find, fillOf, groupOf, hasViewer, insert, panelsIn, remove, sanitize, type Group, type Node, type Split, type Target } from "./dock";
+import { defaultTree, find, type Homes, fillOf, groupOf, hasViewer, insert, panelsIn, remove, sanitize, type Group, type Node, type Split, type Target } from "./dock";
 import { showMenu, type MenuItem } from "./menu";
 import { store, toast } from "./store";
 
@@ -23,8 +23,11 @@ type Home = "side" | "right" | "bottom";
 
 export interface PanelSpec {
   id: string;
-  /** Its key and its tile: `b`, `i`, `t`… */
+  /** Its tile: `b`, `i`, `t`… */
   letter: string;
+  /** What its letter does, in the shortcut list — set when the letter is also its key (`B I
+   *  T A H M R`). A panel without one (blueprints, fonts) has a tile and no key. */
+  key?: string;
   title: string;
   /** The element the panel draws into. It moves between containers; it is never rebuilt. */
   body: HTMLElement;
@@ -56,16 +59,14 @@ const KEY = "kuma.panels.";
 const DOCK_KEY = "kuma.dock";
 const MODE_KEY = "kuma.mode";
 const MOVABLE_KEY = "kuma.dock.movable";
-/** Every panel the editor has: what a stored dock may name. */
-const PANELS = ["bin", "blueprints", "fonts", "pins", "history", "queue", "inspector", "timeline", "agent"];
 
 interface Frame { root: HTMLElement; body: HTMLElement; spec: PanelSpec }
 /** A group's elements, kept across draws so nothing on screen is rebuilt. */
 interface GroupEls { root: HTMLElement; tabs: HTMLElement; note: HTMLElement; tools: HTMLElement; body: HTMLElement }
 
-const read = <T>(key: string, fallback: T): T => {
-  try { return { ...fallback, ...JSON.parse(localStorage.getItem(key) ?? "{}") }; } catch { return fallback; }
-};
+const stored = (key: string): string | null => { try { return localStorage.getItem(key); } catch { return null; } };
+const parsed = (key: string): unknown => { try { return JSON.parse(stored(key) ?? "null"); } catch { return null; } };
+const read = <T>(key: string, fallback: T): T => ({ ...fallback, ...(parsed(key) as Partial<T> | null) });
 const write = (key: string, v: unknown) => { try { localStorage.setItem(key, typeof v === "string" ? v : JSON.stringify(v)); } catch { /* this session only */ } };
 
 /** Make `parent`'s children exactly `kids`, in order, moving only what is out of place. An
@@ -83,12 +84,12 @@ class PanelHost {
     power: read<Floating>(KEY + "power", { open: [], geom: {} }),
     den: read<Floating>(KEY + "den", { open: [], geom: {} }),
   };
-  /** Power's dock. */
-  private tree: Node = sanitize((() => { try { return JSON.parse(localStorage.getItem(DOCK_KEY) ?? "null"); } catch { return null; } })() ?? defaultTree(), new Set(PANELS));
+  /** Power's dock: the stored one, read once the panels are registered (`layoutDock`). */
+  private tree: Node = defaultTree({ side: [], right: [], bottom: [] });
   /** Whether power's panels can be moved: dragged to another group or place, floated, or
    *  closed. Off, the dock holds still — tabs still switch, seams still resize — so a drag
    *  that started on a tab by accident never rearranges anything. Off by default. */
-  private movable = (() => { try { return localStorage.getItem(MOVABLE_KEY) === "1"; } catch { return false; } })();
+  private movable = stored(MOVABLE_KEY) === "1";
 
   get canMove(): boolean {
     return this.movable;
@@ -106,8 +107,9 @@ class PanelHost {
   private groupEls = new Map<string, GroupEls>();
   private tabEls = new Map<string, HTMLElement>();
   private grips = new Map<string, HTMLElement>();
-  /** Panels in windows of their own. While one is out it is parked here. */
-  private out = new Set<string>();
+  /** Panels in windows of their own, and when each went out (for the heartbeat's grace,
+   *  `viewsync.ts`). While one is out it is parked here. */
+  readonly out = new Map<string, number>();
   /** A window opened from this page, by panel: a browser's handle, polled for closing. */
   private windows = new Map<string, Window>();
   private layer = () => document.getElementById("floating")!;
@@ -117,9 +119,7 @@ class PanelHost {
 
   /** The mode remembered, before anything is drawn. */
   initialMode(): Mode {
-    let m: string | null = null;
-    try { m = localStorage.getItem(MODE_KEY); } catch { /* the default */ }
-    return m === "den" ? "den" : "power";
+    return stored(MODE_KEY) === "den" ? "den" : "power";
   }
 
   register(spec: PanelSpec): void {
@@ -177,6 +177,12 @@ class PanelHost {
     this.flash(id);
   }
 
+  /** On screen, wherever it is: called back from its window, or shown. */
+  private front(id: string) {
+    if (this.out.has(id)) this.recall(id);
+    else this.show(id);
+  }
+
   /** Make sure `id` is up, without sending it away when it already is. */
   show(id: string): void {
     const spec = this.specs.get(id);
@@ -203,8 +209,8 @@ class PanelHost {
   private dockHome(id: string) {
     const spec = this.specs.get(id)!;
     const back = this.home[id] ? find(this.tree, this.home[id]) : undefined;
-    const kin = { side: ["bin", "blueprints", "fonts", "pins", "history", "queue"], right: ["inspector", "agent"], bottom: ["timeline"] };
-    const near = spec.dock ? kin[spec.dock].map((p) => groupOf(this.tree, p)).find((g) => g) : undefined;
+    // Else beside a panel of its kind: one that lives in the same place.
+    const near = spec.dock ? this.all.filter((s) => s.dock === spec.dock).map((s) => groupOf(this.tree, s.id)).find((g) => g) : undefined;
     const group = back?.kind === "group" ? back : near;
     if (group) {
       group.tabs.push(id);
@@ -230,9 +236,17 @@ class PanelHost {
     this.apply();
   }
 
+  /** The dock as it starts: each panel with a home in the place it lives, in the order they
+   *  were registered. */
+  private firstTree(): Node {
+    const homes: Homes = { side: [], right: [], bottom: [] };
+    for (const s of this.all) if (s.dock) homes[s.dock].push(s.id);
+    return defaultTree(homes);
+  }
+
   /** Power's dock as it first was. */
   resetDock(): void {
-    this.tree = defaultTree();
+    this.tree = this.firstTree();
     this.floating.power.open = [];
     this.saveAll();
     this.apply();
@@ -266,6 +280,7 @@ class PanelHost {
    */
   layoutDock(): void {
     if (this.solo) return;
+    this.tree = sanitize(parsed(DOCK_KEY), new Set(this.specs.keys()), this.firstTree());
     reconcile(this.dockEl(), [this.nodeEl(this.tree, new Set())]);
   }
 
@@ -283,7 +298,7 @@ class PanelHost {
     const l = this.floating[mode];
     const floating = l.open.filter((id) => this.specs.has(id) && !this.out.has(id) && (mode === "den" || !this.isDocked(id)));
     // In den the dock is hidden under the frame; a panel floating there is not in it.
-    const away = new Set([...floating, ...this.out]);
+    const away = new Set([...floating, ...this.out.keys()]);
     const docked = panelsIn(this.tree).filter((id) => this.specs.has(id) && !away.has(id));
 
     for (const [id, f] of this.frames) {
@@ -352,10 +367,9 @@ class PanelHost {
     ge.root.hidden = shown.length === 0;
     const active = shown.includes(g.active) ? g.active : shown[0];
     reconcile(ge.tabs, g.tabs.filter((t) => this.specs.has(t)).map((t) => this.tabEl(t, t === active, this.out.has(t))));
-    ge.root.classList.toggle("single", g.tabs.length === 1);
     const frames = shown.map((t) => {
       const f = this.frame(t);
-      f.root.className = "panel docked nohead";
+      f.root.className = "panel docked";
       f.root.removeAttribute("style");
       f.root.hidden = t !== active;
       return f;
@@ -402,9 +416,10 @@ class PanelHost {
     }
     t.classList.toggle("on", on);
     t.classList.toggle("out", out);
-    t.title = out ? `${spec.title} — in a window of its own; its letter (${spec.letter.toUpperCase()}) calls it back`
-      : this.movable ? `${spec.title} (${spec.letter.toUpperCase()}) — drag to move it: onto a group's middle to join it, onto an edge to split`
-      : `${spec.title} (${spec.letter.toUpperCase()})`;
+    const named = spec.key ? `${spec.title} (${spec.letter.toUpperCase()})` : spec.title;
+    t.title = out ? `${spec.title} — in a window of its own; ${spec.key ? `its letter (${spec.letter.toUpperCase()}) calls it back` : "click to call it back"}`
+      : this.movable ? `${named} — drag to move it: onto a group's middle to join it, onto an edge to split`
+      : named;
     return t;
   }
 
@@ -483,7 +498,7 @@ class PanelHost {
    *  window's edge for a window of its own. A press that does not move shows it. */
   private dragTab(e: PointerEvent, id: string) {
     // Locked: a press on a tab only shows it (or calls it back from its window).
-    if (!this.movable) { if (this.out.has(id)) this.recall(id); else this.show(id); return; }
+    if (!this.movable) { this.front(id); return; }
     const spec = this.specs.get(id)!;
     let ghost: HTMLElement | null = null;
     let at: ReturnType<PanelHost["targetAt"]> = null;
@@ -504,7 +519,7 @@ class PanelHost {
       end: (moved) => {
         ghost?.remove();
         this.dropHint(null);
-        if (!moved) { if (this.out.has(id)) this.recall(id); else this.show(id); return; }
+        if (!moved) { this.front(id); return; }
         const outside = pointer.x <= 0 || pointer.y <= 0 || pointer.x >= innerWidth - 1 || pointer.y >= innerHeight - 1;
         if (outside) { this.popOut(id); return; }
         if (at) { this.dock(id, at.target); return; }
@@ -551,7 +566,7 @@ class PanelHost {
     const layer = this.layer().getBoundingClientRect();
     const w = spec.size?.w ?? 300, h = Math.min(spec.size?.h ?? 340, layer.height - 40);
     // Down the left then the right, so two summoned panels do not land on each other.
-    if (spec.id === "timeline") return { x: 30, y: Math.max(20, layer.height - h - 20), w: Math.min(w, layer.width - 60), h };
+    if (spec.dock === "bottom") return { x: 30, y: Math.max(20, layer.height - h - 20), w: Math.min(w, layer.width - 60), h };
     const right = i % 2 === 1;
     // Below den's HUD (and power's top bar), which are what tell you where you are.
     return { x: right ? layer.width - w - 28 : 28, y: 68 + Math.floor(i / 2) * 40, w, h };
@@ -637,7 +652,7 @@ class PanelHost {
           // Snapped: flush with the edge it was dropped near, and kept there.
           if (g.x < SNAP) g.edge = "left";
           else if (layer.width - (g.x + g.w) < SNAP) g.edge = "right";
-          else if (layer.height - (g.y + g.h) < SNAP && f.spec.id === "timeline") g.edge = "bottom";
+          else if (layer.height - (g.y + g.h) < SNAP && f.spec.dock === "bottom") g.edge = "bottom";
           this.floating[store.state.mode].geom[f.spec.id] = g;
           this.place(f, g);
           this.saveAll();
@@ -714,8 +729,7 @@ class PanelHost {
       this.windows.set(id, win);
       const poll = window.setInterval(() => { if (win.closed) { clearInterval(poll); this.returned(id); } }, 800);
     }
-    this.out.add(id);
-    this.outSince.set(id, Date.now());
+    this.out.set(id, Date.now());
     this.apply();
   }
 
@@ -723,15 +737,8 @@ class PanelHost {
    *  dock, or summoned in den, since putting it back is asking for it. */
   returned(id: string): void {
     this.windows.delete(id);
-    this.outSince.delete(id);
     if (!this.out.delete(id)) return;
-    const mode = store.state.mode;
-    const spec = this.specs.get(id);
-    const g = groupOf(this.tree, id);
-    if (mode === "power" && g) { g.active = id; this.saveDock(); this.apply(); return; }
-    if (mode === "power" && spec?.dock && !this.isFloating(id)) { this.dockHome(id); return; }
-    const l = this.floating[mode];
-    if (!l.open.includes(id)) { l.open.push(id); this.saveAll(); }
+    this.show(id);
     this.apply();
   }
 
@@ -747,19 +754,12 @@ class PanelHost {
   /** How a panel's window leaves: told to the editor window first, then closed. */
   leave: () => void = () => window.close();
 
-  /** When each panel went out, for the heartbeat's grace (`viewsync.ts`). */
-  readonly outSince = new Map<string, number>();
-  get outIds(): string[] {
-    return [...this.out];
-  }
-
   /** Told that a panel is in a window (a window opened before this page reloaded). */
   claimed(id: string): void {
     if (!this.specs.has(id)) return;
-    this.outSince.set(id, Date.now());
-    if (this.out.has(id)) return;
-    this.out.add(id);
-    this.apply();
+    const was = this.out.has(id);
+    this.out.set(id, Date.now());
+    if (!was) this.apply();
   }
 
   /** This page is a panel's own window: show that panel, full size, and nothing else. */
@@ -795,11 +795,6 @@ function half(r: DOMRect, edge: string, share: number): DOMRect {
 }
 
 export const panels = new PanelHost();
-
-/** The letters, as commands: ⌘K, the menus and the keys all reach a panel the same way. */
-export const PANEL_KEYS: [letter: string, id: string][] = [
-  ["b", "bin"], ["i", "inspector"], ["t", "timeline"], ["a", "agent"], ["h", "history"], ["m", "pins"], ["r", "queue"],
-];
 
 export function panelCommands(): void {
   for (const s of panels.all) command(`panel.${s.id}`, `Panel: ${s.title}`, () => panels.toggle(s.id));

@@ -273,6 +273,12 @@ export type PatchOp =
 export type JobState = "queued" | "running" | "done" | "failed" | "cancelled";
 /** Done, failed or cancelled: it will not change again. */
 export const isFinal = (j: Job) => j.state !== "queued" && j.state !== "running";
+/** How many jobs are in each state. */
+export function jobCounts(jobs: Record<number, Job>): Record<JobState, number> {
+  const n: Record<JobState, number> = { running: 0, queued: 0, done: 0, failed: 0, cancelled: 0 };
+  for (const j of Object.values(jobs)) n[j.state]++;
+  return n;
+}
 
 export interface Job {
   id: number; kind: string; percent: number; message: string; result: unknown;
@@ -339,7 +345,8 @@ export type DaemonEvent =
   | { type: "jobs_cleared"; ids: number[] }
   | ({ type: "activity" } & Activity)
   | ({ type: "history" } & HistoryEntry)
-  | { type: "pins" };
+  /** The pin list, whenever it may have changed: a marker edited, a pin answered or ticked. */
+  | { type: "pins"; pins: Pin[] };
 
 export const fpsValue = (f: Fps) => f.num / f.den;
 

@@ -1,26 +1,15 @@
-/* The launcher is the editor's first window, so it wears the editor's clothes: the palette
-   and the three faces are the editor's own files, copied in by `scripts/copy-assets.mjs`,
-   and the shapes follow `ui/src/style.css` — a top bar with the bear and the wordmark,
-   square corners, pixel-face labels, and the orange status line along the foot. */
+/* The launcher is the editor's first window, so it wears the editor's clothes: the palette,
+   the three faces, the top bar and the status line are the editor's own files
+   (`ui/src/chrome.css`), copied in by `scripts/copy-assets.mjs`. What is here is the page:
+   square corners, pixel-face labels, the projects and the form. */
 @import "./themes.css";
 @import "./fonts.css";
+@import "./chrome.css";
 
-:root {
-  --mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
-  --sans: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
-  --label: "Silkscreen", var(--mono);
-  /* No overlay iframes here, so unlike the editor the root may be dark-scheme. */
-  color-scheme: dark;
-}
+/* No overlay iframes here, so unlike the editor the root may be dark-scheme. */
+:root { color-scheme: dark; }
 * { box-sizing: border-box; }
 html, body { height: 100%; margin: 0; background: var(--bg-0); color: var(--fg); font: 12px/1.4 var(--mono); overflow: hidden; }
-
-* { scrollbar-width: thin; scrollbar-color: var(--bg-3) transparent; }
-::-webkit-scrollbar { width: 11px; height: 11px; }
-::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: var(--bg-3); border: 3px solid transparent; background-clip: content-box; border-radius: 8px; }
-::-webkit-scrollbar-thumb:hover { background: var(--line); background-clip: content-box; }
-::-webkit-scrollbar-corner { background: transparent; }
 
 button, input, select { font: inherit; color: inherit; }
 button { background: var(--bg-0); border: 1px solid var(--line); border-radius: 0; padding: 6px 12px; cursor: pointer; white-space: nowrap; }
@@ -42,10 +31,6 @@ kbd { font: 10px var(--mono); border: 1px solid var(--line); padding: 0 4px; col
 /* ---- the window: top bar, the page, the status line */
 #app { height: 100%; display: grid; grid-template-rows: 44px minmax(0, 1fr) 24px; }
 
-#topbar { display: flex; align-items: center; gap: 12px; padding: 0 14px; background: var(--bg-bar); border-bottom: 1px solid var(--line-2); min-width: 0; }
-/* The bear is 12×10 and only ever scaled by whole numbers, so its pixels stay pixels. */
-.bear { image-rendering: pixelated; flex: none; display: block; }
-.wordmark { font: 400 14px var(--label); color: var(--fg); flex: none; }
 .tagline { color: var(--fg-3); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 #actions { display: flex; gap: 8px; flex: none; }
 #actions kbd { margin-left: 8px; border-color: currentColor; color: inherit; opacity: 0.7; }
@@ -53,16 +38,10 @@ kbd { font: 10px var(--mono); border: 1px solid var(--line); padding: 0 4px; col
 #main { min-height: 0; overflow-y: auto; overflow-x: hidden; }
 .page { max-width: 820px; margin: 0 auto; padding: 28px 28px 36px; }
 
-/* ---- the status line, the editor's: what this is, then which kuma it will run */
-#statusline {
-  display: flex; align-items: stretch; background: var(--accent); color: var(--on-accent);
-  font-size: 11px; line-height: 24px; white-space: nowrap; overflow: hidden; min-width: 0;
-}
-#statusline > * { padding: 0 12px; border-right: 1px solid color-mix(in srgb, var(--on-accent) 25%, transparent); overflow: hidden; text-overflow: ellipsis; flex: none; }
-#statusline .mode { font: 400 10px/24px var(--label); background: var(--on-accent); color: var(--accent); }
+/* ---- the status line (`chrome.css`): what this is, then which kuma it will run */
+#statusline > * { overflow: hidden; text-overflow: ellipsis; flex: none; }
 #statusline .grow { flex: 1 1 0; min-width: 0; }
 #statusline .bad { background: var(--danger); color: #fff; }
-#statusline .last { border-right: 0; }
 
 /* ---- notices: what is wrong with this machine's kuma, above everything else */
 .notices { display: flex; flex-direction: column; gap: 6px; margin-bottom: 20px; }

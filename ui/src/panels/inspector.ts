@@ -395,7 +395,7 @@ export class Inspector {
     // selected clip decides what the panel can edit at all — a keyed value has no "now" to
     // write to from outside it — and that flips rarely. The values themselves follow the
     // playhead without a re-render; see `renderEffects`.
-    store.select((s) => [s.project, s.selection, s.manifests, s.fonts, s.blueprints, s.sequence, playheadInClip(), s.previewStamp, s.history], () => this.render());
+    store.select((s) => [s.project, s.selection, s.manifests, s.fonts, s.blueprints, s.sequence, playheadInClip(), s.previewStamp], () => this.render());
   }
 
   private render() {
@@ -488,7 +488,8 @@ export class Inspector {
     actions.appendChild(button("Delete clip", () => store.patch([{ op: "remove", path }], `delete ${clip.id}`)));
     this.host.appendChild(actions);
     const past = historyFor([clip.id], "this clip");
-    if (past) this.host.appendChild(past);
+    this.off.push(past.off);
+    this.host.appendChild(past.box);
   }
 
   /**
@@ -617,7 +618,8 @@ export class Inspector {
     actions.appendChild(remove);
     this.host.appendChild(actions);
     const past = historyFor([id], "this entry");
-    if (past) this.host.appendChild(past);
+    this.off.push(past.off);
+    this.host.appendChild(past.box);
   }
 
   /** The `source` half of an entry — the part that differs per kind. */

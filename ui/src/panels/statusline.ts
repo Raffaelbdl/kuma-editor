@@ -7,7 +7,8 @@ import { Cmd, run } from "../commands";
 import { el, plural } from "../dom";
 import { panels } from "../panelhost";
 import { fmtTime, store } from "../store";
-import { fpsValue } from "../types";
+import { keysFor } from "../shortcuts";
+import { fpsValue, jobCounts } from "../types";
 
 export function mountStatusline(host: HTMLElement): void {
   const mode = el("span", "mode");
@@ -18,10 +19,10 @@ export function mountStatusline(host: HTMLElement): void {
   const at = el("span", "at");
   const frame = el("span", "frame");
   const agent = el("span", "agent clickable");
-  agent.title = "The agent: what it is doing and its last calls (A)";
+  agent.title = `The agent: what it is doing and its last calls (${keysFor("panel.agent")})`;
   agent.onclick = () => panels.toggle("agent");
   const jobs = el("span", "jobs clickable last");
-  jobs.title = "The render queue (R)";
+  jobs.title = `The render queue (${keysFor("panel.queue")})`;
   jobs.onclick = () => run(Cmd.queue);
   host.append(mode, rev, sel, at, el("span", "grow"), frame, agent, jobs);
 
@@ -41,9 +42,8 @@ export function mountStatusline(host: HTMLElement): void {
     agent.classList.toggle("idle", v.bear === "idle");
   });
   store.select((s) => [s.jobs], (s) => {
-    const all = Object.values(s.jobs);
-    const running = all.filter((j) => j.state === "running" || j.state === "queued").length;
-    const done = all.filter((j) => j.state === "done").length;
+    const n = jobCounts(s.jobs);
+    const running = n.running + n.queued, done = n.done;
     jobs.textContent = running ? `${plural(running, "job")} running · ${done} done` : done ? `${plural(done, "job")} done` : "";
   });
 }

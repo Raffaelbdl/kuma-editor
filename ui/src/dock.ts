@@ -22,19 +22,19 @@ export type Node = Split | Group | Viewer;
 /** Where a dragged panel lands: a node and the part of it, or an edge of the whole dock. */
 export type Target = { node: string; zone: Zone } | { root: Exclude<Zone, "center"> };
 
+/** The panels that live in each place, as their specs say (`PanelSpec.dock`). */
+export type Homes = Record<"side" | "right" | "bottom", string[]>;
+
 /** Power's layout as it was when the dock had fixed slots: the side panels as one group of
- *  tabs, the frame, the inspector, and the timeline across the bottom. */
-export function defaultTree(): Node {
-  return {
+ *  tabs, the frame, the right's panels, and the bottom's across the bottom. */
+export function defaultTree(homes: Homes): Node {
+  const group = (id: string, tabs: string[], size: number): Group => ({ id, kind: "group", tabs, active: tabs[0] ?? "", size });
+  return normalize({
     id: "root", kind: "split", dir: "col", children: [
-      { id: "top", kind: "split", dir: "row", children: [
-        { id: "g-side", kind: "group", tabs: ["bin", "blueprints", "fonts", "pins", "history", "queue"], active: "bin", size: 232 },
-        { id: "viewer", kind: "viewer" },
-        { id: "g-right", kind: "group", tabs: ["inspector"], active: "inspector", size: 288 },
-      ] },
-      { id: "g-bottom", kind: "group", tabs: ["timeline"], active: "timeline", size: 300 },
+      { id: "top", kind: "split", dir: "row", children: [group("g-side", homes.side, 232), { id: "viewer", kind: "viewer" }, group("g-right", homes.right, 288)] },
+      group("g-bottom", homes.bottom, 300),
     ],
-  };
+  });
 }
 
 let seq = 0;
@@ -117,8 +117,8 @@ export function insert(root: Node, panel: string, target: Target, measured: { w:
 }
 
 /** A tree read back from storage, made safe: every panel at most once, unknown ones gone,
- *  the viewer there exactly once. Anything wrong with it and it is the default again. */
-export function sanitize(t: unknown, known: Set<string>): Node {
+ *  the viewer there exactly once. Anything wrong with it and it is `fallback`. */
+export function sanitize(t: unknown, known: Set<string>, fallback: Node): Node {
   try {
     const seen = new Set<string>();
     let viewers = 0;
@@ -134,9 +134,9 @@ export function sanitize(t: unknown, known: Set<string>): Node {
       return null;
     };
     const out = fix(t as Node);
-    if (!out || viewers !== 1) return defaultTree();
+    if (!out || viewers !== 1) return fallback;
     return normalize(out);
   } catch {
-    return defaultTree();
+    return fallback;
   }
 }

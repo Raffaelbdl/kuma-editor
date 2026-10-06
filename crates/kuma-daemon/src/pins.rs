@@ -8,15 +8,20 @@
 
 use std::collections::HashMap;
 
-use kuma_core::{BinId, Project, Sequence};
-use serde::Serialize;
+use kuma_core::{BinId, Marker, Project, Sequence};
+use serde::{Deserialize, Serialize};
 
 /// A pin's id: its sequence and its time to the millisecond, `master@8.600`.
 pub fn pin_id(sequence: &str, t: f64) -> String {
     format!("{sequence}@{t:.3}")
 }
 
-#[derive(Debug, Clone, Serialize)]
+/// What makes a marker a pin: a comment in its label.
+fn is_pin(m: &Marker) -> bool {
+    !m.label.trim().is_empty()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Pin {
     pub id: String,
     pub sequence: BinId,
@@ -49,8 +54,24 @@ pub fn list(p: &Project, answers: &Answers) -> Vec<Pin> {
     master.into_iter().chain(others).flat_map(|(id, s)| of_sequence(id, s, answers)).collect()
 }
 
+/// Whether `id` names a pin in `p`, found without listing them.
+pub fn exists(p: &Project, id: &str) -> bool {
+    let Some((seq, _)) = id.rsplit_once('@') else { return false };
+    p.seq(seq).is_some_and(|s| s.markers.iter().any(|m| is_pin(m) && pin_id(seq, m.t) == id))
+}
+
+/// Whether `a` and `b` list different pins, done or not: a labelled marker added, removed,
+/// moved, relabelled or recoloured, or another master to list first. Compares the markers
+/// in place rather than building either list.
+pub fn differ(a: &Project, b: &Project) -> bool {
+    fn marks(p: &Project) -> impl Iterator<Item = (&BinId, f64, &String, &Option<String>)> {
+        p.sequences().flat_map(|(id, s)| s.markers.iter().filter(|m| is_pin(m)).map(move |m| (id, m.t, &m.label, &m.color)))
+    }
+    a.master != b.master || !marks(a).eq(marks(b))
+}
+
 fn of_sequence(id: &BinId, s: &Sequence, answers: &Answers) -> Vec<Pin> {
-    let mut marks: Vec<_> = s.markers.iter().filter(|m| !m.label.trim().is_empty()).collect();
+    let mut marks: Vec<_> = s.markers.iter().filter(|m| is_pin(m)).collect();
     marks.sort_by(|a, b| a.t.total_cmp(&b.t));
     marks
         .into_iter()
@@ -75,6 +96,7 @@ fn of_sequence(id: &BinId, s: &Sequence, answers: &Answers) -> Vec<Pin> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use kuma_core::BinSource;
     use serde_json::json;
 
     #[test]
@@ -99,5 +121,15 @@ mod tests {
         assert_eq!(got, [("main@1.250", 1, None), ("main@8.600", 2, Some(3)), ("a@1.000", 1, None)], "the master first, an empty label is no pin");
         assert_eq!(pins[1].done_by.as_deref(), Some("agent"));
         assert_eq!(pins[1].color.as_deref(), Some("#f00"));
+        assert!(exists(&p, "main@8.600") && exists(&p, "a@1.000"));
+        assert!(!exists(&p, "main@2.000") && !exists(&p, "main@9.000") && !exists(&p, "nowhere"), "unlabelled, absent, malformed");
+
+        let mut q = p.clone();
+        assert!(!differ(&p, &q));
+        q.name = "renamed".into();
+        assert!(!differ(&p, &q), "only markers count");
+        let BinSource::Sequence(s) = &mut q.bin.get_mut("main").unwrap().source else { unreachable!() };
+        s.markers[0].label = "HUD still fights".into();
+        assert!(differ(&p, &q));
     }
 }

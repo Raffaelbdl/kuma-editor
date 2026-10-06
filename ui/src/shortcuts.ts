@@ -9,6 +9,7 @@
 import { Cmd, command, run } from "./commands";
 import { el, row } from "./dom";
 import { showInfo } from "./modal";
+import { panels } from "./panelhost";
 import { SEQUENCE_TAB, store } from "./store";
 
 /** Which part of the shortcut list a binding belongs to, in the order they are shown. */
@@ -30,12 +31,14 @@ interface Binding {
 const mod = (e: KeyboardEvent) => e.ctrlKey || e.metaKey;
 /** A bare letter: no Ctrl, Cmd or Alt (Shift is its own binding). */
 const bare = (e: KeyboardEvent, k: string) => e.key.toLowerCase() === k && !mod(e) && !e.altKey && !e.shiftKey;
-/** The panel letters (`panelhost.ts`): in den they summon a panel, in power they bring it
- *  forward. One binding each, so the rail's tooltips can read their key off this table. */
-const PANEL_BINDINGS: Binding[] = [
-  ["b", "bin", "The bin"], ["i", "inspector", "The inspector"], ["t", "timeline", "The timeline"], ["a", "agent", "The agent: what it is doing, its last calls"],
-  ["h", "history", "The history: every step, yours and the agent's"], ["m", "pins", "Your pins: notes on frames for the agent"], ["r", "queue", "The render queue"],
-].map(([k, id, what]) => ({ when: (e: KeyboardEvent) => bare(e, k), action: `panel.${id}`, list: { where: "Panels" as const, keys: k.toUpperCase(), what } }));
+/** The panel letters, read off the panels that have one (`PanelSpec.key`): in den they
+ *  summon a panel, in power they bring it forward. The panels register after this module
+ *  loads, so they are asked for each time; `PANELS` marks where they go in the table. */
+const panelBindings = (): Binding[] => panels.all.filter((s) => s.key).map((s) => ({
+  when: (e: KeyboardEvent) => bare(e, s.letter), action: `panel.${s.id}`, list: { where: "Panels" as const, keys: s.letter.toUpperCase(), what: s.key! },
+}));
+const PANELS: Binding = { when: () => false, action: "" };
+const bindings = (): Binding[] => BINDINGS.flatMap((b) => (b === PANELS ? panelBindings() : [b]));
 const frame = () => 1 / store.fps;
 /** The overlay workbench is on screen, and has its own clock. */
 const onOverlay = () => store.state.tab !== SEQUENCE_TAB;
@@ -45,7 +48,7 @@ const BINDINGS: Binding[] = [
     list: { where: "Panels", keys: "Ctrl + K", what: "Every command, by name" } },
   { when: (e) => e.key === "`" && !mod(e) && !e.altKey, action: Cmd.toggleMode, preventDefault: true,
     list: { where: "Panels", keys: "`", what: "Den or power: the frame and what the agent did, or every panel docked" } },
-  ...PANEL_BINDINGS,
+  PANELS,
   // A pin is a note on the frame you are looking at; the workbench has no timeline to
   // hold one.
   { when: (e) => bare(e, "p") && !onOverlay(), action: Cmd.addPin, preventDefault: true,
@@ -133,7 +136,7 @@ const GESTURES: { section: Section; does: string; what: string }[] = [
 /** How a command's key is written, for the places that name one beside a button or in a
  *  tooltip — read off the binding, so it cannot say something the key does not do. */
 export function keysFor(cmd: string): string | undefined {
-  return BINDINGS.find((b) => b.action === cmd)?.list?.keys;
+  return bindings().find((b) => b.action === cmd)?.list?.keys;
 }
 
 /** Show the list: the documented bindings, then the gestures, by section. Registered as a
@@ -147,7 +150,7 @@ function showShortcuts(): void {
     // A chord is drawn as keys — `Ctrl + C / X` as three of them with the words between —
     // and a gesture as the sentence it is, because "Drag a clip" is three words, not three
     // keys to press.
-    for (const b of BINDINGS) {
+    for (const b of bindings()) {
       if (b.list?.where !== section) continue;
       const how = el("span", "sc-keys");
       for (const part of b.list.keys.split(" ")) how.appendChild(part === "+" || part === "/" ? el("span", "muted", part) : el("kbd", "", part));
@@ -178,7 +181,7 @@ export function installShortcuts(): void {
     // that after clicking a track's mute — the last thing clicked keeps the focus — the
     // arrows did nothing here and scrolled the timeline instead.
     if (target.closest?.("button") && (e.code === "Space" || e.key === "Enter")) return;
-    const b = BINDINGS.find((x) => x.when(e));
+    const b = bindings().find((x) => x.when(e));
     if (!b) return;
     if (b.preventDefault) e.preventDefault();
     if (typeof b.action === "string") run(b.action);

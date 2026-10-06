@@ -25,9 +25,6 @@ const ICONS = {
   /** Step back and forward — over keyframes, on the buttons beside a keyframe strip. */
   "chevron-left": [shape("polygon", { points: "16,4 18,6 12,12 18,18 16,20 8,12" })],
   "chevron-right": [shape("polygon", { points: "8,4 6,6 12,12 6,18 8,20 16,12" })],
-  /** Appearance: a disc with one half filled, the glyph every application uses for
-   *  "how this looks". Drawn as a stroked circle plus a half disc so it reads at 14px,
-   *  where a painter's palette is a smudge. */
   /** Panels held where they are, or free to move: a padlock shut and open. */
   lock: [
     shape("rect", { x: 5, y: 11, width: 14, height: 10, rx: 1.5 }),
@@ -36,10 +33,6 @@ const ICONS = {
   unlock: [
     shape("rect", { x: 5, y: 11, width: 14, height: 10, rx: 1.5 }),
     shape("path", { d: "M8 11V8a4 4 0 0 1 7.6-1.7", fill: "none", stroke: "currentColor", "stroke-width": 2 }),
-  ],
-  palette: [
-    shape("circle", { cx: 12, cy: 12, r: 9, fill: "none", stroke: "currentColor", "stroke-width": 2 }),
-    shape("path", { d: "M12 3a9 9 0 0 0 0 18z" }),
   ],
   /** A keyframe: the diamond the strip and the clip draw keys with. Filled, an effect is
    *  keyframed; outlined, it could be. */
@@ -64,9 +57,6 @@ const ICONS = {
   import: [shape("path", { d: "M12 3v12M7 10l5 5 5-5M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2", fill: "none", stroke: "currentColor", "stroke-width": 2.2, "stroke-linecap": "round", "stroke-linejoin": "round" })],
   /** A prompt: kept for the integrated terminal the bin's toolbar is to open. */
   terminal: [shape("path", { d: "M4 7l5 5-5 5M12 19h8", fill: "none", stroke: "currentColor", "stroke-width": 2.2, "stroke-linecap": "round", "stroke-linejoin": "round" })],
-  /** Undo and redo: an arrow turning back on itself, and its mirror. */
-  undo: [shape("path", { d: "M9 14L4 9l5-5M4 9h10a6 6 0 0 1 0 12h-3", fill: "none", stroke: "currentColor", "stroke-width": 2.2, "stroke-linecap": "round", "stroke-linejoin": "round" })],
-  redo: [shape("path", { d: "M15 14l5-5-5-5M20 9H10a6 6 0 0 0 0 12h3", fill: "none", stroke: "currentColor", "stroke-width": 2.2, "stroke-linecap": "round", "stroke-linejoin": "round" })],
   refresh: [shape("path", { d: "M20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7", fill: "none", stroke: "currentColor", "stroke-width": 2.2, "stroke-linecap": "round", "stroke-linejoin": "round" })],
 };
 

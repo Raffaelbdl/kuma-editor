@@ -10,8 +10,9 @@ import { agentView, bear, setBear, watchAgent } from "../agent";
 import { Cmd, run } from "../commands";
 import { button, dragPointer, el } from "../dom";
 import { icon } from "../icons";
-import { panels, PANEL_KEYS } from "../panelhost";
-import { fmtTime, store } from "../store";
+import { panels } from "../panelhost";
+import { keysFor } from "../shortcuts";
+import { binName, fmtTime, store } from "../store";
 import type { Activity, HistoryEntry } from "../types";
 
 export function mountDen(host: HTMLElement): void {
@@ -26,16 +27,12 @@ export function mountDen(host: HTMLElement): void {
   hud.append(pet, el("span", "den-chip", "den"), seqName, status, cursor);
   const power = button("power ↗", () => panels.setMode("power"), "Back to every panel, at the playhead (the selection stays)", "den-power");
   host.append(hud, power);
-  watchAgent((v) => {
-    setBear(pet, v.bear);
-    const rev = store.state.project ? `r${store.state.project.revision}` : "";
-    status.textContent = `${rev}${v.client ? ` · kuma ${v.doing}` : ""}`;
-  });
-  store.select((s) => [s.project, s.sequence], (s) => {
-    seqName.textContent = s.project?.bin[s.sequence]?.name || s.sequence;
-    const v = agentView(s);
-    status.textContent = `${s.project ? `r${s.project.revision}` : ""}${v.client ? ` · kuma ${v.doing}` : ""}`;
-  });
+  const drawStatus = (v = agentView(store.state)) => {
+    const p = store.state.project;
+    status.textContent = `${p ? `r${p.revision}` : ""}${v.client ? ` · kuma ${v.doing}` : ""}`;
+  };
+  watchAgent((v) => { setBear(pet, v.bear); drawStatus(v); });
+  store.select((s) => [s.project, s.sequence], (s) => { seqName.textContent = binName(s.sequence); drawStatus(); });
 
   // ---- viewfinder: the corners of what the agent last looked at
   const vf = el("div", "den-vf");
@@ -91,39 +88,47 @@ export function mountDen(host: HTMLElement): void {
   const head = el("div", "dr-head");
   track.append(ticks, marks, head);
   const keys = el("div", "den-keys");
-  const keyEls = PANEL_KEYS.map(([letter, id]) => {
-    const b = button(letter, () => panels.toggle(id), `${panels.spec(id)?.title ?? id} (${letter.toUpperCase()})`, `den-key${id === "agent" ? " agent" : ""}`);
-    b.dataset.panel = id;
+  // The panels that have a key, in the order they were registered.
+  const keyEls = panels.all.filter((spec) => spec.key).map((spec) => {
+    const b = button(spec.letter, () => panels.toggle(spec.id), `${spec.title} (${keysFor(`panel.${spec.id}`)})`, `den-key${spec.id === "agent" ? " agent" : ""}`);
+    b.dataset.panel = spec.id;
     keys.appendChild(b);
     return b;
   });
-  const pin = button("", () => run(Cmd.addPin), "Leave a pin at the playhead: a note on this frame for the agent (P)", "den-pin");
+  const pin = button("", () => run(Cmd.addPin), `Leave a pin at the playhead: a note on this frame for the agent (${keysFor(Cmd.addPin)})`, "den-pin");
   pin.append(el("span", "dot"), "pin");
   rail.append(play, now, track, end, keys, pin);
   host.appendChild(rail);
 
-  const x = (t: number) => `${(Math.min(Math.max(0, t), dur()) / (dur() || 1)) * 100}%`;
-  const dur = () => Math.max(store.duration, 1);
+  // The sequence's length, taken once per redraw: `store.duration` walks every clip.
+  let d = 1;
+  const x = (t: number) => `${(Math.min(Math.max(0, t), d) / d) * 100}%`;
   track.addEventListener("pointerdown", (e) => {
     if (e.button !== 0) return;
     const r = track.getBoundingClientRect();
-    const seek = (cx: number) => store.seek(((cx - r.left) / r.width) * dur());
+    const seek = (cx: number) => store.seek(((cx - r.left) / r.width) * d);
     seek(e.clientX);
     dragPointer(e, { axes: "x", move: (_dx, _dy, ev) => seek(ev.clientX), end: () => {} });
   });
 
-  store.subscribe((s) => {
+  // Hidden in power, so drawn only in den — and all of it again on the way in.
+  const den = () => store.state.mode === "den";
+  const drawHead = (s = store.state) => {
+    if (!den()) return;
     now.textContent = fmtTime(s.playhead, store.fps);
     head.style.left = x(s.playhead);
     if (play.dataset.playing !== String(s.playing)) {
       play.dataset.playing = String(s.playing);
       play.replaceChildren(icon(s.playing ? "pause" : "play"));
     }
-  });
-  store.select((s) => [s.project, s.sequence, s.history, s.pins], (s) => {
-    end.textContent = fmtTime(store.duration, store.fps);
+  };
+  store.select((s) => [s.playhead, s.playing], drawHead);
+  store.select((s) => [s.project, s.sequence, s.history, s.pins, s.mode], (s) => {
+    if (!den()) return;
+    d = Math.max(store.duration, 1);
+    end.textContent = fmtTime(d, store.fps);
+    drawHead(s);
     // A tick a second, a taller one every ten — denser and it is a texture, not a scale.
-    const d = dur();
     const step = d > 600 ? 10 : d > 120 ? 5 : 1;
     ticks.replaceChildren();
     for (let t = 0; t <= d; t += step) {
@@ -133,7 +138,14 @@ export function mountDen(host: HTMLElement): void {
     }
     marks.replaceChildren();
     // The last revisions that edited something on this sequence, where they edited it.
-    const placed = s.history.filter((h) => h.revision !== null && h.kind !== "refused").map((h) => ({ h, t: editedAt(h) })).filter((p): p is { h: HistoryEntry; t: number } => p.t !== null).slice(0, 3).reverse();
+    const starts = new Map(store.tracks.flatMap((t) => t.clips).map((c) => [c.id, c.start]));
+    const placed: { h: HistoryEntry; t: number }[] = [];
+    for (const h of s.history) {
+      if (placed.length === 3) break;
+      if (h.revision === null || h.kind === "refused") continue;
+      const t = editedAt(h, starts);
+      if (t !== null) placed.unshift({ h, t });
+    }
     placed.forEach(({ h, t }, i) => {
       const m = el("div", `dr-rev${i === placed.length - 1 ? " latest" : ""}`);
       m.style.left = x(t);
@@ -143,7 +155,7 @@ export function mountDen(host: HTMLElement): void {
       m.onpointerdown = (e) => e.stopPropagation();
       marks.appendChild(m);
     });
-    for (const m of store.markers.filter((m) => m.label.trim())) {
+    for (const m of s.pins.filter((p) => p.sequence === s.sequence)) {
       const p = el("div", "dr-pin");
       p.style.left = x(m.t);
       p.title = m.label;
@@ -164,8 +176,9 @@ function lastLook(activity: Activity[], sequence: string, master: string): Activ
 }
 
 /** Where on the open sequence a revision edited: the earliest start of the clips it
- *  touched there, as they are now. Null when it touched nothing on this timeline. */
-function editedAt(h: HistoryEntry): number | null {
-  const starts = h.targets.map((id) => store.tracks.flatMap((t) => t.clips).find((c) => c.id === id)?.start).filter((t): t is number => t !== undefined);
-  return starts.length ? Math.min(...starts) : null;
+ *  touched there (`starts`, by clip id), as they are now. Null when it touched nothing on
+ *  this timeline. */
+function editedAt(h: HistoryEntry, starts: Map<string, number>): number | null {
+  const at = h.targets.map((id) => starts.get(id)).filter((t): t is number => t !== undefined);
+  return at.length ? Math.min(...at) : null;
 }

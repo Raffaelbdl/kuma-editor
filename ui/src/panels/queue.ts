@@ -3,17 +3,14 @@
 // then "render master", which is the one render nobody has to choose anything for. The
 // render dialog still holds the choices (another sequence, a preset, an output, threads).
 //
-// Rows are updated in place and only re-placed when the set of jobs changes, so a cancel
-// click is never lost to a redraw — the dialog's queue learnt that first.
+// The rows are the dialog's list (`jobList`), drawn smaller.
 
 import { api } from "../api";
 import { desktop } from "../desktop";
 import { button, el, plural } from "../dom";
-import { store, toast } from "../store";
-import { isFinal, type Job } from "../types";
-import { binName, lastRenderPreset, openRenderDialog, subject } from "./render";
-
-interface Row { root: HTMLElement; update(j: Job): void }
+import { binName, store, toast } from "../store";
+import { isFinal, jobCounts } from "../types";
+import { jobList, lastRenderPreset, openRenderDialog, subject, type JobRow } from "./render";
 
 export function queuePanel(): { body: HTMLElement; tools: HTMLElement } {
   const body = el("div", "queue-panel");
@@ -26,22 +23,11 @@ export function queuePanel(): { body: HTMLElement; tools: HTMLElement } {
   body.append(list, el("div", "q-foot"));
   body.lastElementChild!.append(renderMaster, done);
 
-  const rows = new Map<number, Row>();
-  let order = "";
+  const rows = jobList(list, jobRow, el("p", "muted tiny", "No jobs yet. Renders, bakes, samples and transcripts show up here, the agent's too."));
   store.select((s) => [s.jobs], (s) => {
-    const all = Object.values(s.jobs).sort((a, b) => b.id - a.id);
-    const finished = all.filter((j) => j.state === "done").length;
-    done.textContent = `${finished} done`;
+    const all = rows(s.jobs);
+    done.textContent = `${jobCounts(s.jobs).done} done`;
     done.disabled = !all.some(isFinal);
-    for (const j of all) {
-      if (!rows.has(j.id)) rows.set(j.id, jobRow(j.id));
-      rows.get(j.id)!.update(j);
-    }
-    const now = all.map((j) => j.id).join();
-    if (now === order) return;
-    order = now;
-    for (const id of rows.keys()) if (!(id in s.jobs)) rows.delete(id);
-    list.replaceChildren(...(all.length ? all.map((j) => rows.get(j.id)!.root) : [el("p", "muted tiny", "No jobs yet. Renders, bakes, samples and transcripts show up here, the agent's too.")]));
   });
   return { body, tools };
 }
@@ -59,7 +45,7 @@ async function renderMasterNow() {
   }
 }
 
-function jobRow(id: number): Row {
+function jobRow(id: number): JobRow {
   const title = el("div", "q-title");
   const action = el("span", "q-action");
   const bar = el("div", "q-bar");

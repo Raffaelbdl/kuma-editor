@@ -10,7 +10,7 @@ import { Cmd, command, run } from "../commands";
 import { button, el } from "../dom";
 import { panels } from "../panelhost";
 import { store } from "../store";
-import type { JobState } from "../types";
+import { jobCounts, type JobState } from "../types";
 import { openRenderDialog } from "./render";
 import { mountTabs } from "./tabs";
 
@@ -49,9 +49,7 @@ export function mountTopbar(host: HTMLElement): void {
   mountTabs(tabs);
 
   store.select((s) => [s.jobs], (s) => {
-    const n: Record<JobState, number> = { running: 0, queued: 0, done: 0, failed: 0, cancelled: 0 };
-    for (const j of Object.values(s.jobs)) n[j.state]++;
-    const said: [JobState, string][] = [["running", "running"], ["queued", "queued"], ["done", "done"], ["failed", "failed"], ["cancelled", "cancelled"]];
-    status.textContent = said.filter(([k]) => n[k]).map(([k, word]) => `${n[k]} ${word}`).join(" · ");
+    const n = jobCounts(s.jobs);
+    status.textContent = (Object.keys(n) as JobState[]).filter((k) => n[k]).map((k) => `${n[k]} ${k}`).join(" · ");
   });
 }

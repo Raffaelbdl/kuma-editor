@@ -22,7 +22,7 @@ import { mountStatusline } from "./panels/statusline";
 import { mountTopbar } from "./panels/topbar";
 import { mountTransport } from "./panels/transport";
 import { installShortcuts } from "./shortcuts";
-import { store, toast } from "./store";
+import { binName, store, toast } from "./store";
 import { installTheme } from "./theme";
 import { Timeline } from "./panels/timeline";
 import { initTitlebar } from "./panels/titlebar";
@@ -69,10 +69,27 @@ function projectCommands() {
 /** The panels, as modules: each draws into one element of its own, and the panel host
  *  (`panelhost.ts`) moves that element between containers. */
 function registerPanels() {
+  // In the order den offers their keys (`b i t a`, then the side panels' `m h r`); the side
+  // panels' order is also the rail's.
   const libraryEl = el("aside");
   libraryEl.id = "library";
   const library = new Library(libraryEl, "bin");
-  panels.register({ id: "bin", letter: "b", title: "bin", body: libraryEl, tools: library.tools, dock: "side", size: { w: 300, h: 420 } });
+  panels.register({ id: "bin", letter: "b", key: "The bin", title: "bin", body: libraryEl, tools: library.tools, dock: "side", size: { w: 300, h: 420 } });
+  const inspectorEl = el("aside");
+  inspectorEl.id = "inspector";
+  new Inspector(inspectorEl);
+  panels.register({ id: "inspector", letter: "i", key: "The inspector", title: "inspector", body: inspectorEl, dock: "right", size: { w: 300, h: 460 } });
+
+  const timelineEl = el("div");
+  timelineEl.id = "timeline";
+  new Timeline(timelineEl);
+  const seqNote = el("span");
+  store.select((s) => [s.project, s.sequence], (s) => { seqNote.textContent = binName(s.sequence); });
+  panels.register({ id: "timeline", letter: "t", key: "The timeline", title: "timeline", body: timelineEl, note: seqNote, dock: "bottom", size: { w: 1180, h: 260 } });
+
+  const agent = agentPanel();
+  panels.register({ id: "agent", letter: "a", key: "The agent: what it is doing, its last calls", title: "agent", body: agent.body, note: agent.note, dock: null, size: { w: 300, h: 300 } });
+
   const blueprintsEl = el("aside");
   blueprintsEl.id = "blueprints";
   const blueprints = new Library(blueprintsEl, "blueprints");
@@ -80,26 +97,11 @@ function registerPanels() {
   const fonts = fontsPanel();
   panels.register({ id: "fonts", letter: "f", title: "fonts", body: fonts.body, tools: fonts.tools, dock: "side" });
   const pins = pinsPanel();
-  panels.register({ id: "pins", letter: "m", title: "pins", body: pins.body, note: pins.note, dock: "side", size: { w: 300, h: 300 } });
+  panels.register({ id: "pins", letter: "m", key: "Your pins: notes on frames for the agent", title: "pins", body: pins.body, note: pins.note, dock: "side", size: { w: 300, h: 300 } });
   const history = historyPanel();
-  panels.register({ id: "history", letter: "h", title: "history", body: history.body, tools: history.tools, dock: "side", size: { w: 380, h: 340 } });
+  panels.register({ id: "history", letter: "h", key: "The history: every step, yours and the agent's", title: "history", body: history.body, tools: history.tools, dock: "side", size: { w: 380, h: 340 } });
   const queue = queuePanel();
-  panels.register({ id: "queue", letter: "r", title: "render queue", body: queue.body, tools: queue.tools, dock: "side", size: { w: 330, h: 380 } });
-
-  const inspectorEl = el("aside");
-  inspectorEl.id = "inspector";
-  new Inspector(inspectorEl);
-  panels.register({ id: "inspector", letter: "i", title: "inspector", body: inspectorEl, dock: "right", size: { w: 300, h: 460 } });
-
-  const timelineEl = el("div");
-  timelineEl.id = "timeline";
-  new Timeline(timelineEl);
-  const seqNote = el("span");
-  store.select((s) => [s.project, s.sequence], (s) => { seqNote.textContent = s.project?.bin[s.sequence]?.name || s.sequence; });
-  panels.register({ id: "timeline", letter: "t", title: "timeline", body: timelineEl, note: seqNote, dock: "bottom", size: { w: 1180, h: 260 } });
-
-  const agent = agentPanel();
-  panels.register({ id: "agent", letter: "a", title: "agent", body: agent.body, note: agent.note, dock: null, size: { w: 300, h: 300 } });
+  panels.register({ id: "queue", letter: "r", key: "The render queue", title: "render queue", body: queue.body, tools: queue.tools, dock: "side", size: { w: 330, h: 380 } });
 }
 
 async function main() {
@@ -111,6 +113,9 @@ async function main() {
   const solo = new URLSearchParams(location.search).get("panel");
   store.set({ mode: panels.initialMode() });
   await store.init();
+  // The panels first: the dock is read back knowing which ones there are. They draw into
+  // elements of their own, parked until the dock puts them somewhere.
+  registerPanels();
   // The dock's containers, with the frame in its place, before the preview gives the frame
   // iframes that moving it would reload.
   if (!solo) panels.layoutDock();
@@ -129,7 +134,6 @@ async function main() {
     mountTransport(document.getElementById("transport")!);
     mountStatusline(document.getElementById("statusline")!);
   }
-  registerPanels();
   panelCommands();
   installPalette();
   installShortcuts();

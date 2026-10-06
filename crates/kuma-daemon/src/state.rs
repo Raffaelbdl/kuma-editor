@@ -190,8 +190,10 @@ pub enum Event {
     Activity(Box<crate::activity::Record>),
     /// A revision was made, or a patch refused (`crate::history`).
     History(crate::history::Entry),
-    /// Which pins are done changed; clients refetch `GET /api/pins`.
-    Pins,
+    /// The pin list, whole and as `GET /api/pins` lists it, sent whenever it can have
+    /// changed: a marker edited (by an edit, a step or a restore), a pin answered, ticked or
+    /// unticked. At most one per operation, after its `history`.
+    Pins { pins: Vec<crate::pins::Pin> },
 }
 
 pub struct UndoStack {
@@ -426,6 +428,7 @@ impl AppState {
         let next = outcome.project.clone();
         let prev = self.commit(outcome.project, origin).map_err(|e| EditError::Patch(e.to_string()))?;
         let changes = history::changes(&prev, &next, &targets);
+        let pins_differ = crate::pins::differ(&prev, &next);
         {
             let mut u = lock(&self.undo);
             u.past.push((prev, origin.to_string()));
@@ -434,38 +437,42 @@ impl AppState {
             }
             u.future.clear();
         }
-        self.record(history::Entry {
-            revision: Some(rev),
-            kind,
-            origin: origin.to_string(),
-            author: history::author(origin).to_string(),
-            summary: history::summary(origin),
-            ops,
-            at: history::now_ms(),
-            base_revision: step.base_revision,
-            error: None,
-            changes,
-            targets: targets.iter().map(|t| t.id().to_string()).collect(),
-            pins: step.pins.to_vec(),
-        });
+        let answered = self.record(history::Entry { ops, base_revision: step.base_revision, changes, pins: step.pins.to_vec(), ..history::Entry::new(kind, origin, Some(rev), &targets) });
+        if answered || pins_differ {
+            self.send_pins(&lock(&self.pins));
+        }
         lock(&self.history).keep(next);
         Ok((rev, outcome.warnings))
     }
 
     /// Append to the history and tell every client; an entry naming pins answers them.
-    fn record(&self, entry: history::Entry) {
-        if let (Some(revision), false) = (entry.revision, entry.pins.is_empty()) {
+    /// Returns whether it did, for the caller to send the pins once with whatever else
+    /// changed them.
+    fn record(&self, entry: history::Entry) -> bool {
+        let answering = entry.revision.filter(|_| !entry.pins.is_empty());
+        if let Some(revision) = answering {
             let mut answers = lock(&self.pins);
             for id in &entry.pins {
                 answers.insert(id.clone(), crate::pins::Done { revision, by: entry.author.clone() });
             }
         }
-        let answered = entry.revision.is_some() && !entry.pins.is_empty();
         lock(&self.history).push(entry.clone());
         let _ = self.events.send(Event::History(entry));
-        if answered {
-            let _ = self.events.send(Event::Pins);
-        }
+        answering.is_some()
+    }
+
+    /// Every pin, the master's first, each with whether it is done: `GET /api/pins`.
+    pub fn pin_list(&self) -> Vec<crate::pins::Pin> {
+        let answers = lock(&self.pins);
+        crate::pins::list(&read(&self.project), &answers)
+    }
+
+    /// Broadcast the pin list. Built and sent while `answers` (the pins lock) is held, so
+    /// whichever list is sent last was built last and clients end on the current one. The
+    /// pins lock is always taken before the project's.
+    fn send_pins(&self, answers: &crate::pins::Answers) {
+        let pins = crate::pins::list(&read(&self.project), answers);
+        let _ = self.events.send(Event::Pins { pins });
     }
 
     pub fn apply_patch(&self, patch: &[json_patch::PatchOperation], base: Option<u64>, origin: &str) -> Result<(u64, Vec<Issue>), EditError> {
@@ -482,21 +489,9 @@ impl AppState {
             Ok(Edited { targets: history::patch_targets(p, Some(&outcome.project), patch), ops: patch.len(), outcome })
         });
         if let Err(e) = &applied {
-            let current = read(&self.project).clone();
-            self.record(history::Entry {
-                revision: None,
-                kind: Kind::Refused,
-                origin: origin.to_string(),
-                author: history::author(origin).to_string(),
-                summary: history::summary(origin),
-                ops: patch.len(),
-                at: history::now_ms(),
-                base_revision: base,
-                error: Some(history::refusal(e)),
-                targets: history::patch_targets(&current, None, patch).iter().map(|t| t.id().to_string()).collect(),
-                changes: Vec::new(),
-                pins: pins.to_vec(),
-            });
+            let targets = history::patch_targets(&read(&self.project), None, patch);
+            // Answers nothing: it made no revision.
+            self.record(history::Entry { ops: patch.len(), base_revision: base, error: Some(history::refusal(e)), pins: pins.to_vec(), ..history::Entry::new(Kind::Refused, origin, None, &targets) });
         }
         applied
     }
@@ -536,23 +531,24 @@ impl AppState {
         })?)
     }
 
-    /// Which pins are done, by id.
-    pub fn pin_answers(&self) -> crate::pins::Answers {
-        lock(&self.pins).clone()
-    }
-
     /// Tick a pin by hand (the current revision, by the user), or untick it, which forgets
-    /// an edit's answer too. Clients are told to refetch.
-    pub fn tick_pin(&self, id: &str, done: bool) {
-        let revision = read(&self.project).revision;
+    /// an edit's answer too, and send the list. `false` when there is no such pin.
+    pub fn tick_pin(&self, id: &str, done: bool) -> bool {
         let mut answers = lock(&self.pins);
+        let revision = {
+            let p = read(&self.project);
+            if !crate::pins::exists(&p, id) {
+                return false;
+            }
+            p.revision
+        };
         if done {
             answers.insert(id.to_string(), crate::pins::Done { revision, by: "user".into() });
         } else {
             answers.remove(id);
         }
-        drop(answers);
-        let _ = self.events.send(Event::Pins);
+        self.send_pins(&answers);
+        true
     }
 
     /// Undo/redo swap whole snapshots; the revision keeps increasing so clients never
@@ -577,8 +573,13 @@ impl AppState {
 
     fn swap(&self, redo: bool, by: Option<&str>) -> anyhow::Result<Option<u64>> {
         let _guard = lock(&self.edit);
-        let mut u = lock(&self.undo);
-        let Some((mut restored, origin)) = (if redo { u.future.pop() } else { u.past.pop() }) else { return Ok(None) };
+        // The undo stack is only ever changed under the edit lock, so it can be let go of
+        // between the pop and the push without anyone seeing the step missing.
+        let popped = {
+            let mut u = lock(&self.undo);
+            if redo { u.future.pop() } else { u.past.pop() }
+        };
+        let Some((mut restored, origin)) = popped else { return Ok(None) };
         let keep = restored.clone();
         restored.revision = read(&self.project).revision + 1;
         let rev = restored.revision;
@@ -589,27 +590,26 @@ impl AppState {
             Ok(now) => {
                 let targets = history::diff_targets(&now, &next);
                 let changes = history::changes(&now, &next, &targets);
-                if redo { &mut u.past } else { &mut u.future }.push((now, origin.clone()));
-                drop(u);
+                let pins_differ = crate::pins::differ(&now, &next);
+                {
+                    let mut u = lock(&self.undo);
+                    if redo { &mut u.past } else { &mut u.future }.push((now, origin.clone()));
+                }
                 self.record(history::Entry {
-                    revision: Some(rev),
-                    kind: if redo { Kind::Redo } else { Kind::Undo },
-                    origin: label,
                     author: by.map(history::author).unwrap_or("other").to_string(),
                     summary: format!("{verb}: {}", history::summary(&origin)),
-                    ops: 0,
-                    at: history::now_ms(),
-                    base_revision: None,
-                    error: None,
-                    targets: targets.iter().map(|t| t.id().to_string()).collect(),
                     changes,
-                    pins: Vec::new(),
+                    ..history::Entry::new(if redo { Kind::Redo } else { Kind::Undo }, &label, Some(rev), &targets)
                 });
+                if pins_differ {
+                    self.send_pins(&lock(&self.pins));
+                }
                 lock(&self.history).keep(next);
                 Ok(Some(rev))
             }
             Err(e) => {
                 // A failed save changed nothing; the history step must survive it.
+                let mut u = lock(&self.undo);
                 if redo { &mut u.future } else { &mut u.past }.push((keep, origin));
                 Err(e)
             }

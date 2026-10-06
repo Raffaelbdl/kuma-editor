@@ -26,13 +26,12 @@ export function agentPanel(): { body: HTMLElement; note: HTMLElement } {
     doing.textContent = v.last ? callLine(v.last) : "An agent on this project over MCP shows up here: what it reads, edits and looks at.";
   });
 
-  const draw = () => {
-    const recent = store.state.activity.slice(0, 5);
-    calls.replaceChildren(...recent.map(callRow));
-  };
-  store.select((s) => [s.activity], draw);
-  // "14s ago" has to keep counting.
-  setInterval(draw, 5000);
+  store.select((s) => [s.activity], (s) => calls.replaceChildren(...s.activity.slice(0, 5).map(callRow)));
+  // "14s ago" has to keep counting: only those words, while the panel is on screen.
+  setInterval(() => {
+    if (!calls.offsetParent) return;
+    for (const w of calls.querySelectorAll<HTMLElement>(".ag-when[data-at]")) w.textContent = ` · ${ago(Number(w.dataset.at))}`;
+  }, 5000);
   return { body, note };
 }
 
@@ -50,7 +49,9 @@ function callRow(a: Activity): HTMLElement {
   if (edited) head.appendChild(el("span", "ag-rev", `r${a.revision_after}`));
   else if (a.tool === "check_overlay" && a.lint) head.appendChild(el("span", a.lint.ok ? "ag-ok" : "ag-bad", a.lint.ok ? "✓" : "✗"));
   else if (a.tool === "sample_frames") head.appendChild(el("span", "ag-look", "◉"));
-  head.append(el("b", "", a.tool), el("span", "muted", ` · ${a.state === "running" ? "now" : ago(a.ended_at ?? a.started_at)}`));
+  const when = el("span", "muted ag-when", ` · ${a.state === "running" ? "now" : ago(a.ended_at ?? a.started_at)}`);
+  if (a.state !== "running") when.dataset.at = String(a.ended_at ?? a.started_at);
+  head.append(el("b", "", a.tool), when);
   row.appendChild(head);
   if (a.summary) row.appendChild(el("div", "ag-summary", a.summary));
   if (a.error) row.appendChild(el("div", "ag-error", a.error));

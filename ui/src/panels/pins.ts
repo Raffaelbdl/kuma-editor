@@ -6,28 +6,15 @@
 // revision said it answered it, or you ticked it. Done-ness is the daemon's session state,
 // not the document's — the marker itself never changes when it is answered.
 
-import { agentView } from "../agent";
+import { watchAgent } from "../agent";
 import { Cmd, command } from "../commands";
 import { button, el } from "../dom";
 import { addPin, markerOn } from "../edits";
 import { api } from "../api";
 import { panels } from "../panelhost";
+import { keysFor } from "../shortcuts";
 import { fmtTime, store, toast } from "../store";
-import type { Marker, Pin } from "../types";
-
-/** A pin's id, as the daemon names it: markers have none of their own. */
-export const pinId = (sequence: string, t: number) => `${sequence}@${t.toFixed(3)}`;
-
-/** The open sequence's pins, in time order, numbered as the daemon numbers them, with what
- *  the daemon knows of each. Read off the document, so they show with an older daemon too. */
-export function sequencePins(): (Marker & { id: string; index: number; status: Pin | undefined })[] {
-  const seq = store.state.sequence;
-  const known = new Map(store.state.pins.map((p) => [p.id, p]));
-  return store.markers
-    .filter((m) => m.label.trim())
-    .sort((a, b) => a.t - b.t)
-    .map((m, i) => ({ ...m, id: pinId(seq, m.t), index: i + 1, status: known.get(pinId(seq, m.t)) }));
-}
+import type { Pin } from "../types";
 
 export function pinsPanel(): { body: HTMLElement; note: HTMLElement } {
   const body = el("div", "pins-panel");
@@ -40,9 +27,13 @@ export function pinsPanel(): { body: HTMLElement; note: HTMLElement } {
   const input = el("textarea");
   input.rows = 1;
   let at = 0;
+  // Idle, the draft is these three, and only the time in it follows the playhead.
+  const when = el("span");
+  const offer = [el("span", "pin-plus", "+"), when, el("kbd", "", keysFor(Cmd.addPin) ?? "P")];
+  const editing = () => draft.classList.contains("editing");
   const idle = () => {
     draft.classList.remove("editing");
-    draft.replaceChildren(el("span", "pin-plus", "+"), el("span", "", `pin at ${fmtTime(store.state.playhead, store.fps)}`), el("kbd", "", "P"));
+    draft.replaceChildren(...offer);
   };
   const begin = () => {
     at = store.snap(store.state.playhead);
@@ -52,7 +43,7 @@ export function pinsPanel(): { body: HTMLElement; note: HTMLElement } {
     draft.replaceChildren(el("span", "pin-plus", "+"), input);
     input.focus();
   };
-  draft.onclick = () => { if (!draft.classList.contains("editing")) begin(); };
+  draft.onclick = () => { if (!editing()) begin(); };
   input.onkeydown = async (e) => {
     if (e.key === "Escape") { e.preventDefault(); idle(); return; }
     if (e.key !== "Enter" || e.shiftKey) return;
@@ -61,37 +52,40 @@ export function pinsPanel(): { body: HTMLElement; note: HTMLElement } {
   };
   input.onblur = () => { if (!input.value.trim()) setTimeout(idle, 0); };
   body.append(list, draft);
+  idle();
 
   command(Cmd.addPin, "Pin at playhead", () => {
     panels.show("pins");
     begin();
   });
 
+  // The daemon's pins: it numbers them and knows which are answered (`pins.rs`).
+  let reading: string | undefined;
   const draw = () => {
-    const pins = sequencePins();
+    const pins = store.state.pins.filter((p) => p.sequence === store.state.sequence);
     note.textContent = pins.length ? String(pins.length) : "";
-    const reading = /^reading pin (\d+)/.exec(agentView(store.state).doing)?.[1];
     if (!pins.length) list.replaceChildren(el("p", "muted tiny", "No pins on this sequence. A pin is a note on a frame for the agent: press P to leave one at the playhead."));
-    else list.replaceChildren(...pins.map((p) => pinCard(p, String(p.index) === reading)));
-    if (!draft.classList.contains("editing")) idle();
+    else list.replaceChildren(...pins.map((p) => pinCard(p, p.id === reading)));
   };
-  store.select((s) => [s.project, s.sequence, s.pins, s.activity], draw);
-  store.select((s) => [s.playhead], () => { if (!draft.classList.contains("editing")) idle(); });
+  store.select((s) => [s.pins, s.sequence], draw);
+  watchAgent((v) => { if (v.pin?.id !== reading) { reading = v.pin?.id; draw(); } });
+  store.select((s) => [s.playhead], (s) => { when.textContent = `pin at ${fmtTime(s.playhead, store.fps)}`; });
   return { body, note };
 }
 
-function pinCard(p: ReturnType<typeof sequencePins>[number], reading: boolean): HTMLElement {
-  const done = p.status?.done ?? null;
+function pinCard(p: Pin, reading: boolean): HTMLElement {
+  const done = p.done;
   const card = el("div", `pin-card${done !== null ? " done" : reading ? " reading" : ""}`);
   card.appendChild(el("span", "pin-n", String(p.index)));
   const main = el("div", "pin-main");
   main.appendChild(el("div", "pin-text", p.label));
-  const state = done !== null ? `done in r${done}${p.status?.done_by === "user" ? " · ticked" : ""}` : reading ? "kuma is reading it" : "open";
+  const state = done !== null ? `done in r${done}${p.done_by === "user" ? " · ticked" : ""}` : reading ? "kuma is reading it" : "open";
   main.appendChild(el("div", "pin-meta", `${+p.t.toFixed(2)}s · ${state}`));
   card.appendChild(main);
-  // Ticking by hand is for an answer the agent did not say it gave.
+  // Ticking by hand is for an answer the agent did not say it gave. The daemon tells every
+  // client, this one included, with the new list.
   const tick = button(done !== null ? "↺" : "✓", async () => {
-    try { await api.pinDone(p.id, done === null); store.loadPins(); } catch (e) { toast(`Cannot tick pins with this daemon: ${(e as Error).message}`, "err"); }
+    try { await api.pinDone(p.id, done === null); } catch (e) { toast(`Cannot tick pins with this daemon: ${(e as Error).message}`, "err"); }
   }, done !== null ? "Open it again" : "Mark it done yourself", "pin-tick");
   tick.onpointerdown = (e) => e.stopPropagation();
   card.appendChild(tick);

@@ -443,12 +443,16 @@ file, and gone when the daemon stops:
 
 - **Activity.** `kuma mcp` reports every tool call to `POST /api/activity` as it starts
   (`{"phase":"start","tool","client","args"}`, answered `{"id"}`) and ends
-  (`{"phase":"end","id","ok","error","result"}`), with the arguments trimmed (a patch is its op
-  count) and the result reduced to a lint verdict, an edit's revision or a sample's frame
-  paths. A report waits a second at most and its failure is ignored: the feed is never what
+  (`{"phase":"end","id","ok","error","result","revision"}`), with the arguments trimmed (a
+  patch is its op count) and the result reduced to a lint verdict, an edit's revision or a
+  sample's frame paths. `revision` is the one the call made, read off its own answer (an
+  edit's, an undo's, an import's, a finished transcription's); absent or null, it made none.
+  A report waits a second at most and its failure is ignored: the feed is never what
   slows or fails a tool. `GET /api/activity?limit=N` lists the last 100 calls newest first,
-  each with its state, the revisions either side, a sample's times and `rect`, and its
-  `frames`, served by `GET /api/samples/<file>` from `.kuma/samples/`.
+  each with its state, `revision_before` (the daemon's when it started) and `revision_after`
+  (the one it made, else `revision_before`, so the two differ exactly when the call edited,
+  whatever the person did meanwhile), a sample's times and `rect`, and its `frames`, served
+  by `GET /api/samples/<file>` from `.kuma/samples/`.
 - **History.** One entry per revision the daemon makes — edits, undos, redos, restores — and
   per patch it refuses, with its author (`agent`, `user` or `other`, from the origin; an
   undo's is whoever asked, `{"origin": …}` in its body), the clips and entries it touched and
@@ -462,7 +466,10 @@ file, and gone when the daemon stops:
   both).
 
 Each change is broadcast on `/api/events` beside `project_changed` and `job`: `activity` and
-`history` carry the record, `pins` says only to refetch.
+`history` carry the record, and `pins` carries the whole list as `GET /api/pins` has it
+(`{"type":"pins","pins":[…]}`), sent at most once per operation whenever it can have
+changed — an edit, undo, redo or restore that changes a labelled marker (or the master), an
+edit that names pins, a tick or untick.
 
 ### CLI
 

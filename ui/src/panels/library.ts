@@ -17,6 +17,7 @@ import { icon, type IconName } from "../icons";
 import { store, toast } from "../store";
 import { blueprintActions, moveBinItem, newItems, promptNewFolder } from "../edits";
 import { menuBelow, showMenu, type MenuItem } from "../menu";
+import { panels } from "../panelhost";
 import type { BinItem, Project } from "../types";
 import { childrenMap, isFileSource, isFolderSource, isOverlaySource, isSequenceSource, itemKind, parentOf } from "../types";
 
@@ -24,8 +25,8 @@ export class Library {
   /** The head's tools — + new, a folder, import — rebuilt for whichever list is showing. */
   readonly tools = el("div", "lib-tools");
 
-  constructor(private host: HTMLElement, list: "bin" | "blueprints" = "bin") {
-    this.tab = list;
+  /** Which list this is: the bin, or the blueprints. Each is a panel of its own. */
+  constructor(private host: HTMLElement, private readonly list: "bin" | "blueprints" = "bin") {
     store.select((s) => [s.project, s.blueprints, s.sequence, s.tab], () => this.render());
     // Selection moves a class; it does not rebuild the panel.
     store.select((s) => [s.selection], () => this.markSelected());
@@ -36,7 +37,7 @@ export class Library {
     this.filter.type = "text";
     this.filter.placeholder = "filter";
     this.filter.oninput = () => this.render();
-    // `/` is the filter's key, as it is in every list worth searching.
+    // Escape clears the filter and leaves it.
     this.filter.onkeydown = (e) => { if (e.key === "Escape") { this.filter.value = ""; this.render(); this.filter.blur(); } };
   }
 
@@ -44,7 +45,7 @@ export class Library {
    *  other row, at the top level below them. The bin's, so not over the Blueprints tab. */
   private newMenu(e: MouseEvent) {
     const p = store.state.project;
-    if (!p || this.tab !== "bin" || !this.host.contains(e.target as Node) || (e.target as HTMLElement).closest("input, textarea, select")) return;
+    if (!p || this.list !== "bin" || !this.host.contains(e.target as Node) || (e.target as HTMLElement).closest("input, textarea, select")) return;
     e.preventDefault();
     const id = (e.target as HTMLElement).closest<HTMLElement>(".bin-row")?.dataset.sel?.replace(/^bin:/, "");
     const parent = id ? (isFolderSource(p.bin[id]?.source) ? id : parentOf(p, id)) : null;
@@ -89,30 +90,17 @@ export class Library {
     window.addEventListener("drop", (e) => {
       if (!isFileDrag(e) || e.defaultPrevented) return;
       e.preventDefault();
-      if (this.tab !== "bin") { this.tab = "bin"; this.render(); }
+      // Where they are going: on screen, if the bin was not.
+      panels.show("bin");
       void dropMedia(e.dataTransfer!.files, null);
     });
   }
 
-  /** Which list is showing, and which entries are folded. View state, so it lives here
-   *  rather than in the store. */
-  private tab: "bin" | "blueprints" = "bin";
   /** Rows whose name holds this, and the folders on the way to them. */
   readonly filter = el("input");
   private filterRow: HTMLDivElement | null = null;
 
-  /** Show the bin or the blueprints: the panel host calls this as either is put up. */
-  setTab(tab: "bin" | "blueprints") {
-    if (tab === this.tab && this.host.childElementCount) return;
-    this.tab = tab;
-    this.render();
-  }
-
-  /** Put the caret in the filter (`/`). */
-  focusFilter() {
-    this.filter.focus();
-    this.filter.select();
-  }
+  /** Which entries are folded. View state, so it lives here rather than in the store. */
   private collapsed = new Set<string>();
 
   /** The list, which scrolls under the tabs and the toolbar. Kept across a rebuild with
@@ -122,7 +110,7 @@ export class Library {
   private render() {
     const s = store.state;
     const p = s.project;
-    const scrolled = this.tab === this.body.dataset.tab ? this.body.scrollTop : 0;
+    const scrolled = this.body.scrollTop;
     const typing = document.activeElement === this.filter;
     this.body.replaceChildren();
     this.tools.replaceChildren();
@@ -133,8 +121,7 @@ export class Library {
     if (this.host.firstChild !== this.filterRow || this.host.lastChild !== this.body) this.host.replaceChildren(this.filterRow, this.body);
     if (typing && document.activeElement !== this.filter) this.filter.focus();
     const tools = this.tools;
-    this.body.dataset.tab = this.tab;
-    if (this.tab === "bin") this.renderBin(p, tools);
+    if (this.list === "bin") this.renderBin(p, tools);
     else this.renderBlueprints(tools);
     this.body.scrollTop = scrolled;
     this.markSelected();

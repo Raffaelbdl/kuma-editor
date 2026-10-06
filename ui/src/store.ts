@@ -135,16 +135,8 @@ class Store {
   private async loadAgent() {
     const [a, h] = await Promise.all([api.activity().catch(() => null), api.history().catch(() => null)]);
     this.set({ ...(a ? { activity: a.activity } : {}), ...(h ? { history: h.entries } : {}) });
-    void this.loadPins();
-  }
-
-  private pinsTimer = 0;
-  /** Pins are markers, so any edit can change them; asked for at most every 300 ms. */
-  loadPins() {
-    clearTimeout(this.pinsTimer);
-    this.pinsTimer = window.setTimeout(() => {
-      api.pins().then((r) => this.set({ pins: r.pins })).catch(() => {});
-    }, 300);
+    // After this, every change to them comes as a `pins` event carrying the list.
+    api.pins().then((r) => this.set({ pins: r.pins })).catch(() => {});
   }
 
   private async loadJobs() {
@@ -195,16 +187,14 @@ class Store {
     if (e.type === "project_changed") {
       if (!this.state.project || e.revision !== this.state.project.revision) await this.refresh();
       toast(`${e.origin} → r${e.revision}`, "ok", 1200);
-      this.loadPins();
     } else if (e.type === "activity") {
       const { type: _, ...a } = e;
       this.set({ activity: [a, ...this.state.activity.filter((x) => x.id !== a.id)].sort((x, y) => y.id - x.id).slice(0, 100) });
     } else if (e.type === "history") {
       const { type: _, ...h } = e;
       this.set({ history: [h, ...this.state.history].slice(0, 500) });
-      if (h.pins.length) this.loadPins();
     } else if (e.type === "pins") {
-      this.loadPins();
+      this.set({ pins: e.pins });
     } else if (e.type === "jobs_cleared") {
       const jobs = { ...this.state.jobs };
       for (const id of e.ids) delete jobs[id];
@@ -545,6 +535,11 @@ export async function startJob(label: string, start: () => Promise<{ job: number
 }
 
 /** `mm:ss.ff`, computed from whole frames so the frame field never reaches `fps`. */
+/** What a bin entry is called: its name, else its id. */
+export const binName = (id?: string) => (id && store.state.project?.bin[id]?.name) || id || "?";
+/** A sequence as a list offers it, the master said so. */
+export const sequenceLabel = (id: string) => `${binName(id)}${id === store.state.project?.master ? " (master)" : ""}`;
+
 export const fmtTime = (t: number, fps: number) => {
   const frames = Math.max(0, Math.round(t * fps));
   const whole = Math.floor(frames / fps);

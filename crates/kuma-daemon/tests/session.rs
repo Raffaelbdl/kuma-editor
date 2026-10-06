@@ -83,9 +83,9 @@ fn revision(state: &AppState) -> u64 {
     state.project.read().unwrap().revision
 }
 
-/// A call is recorded when it starts and completed when it ends, with what the daemon
-/// knows (the revisions either side) and what the report said (a sample's moments and
-/// frames); the list is newest first, and both phases are broadcast.
+/// A call is recorded when it starts and completed when it ends, with the revision it
+/// started at and the one it made (its own, or none), and what the report said (a sample's
+/// moments and frames); the list is newest first, and both phases are broadcast.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_tool_call_is_reported_from_start_to_end() {
     let (state, addr, _dir) = daemon().await;
@@ -119,6 +119,27 @@ async fn a_tool_call_is_reported_from_start_to_end() {
     let ev = events.recv().await.unwrap();
     let v = serde_json::to_value(&ev).unwrap();
     assert_eq!((v["type"].as_str(), v["tool"].as_str(), v["state"].as_str()), (Some("activity"), Some("sample_frames"), Some("running")), "{v}");
+}
+
+/// A call's `revision_after` is the revision it reported making, or its `revision_before`
+/// when it reported none: an edit the person made while it ran is not the call's.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_call_is_credited_only_with_the_revision_it_made() {
+    let (state, addr, _dir) = daemon().await;
+    let rev = revision(&state);
+    let id = |v: Value| v["id"].as_u64().unwrap();
+    let edit = id(post(&addr, "/api/activity", json!({ "phase": "start", "tool": "apply_edits", "args": {} })));
+    let look = id(post(&addr, "/api/activity", json!({ "phase": "start", "tool": "get_project", "args": {} })));
+    let made = post(&addr, "/api/project/patch", json!({ "patch": [{ "op": "replace", "path": "/bin/black/name", "value": "Ink" }], "origin": "claude: rename" }))["revision"].as_u64().unwrap();
+    post(&addr, "/api/project/patch", json!({ "patch": [{ "op": "replace", "path": "/bin/black/name", "value": "Coal" }], "origin": "ui" }));
+    assert_eq!(revision(&state), rev + 2);
+
+    post(&addr, "/api/activity", json!({ "phase": "end", "id": edit, "ok": true, "result": { "revision": made, "ops": 1 }, "revision": made }));
+    post(&addr, "/api/activity", json!({ "phase": "end", "id": look, "ok": true, "result": null }));
+    let all = get(&addr, "/api/activity")["activity"].as_array().unwrap().clone();
+    let after = |id: u64| all.iter().find(|r| r["id"] == id).map(|r| (r["revision_before"].as_u64(), r["revision_after"].as_u64())).unwrap();
+    assert_eq!(after(edit), (Some(rev), Some(rev + 1)), "its own revision, not the person's after it");
+    assert_eq!(after(look), (Some(rev), Some(rev)), "no revision reported: it edited nothing");
 }
 
 /// An edit, its undo (authored by whoever asked) and a refused stale patch are each one
@@ -190,7 +211,8 @@ async fn a_revision_is_restored_as_one_undoable_edit() {
 }
 
 /// Pins are labelled markers, numbered in time order per sequence, the master's first; an
-/// edit naming one answers it, and a tick by hand marks or clears it.
+/// edit naming one answers it, and a tick by hand marks or clears it. Each of those sends
+/// the whole list, as `GET /api/pins` has it.
 #[tokio::test(flavor = "multi_thread")]
 async fn pins_are_listed_answered_and_ticked() {
     let (state, addr, _dir) = daemon().await;
@@ -214,11 +236,41 @@ async fn pins_are_listed_answered_and_ticked() {
     let (status, _) = call(&addr, "POST", "/api/pins/done", json!({ "id": "main@3.000", "done": true }));
     assert!(status.contains("404"), "an unlabelled marker is no pin: {status}");
 
-    let mut types = Vec::new();
-    while let Ok(ev) = events.try_recv() {
-        types.push(serde_json::to_value(ev).unwrap()["type"].as_str().unwrap().to_string());
-    }
+    let sent = drain(&mut events);
+    let types: Vec<&str> = sent.iter().map(|v| v["type"].as_str().unwrap()).collect();
     assert_eq!(types, ["project_changed", "history", "pins", "pins", "pins"]);
+    assert_eq!(sent[2]["pins"][1]["done"], r["revision"], "the answer is in the list sent");
+    assert_eq!(sent[4], json!({ "type": "pins", "pins": pins() }), "the last list sent is the list");
+}
+
+/// The pins are sent when an edit, an undo or a redo changes a labelled marker, and not
+/// for an edit that leaves them alone.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_pins_are_sent_when_the_markers_change() {
+    let (state, addr, _dir) = daemon().await;
+    let mut events = state.events.subscribe();
+    let types = |sent: &[Value]| sent.iter().map(|v| v["type"].as_str().unwrap().to_string()).collect::<Vec<_>>();
+
+    post(&addr, "/api/project/patch", json!({ "patch": [{ "op": "replace", "path": "/bin/black/name", "value": "Ink" }] }));
+    assert_eq!(types(&drain(&mut events)), ["project_changed", "history"], "no marker changed");
+
+    post(&addr, "/api/project/patch", json!({ "patch": [{ "op": "replace", "path": "/bin/main/source/markers/1/label", "value": "far too dark" }] }));
+    let sent = drain(&mut events);
+    assert_eq!(types(&sent), ["project_changed", "history", "pins"]);
+    assert_eq!(sent[2]["pins"][0]["label"], "far too dark");
+
+    post(&addr, "/api/project/undo", json!({ "origin": "ui" }));
+    let sent = drain(&mut events);
+    assert_eq!(types(&sent), ["project_changed", "history", "pins"]);
+    assert_eq!(sent[2]["pins"][0]["label"], "too dark");
+
+    post(&addr, "/api/project/undo", json!({ "origin": "ui" }));
+    assert_eq!(types(&drain(&mut events)), ["project_changed", "history"], "undoing the rename");
+}
+
+/// Every event sent so far, as JSON.
+fn drain(events: &mut tokio::sync::broadcast::Receiver<kuma_daemon::state::Event>) -> Vec<Value> {
+    std::iter::from_fn(|| events.try_recv().ok()).map(|ev| serde_json::to_value(ev).unwrap()).collect()
 }
 
 /// Sampled frames are served from `.kuma/samples/` and from nowhere else.

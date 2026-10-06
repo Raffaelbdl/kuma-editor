@@ -6,7 +6,7 @@
 import { Cmd, command, list, run } from "./commands";
 import { el } from "./dom";
 import { keysFor } from "./shortcuts";
-import { store } from "./store";
+import { sequenceLabel, store } from "./store";
 import { sequenceIds } from "./types";
 
 interface Entry { label: string; keys?: string; run(): void }
@@ -18,12 +18,12 @@ function entries(): Entry[] {
     // Ones that need an argument from somewhere else (a step, a scale, a kind) are not
     // commands a name can run on its own.
     .filter((c) => ![Cmd.seekEdge, Cmd.previewScale, Cmd.overlayStep, Cmd.addTrack, Cmd.palette].includes(c.id as never))
-    .map((c) => ({ label: c.label.replace(/…$/, "…"), keys: keysFor(c.id), run: () => run(c.id) }));
+    .map((c) => ({ label: c.label, keys: keysFor(c.id), run: () => run(c.id) }));
   for (const kind of ["video", "overlay", "audio"]) out.push({ label: `Add ${kind} track`, run: () => run(Cmd.addTrack, kind) });
   const p = store.state.project;
   if (p) {
-    for (const id of sequenceIds(p)) out.push({ label: `Open sequence: ${p.bin[id].name || id}${id === p.master ? " (master)" : ""}`, run: () => void store.openSequence(id) });
-    for (const pin of store.markers.filter((m) => m.label.trim())) out.push({ label: `Go to pin: ${pin.label.split("\n")[0]}`, run: () => store.seek(pin.t) });
+    for (const id of sequenceIds(p)) out.push({ label: `Open sequence: ${sequenceLabel(id)}`, run: () => void store.openSequence(id) });
+    for (const pin of store.state.pins.filter((x) => x.sequence === store.state.sequence)) out.push({ label: `Go to pin: ${pin.label.split("\n")[0]}`, run: () => store.seek(pin.t) });
   }
   return out;
 }

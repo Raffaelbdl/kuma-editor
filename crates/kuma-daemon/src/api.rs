@@ -17,7 +17,7 @@ use serde_json::{json, Value};
 use tower_http::services::ServeDir;
 use tower_http::set_header::SetResponseHeaderLayer;
 
-use crate::jobs::{self, MeasureRequest, MediaMeasureRequest, RenderRequest, SampleRequest, TranscribeRequest};
+use crate::jobs::{self, Asked, MeasureRequest, MediaMeasureRequest, RenderRequest, SampleRequest, TranscribeRequest};
 use crate::preview::{self, EngineEvent};
 use crate::state::{lock, read, AppState};
 
@@ -323,19 +323,11 @@ async fn activity(State(st): S, Query(q): Query<Limit>) -> Result<Response, ApiE
     json_now(&ActivityList { activity: a.newest(q.limit.unwrap_or(crate::activity::RECORDS)) })
 }
 
-/// The MCP server reporting a tool call's start (answered with its id) or end.
+/// The MCP server reporting a tool call that started no job, once it has ended (a call
+/// that started one is the job's to record, `jobs::spawn_inner`). Answered with its id.
 async fn report_activity(State(st): S, Json(report): Json<crate::activity::Report>) -> ApiResult {
-    use crate::activity::Report;
-    let now = crate::history::now_ms();
-    let record = match report {
-        Report::Start { tool, client, args } => {
-            let revision = read(&st.project).revision;
-            lock(&st.activity).start(tool, client, args, revision, now)
-        }
-        Report::End { id, ok, error, result, revision } => lock(&st.activity)
-            .end(id, if ok { Ok(&result) } else { Err(error) }, revision, now, &st.config.samples_dir())
-            .ok_or_else(|| ApiError::not_found(format!("no activity {id}: it has ended or been forgotten")))?,
-    };
+    let current = read(&st.project).revision;
+    let record = lock(&st.activity).call(report, current, crate::history::now_ms(), &st.config.samples_dir());
     let id = record.id;
     let _ = st.events.send(crate::state::Event::Activity(Box::new(record)));
     Ok(Json(json!({ "id": id })))
@@ -825,10 +817,10 @@ async fn unused_entries(State(st): S) -> Json<Value> {
 
 /// Speech to text on a media entry, as a job: whisper takes seconds to minutes. The
 /// result names the new `subtitles` bin entry.
-async fn transcribe(State(st): S, Json(req): Json<TranscribeRequest>) -> Json<Value> {
+async fn transcribe(State(st): S, Json(Asked { call, req }): Json<Asked<TranscribeRequest>>) -> Json<Value> {
     let s2 = st.clone();
     let params = json!({ "bin": req.bin, "clip": req.clip });
-    Json(json!({ "job": jobs::spawn_with(st, "transcribe", params, move |progress| jobs::transcribe(&s2, &req, progress)) }))
+    Json(json!({ "job": jobs::spawn_with(st, "transcribe", params, call, move |progress| jobs::transcribe(&s2, &req, progress)) }))
 }
 
 // ---------- jobs ----------
@@ -854,7 +846,7 @@ async fn target(st: &Arc<AppState>, req: &RenderRequest) -> Result<(String, &'st
 
 /// Queue a render. Sequence and output are settled now, so the queue shows what will be
 /// written whatever is opened meanwhile, and a bad preset is refused here.
-async fn render(State(st): S, Json(mut req): Json<RenderRequest>) -> ApiResult {
+async fn render(State(st): S, Json(Asked { call, mut req }): Json<Asked<RenderRequest>>) -> ApiResult {
     let (sequence, preset, output) = target(&st, &req).await?;
     let params = json!({
         "sequence": sequence, "preset": preset.id, "output": output, "path": jobs::project_relative(&st, &output),
@@ -863,7 +855,7 @@ async fn render(State(st): S, Json(mut req): Json<RenderRequest>) -> ApiResult {
     req.sequence = Some(sequence);
     req.output = Some(output);
     let s2 = st.clone();
-    let id = jobs::spawn_cancellable(st, "render", params, move |progress, cancel| jobs::render(&s2, &req, progress, cancel));
+    let id = jobs::spawn_cancellable(st, "render", params, call, move |progress, cancel| jobs::render(&s2, &req, progress, cancel));
     Ok(Json(json!({ "job": id })))
 }
 
@@ -885,9 +877,9 @@ struct BakeReq {
     clips: Option<Vec<String>>,
 }
 
-async fn bake(State(st): S, Json(req): Json<BakeReq>) -> Json<Value> {
+async fn bake(State(st): S, Json(Asked { call, req }): Json<Asked<BakeReq>>) -> Json<Value> {
     let s2 = st.clone();
-    let id = jobs::spawn_with(st, "bake", json!({ "clips": req.clips }), move |progress| {
+    let id = jobs::spawn_with(st, "bake", json!({ "clips": req.clips }), call, move |progress| {
         let project = read(&s2.project).clone();
         let bakes = jobs::bake_all(&s2, &project, req.clips.as_deref(), progress)?;
         Ok(json!({ "bakes": bakes.iter().map(|(k, b)| json!({ "clip": k, "resource": b.resource, "still": b.is_still })).collect::<Vec<_>>() }))
@@ -902,30 +894,31 @@ async fn sample(State(st): S, Json(req): Json<SampleRequest>) -> ApiResult {
 
 /// The same sample as a job, for a caller that must not block on the bakes it needs:
 /// progress names the overlay baking, and the result is what `/api/sample` answers.
-async fn sample_job(State(st): S, Json(req): Json<SampleRequest>) -> Json<Value> {
+async fn sample_job(State(st): S, Json(Asked { call, req }): Json<Asked<SampleRequest>>) -> Json<Value> {
     let s2 = st.clone();
-    // The sequence it samples, the master unless named, so the queue can say so.
+    // The sequence it samples, the master unless named, so the queue can say so; and the
+    // moments and region, which the agent's activity shows.
     let sequence = req.overlay.is_none().then(|| req.sequence.clone().unwrap_or_else(|| read(&st.project).master.clone()));
-    let params = json!({ "sequence": sequence, "overlay": req.overlay, "times": req.times });
-    let id = jobs::spawn_with(st, "sample", params, move |progress| jobs::sample(&s2, &req, progress));
+    let params = json!({ "sequence": sequence, "overlay": req.overlay, "times": req.times, "t0": req.t0, "t1": req.t1, "rect": req.rect });
+    let id = jobs::spawn_with(st, "sample", params, call, move |progress| jobs::sample(&s2, &req, progress));
     Json(json!({ "job": id }))
 }
 
 /// How loud a sequence is, as a cancellable job: it renders the sound, which takes a while
 /// for a long video. The result is `jobs::measure_audio`'s.
-async fn measure_audio(State(st): S, Json(req): Json<MeasureRequest>) -> Json<Value> {
+async fn measure_audio(State(st): S, Json(Asked { call, req }): Json<Asked<MeasureRequest>>) -> Json<Value> {
     let s2 = st.clone();
     let params = json!({ "sequence": req.sequence, "mute": req.mute, "solo": req.solo });
-    Json(json!({ "job": jobs::spawn_cancellable(st, "measure", params, move |progress, cancel| jobs::measure_audio(&s2, &req, progress, cancel)) }))
+    Json(json!({ "job": jobs::spawn_cancellable(st, "measure", params, call, move |progress, cancel| jobs::measure_audio(&s2, &req, progress, cancel)) }))
 }
 
 /// How loud one source is and where it is quiet, as a cancellable job: ffmpeg decodes the
 /// whole stretch, which takes a while for a long recording. The result is
 /// `jobs::measure_media`'s.
-async fn measure_media(State(st): S, Json(req): Json<MediaMeasureRequest>) -> Json<Value> {
+async fn measure_media(State(st): S, Json(Asked { call, req }): Json<Asked<MediaMeasureRequest>>) -> Json<Value> {
     let s2 = st.clone();
     let params = json!({ "bin": req.bin, "path": req.path, "range": req.range });
-    Json(json!({ "job": jobs::spawn_cancellable(st, "measure-media", params, move |progress, cancel| jobs::measure_media(&s2, &req, progress, cancel)) }))
+    Json(json!({ "job": jobs::spawn_cancellable(st, "measure-media", params, call, move |progress, cancel| jobs::measure_media(&s2, &req, progress, cancel)) }))
 }
 
 async fn cache_usage(State(st): S) -> ApiResult {
@@ -939,9 +932,9 @@ struct PruneReq {
 }
 
 /// A job: it waits for renders using the cache.
-async fn cache_prune(State(st): S, Json(req): Json<PruneReq>) -> Json<Value> {
+async fn cache_prune(State(st): S, Json(Asked { call, req }): Json<Asked<PruneReq>>) -> Json<Value> {
     let s2 = st.clone();
-    let id = jobs::spawn(st, "prune", move |progress| Ok(json!(crate::cache::prune(&s2, req.all, progress)?)));
+    let id = jobs::spawn_with(st, "prune", json!({ "all": req.all }), call, move |progress| Ok(json!(crate::cache::prune(&s2, req.all, progress)?)));
     Json(json!({ "job": id }))
 }
 

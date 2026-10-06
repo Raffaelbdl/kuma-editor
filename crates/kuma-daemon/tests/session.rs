@@ -83,63 +83,180 @@ fn revision(state: &AppState) -> u64 {
     state.project.read().unwrap().revision
 }
 
-/// A call is recorded when it starts and completed when it ends, with the revision it
-/// started at and the one it made (its own, or none), and what the report said (a sample's
-/// moments and frames); the list is newest first, and both phases are broadcast.
+/// A call that started no job is reported once it has ended, and kept finished: with the
+/// revision before the one it made, and what the report said (a sample's moments and
+/// frames); the list is newest first, each report is broadcast, and the old start/end
+/// protocol is refused.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_tool_call_is_reported_from_start_to_end() {
+async fn a_call_is_reported_once_it_has_ended() {
     let (state, addr, _dir) = daemon().await;
     let mut events = state.events.subscribe();
     let rev = revision(&state);
     let samples = state.config.samples_dir();
 
-    let sample = post(&addr, "/api/activity", json!({ "phase": "start", "tool": "sample_frames", "client": "claude-code", "args": { "t0": 46.0, "t1": 49.0, "rect": { "x": 0, "y": 0, "w": 960, "h": 540 } } }));
-    let edit = post(&addr, "/api/activity", json!({ "phase": "start", "tool": "apply_edits", "args": { "patch": { "ops": 2 }, "note": "Moved + trimmed the umbrella", "pins": ["main@8.600"] } }));
+    let frames = json!({ "paths": [samples.join("x/1.png"), samples.join("x/2.png")], "sheet": null });
+    let args = json!({ "t0": 46.0, "t1": 49.0, "rect": { "x": 0, "y": 0, "w": 960, "h": 540 } });
+    let sample = post(&addr, "/api/activity", json!({ "phase": "call", "tool": "sample_frames", "client": "claude-code", "args": args, "ok": true, "error": null, "result": frames, "revision": null, "started_at": 1 }));
+    let edit = post(&addr, "/api/activity", json!({ "phase": "call", "tool": "apply_edits", "args": { "patch": { "ops": 2 }, "note": "Moved + trimmed the umbrella", "pins": ["main@8.600"] }, "ok": false, "error": "409: stale", "result": null }));
     let (a, b) = (sample["id"].as_u64().unwrap(), edit["id"].as_u64().unwrap());
     assert!(b > a);
-
-    let frames = json!({ "paths": [samples.join("x/1.png"), samples.join("x/2.png")], "sheet": null });
-    post(&addr, "/api/activity", json!({ "phase": "end", "id": a, "ok": true, "error": null, "result": frames }));
-    post(&addr, "/api/activity", json!({ "phase": "end", "id": b, "ok": false, "error": "409: stale", "result": null }));
 
     let all = get(&addr, "/api/activity")["activity"].as_array().unwrap().clone();
     assert_eq!(all.iter().map(|r| r["id"].as_u64().unwrap()).collect::<Vec<_>>(), [b, a], "newest first");
     let (e, s) = (&all[0], &all[1]);
     assert_eq!((e["state"].as_str(), e["client"].as_str(), e["summary"].as_str()), (Some("failed"), Some("agent"), Some("Moved + trimmed the umbrella")));
-    assert_eq!((e["error"].as_str(), &e["args"]["pins"]), (Some("409: stale"), &json!(["main@8.600"])));
+    assert_eq!((e["error"].as_str(), &e["args"]["pins"], &e["job"]), (Some("409: stale"), &json!(["main@8.600"]), &Value::Null));
     assert_eq!((s["state"].as_str(), s["client"].as_str(), s["revision_before"].as_u64(), s["revision_after"].as_u64()), (Some("done"), Some("claude-code"), Some(rev), Some(rev)));
     assert_eq!(s["sample"], json!({ "sequence": null, "overlay": null, "times": [46.0, 49.0], "rect": { "x": 0, "y": 0, "w": 960, "h": 540 } }));
     assert_eq!(s["frames"], json!(["x/1.png", "x/2.png"]));
+    assert_eq!(s["started_at"].as_u64(), Some(1), "when the call started, not when it was reported");
     assert!(s["ended_at"].as_u64().unwrap() >= s["started_at"].as_u64().unwrap());
     assert_eq!(get(&addr, "/api/activity?limit=1")["activity"].as_array().unwrap().len(), 1);
 
-    let (status, _) = call(&addr, "POST", "/api/activity", json!({ "phase": "end", "id": 999, "ok": true }));
-    assert!(status.contains("404"), "{status}");
+    for old in [json!({ "phase": "start", "tool": "get_project", "args": {} }), json!({ "phase": "end", "id": a, "ok": true })] {
+        let (status, _) = call(&addr, "POST", "/api/activity", old);
+        assert!(status.contains("422") || status.contains("400"), "{status}");
+    }
+    assert_eq!(get(&addr, "/api/activity")["activity"].as_array().unwrap().len(), 2);
 
     let ev = events.recv().await.unwrap();
     let v = serde_json::to_value(&ev).unwrap();
-    assert_eq!((v["type"].as_str(), v["tool"].as_str(), v["state"].as_str()), (Some("activity"), Some("sample_frames"), Some("running")), "{v}");
+    assert_eq!((v["type"].as_str(), v["tool"].as_str(), v["state"].as_str()), (Some("activity"), Some("sample_frames"), Some("done")), "{v}");
 }
 
-/// A call's `revision_after` is the revision it reported making, or its `revision_before`
-/// when it reported none: an edit the person made while it ran is not the call's.
+/// A call's `revision_after` is the revision it reported making and its `revision_before`
+/// the one before; one that reported none is at the daemon's revision on both: an edit the
+/// person made while it ran is not the call's.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_call_is_credited_only_with_the_revision_it_made() {
     let (state, addr, _dir) = daemon().await;
     let rev = revision(&state);
     let id = |v: Value| v["id"].as_u64().unwrap();
-    let edit = id(post(&addr, "/api/activity", json!({ "phase": "start", "tool": "apply_edits", "args": {} })));
-    let look = id(post(&addr, "/api/activity", json!({ "phase": "start", "tool": "get_project", "args": {} })));
     let made = post(&addr, "/api/project/patch", json!({ "patch": [{ "op": "replace", "path": "/bin/black/name", "value": "Ink" }], "origin": "claude: rename" }))["revision"].as_u64().unwrap();
     post(&addr, "/api/project/patch", json!({ "patch": [{ "op": "replace", "path": "/bin/black/name", "value": "Coal" }], "origin": "ui" }));
     assert_eq!(revision(&state), rev + 2);
 
-    post(&addr, "/api/activity", json!({ "phase": "end", "id": edit, "ok": true, "result": null, "revision": made }));
-    post(&addr, "/api/activity", json!({ "phase": "end", "id": look, "ok": true, "result": null }));
+    let edit = id(post(&addr, "/api/activity", json!({ "phase": "call", "tool": "apply_edits", "args": {}, "ok": true, "result": null, "revision": made })));
+    let look = id(post(&addr, "/api/activity", json!({ "phase": "call", "tool": "get_project", "args": {}, "ok": true, "result": null })));
     let all = get(&addr, "/api/activity")["activity"].as_array().unwrap().clone();
     let after = |id: u64| all.iter().find(|r| r["id"] == id).map(|r| (r["revision_before"].as_u64(), r["revision_after"].as_u64())).unwrap();
     assert_eq!(after(edit), (Some(rev), Some(rev + 1)), "its own revision, not the person's after it");
-    assert_eq!(after(look), (Some(rev), Some(rev)), "no revision reported: it edited nothing");
+    assert_eq!(after(look), (Some(rev + 2), Some(rev + 2)), "no revision reported: it edited nothing");
+}
+
+/// The activity record of `job`, polled until it is final, beside the job as it then is.
+fn finished(addr: &str, job: u64) -> (Value, Value) {
+    let start = std::time::Instant::now();
+    loop {
+        let j = get(addr, &format!("/api/jobs/{job}"));
+        let all = get(addr, "/api/activity")["activity"].as_array().unwrap().clone();
+        let r = all.into_iter().find(|r| r["job"] == job).unwrap_or_else(|| panic!("no activity for job {job}"));
+        if matches!(j["state"].as_str(), Some("done" | "failed" | "cancelled")) && r["state"] != "running" {
+            return (r, j);
+        }
+        assert!(start.elapsed() < std::time::Duration::from_secs(60), "job {job} or its activity never ended: {j} {r}");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
+/// A job a tool call asked for (`call` in its request) is that call's activity: recorded
+/// running when the job is created, with the job's params, and finished when the job ends,
+/// however it ends. A job nobody's call asked for has none, and clearing finished jobs
+/// leaves the activity alone.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_job_an_agent_asked_for_is_its_activity() {
+    let (state, addr, _dir) = daemon().await;
+    let mut events = state.events.subscribe();
+    let rev = revision(&state);
+
+    // Fails at once: a colour has no audio.
+    let failing = post(&addr, "/api/transcribe", json!({ "bin": "black", "call": { "tool": "transcribe", "client": "claude-code" } }))["job"].as_u64().unwrap();
+    let v = serde_json::to_value(events.recv().await.unwrap()).unwrap();
+    assert_eq!((v["type"].as_str(), v["id"].as_u64()), (Some("job"), Some(failing)), "{v}");
+    let v = serde_json::to_value(events.recv().await.unwrap()).unwrap();
+    assert_eq!((v["type"].as_str(), v["tool"].as_str(), v["job"].as_u64(), v["state"].as_str()), (Some("activity"), Some("transcribe"), Some(failing), Some("running")), "{v}");
+    let (r, j) = finished(&addr, failing);
+    assert_eq!(j["asked_by"], json!({ "tool": "transcribe", "client": "claude-code" }));
+    assert_eq!((r["state"].as_str(), r["client"].as_str(), &r["args"]), (Some("failed"), Some("claude-code"), &json!({ "bin": "black", "clip": null })));
+    assert_eq!((r["error"].as_str(), r["revision_before"].as_u64(), r["revision_after"].as_u64()), (j["message"].as_str(), Some(rev), Some(rev)));
+
+    let pruned = post(&addr, "/api/cache/prune", json!({ "all": false, "call": { "tool": "prune_cache", "client": null } }))["job"].as_u64().unwrap();
+    let (r, j) = finished(&addr, pruned);
+    assert_eq!((r["state"].as_str(), r["client"].as_str(), j["state"].as_str()), (Some("done"), Some("agent"), Some("done")));
+    assert!(r["ended_at"].as_u64().unwrap() >= r["started_at"].as_u64().unwrap());
+
+    // Done or failed (there may be no melt here), but what it looked at is known from the start.
+    let rect = json!({ "x": 0, "y": 0, "w": 160, "h": 120 });
+    let sampled = post(&addr, "/api/sample/job", json!({ "t0": 1, "t1": 3, "count": 2, "rect": rect, "call": { "tool": "sample_frames", "client": "claude-code" } }))["job"].as_u64().unwrap();
+    let (r, j) = finished(&addr, sampled);
+    assert_eq!(r["sample"], json!({ "sequence": "main", "overlay": null, "times": [1.0, 3.0], "rect": rect }));
+    assert_eq!(r["state"], j["state"]);
+    assert_eq!(r["frames"].as_array().unwrap().is_empty(), j["state"] != "done", "{r}");
+
+    let quiet = post(&addr, "/api/cache/prune", json!({ "all": false }))["job"].as_u64().unwrap();
+    let start = std::time::Instant::now();
+    while !matches!(get(&addr, &format!("/api/jobs/{quiet}"))["state"].as_str(), Some("done" | "failed")) {
+        assert!(start.elapsed() < std::time::Duration::from_secs(60));
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert_eq!(get(&addr, &format!("/api/jobs/{quiet}"))["asked_by"], Value::Null);
+    let all = get(&addr, "/api/activity")["activity"].as_array().unwrap().clone();
+    assert!(all.iter().all(|r| r["job"] != quiet), "the editor's own job is not the agent's");
+
+    post(&addr, "/api/jobs/clear", Value::Null);
+    assert!(state.jobs.get(failing).is_none());
+    assert_eq!(get(&addr, "/api/activity")["activity"].as_array().unwrap().clone(), all, "clearing jobs forgets no activity");
+}
+
+/// A cancel finishes the record of the job it stops, queued or running: no call the agent
+/// abandons, nor any it aborts with `cancel_job`, leaves a record running.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_cancelled_job_finishes_its_activity() {
+    use std::sync::atomic::Ordering;
+    let (state, addr, _dir) = daemon().await;
+    let call = || Some(kuma_daemon::activity::Call { tool: "render".into(), client: "claude-code".into() });
+    // A stand-in render: holds the lane until cancelled.
+    let lane = |state: &Arc<AppState>| {
+        let s2 = state.clone();
+        kuma_daemon::jobs::spawn_cancellable(state.clone(), "render", json!({ "preset": "draft" }), call(), move |progress, cancel| {
+            kuma_daemon::jobs::in_render_lane(&s2, cancel, progress, || {
+                progress(10, "encoding");
+                while !cancel.load(Ordering::SeqCst) {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                Ok(json!({}))
+            })
+        })
+    };
+    let running = lane(&state);
+    let start = std::time::Instant::now();
+    while get(&addr, &format!("/api/jobs/{running}"))["message"] != "encoding" {
+        assert!(start.elapsed() < std::time::Duration::from_secs(60));
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let queued = lane(&state);
+    assert_eq!(get(&addr, &format!("/api/jobs/{queued}"))["state"], "queued");
+    let all = get(&addr, "/api/activity")["activity"].as_array().unwrap().clone();
+    assert_eq!(all.iter().filter(|r| r["state"] == "running").count(), 2, "{all:?}");
+
+    post(&addr, &format!("/api/jobs/{queued}/cancel"), json!({}));
+    let (r, j) = finished(&addr, queued);
+    assert_eq!((r["state"].as_str(), j["state"].as_str(), &r["error"]), (Some("cancelled"), Some("cancelled"), &Value::Null));
+    post(&addr, &format!("/api/jobs/{running}/cancel"), json!({}));
+    let (r, _) = finished(&addr, running);
+    assert_eq!((r["state"].as_str(), &r["args"]), (Some("cancelled"), &json!({ "preset": "draft" })));
+    let all = get(&addr, "/api/activity")["activity"].as_array().unwrap().clone();
+    assert!(all.iter().all(|r| r["state"] != "running"), "{all:?}");
+}
+
+/// A job that panics fails, and so does the call that asked for it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_job_that_panics_ends_its_activity() {
+    let (state, addr, _dir) = daemon().await;
+    let call = Some(kuma_daemon::activity::Call { tool: "bake_overlay".into(), client: "claude-code".into() });
+    let id = kuma_daemon::jobs::spawn_with(state.clone(), "bake", Value::Null, call, |_| panic!("a bug"));
+    let (r, j) = finished(&addr, id);
+    assert_eq!((r["state"].as_str(), j["state"].as_str(), r["error"].as_str()), (Some("failed"), Some("failed"), Some("the job panicked")));
 }
 
 /// An edit, its undo (authored by whoever asked) and a refused stale patch are each one
@@ -243,7 +360,7 @@ async fn undo_walks_back_through_many_edits() {
 #[tokio::test(flavor = "multi_thread")]
 async fn the_lists_read_as_they_always_did() {
     let (state, addr, _dir) = daemon().await;
-    post(&addr, "/api/activity", json!({ "phase": "start", "tool": "apply_edits", "client": "claude-code", "args": { "note": "rename", "pins": ["main@8.600"] } }));
+    post(&addr, "/api/activity", json!({ "phase": "call", "tool": "apply_edits", "client": "claude-code", "args": { "note": "rename", "pins": ["main@8.600"] }, "ok": true, "revision": 1 }));
     post(&addr, "/api/project/patch", json!({ "patch": [{ "op": "replace", "path": "/bin/black/name", "value": "Ink" }], "origin": "claude: rename", "pins": ["main@8.600"] }));
     post(&addr, "/api/project/undo", json!({ "origin": "ui" }));
     let (status, _) = call(&addr, "POST", "/api/project/patch", json!({ "patch": [{ "op": "remove", "path": "/bin/nowhere" }] }));

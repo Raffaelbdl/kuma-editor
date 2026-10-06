@@ -12,6 +12,7 @@ use kuma_mlt::{compile, CompileOptions, OverlayBake, RenderJob, UnbakedPolicy};
 use kuma_overlay::{BakeRequest, TranscribeOptions};
 use serde::{Deserialize, Serialize};
 
+use crate::activity::Call;
 use crate::state::{lock, read, AppState, Event};
 
 /// Where a job is in its life: what clients read. `message` is only a label.
@@ -45,6 +46,20 @@ pub struct Job {
     /// What it was asked to do, as the queue shows it: a render's sequence, preset, output.
     #[serde(default)]
     pub params: serde_json::Value,
+    /// The agent's tool call that asked for it, when one did: its activity record runs
+    /// with the job (`crate::activity`). `null` for the editor's own.
+    #[serde(default)]
+    pub asked_by: Option<Call>,
+}
+
+/// A job's request body as a client sends it: the request, and the tool call asking for it
+/// when an agent's is (`call`, which `kuma mcp` adds).
+#[derive(Debug, Deserialize)]
+pub struct Asked<T> {
+    #[serde(default)]
+    pub call: Option<Call>,
+    #[serde(flatten)]
+    pub req: T,
 }
 
 impl JobState {
@@ -145,37 +160,40 @@ pub fn spawn<F>(state: Arc<AppState>, kind: &str, f: F) -> u64
 where
     F: FnOnce(&dyn Fn(u8, &str)) -> anyhow::Result<serde_json::Value> + Send + 'static,
 {
-    spawn_with(state, kind, serde_json::Value::Null, f)
+    spawn_with(state, kind, serde_json::Value::Null, None, f)
 }
 
-/// [`spawn`], with `params` saying what the job works on, for the queue to show.
-pub fn spawn_with<F>(state: Arc<AppState>, kind: &str, params: serde_json::Value, f: F) -> u64
+/// [`spawn`], with `params` saying what the job works on, for the queue to show, and the
+/// tool call that asked for it, if one did.
+pub fn spawn_with<F>(state: Arc<AppState>, kind: &str, params: serde_json::Value, call: Option<Call>, f: F) -> u64
 where
     F: FnOnce(&dyn Fn(u8, &str)) -> anyhow::Result<serde_json::Value> + Send + 'static,
 {
-    spawn_inner(state, kind, params, false, move |progress, _| f(progress))
+    spawn_inner(state, kind, params, call, false, move |progress, _| f(progress))
 }
 
 /// Spawn a cancellable job: `queued` until its first progress report. `f` watches the
 /// flag; once set, the job ends `cancelled` however `f` returns.
-pub fn spawn_cancellable<F>(state: Arc<AppState>, kind: &str, params: serde_json::Value, f: F) -> u64
+pub fn spawn_cancellable<F>(state: Arc<AppState>, kind: &str, params: serde_json::Value, call: Option<Call>, f: F) -> u64
 where
     F: FnOnce(&dyn Fn(u8, &str), &AtomicBool) -> anyhow::Result<serde_json::Value> + Send + 'static,
 {
-    spawn_inner(state, kind, params, true, f)
+    spawn_inner(state, kind, params, call, true, f)
 }
 
 /// How often progress reaches clients when only the message moves: melt reports every frame.
 const PROGRESS_EVERY: std::time::Duration = std::time::Duration::from_millis(250);
 
-fn spawn_inner<F>(state: Arc<AppState>, kind: &str, params: serde_json::Value, cancellable: bool, f: F) -> u64
+/// Every job is created here, and ends here: so the activity record of a job a tool call
+/// asked for starts and finishes here too, whichever way the job ends.
+fn spawn_inner<F>(state: Arc<AppState>, kind: &str, params: serde_json::Value, call: Option<Call>, cancellable: bool, f: F) -> u64
 where
     F: FnOnce(&dyn Fn(u8, &str), &AtomicBool) -> anyhow::Result<serde_json::Value> + Send + 'static,
 {
     let id = state.jobs.next.fetch_add(1, Ordering::SeqCst) + 1;
     // Only a cancellable job can wait for a turn; anything else starts at once.
     let (start, message) = if cancellable { (JobState::Queued, "queued") } else { (JobState::Running, "starting") };
-    let job = Job { id, kind: kind.to_string(), state: start, percent: 0, message: String::new(), result: serde_json::Value::Null, cancellable, params }.with_state(start, message);
+    let job = Job { id, kind: kind.to_string(), state: start, percent: 0, message: String::new(), result: serde_json::Value::Null, cancellable, params, asked_by: call }.with_state(start, message);
     let flag = Arc::new(AtomicBool::new(false));
     if cancellable {
         lock(&state.jobs.cancels).insert(id, flag.clone());
@@ -194,6 +212,11 @@ where
     }
     // Said at once, or a queued render would be invisible until its turn.
     let _ = state.events.send(Event::Job(job.clone()));
+    if let Some(call) = &job.asked_by {
+        let revision = read(&state.project).revision;
+        let record = lock(&state.activity).from_job(&job, call, revision, crate::history::now_ms());
+        let _ = state.events.send(Event::Activity(Box::new(record)));
+    }
     tokio::task::spawn_blocking(move || {
         let publish = |job: Job| {
             lock(&state.jobs.table).insert(id, job.clone());
@@ -208,13 +231,21 @@ where
                 publish(Job { percent, ..job.clone() }.with_state(JobState::Running, message));
             }
         };
-        let outcome = f(&progress, &flag);
+        // A panic is a failure like any other: a job left running would never end, nor
+        // would the activity following it.
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(&progress, &flag))).unwrap_or_else(|_| Err(anyhow::anyhow!("the job panicked")));
         let percent = last.get().1;
-        publish(match outcome {
+        let end = match outcome {
             _ if flag.load(Ordering::SeqCst) => Job { percent, ..job.clone() }.with_state(JobState::Cancelled, "cancelled"),
             Ok(result) => Job { percent: 100, result, ..job.clone() }.with_state(JobState::Done, "done"),
             Err(e) => Job { percent, ..job.clone() }.with_state(JobState::Failed, format!("{e:#}")),
-        });
+        };
+        publish(end.clone());
+        if end.asked_by.is_some() {
+            if let Some(record) = lock(&state.activity).job_ended(&end, crate::history::now_ms(), &state.config.samples_dir()) {
+                let _ = state.events.send(Event::Activity(Box::new(record)));
+            }
+        }
         // Only now: a cancel just before the final state must not find it uncancellable.
         lock(&state.jobs.cancels).remove(&id);
     });

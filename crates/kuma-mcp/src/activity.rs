@@ -1,10 +1,12 @@
-//! What this server tells the daemon about each tool call, so the editor can show what the
-//! agent is doing and not only the patches it lands (`POST /api/activity`).
+//! What this server tells the daemon about a tool call that started no job, once it has
+//! ended, so the editor can show what the agent is doing and not only the patches it lands
+//! (`POST /api/activity`). A call that starts a job says so in the job's request instead
+//! (`call`), and the daemon records it for as long as the job runs.
 //!
 //! A report is small by construction: the arguments trimmed (a patch is its op count, long
 //! strings and lists are cut), and the result reduced to the one thing the editor shows
 //! for that tool, plus the revision a call that edits made. Everything here is pure;
-//! sending is `Client::report`, best effort.
+//! sending is `Client::report`, best effort and never waited on.
 
 use rmcp::model::{CallToolResponse, CallToolResult};
 use rmcp::ErrorData as McpError;
@@ -19,19 +21,22 @@ const MAX_DEPTH: usize = 4;
 /// Frame paths reported for a sample; the daemon keeps fewer.
 const MAX_PATHS: usize = 32;
 
-/// Tools that edit, and answer the revision they made ([`revision_made`]).
-const EDITS: &[&str] = &["apply_edits", "undo", "redo", "add_blueprint", "add_media", "reprobe_media", "import_overlay", "make_overlay_unique", "transcribe"];
+/// Tools that edit, and answer the revision they made ([`revision_made`]). A transcription
+/// edits too, but as a job: the daemon reads its revision off the job's result.
+const EDITS: &[&str] = &["apply_edits", "undo", "redo", "add_blueprint", "add_media", "reprobe_media", "import_overlay", "make_overlay_unique"];
 /// Tools [`summary`] reduces to more than whether they finished.
 const SUMMARISED: &[&str] = &["check_overlay", "sample_frames"];
 
-/// The start of a call. A client that gave no name is the daemon's to name.
-pub fn start(tool: &str, client: Option<&str>, args: Option<&Map<String, Value>>) -> Value {
-    json!({ "phase": "start", "tool": tool, "client": client, "args": trim_args(args) })
+/// Milliseconds since the epoch, as the daemon counts a call's times.
+pub fn now_ms() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
 }
 
-/// The end of call `id`, from its response. Its answer is parsed only for a tool the
-/// report reads something of.
-pub fn end(id: u64, tool: &str, response: &Result<CallToolResponse, McpError>) -> Value {
+/// A call that has ended without starting a job, from its response: `args` as
+/// [`trim_args`] made them when it started, at `started_at` (milliseconds since the epoch).
+/// A client that gave no name is the daemon's to name. Its answer is parsed only for a
+/// tool the report reads something of.
+pub fn call(tool: &str, client: Option<&str>, args: Value, started_at: u64, response: &Result<CallToolResponse, McpError>) -> Value {
     let (ok, error, answer) = match response {
         Ok(CallToolResponse::Complete(r)) if r.is_error == Some(true) => (false, first_text(r).map(str::to_string), None),
         Ok(CallToolResponse::Complete(r)) if SUMMARISED.contains(&tool) || EDITS.contains(&tool) => (true, None, first_text(r).and_then(|t| serde_json::from_str::<Value>(t).ok())),
@@ -39,7 +44,7 @@ pub fn end(id: u64, tool: &str, response: &Result<CallToolResponse, McpError>) -
         Err(e) => (false, Some(e.message.to_string()), None),
     };
     let (result, revision) = answer.map_or((Value::Null, None), |v| (summary(tool, &v), revision_made(tool, &v)));
-    json!({ "phase": "end", "id": id, "ok": ok, "error": error, "result": result, "revision": revision })
+    json!({ "phase": "call", "tool": tool, "client": client, "args": args, "ok": ok, "error": error, "result": result, "revision": revision, "started_at": started_at })
 }
 
 /// A call's arguments, small: `patch` as `{"ops": n}` (its `note`, `base_revision` and
@@ -72,13 +77,11 @@ fn first_text(r: &CallToolResult) -> Option<&str> {
 }
 
 /// The revision a call made, off the JSON it answered: `None` for a tool that does not
-/// edit, a re-probe that found nothing to change, and a transcription still running. The
-/// daemon reads `None` as "made none", so a call is never credited with an edit that
-/// landed while it ran.
+/// edit, and a re-probe that found nothing to change. The daemon reads `None` as "made
+/// none", so a call is never credited with an edit that landed while it ran.
 fn revision_made(tool: &str, v: &Value) -> Option<u64> {
     match tool {
         "reprobe_media" if !v["changed"].as_array().is_some_and(|c| !c.is_empty()) => None,
-        "transcribe" => v["result"]["revision"].as_u64(),
         t if EDITS.contains(&t) => v["revision"].as_u64(),
         _ => None,
     }
@@ -115,9 +118,14 @@ mod tests {
         CallToolResult::success(vec![ContentBlock::text(serde_json::to_string_pretty(&v).unwrap())])
     }
 
-    /// `end`'s `result` for a call answering `v`.
+    /// The report of a call to `tool` answering `v`.
+    fn reported(tool: &str, v: Value) -> Value {
+        call(tool, Some("claude-code"), Value::Null, 5, &Ok(answered(v).into()))
+    }
+
+    /// Its `result`.
     fn summary(tool: &str, v: Value) -> Value {
-        end(1, tool, &Ok(answered(v).into()))["result"].clone()
+        reported(tool, v)["result"].clone()
     }
 
     #[test]
@@ -147,22 +155,21 @@ mod tests {
     /// A call that edits reports the revision its own answer names; one that reads, or edits
     /// nothing, reports none — not the project's revision when the report is sent.
     #[test]
-    fn an_end_carries_the_revision_the_call_made() {
-        let revision = |tool: &str, v: Value| end(1, tool, &Ok(answered(v).into()))["revision"].clone();
+    fn a_report_carries_the_revision_the_call_made() {
+        let revision = |tool: &str, v: Value| reported(tool, v)["revision"].clone();
         assert_eq!(revision("apply_edits", json!({ "revision": 59, "ops": 1 })), json!(59));
         assert_eq!(revision("undo", json!({ "revision": 60 })), json!(60));
-        assert_eq!(revision("transcribe", json!({ "id": 2, "state": "done", "result": { "revision": 61 } })), json!(61));
-        assert_eq!(revision("transcribe", json!({ "id": 2, "state": "running", "result": null })), Value::Null, "still transcribing");
         assert_eq!(revision("reprobe_media", json!({ "changed": [], "revision": 61 })), Value::Null, "nothing to change");
         assert_eq!(revision("reprobe_media", json!({ "changed": [{ "id": "a" }], "revision": 62 })), json!(62));
         assert_eq!(revision("get_project", json!({ "revision": 62 })), Value::Null, "reads only");
     }
 
     #[test]
-    fn an_end_says_whether_the_call_failed() {
-        let ok = end(7, "apply_edits", &Ok(answered(json!({ "revision": 3, "ops": 1 })).into()));
-        assert_eq!(ok, json!({ "phase": "end", "id": 7, "ok": true, "error": null, "result": null, "revision": 3 }));
-        let failed = end(8, "undo", &Err(McpError::invalid_request("nothing to undo", None)));
-        assert_eq!((failed["ok"].as_bool(), failed["error"].as_str(), &failed["revision"]), (Some(false), Some("nothing to undo"), &Value::Null));
+    fn a_report_says_whether_the_call_failed() {
+        let args = trim_args(json!({ "note": "trim" }).as_object());
+        let ok = call("apply_edits", Some("claude-code"), args, 5, &Ok(answered(json!({ "revision": 3, "ops": 1 })).into()));
+        assert_eq!(ok, json!({ "phase": "call", "tool": "apply_edits", "client": "claude-code", "args": { "note": "trim" }, "ok": true, "error": null, "result": null, "revision": 3, "started_at": 5 }));
+        let failed = call("undo", None, Value::Null, 5, &Err(McpError::invalid_request("nothing to undo", None)));
+        assert_eq!((failed["ok"].as_bool(), failed["error"].as_str(), &failed["revision"], &failed["client"]), (Some(false), Some("nothing to undo"), &Value::Null, &Value::Null));
     }
 }

@@ -288,6 +288,8 @@ export interface Job {
   cancellable?: boolean;
   /** What it was asked to do, settled when it started — a render's `{sequence, preset, output}`. */
   params?: unknown;
+  /** The agent's call that asked for it; null for the editor's own jobs. */
+  asked_by?: { tool: string; client: string } | null;
 }
 
 /** One part of the project's `.kuma/` cache: entries (a bake is one) and their bytes. */
@@ -295,12 +297,16 @@ export interface CachePart { entries: number; bytes: number }
 /** How big the cache is, by part. */
 export interface CacheUsage { bakes: CachePart; samples: CachePart; thumbs: CachePart; bytes: number }
 
-/** One tool call an agent made over MCP, as the daemon was told of it (`/api/activity`).
- *  Session state: the daemon's, never the document's. */
+/** One tool call an agent made over MCP (`/api/activity`). A call that started a job is
+ *  that job's record — running while it runs, ended with it, cancelled with it — and its
+ *  `args` are the job's params; any other call arrives already ended. Session state: the
+ *  daemon's, never the document's. */
 export interface Activity {
   id: number; tool: string; client: string;
-  state: "running" | "done" | "failed";
+  state: "running" | "done" | "failed" | "cancelled";
   args: Record<string, unknown> | null;
+  /** The job it started, if it started one. */
+  job: number | null;
   /** What the call said it did: an `apply_edits` note. */
   summary: string | null;
   revision_before: number; revision_after: number | null;
@@ -311,7 +317,7 @@ export interface Activity {
   sample: { sequence: string | null; overlay: string | null; times: number[]; rect: { x: number; y: number; w: number; h: number } | null } | null;
   lint: { ok: boolean; errors: number; warnings: number } | null;
   /** A sample's frames, under `/api/samples/`. */
-  frames?: string[];
+  frames: string[];
 }
 
 /** One step of the project's history: the daemon's undo stack, with who made each step,

@@ -76,7 +76,10 @@ function jobRow(id: number): JobRow {
       state.title = j.message;
       // Moved only when it changes: a press on cancel must outlast a progress event.
       reconcile(action, !isFinal(j) && j.cancellable ? [cancel] : j.state === "done" && file && desktop() ? [open] : []);
-      root.title = `#${j.id} · ${j.kind}${j.state === "queued" ? ` · ${plural(1, "job")} ahead or more` : ""}`;
+      // Who asked: the agent's call by name, as the agent panel lists it.
+      const asked = j.asked_by ? ` · asked by ${j.asked_by.client} (${j.asked_by.tool})` : "";
+      root.title = `#${j.id} · ${j.kind}${asked}${j.state === "queued" ? ` · ${plural(1, "job")} ahead or more` : ""}`;
+      root.classList.toggle("agent", !!j.asked_by);
     },
   };
 }

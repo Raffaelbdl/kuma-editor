@@ -2970,13 +2970,28 @@ bar: they are commands, so ⌘K and the keys have them, and a sequence opens fro
 ⌘K's *Open sequence*).
 
 **The agent's activity is reported by the MCP server, not inferred** — adopted. The UI used
-to see only the patches an agent landed. Now `kuma mcp` reports every tool call to the
-daemon as it starts and ends (`POST /api/activity`), with its arguments trimmed and its result
-reduced to what the editor draws: a lint verdict, an edit's revision, a sample's frames and
-rect. A report waits a second at most and its failure is ignored — the feed must never be the
-reason a tool is slow or fails. The bear's states, the status line and den's viewfinder are
-read off that feed (`ui/src/agent.ts`), with a clock for "asleep after a minute": what the
-agent was told it is doing, never a model of it.
+to see only the patches an agent landed. Now the daemon keeps every tool call `kuma mcp`
+serves (`crate::activity`), with its arguments trimmed and its result reduced to what the
+editor draws: a lint verdict, an edit's revision, a sample's frames and rect. The bear's
+states, the status line and den's viewfinder are read off that feed (`ui/src/agent.ts`), with
+a clock for "asleep after a minute": what the agent was told it is doing, never a model of it.
+
+**A call's record is the daemon's, and follows its job** — adopted, superseding the first
+cut, in which `kuma mcp` reported each call as it started and as it ended. That left records
+`running` for good whenever the end never came — the client cancelled the call (rmcp drops
+it before the end is sent), `kuma mcp` died, the report was lost, or the start's one-second
+wait for its id timed out after the daemon had recorded it — and the bear never slept; and
+every call waited up to a second on bookkeeping before it ran. The daemon runs every long
+call's work anyway, as a job, so the record now lives there: a call that starts a job stamps
+the job's request (`call`, kept as the job's `asked_by`), the record starts when the job is
+created and ends where every job ends (`jobs::spawn_inner`: done, failed, cancelled — a panic
+counts as failed), and a call the agent abandons leaves a job, and a record, that truly is
+still running. Every other call is quick and is reported once, after it has answered, as an
+already-finished record; one cancelled midway is not reported at all. Nothing is sent before
+a call runs, so there is nothing left for anyone to finish. Rejected: a timeout that
+marks old running records failed (a long render would be called failed while it encodes)
+and a heartbeat from `kuma mcp` (it would still lie about a job whose call was abandoned).
+An old `kuma mcp` speaking start/end is refused (422) and only loses its feed entries.
 
 **History is the daemon's undo stack with authors** — adopted. Every revision the daemon
 makes, and every patch it refuses, is an entry recorded where it happens (under the edit

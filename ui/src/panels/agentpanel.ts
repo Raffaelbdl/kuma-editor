@@ -57,9 +57,11 @@ function callRow(a: Activity): HTMLElement {
   if (edited) head.appendChild(el("span", "ag-rev", `r${a.revision_after}`));
   else if (a.tool === "check_overlay" && a.lint) head.appendChild(el("span", a.lint.ok ? "ag-ok" : "ag-bad", a.lint.ok ? "✓" : "✗"));
   else if (a.tool === "sample_frames") head.appendChild(el("span", "ag-look", "◉"));
+  // A call that started a job runs as long as its job; one cancelled says so.
   const when = el("span", "muted ag-when", ` · ${a.state === "running" ? "now" : ago(a.ended_at ?? a.started_at)}`);
   if (a.state !== "running") when.dataset.at = String(a.ended_at ?? a.started_at);
   head.append(el("b", "", a.tool), when);
+  if (a.state === "cancelled") head.append(el("span", "muted", " · cancelled"));
   row.appendChild(head);
   if (a.summary) row.appendChild(el("div", "ag-summary", a.summary));
   if (a.error) row.appendChild(el("div", "ag-error", a.error));

@@ -441,18 +441,30 @@ instructions are kept under the 2048 characters a client shows and point at both
 agent through three kinds of session state the daemon keeps in memory — never in the project
 file, and gone when the daemon stops:
 
-- **Activity.** `kuma mcp` reports every tool call to `POST /api/activity` as it starts
-  (`{"phase":"start","tool","client","args"}`, answered `{"id"}`) and ends
-  (`{"phase":"end","id","ok","error","result","revision"}`), with the arguments trimmed (a
-  patch is its op count) and the result reduced to a lint verdict or a sample's frame paths.
-  `revision` is the one the call made, read off its own answer (an
-  edit's, an undo's, an import's, a finished transcription's); absent or null, it made none.
-  A report waits a second at most and its failure is ignored: the feed is never what
-  slows or fails a tool. `GET /api/activity?limit=N` lists the last 100 calls newest first,
-  each with its state, `revision_before` (the daemon's when it started) and `revision_after`
-  (the one it made, else `revision_before`, so the two differ exactly when the call edited,
-  whatever the person did meanwhile), a sample's times and `rect`, and its `frames`, served
-  by `GET /api/samples/<file>` from `.kuma/samples/`.
+- **Activity.** The daemon keeps the agent's recent tool calls, and owns each record's life.
+  A call that starts a job (`render`, `sample_frames`, `transcribe`, `bake_overlay`,
+  `measure_audio`, `measure_media`, `prune_cache`) is stamped in the job's request:
+  `kuma mcp` adds `"call": {"tool", "client"}` (the MCP client's name; null reads as
+  `agent`), the job keeps it as `asked_by` (`null` on the editor's own jobs, in
+  `GET /api/jobs` too), and the daemon records the call `running` the moment the job is
+  created — its `args` the job's `params`, its `job` the job's id — and finishes it wherever
+  the job becomes final: `done`, `failed` (with the job's message as `error`) or `cancelled`,
+  whether by `cancel_job`, the editor's queue, or a cancel while it was still queued. So
+  a call the client gives up on leaves its job, and the record, running until the job ends,
+  which is the truth. Every other call is reported once, after it has answered, to
+  `POST /api/activity` (`{"phase":"call","tool","client","args","ok","error","result","revision","started_at"}`),
+  and kept already finished; a cancelled one is never reported. Its arguments are trimmed (a
+  patch is its op count) and its result reduced to a lint verdict or a sample's frame paths;
+  `revision` is the one the call made, read off its own answer (an edit's, an undo's, an
+  import's), absent or null when it made none. Nothing waits on a report and its failure is
+  ignored: the feed is never what slows or fails a tool. `GET /api/activity?limit=N` lists the
+  last 100 calls newest first (one still running is not forgotten to make room), each with
+  its state (`running`, `done`, `failed`, `cancelled`), `job`, `revision_before` (the
+  daemon's when its job was created; for a reported call the one before the revision it
+  made, else the daemon's) and `revision_after` (the one it made — a transcription's is its
+  job's — else `revision_before`, so the two differ exactly when the call edited, whatever
+  the person did meanwhile), a sample's times and `rect`, and its `frames`, served by
+  `GET /api/samples/<file>` from `.kuma/samples/`.
 - **History.** One entry per revision the daemon makes — edits, undos, redos, restores — and
   per patch it refuses, with its author (`agent`, `user` or `other`, from the origin; an
   undo's is whoever asked, `{"origin": …}` in its body), the clips and entries it touched and

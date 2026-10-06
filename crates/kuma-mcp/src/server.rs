@@ -2,6 +2,8 @@
 //! `sample_frames`, which returns rendered frames as image content so the agent can look
 //! at the actual composite.
 
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use base64::Engine as _;
@@ -109,10 +111,25 @@ impl KumaServer {
         Ok(ok_json(&self.client.post(path, body).await.map_err(err)?))
     }
 
-    /// Start a background job and wait for it (up to `timeout`).
-    async fn job(&self, path: &str, body: &Value, timeout: Duration, ctx: &RequestContext<RoleServer>) -> Result<CallToolResult, McpError> {
-        let v = self.client.post(path, body).await.map_err(err)?;
+    /// Start a background job, stamped with the call asking for it (`call`): the daemon
+    /// records that call in its activity for as long as the job runs, so this call is not
+    /// reported again when it answers.
+    async fn start_job(&self, path: &str, mut body: Value, ctx: &RequestContext<RoleServer>) -> Result<u64, McpError> {
+        let asking = ctx.extensions.get::<Asking>();
+        if let Some(a) = asking {
+            body["call"] = json!({ "tool": a.tool, "client": a.client });
+        }
+        let v = self.client.post(path, &body).await.map_err(err)?;
         let id = v["job"].as_u64().ok_or_else(|| err(anyhow::anyhow!("daemon did not return a job id: {v}")))?;
+        if let Some(a) = asking {
+            a.started.store(true, Ordering::SeqCst);
+        }
+        Ok(id)
+    }
+
+    /// Start a background job and wait for it (up to `timeout`).
+    async fn job(&self, path: &str, body: Value, timeout: Duration, ctx: &RequestContext<RoleServer>) -> Result<CallToolResult, McpError> {
+        let id = self.start_job(path, body, ctx).await?;
         let j = self.wait(id, timeout, ctx).await.map_err(err)?;
         if let Some(e) = client::failure(id, &j) {
             return Err(err(e));
@@ -150,6 +167,15 @@ impl KumaServer {
         }
         Ok(ok_json(&v))
     }
+}
+
+/// The tool call being served, as `call_tool` leaves it in the request's extensions: what a
+/// job it starts is stamped with, and whether it started one.
+#[derive(Clone)]
+struct Asking {
+    tool: String,
+    client: Option<String>,
+    started: Arc<AtomicBool>,
 }
 
 /// What a waiting tool tells a client about a job, when the call carried a progress token:
@@ -196,9 +222,11 @@ async fn report(peer: &Peer<RoleServer>, n: ProgressNotificationParam) {
     }
 }
 
-/// Every job without its result, which for a sample or a measurement is most of it.
+/// Every job without its result, which for a sample or a measurement is most of it; with
+/// the tool call that asked for it (`asked_by`), null for the editor's own.
 fn job_summaries(all: &[Value]) -> Value {
-    Value::Array(all.iter().map(|j| json!({ "id": j["id"], "kind": j["kind"], "state": j["state"], "percent": j["percent"], "message": j["message"], "params": j["params"] })).collect())
+    let summary = |j: &Value| json!({ "id": j["id"], "kind": j["kind"], "state": j["state"], "percent": j["percent"], "message": j["message"], "params": j["params"], "asked_by": j["asked_by"] });
+    Value::Array(all.iter().map(summary).collect())
 }
 
 /// A job as a tool returns it, with how to keep waiting when it has not finished.
@@ -733,7 +761,7 @@ impl KumaServer {
             "bin": p.bin, "clip": p.clip, "id": p.id, "replace": p.replace.unwrap_or(false), "language": p.language, "max_chars": p.max_chars,
             "model": p.model, "split": p.split, "snap": p.snap, "silence_db": p.silence_db, "silence_min": p.silence_min, "origin": "claude: transcribe",
         });
-        self.job("/api/transcribe", &body, Duration::from_secs(p.wait_seconds.unwrap_or(600)), &ctx).await
+        self.job("/api/transcribe", body, Duration::from_secs(p.wait_seconds.unwrap_or(600)), &ctx).await
     }
 
     #[tool(description = "Scaffold `overlays/<id>/`, a contract-abiding skeleton to edit, and return its lint report. Does not touch the bin: `import_overlay` it when ready. Refuses an existing id.")]
@@ -778,8 +806,7 @@ impl KumaServer {
                     "overlay": p.overlay, "duration": p.duration, "backdrop": p.backdrop,
                     "frame_width": p.frame.map(|f| f.0), "frame_height": p.frame.map(|f| f.1),
                 });
-                let v = self.client.post("/api/sample/job", &body).await.map_err(err)?;
-                v["job"].as_u64().ok_or_else(|| err(anyhow::anyhow!("daemon did not return a job id: {v}")))?
+                self.start_job("/api/sample/job", body, &ctx).await?
             }
         };
         let j = self.wait(id, Duration::from_secs(p.wait_seconds.unwrap_or(90)), &ctx).await.map_err(err)?;
@@ -826,29 +853,29 @@ impl KumaServer {
 
     #[tool(description = "Bake overlay clips to alpha frame sequences now (normally done automatically at render). Cached by content; returns the bake resources.")]
     async fn bake_overlay(&self, Parameters(p): Parameters<BakeOverlay>, ctx: RequestContext<RoleServer>) -> Result<CallToolResult, McpError> {
-        self.job("/api/bake", &json!({ "clips": p.clips }), Duration::from_secs(p.wait_seconds.unwrap_or(1800)), &ctx).await
+        self.job("/api/bake", json!({ "clips": p.clips }), Duration::from_secs(p.wait_seconds.unwrap_or(1800)), &ctx).await
     }
 
     #[tool(description = "Render the timeline to a video file with an export preset. Renders the master unless `sequence` names another one. `threads`, `quality` and `speed` change this render only and default to the preset's (see list_presets). Renders run one at a time: a render asked for while another encodes waits `queued`. `cancel_job` stops it.")]
     async fn render(&self, Parameters(p): Parameters<Render>, ctx: RequestContext<RoleServer>) -> Result<CallToolResult, McpError> {
-        self.job("/api/render", &p.body(), Duration::from_secs(p.wait_seconds.unwrap_or(900)), &ctx).await
+        self.job("/api/render", p.body(), Duration::from_secs(p.wait_seconds.unwrap_or(900)), &ctx).await
     }
 
     #[tool(description = "Measure how loud a sequence is (the master by default): its sound rendered through the real graph, no bakes needed, and metered to EBU R128. Returns integrated loudness (LUFS), loudness range and true peak (dBTP) overall and per section (by default each clip placing a sequence, i.e. each chapter), the five loudest moments, and silent stretches of a second or more. Measured after the sequence's own effects, so a master stage (`volume` then `limiter` in the master's `effects`) is measured as it renders. Check this before a final render: a fade that silences music, or effects stacking on a peak, show up here. `solo` (track ids, nested ones too) measures the voice or the music alone and `mute` leaves tracks out, for this measurement only: the project is not edited.")]
     async fn measure_audio(&self, Parameters(p): Parameters<MeasureAudio>, ctx: RequestContext<RoleServer>) -> Result<CallToolResult, McpError> {
         let body = json!({ "sequence": p.sequence, "range": p.range, "sections": p.sections, "mute": p.mute.unwrap_or_default(), "solo": p.solo.unwrap_or_default() });
-        self.job("/api/audio/measure", &body, Duration::from_secs(p.wait_seconds.unwrap_or(600)), &ctx).await
+        self.job("/api/audio/measure", body, Duration::from_secs(p.wait_seconds.unwrap_or(600)), &ctx).await
     }
 
     #[tool(description = "Measure one source, a media entry (`bin`) or a file in the project (`path`), optionally over a `range` of it, in its own seconds: integrated loudness (LUFS), loudness range and true peak (dBTP); its loudness over time (`curve`: short-term by default, about 120 values unless `step` says, at most 1200); and its quiet stretches as `{start, end}` (every sample under `silence_db`, default -35 dB, for `silence_min`, default 0.15 s; at most 500 listed). A silence's end is where sound starts: a take, a sentence or a sound effect's onset. For a level a volume keyframe can follow, a pause to cut at, or a take to place. Nothing is stored.")]
     async fn measure_media(&self, Parameters(p): Parameters<MeasureMedia>, ctx: RequestContext<RoleServer>) -> Result<CallToolResult, McpError> {
         let body = json!({ "bin": p.bin, "path": p.path, "range": p.range, "curve": p.curve, "step": p.step, "silence_db": p.silence_db, "silence_min": p.silence_min });
-        self.job("/api/media/measure", &body, Duration::from_secs(p.wait_seconds.unwrap_or(600)), &ctx).await
+        self.job("/api/media/measure", body, Duration::from_secs(p.wait_seconds.unwrap_or(600)), &ctx).await
     }
 
     #[tool(description = "Delete what the project's `.kuma/` cache no longer uses: superseded bakes, sampled frames, thumbnails of removed entries. sample_frames leaves PNGs behind, so prune after a long session. Returns what was freed and what is left.")]
     async fn prune_cache(&self, Parameters(p): Parameters<PruneCache>, ctx: RequestContext<RoleServer>) -> Result<CallToolResult, McpError> {
-        self.job("/api/cache/prune", &json!({ "all": p.all }), Duration::from_secs(3600), &ctx).await
+        self.job("/api/cache/prune", json!({ "all": p.all }), Duration::from_secs(3600), &ctx).await
     }
 
     #[tool(description = "Status of a background job (render, bake, sample, measure, transcribe): state (queued, running, done, failed, cancelled), percent, message, result. With `wait_seconds`, waits up to that long for it to finish and returns it either way: the way to keep waiting on a long job in bounded calls. Without `id`, lists the jobs the daemon remembers, to find one whose call was moved to the background.")]
@@ -883,19 +910,22 @@ impl KumaServer {
 
 #[tool_handler(router = self.tool_router)]
 impl ServerHandler for KumaServer {
-    /// Every tool, through the router, and told when this server is an old build. Each call
-    /// is reported to the daemon as it starts and ends, for the editor's activity feed: the
-    /// start waits at most a second (so the daemon reads the revision before the call
-    /// changes it), and the end, which names the revision the call made, is not waited on at
-    /// all.
-    async fn call_tool(&self, request: CallToolRequestParams, context: RequestContext<RoleServer>) -> Result<CallToolResponse, McpError> {
+    /// Every tool, through the router, and told when this server is an old build. For the
+    /// editor's activity feed, a call that starts a job stamps the job with itself
+    /// ([`KumaServer::start_job`]) and the daemon follows it from there; any other call is
+    /// reported once it has answered, naming the revision it made, and that report is not
+    /// waited on. Nothing is sent before a call runs, so nothing is left to finish: a call
+    /// the client cancels is a job that runs on, or nothing reported at all.
+    async fn call_tool(&self, request: CallToolRequestParams, mut context: RequestContext<RoleServer>) -> Result<CallToolResponse, McpError> {
         let tool = request.name.to_string();
         let client = context.peer.peer_info().map(|i| i.client_info.name.clone());
-        let id = self.client.report(&activity::start(&tool, client.as_deref(), request.arguments.as_ref())).await.and_then(|v| v["id"].as_u64());
+        let (args, started_at) = (activity::trim_args(request.arguments.as_ref()), activity::now_ms());
+        let started = Arc::new(AtomicBool::new(false));
+        context.extensions.insert(Asking { tool: tool.clone(), client: client.clone(), started: started.clone() });
         let response = self.tool_router.call(ToolCallContext::new(self, request, context)).await;
-        if let Some(id) = id {
-            let (reporter, end) = (self.client.clone(), activity::end(id, &tool, &response));
-            tokio::spawn(async move { reporter.report(&end).await });
+        if !started.load(Ordering::SeqCst) {
+            let (reporter, report) = (self.client.clone(), activity::call(&tool, client.as_deref(), args, started_at, &response));
+            tokio::spawn(async move { reporter.report(&report).await });
         }
         if self.build.replaced() { noted(response, REBUILT) } else { response }
     }
@@ -1001,6 +1031,15 @@ mod tests {
         assert!(beat.progress > back.progress && beat.progress < 41.0, "{}", beat.progress);
     }
 
+
+    /// A listed job says which call asked for it, and leaves its result out.
+    #[test]
+    fn a_job_summary_says_who_asked() {
+        let jobs = json!([{ "id": 2, "kind": "render", "state": "running", "result": { "big": true }, "asked_by": { "tool": "render", "client": "claude-code" } }, { "id": 3, "kind": "bake" }]);
+        let listed = job_summaries(jobs.as_array().unwrap());
+        assert_eq!((&listed[0]["asked_by"]["tool"], listed[0].get("result")), (&json!("render"), None));
+        assert_eq!(listed[1]["asked_by"], Value::Null);
+    }
 
     /// A job that has not finished says how to keep waiting; one that has, does not.
     #[test]

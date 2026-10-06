@@ -10,8 +10,8 @@ pub struct Client {
     http: reqwest::Client,
 }
 
-/// How long a report may take before it is given up on: a tool must never wait on the
-/// daemon's bookkeeping of it.
+/// How long a report may take before it is given up on. Nothing waits on one (it is sent
+/// after the call has answered); this only bounds the task sending it.
 const REPORT_TIMEOUT: Duration = Duration::from_secs(1);
 
 /// Probe a daemon. Returns its health document when one answers. Never goes through a
@@ -74,11 +74,14 @@ impl Client {
         Self::check(self.http.post(self.url(path)).json(body).send().await?).await
     }
 
-    /// Tell the daemon about a tool call (`POST /api/activity`). Best effort: the answer, or
-    /// `None` when the daemon is slow, gone or refuses — never an error for the tool.
-    pub async fn report(&self, body: &Value) -> Option<Value> {
-        let r = self.http.post(self.url("/api/activity")).timeout(REPORT_TIMEOUT).json(body).send().await.ok()?;
-        Self::check(r).await.ok()
+    /// Tell the daemon about a tool call that has ended (`POST /api/activity`). Best effort:
+    /// a daemon that is slow, gone or refuses costs the feed that entry, never the tool.
+    pub async fn report(&self, body: &Value) {
+        if let Ok(r) = self.http.post(self.url("/api/activity")).timeout(REPORT_TIMEOUT).json(body).send().await {
+            if let Err(e) = Self::check(r).await {
+                tracing::debug!("activity not reported: {e:#}");
+            }
+        }
     }
 
     /// Poll a job until it finishes (or `timeout` elapses, returning it still running).

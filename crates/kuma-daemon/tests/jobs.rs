@@ -49,7 +49,7 @@ fn wait_for(state: &AppState, id: u64, what: &str, done: impl Fn(&Job) -> bool) 
 /// A stand-in render: holds the lane until told to let go.
 fn lane_job(state: &Arc<AppState>, release: mpsc::Receiver<()>, ran: Arc<AtomicBool>) -> u64 {
     let s2 = state.clone();
-    jobs::spawn_cancellable(state.clone(), "render", serde_json::Value::Null, move |progress, cancel| {
+    jobs::spawn_cancellable(state.clone(), "render", serde_json::Value::Null, None, move |progress, cancel| {
         jobs::in_render_lane(&s2, cancel, progress, || {
             ran.store(true, Ordering::SeqCst);
             progress(10, "encoding");
@@ -104,7 +104,7 @@ async fn only_a_running_cancellable_job_can_be_cancelled() {
     assert!(matches!(jobs::cancel(&state, plain), Err(CancelError::NotCancellable(_))));
     tx.send(()).unwrap();
 
-    let quick = jobs::spawn_cancellable(state.clone(), "render", serde_json::Value::Null, |_, _| Ok(serde_json::Value::Null));
+    let quick = jobs::spawn_cancellable(state.clone(), "render", serde_json::Value::Null, None, |_, _| Ok(serde_json::Value::Null));
     wait_for(&state, quick, "finished", |j| j.state.is_final());
     assert!(matches!(jobs::cancel(&state, quick), Err(CancelError::Finished(_))));
 }
@@ -137,7 +137,7 @@ async fn a_cancelled_render_stops_melt_and_leaves_nothing() {
     let req = RenderRequest { preset: "draft".into(), output: Some(output.clone()), ..Default::default() };
     let (_, preset, _) = jobs::render_target(&state, &req).unwrap();
     let s2 = state.clone();
-    let id = jobs::spawn_cancellable(state.clone(), "render", serde_json::json!({ "preset": preset.id }), move |p, c| jobs::render(&s2, &req, p, c));
+    let id = jobs::spawn_cancellable(state.clone(), "render", serde_json::json!({ "preset": preset.id }), None, move |p, c| jobs::render(&s2, &req, p, c));
     let job = wait_for(&state, id, "encoding", |j| j.state.is_final() || j.percent >= 50);
     assert!(!job.state.is_final(), "finished before it could be cancelled: {job:?}");
     jobs::cancel(&state, id).unwrap();

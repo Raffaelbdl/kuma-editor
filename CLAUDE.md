@@ -170,7 +170,8 @@ Chrome headless shell if hyperframes should not download one.
   implement `prompt`, `alert` or `confirm`, so UI code that calls them works in a browser
   and throws in the app. Ask for text with `askText` in `ui/src/modal.ts`.
 - **A panel is one module in any container** (`ui/src/panelhost.ts`): a tab in power's dock
-  (`dock.ts`: splits and tab groups round the frame, rearranged by dragging a tab), floating,
+  (`dock.ts`: splits and tab groups round the frame, rearranged by dragging a tab once the rail's
+  padlock lets panels move — locked by default), floating,
   or a window of its own (`?panel=<id>`), and the panel never knows which. The frame is the
   dock's one leaf that is not a panel; it is never re-parented except by a drop that moves
   it (that reloads its overlay iframes), and den lifts it with CSS rather than moving it.

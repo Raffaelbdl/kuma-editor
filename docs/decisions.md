@@ -2937,6 +2937,13 @@ acceptable price for a layout change. The bin and the blueprints became two inst
 panel class rather than two views of one element, since two panels in two groups can both be
 on screen.
 
+**Moving panels is an option, off by default** — adopted, at the user's asking. A dock that
+rearranges on any drag of a tab rearranges on an accidental one too, and most sessions want
+power's layout as it is. So the dock is locked until the padlock at the foot of the rail (⌘K's
+*Movable panels*, a tab's right-click) unlocks it: locked, a tab only switches, the seams
+still resize, × and the drop targets are gone, and a floating panel cannot dock. The choice is
+view state, beside the arrangement it protects.
+
 **Den does not move the frame** — adopted, against the obvious implementation. Moving
 `#stages` into den's own container would reparent the overlay iframes, and an iframe that
 leaves the document reloads. Den is a class: the power chrome is hidden, the centre takes the

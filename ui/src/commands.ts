@@ -94,4 +94,5 @@ export const Cmd = {
   toggleMode: "view.toggle-mode",
   addPin: "pins.add",
   resetDock: "view.reset-dock",
+  movablePanels: "view.movable-panels",
 } as const;

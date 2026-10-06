@@ -196,6 +196,12 @@ body.has-titlebar #titlebar {
   font: 11px var(--mono); background: var(--fg); color: var(--bg-0); padding: 2px 7px;
 }
 .rail-key:hover .tip { display: block; }
+.rail-key.lock { margin-top: auto; margin-bottom: 10px; color: var(--fg-3); }
+.rail-key.lock.free { color: var(--accent-text); }
+.rail-key.lock .tip { top: auto; bottom: 4px; }
+/* Locked: nothing in a group's head says it can be dragged or closed. */
+#app.dock-locked .dock-head { cursor: default; }
+#app.dock-locked .dock-head button.pclose { display: none !important; }
 
 #center { display: grid; grid-template-rows: minmax(0, 1fr) 34px; min-width: 0; min-height: 0; background: var(--bg-stage); }
 #stages { display: grid; min-width: 0; min-height: 0; }

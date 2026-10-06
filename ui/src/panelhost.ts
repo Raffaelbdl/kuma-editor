@@ -15,7 +15,7 @@ import { Cmd, command } from "./commands";
 import { button, dragPointer, el } from "./dom";
 import { desktop } from "./desktop";
 import { defaultTree, find, fillOf, groupOf, hasViewer, insert, panelsIn, remove, sanitize, type Group, type Node, type Split, type Target } from "./dock";
-import { showMenu } from "./menu";
+import { showMenu, type MenuItem } from "./menu";
 import { store, toast } from "./store";
 
 export type Mode = "power" | "den";
@@ -55,6 +55,7 @@ const ROOT_EDGE = 26;
 const KEY = "kuma.panels.";
 const DOCK_KEY = "kuma.dock";
 const MODE_KEY = "kuma.mode";
+const MOVABLE_KEY = "kuma.dock.movable";
 /** Every panel the editor has: what a stored dock may name. */
 const PANELS = ["bin", "blueprints", "fonts", "pins", "history", "queue", "inspector", "timeline", "agent"];
 
@@ -84,6 +85,21 @@ class PanelHost {
   };
   /** Power's dock. */
   private tree: Node = sanitize((() => { try { return JSON.parse(localStorage.getItem(DOCK_KEY) ?? "null"); } catch { return null; } })() ?? defaultTree(), new Set(PANELS));
+  /** Whether power's panels can be moved: dragged to another group or place, floated, or
+   *  closed. Off, the dock holds still — tabs still switch, seams still resize — so a drag
+   *  that started on a tab by accident never rearranges anything. Off by default. */
+  private movable = (() => { try { return localStorage.getItem(MOVABLE_KEY) === "1"; } catch { return false; } })();
+
+  get canMove(): boolean {
+    return this.movable;
+  }
+
+  setMovable(on: boolean): void {
+    this.movable = on;
+    write(MOVABLE_KEY, on ? "1" : "0");
+    this.apply();
+  }
+
   /** The group each panel was last closed out of: where its letter puts it back. */
   private home: Record<string, string> = read<Record<string, string>>(KEY + "home", {});
   private nodeEls = new Map<string, HTMLElement>();
@@ -262,6 +278,7 @@ class PanelHost {
     const app = document.getElementById("app")!;
     app.classList.toggle("den", mode === "den");
     app.classList.toggle("power", mode === "power");
+    app.classList.toggle("dock-locked", !this.movable);
     const parking = document.getElementById("parking")!;
     const l = this.floating[mode];
     const floating = l.open.filter((id) => this.specs.has(id) && !this.out.has(id) && (mode === "den" || !this.isDocked(id)));
@@ -318,11 +335,11 @@ class PanelHost {
       const note = el("span", "dock-note");
       const tools = el("span", "dock-tools");
       const pop = button("⧉", () => { const a = this.activeOf(g.id); if (a) this.popOut(a); }, "Open this panel in a window of its own (or drag its tab past the window's edge)", "pbtn pop");
-      const close = button("×", () => { const a = this.activeOf(g.id); if (a) this.close(a); }, "Close this panel — its letter brings it back here", "pbtn");
+      const close = button("×", () => { const a = this.activeOf(g.id); if (a) this.close(a); }, "Close this panel — its letter brings it back here", "pbtn pclose");
       head.append(tabs, note, el("span", "spacer"), tools, pop, close);
       // The head's empty part drags the panel in front, as its tab does.
       head.addEventListener("pointerdown", (e) => {
-        if (e.target === head || (e.target as HTMLElement).classList.contains("spacer")) { const a = this.activeOf(g.id); if (a) this.dragTab(e, a); }
+        if (this.movable && (e.target === head || (e.target as HTMLElement).classList.contains("spacer"))) { const a = this.activeOf(g.id); if (a) this.dragTab(e, a); }
       });
       const body = el("div", "dock-body");
       root.append(head, body);
@@ -368,19 +385,26 @@ class PanelHost {
       t.addEventListener("pointerdown", (e) => { if (e.button === 0) this.dragTab(e, id); });
       t.addEventListener("contextmenu", (e) => {
         e.preventDefault();
-        showMenu([
-          { heading: spec.title },
+        const moving: MenuItem[] = this.movable ? [
           { label: "Float", run: () => this.setFloating(id, true), title: "Over the dock, where you drop it; drag it onto a group to dock it again" },
           { label: "Window of its own", run: () => this.popOut(id) },
           "separator",
           { label: "Close", run: () => this.close(id), title: "Its letter brings it back here" },
           { label: "Reset the dock", run: () => this.resetDock(), title: "Every panel back where it started" },
-        ], e.clientX, e.clientY);
+          { label: "Lock the panels", run: () => this.setMovable(false), title: "Hold them where they are" },
+        ] : [
+          { label: "Window of its own", run: () => this.popOut(id) },
+          "separator",
+          { label: "Let the panels move", run: () => this.setMovable(true), title: "Drag a tab to another group or beside one, float it, close it" },
+        ];
+        showMenu([{ heading: spec.title }, ...moving], e.clientX, e.clientY);
       });
     }
     t.classList.toggle("on", on);
     t.classList.toggle("out", out);
-    t.title = out ? `${spec.title} — in a window of its own; its letter (${spec.letter.toUpperCase()}) calls it back` : `${spec.title} (${spec.letter.toUpperCase()}) — drag to move it: onto a group's middle to join it, onto an edge to split`;
+    t.title = out ? `${spec.title} — in a window of its own; its letter (${spec.letter.toUpperCase()}) calls it back`
+      : this.movable ? `${spec.title} (${spec.letter.toUpperCase()}) — drag to move it: onto a group's middle to join it, onto an edge to split`
+      : `${spec.title} (${spec.letter.toUpperCase()})`;
     return t;
   }
 
@@ -429,7 +453,7 @@ class PanelHost {
   /** Where a drop at (x, y) would put a panel in the dock: a group's middle or edge, the
    *  frame's edge, or the dock's own edge. Null off the dock. */
   private targetAt(x: number, y: number): { target: Target; box: DOMRect } | null {
-    if (store.state.mode !== "power") return null;
+    if (store.state.mode !== "power" || !this.movable) return null;
     const dock = this.dockEl().getBoundingClientRect();
     if (x < dock.left || x > dock.right || y < dock.top || y > dock.bottom) return null;
     const edge = (["left", "right", "top", "bottom"] as const).find((z) =>
@@ -458,6 +482,8 @@ class PanelHost {
   /** Drag a docked panel by its tab: onto the dock to move it, off it to float it, past the
    *  window's edge for a window of its own. A press that does not move shows it. */
   private dragTab(e: PointerEvent, id: string) {
+    // Locked: a press on a tab only shows it (or calls it back from its window).
+    if (!this.movable) { if (this.out.has(id)) this.recall(id); else this.show(id); return; }
     const spec = this.specs.get(id)!;
     let ghost: HTMLElement | null = null;
     let at: ReturnType<PanelHost["targetAt"]> = null;
@@ -781,6 +807,10 @@ export function panelCommands(): void {
   command(Cmd.modePower, "Power mode", () => panels.setMode("power"));
   command(Cmd.toggleMode, "Switch den / power", () => panels.setMode(store.state.mode === "den" ? "power" : "den"));
   command(Cmd.resetDock, "Reset the dock", () => panels.resetDock());
+  command(Cmd.movablePanels, "Movable panels: on / off", () => {
+    panels.setMovable(!panels.canMove);
+    toast(panels.canMove ? "Panels move: drag a tab to another group, beside one or off the dock" : "Panels locked where they are", "ok");
+  });
   for (const s of panels.all) command(`panel.${s.id}.window`, `Window: ${s.title}`, () => panels.popOut(s.id));
   for (const s of panels.all) command(`panel.${s.id}.float`, `Float: ${s.title}`, () => panels.setFloating(s.id, true));
   // The window may resize under floating panels: keep them on screen and on their edges.

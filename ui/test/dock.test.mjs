@@ -60,6 +60,19 @@ describe("the dock", { skip: why ? `skipping: ${why}` : false }, () => {
     assert.equal(await page.eval(GROUPS), "bin*+blueprints+fonts+pins+history+queue | inspector* | timeline*");
   });
 
+  it("holds still until the panels are let move, from the foot of the rail", async () => {
+    // Locked, the default: a drag is only a press on the tab, which shows it.
+    const [x, y, w, h] = await group("timeline");
+    await drag(await tab("queue"), [x + w / 2, y + h / 2]);
+    await new Promise((r) => setTimeout(r, 300));
+    assert.equal(await page.eval(GROUPS), "bin+blueprints+fonts+pins+history+queue* | inspector* | timeline*");
+    assert.equal(await page.eval(`!!document.querySelector("#app.dock-locked")`), true);
+    await page.eval(`document.querySelector("#rail .rail-key.lock").click()`);
+    await page.until(`!document.querySelector("#app.dock-locked") && document.querySelector("#rail .rail-key.lock.free")`);
+    await page.eval(`document.querySelector('.dock-tab[data-panel="bin"]').dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0 })); window.dispatchEvent(new PointerEvent("pointerup", { bubbles: true })); true`);
+    await page.until(`${GROUPS}.startsWith("bin*")`);
+  });
+
   it("joins a group when a tab is dropped on its middle", async () => {
     const [x, y, w, h] = await group("timeline");
     await drag(await tab("queue"), [x + w / 2, y + h / 2]);

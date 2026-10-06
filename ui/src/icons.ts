@@ -28,6 +28,15 @@ const ICONS = {
   /** Appearance: a disc with one half filled, the glyph every application uses for
    *  "how this looks". Drawn as a stroked circle plus a half disc so it reads at 14px,
    *  where a painter's palette is a smudge. */
+  /** Panels held where they are, or free to move: a padlock shut and open. */
+  lock: [
+    shape("rect", { x: 5, y: 11, width: 14, height: 10, rx: 1.5 }),
+    shape("path", { d: "M8 11V8a4 4 0 0 1 8 0v3", fill: "none", stroke: "currentColor", "stroke-width": 2 }),
+  ],
+  unlock: [
+    shape("rect", { x: 5, y: 11, width: 14, height: 10, rx: 1.5 }),
+    shape("path", { d: "M8 11V8a4 4 0 0 1 7.6-1.7", fill: "none", stroke: "currentColor", "stroke-width": 2 }),
+  ],
   palette: [
     shape("circle", { cx: 12, cy: 12, r: 9, fill: "none", stroke: "currentColor", "stroke-width": 2 }),
     shape("path", { d: "M12 3a9 9 0 0 0 0 18z" }),

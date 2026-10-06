@@ -2,7 +2,9 @@
 // are the keys — the same ones that summon the panels in den — and each is a command: a
 // docked panel comes to the front of its group, a closed one goes back where it was.
 
+import { Cmd, run } from "../commands";
 import { el } from "../dom";
+import { icon } from "../icons";
 import { keysFor } from "../shortcuts";
 import { panels } from "../panelhost";
 import { store } from "../store";
@@ -21,7 +23,14 @@ export function mountRail(host: HTMLElement): void {
     host.appendChild(b);
     return b;
   });
+  // At the foot of the rail: whether the panels can be moved. Off, the dock holds still.
+  const lock = el("button", "rail-key lock");
+  lock.onclick = () => run(Cmd.movablePanels);
+  host.appendChild(lock);
   const mark = () => {
+    const free = panels.canMove;
+    lock.replaceChildren(icon(free ? "unlock" : "lock", 14), el("span", "tip", free ? "panels move · click to lock them" : "panels locked · click to let them move"));
+    lock.classList.toggle("free", free);
     for (const b of keys) b.classList.toggle("on", panels.isVisible(b.dataset.panel!));
     const open = store.state.pins.some((p) => p.done === null);
     keys[RAIL.indexOf("pins")].classList.toggle("flag", open);

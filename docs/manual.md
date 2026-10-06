@@ -299,8 +299,10 @@ is offered when the media has one transcript, and the job refuses `replace` with
 **Den and power.** The editor has two modes over one set of panels; the backquote key, the
 top bar's toggle or the status line's first cell switches between them, keeping the playhead
 and the selection. **Power** docks everything round the frame. The dock starts with the side panels as tabs on
-the left, the inspector on the right and the timeline along the bottom, and is yours to
-rearrange: drag a panel's tab (or its group's head) onto the middle of another group to join
+the left, the inspector on the right and the timeline along the bottom, and holds still until
+you let it move: the padlock at the foot of the rail (or ⌘K's *Movable panels*, or a tab's
+right-click) unlocks it, and it stays as you left it. Locked, a tab only switches and the seams
+still resize. Unlocked, it is yours to rearrange: drag a panel's tab (or its group's head) onto the middle of another group to join
 it, onto an edge of a group or of the frame to split the space there, or onto the dock's own
 edge to run the whole length of it; the hint shows where it will land. Drag a seam to share
 the space differently, × closes a panel, and its letter brings it back where it was. Dropped

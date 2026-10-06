@@ -15,7 +15,7 @@
 button, input, select, textarea, option { color-scheme: dark; }
 
 button, input, select, textarea { font: inherit; color: inherit; }
-button { background: var(--bg-0); border: 1px solid var(--line); border-radius: 2px; padding: 3px 9px; cursor: pointer; }
+button { background: var(--bg-0); border: 1px solid var(--line); border-radius: 0; padding: 3px 9px; cursor: pointer; }
 button:hover { border-color: var(--fg-2); }
 /* A button whose whole label is an icon: no text to lay out, so the box is the icon plus
    the padding that makes it the height of the buttons beside it (13px/1.4 text). */
@@ -23,7 +23,16 @@ button.icon { padding: 5px 8px; line-height: 0; }
 button.reload.busy svg { animation: spin 0.9s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 button svg { display: block; }
-input, select, textarea { background: var(--bg-0); border: 1px solid var(--line); border-radius: 2px; padding: 3px 6px; width: 100%; }
+input, select, textarea { background: var(--bg-0); border: 1px solid var(--line); border-radius: 0; padding: 3px 6px; width: 100%; }
+input:focus, select:focus, textarea:focus { outline: none; border-color: var(--accent); }
+/* A slider in the chrome's terms: a hairline and a square, not the browser's blue pill. */
+input[type="range"] { appearance: none; -webkit-appearance: none; height: 16px; padding: 0; border: 0; background: none; cursor: pointer; }
+input[type="range"]::-webkit-slider-runnable-track { height: 2px; background: var(--line); }
+input[type="range"]::-webkit-slider-thumb { -webkit-appearance: none; width: 10px; height: 10px; margin-top: -4px; border: 0; border-radius: 0; background: var(--fg-2); }
+input[type="range"]:hover::-webkit-slider-thumb, input[type="range"]:focus-visible::-webkit-slider-thumb { background: var(--sel); }
+input[type="range"]::-moz-range-track { height: 2px; background: var(--line); }
+input[type="range"]::-moz-range-thumb { width: 10px; height: 10px; border: 0; border-radius: 0; background: var(--fg-2); }
+input[type="range"]:hover::-moz-range-thumb { background: var(--sel); }
 /* A tick is its own size: full width would leave it floating in the middle of the field. */
 input[type="checkbox"] { width: auto; justify-self: start; }
 input[type="color"] { padding: 0; height: 26px; }
@@ -498,7 +507,7 @@ button.tab:hover { color: var(--fg); }
 button.tab.on { color: var(--fg); border-bottom-color: var(--accent); }
 
 .insp-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
-.insp-thumb { width: 100%; border-radius: 4px; margin: 6px 0; background: repeating-conic-gradient(var(--check-a) 0 25%, var(--check-b) 0 50%) 0 0 / 12px 12px; }
+.insp-thumb { width: 100%; border-radius: 0; margin: 6px 0; background: repeating-conic-gradient(var(--check-a) 0 25%, var(--check-b) 0 50%) 0 0 / 12px 12px; }
 .tiny { font-size: 11px; margin: 2px 0 8px; }
 /* Navigation, not an edit: it moves the panel to the entry this clip plays. */
 button.linkish { background: none; border: 0; padding: 0; color: var(--sel); text-align: left; }
@@ -531,26 +540,26 @@ button.linkish:hover { text-decoration: underline; }
 /* ---- property fields (see ui/src/props.ts) ----------------------------------------
    A number is a thing you drag: the box says so with a resize cursor, and the letter on
    its left says which number it is. Typing in it turns the cursor back into a caret. */
-.num { display: flex; align-items: center; min-width: 0; background: var(--bg); border: 1px solid var(--line); border-radius: 5px; }
+.num { display: flex; align-items: center; min-width: 0; background: var(--bg-0); border: 1px solid var(--line); border-radius: 0; }
 .num:hover { border-color: var(--fg-2); }
 .num.dragging { border-color: var(--accent); }
 .num .tag {
   flex: none; align-self: stretch; display: flex; align-items: center; padding: 0 5px;
   font: 10px var(--mono); color: var(--fg-2); background: color-mix(in srgb, var(--fg) 5%, transparent);
-  border-right: 1px solid var(--line); border-radius: 4px 0 0 4px; cursor: ew-resize;
+  border-right: 1px solid var(--line); border-radius: 0; cursor: ew-resize;
 }
 .num.axis-x .tag { color: var(--axis-x); background: color-mix(in srgb, var(--axis-x) 14%, transparent); }
 .num.axis-y .tag { color: var(--axis-y); background: color-mix(in srgb, var(--axis-y) 14%, transparent); }
 .num.axis-z .tag { color: var(--axis-z); background: color-mix(in srgb, var(--axis-z) 14%, transparent); }
 .num.axis-w .tag { color: var(--axis-w); background: color-mix(in srgb, var(--axis-w) 14%, transparent); }
 .num input { flex: 1 1 0; min-width: 0; border: 0; background: none; padding: 3px 5px; font: 12px var(--mono); cursor: ew-resize; }
-.num input:focus { cursor: text; outline: 1px solid var(--sel); outline-offset: -1px; border-radius: 4px; }
+.num input:focus { cursor: text; outline: 1px solid var(--accent); outline-offset: -1px; border-radius: 0; }
 .num .suffix { flex: none; padding-right: 5px; font-size: 10px; color: var(--fg-2); cursor: ew-resize; }
 /* ---- the keyframe strip (see ui/src/keyframes.ts) ---------------------------------
    The clip's own length, with its keys on it. Small on purpose: it says where the keys
    are and lets you reach one, and is not trying to be a curve editor. */
 .kfs { margin: 0 0 6px; }
-.kfs-lane { position: relative; height: 18px; border: 1px solid var(--line); border-radius: 5px; background: var(--bg); cursor: pointer; }
+.kfs-lane { position: relative; height: 18px; border: 1px solid var(--line); border-radius: 0; background: var(--bg-0); cursor: pointer; }
 .kfs-track { position: absolute; top: 0; bottom: 0; left: 6px; right: 6px; }
 .kfs-key { position: absolute; top: 4px; width: 8px; height: 8px; margin-left: -4px; background: var(--sel); border: 1px solid rgba(0, 0, 0, 0.45); transform: rotate(45deg); cursor: ew-resize; }
 .kfs-key:hover { background: var(--hot); }
@@ -562,11 +571,12 @@ button.linkish:hover { text-decoration: underline; }
 .kf-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 3px; margin: 0 0 5px; }
 .kf-tools button { padding: 3px 5px; font-size: 11px; white-space: nowrap; }
 .kf-tools button:disabled { opacity: 0.4; cursor: default; }
+.kf-tools button { font: 400 10px var(--label); text-transform: lowercase; }
 .kf-tools button.on { border-color: var(--sel); color: var(--sel); }
 /* The curve view: the shape between the keys, which the strip cannot say. */
 .kf-curve { margin: 0 0 6px; }
 .kf-curve-param { width: 100%; margin-bottom: 4px; }
-.kf-plot { position: relative; height: 84px; border: 1px solid var(--line); border-radius: 5px; background: var(--bg); overflow: visible; }
+.kf-plot { position: relative; height: 84px; border: 1px solid var(--line); border-radius: 0; background: var(--bg-0); overflow: visible; }
 .kf-plot svg { position: absolute; inset: 0; width: 100%; height: 100%; }
 .kf-plot polyline { fill: none; stroke: var(--sel); stroke-width: 1.5; vector-effect: non-scaling-stroke; }
 .kf-plot-head { position: absolute; top: 0; bottom: 0; width: 0; margin-left: -1px; border-left: 2px solid var(--accent); pointer-events: none; }
@@ -596,9 +606,18 @@ body.scrubbing, body.scrubbing * { cursor: ew-resize !important; user-select: no
 .field > .wide { grid-column: 1 / -1; }
 .cue-row { display: grid; grid-template-columns: 58px 58px 1fr auto; gap: 4px; margin-bottom: 4px; }
 .cue-row .num input { padding: 3px 2px; }
-.effect { border: 1px solid var(--line); border-radius: 6px; padding: 6px; margin-bottom: 6px; background: var(--bg-3); }
-.effect .head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; font-weight: 600; }
-.effect .head button { padding: 0 6px; font-size: 11px; }
+/* An effect, or a section of vars: a card as the markers' are — a square outline on the
+   panel, its name in the label face, a hairline under the head while it is open. */
+.effect { border: 1px solid var(--line); border-radius: 0; margin-bottom: 8px; background: none; }
+.effect:hover { border-color: var(--fg-3); }
+.effect .head {
+  display: flex; justify-content: space-between; align-items: center; gap: 4px; padding: 5px 6px;
+  border-bottom: 1px solid var(--line-2); font: 400 11px/1.3 var(--label); text-transform: lowercase; color: var(--fg);
+}
+.effect-body { padding: 6px 6px 0; }
+.effect .head button { padding: 0 4px; }
+button.fx-remove { border: 0; background: none; color: var(--fg-3); font: 13px/1 var(--sans); }
+button.fx-remove:hover { color: var(--danger); }
 /* An effect folds away, because a clip with four of them is longer than the panel. The
    head is the disclosure — it reads as the heading it replaced, not as a button — and the
    chevron turns to point at what it opens. */
@@ -620,8 +639,8 @@ body.scrubbing, body.scrubbing * { cursor: ew-resize !important; user-select: no
 .effect .head .kf-toggle.on { opacity: 1; color: var(--sel); }
 /* An effect with nothing on this clip to act on: said, and dimmed, rather than hidden. */
 .effect.inert .effect-body { opacity: 0.55; }
-.effect .head .inert-note { font-weight: 400; font-size: 10px; color: var(--fg-2); margin-left: 4px; }
-.effect.closed .head { margin-bottom: 0; }
+.effect .head .inert-note { font: 10.5px var(--mono); text-transform: none; color: var(--fg-2); margin-left: 4px; }
+.effect.closed .head { border-bottom: 0; }
 .effect.closed .effect-body { display: none; }
 
 dialog.modal {

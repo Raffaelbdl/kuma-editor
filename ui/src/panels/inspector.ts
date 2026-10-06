@@ -758,7 +758,7 @@ export class Inspector {
         disclose.title = `This ${lower} does nothing: ${owner.what} ${streamsOf(e.type).video ? "shows no picture" : "has no sound"}`;
       }
       head.append(disclose);
-      const remove = button("×", () => store.patch([{ op: "remove", path: `${owner.path}/${ei}` }], `remove ${e.type}`), `Remove this ${lower}`);
+      const remove = button("×", () => store.patch([{ op: "remove", path: `${owner.path}/${ei}` }], `remove ${e.type}`), `Remove this ${lower}`, "fx-remove");
       box.append(head, body);
       const rec = e as unknown as Record<string, unknown>;
       const defaults = spec.add as unknown as Record<string, unknown>;

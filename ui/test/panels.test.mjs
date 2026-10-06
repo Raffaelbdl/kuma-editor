@@ -60,6 +60,36 @@ describe("a panel's own window", { skip: why ? `skipping: ${why}` : false }, () 
     if (tmp) fs.rmSync(tmp, { recursive: true, force: true });
   });
 
+  it("is resized from any edge or corner, and stays that size", async () => {
+    const BOX = `(() => { const r = document.querySelector('#floating .panel[data-panel="agent"]').getBoundingClientRect(); return [r.left, r.top, r.width, r.height].map(Math.round); })()`;
+    const drag = async ([x0, y0], [x1, y1]) => {
+      await page.mouse("mouseMoved", x0, y0);
+      await page.mouse("mousePressed", x0, y0);
+      for (let i = 1; i <= 6; i++) await page.mouse("mouseMoved", x0 + ((x1 - x0) * i) / 6, y0 + ((y1 - y0) * i) / 6, { held: true });
+      await page.mouse("mouseReleased", x1, y1);
+    };
+    const [x, y, w, h] = await page.eval(BOX);
+    // The bottom-right corner: wider and taller, the top-left where it was.
+    await drag([x + w - 4, y + h - 4], [x + w + 56, y + h + 44]);
+    assert.deepEqual(await page.eval(BOX), [x, y, w + 60, h + 48]);
+    // The left edge: the right edge stays put.
+    await drag([x + 2, y + 100], [x + 42, y + 100]);
+    assert.deepEqual(await page.eval(BOX), [x + 40, y, w + 20, h + 48]);
+    // The top edge: the bottom stays put.
+    await drag([x + 150, y + 2], [x + 150, y + 32]);
+    assert.deepEqual(await page.eval(BOX), [x + 40, y + 30, w + 20, h + 18]);
+    // Never smaller than a panel can be used at.
+    await drag([x + 40 + 2, y + 200], [x + 900, y + 200]);
+    assert.equal((await page.eval(BOX))[2], 220);
+    // And kept: summoned again, it comes back at the size it was left.
+    const kept = await page.eval(BOX);
+    await page.eval(key("a"));
+    await page.until(`!${SHOWN}`);
+    await page.eval(key("a"));
+    await page.until(SHOWN);
+    assert.deepEqual(await page.eval(BOX), kept);
+  });
+
   it("is hidden here while it is out, and comes back when its window says goodbye", async () => {
     await page.eval(OPEN);
     await page.until(`!${SHOWN}`);

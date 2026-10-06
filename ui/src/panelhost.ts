@@ -47,6 +47,9 @@ interface Geom { x: number; y: number; w: number; h: number; edge?: "left" | "ri
 interface Floating { open: string[]; geom: Record<string, Geom> }
 
 const SNAP = 24;
+/** The least a floating panel can be resized to and still be used. */
+const MIN_W = 220;
+const MIN_H = 120;
 /** How close to the dock's own edge a drop splits the whole dock rather than a group. */
 const ROOT_EDGE = 26;
 const KEY = "kuma.panels.";
@@ -557,12 +560,11 @@ class PanelHost {
     head.append(tile, title, note, el("span", "spacer"), tools, pop, close);
     if (spec.note) spec.note.classList.add("pnote");
     const body = el("div", "panel-body");
-    const grip = el("div", "pgrip");
-    root.append(head, body, grip);
+    root.append(head, body);
     f = { root, body, spec };
     this.frames.set(id, f);
     this.dragging(f, head);
-    this.resizing(f, grip);
+    this.resizers(f);
     return f;
   }
 
@@ -618,28 +620,49 @@ class PanelHost {
     });
   }
 
-  private resizing(f: Frame, grip: HTMLElement) {
-    grip.addEventListener("pointerdown", (e) => {
-      if (e.button !== 0) return;
-      const r = f.root.getBoundingClientRect();
-      const layer = this.layer().getBoundingClientRect();
-      const g: Geom = { ...(this.floating[store.state.mode].geom[f.spec.id] ?? { x: r.left - layer.left, y: r.top - layer.top, w: r.width, h: r.height }) };
-      dragPointer(e, {
-        axes: "xy",
-        move: (dx, dy) => {
-          g.w = Math.max(220, r.width + dx);
-          g.h = Math.max(120, r.height + dy);
-          if (g.edge === "bottom") g.edge = undefined;
-          this.place(f, { ...g, x: r.left - layer.left, y: r.top - layer.top });
-        },
-        end: (moved) => {
-          if (!moved) return;
-          this.floating[store.state.mode].geom[f.spec.id] = { ...g, x: r.left - layer.left, y: r.top - layer.top };
-          this.saveAll();
-        },
+  /**
+   * Resize a floating panel from any of its edges or corners — a strip along each side and
+   * a square at each corner, each with its own cursor, and a grip drawn in the bottom-right
+   * corner so there is something to see. It stays inside the window, and no smaller than
+   * a panel can be used at. A panel held against an edge stays held while its other side
+   * moves, and lets go when the side against the edge is the one dragged.
+   */
+  private resizers(f: Frame) {
+    for (const dir of ["n", "s", "e", "w", "ne", "nw", "se", "sw"] as const) {
+      const h = el("div", `prs ${dir}`);
+      f.root.appendChild(h);
+      h.addEventListener("pointerdown", (e) => {
+        if (e.button !== 0 || !f.root.classList.contains("floating")) return;
+        e.stopPropagation();
+        const layer = this.layer().getBoundingClientRect();
+        const r = f.root.getBoundingClientRect();
+        const x0 = r.left - layer.left, y0 = r.top - layer.top, w0 = r.width, h0 = r.height;
+        const saved = this.floating[store.state.mode].geom[f.spec.id];
+        const g: Geom = { x: x0, y: y0, w: saved?.w ?? w0, h: h0, edge: saved?.edge };
+        // The side held against an edge is the one that lets go when it is dragged.
+        if ((g.edge === "left" && dir.includes("w")) || (g.edge === "right" && dir.includes("e")) || (g.edge === "bottom" && dir.includes("s"))) g.edge = undefined;
+        const clamp = (v: number, lo: number, hi: number) => Math.round(Math.max(lo, Math.min(hi, v)));
+        f.root.classList.add("resizing");
+        dragPointer(e, {
+          axes: "xy",
+          move: (dx, dy) => {
+            if (dir.includes("e")) g.w = clamp(w0 + dx, MIN_W, layer.width - x0);
+            if (dir.includes("w")) { g.w = clamp(w0 - dx, MIN_W, x0 + w0); g.x = x0 + w0 - g.w; }
+            if (dir.includes("s")) g.h = clamp(h0 + dy, MIN_H, layer.height - y0);
+            if (dir.includes("n")) { g.h = clamp(h0 - dy, MIN_H, y0 + h0); g.y = y0 + h0 - g.h; }
+            this.place(f, g);
+          },
+          end: (moved) => {
+            f.root.classList.remove("resizing");
+            if (!moved) return;
+            this.floating[store.state.mode].geom[f.spec.id] = g;
+            this.saveAll();
+          },
+        });
       });
-    });
+    }
   }
+
 
   /**
    * A panel in a window of its own — a second screen's worth of timeline, say. A browser

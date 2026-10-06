@@ -233,7 +233,21 @@ body.has-titlebar #floating { top: 76px; }
 .panel.floating.dragging { opacity: 0.92; }
 /* The agent's tile is the accent: it is the one panel about somebody else. */
 .panel[data-panel="agent"] .ptile { background: var(--accent); color: var(--on-accent); }
-.panel.floating .pgrip { position: absolute; right: 0; bottom: 0; width: 12px; height: 12px; cursor: nwse-resize; }
+/* Resizing a floating panel: a strip along each side and a square at each corner, inside
+   its border (the panel clips what is outside it). Only while it floats. */
+.prs { position: absolute; z-index: 3; display: none; }
+.panel.floating .prs { display: block; }
+.prs.n, .prs.s { left: 10px; right: 10px; height: 5px; cursor: ns-resize; }
+.prs.e, .prs.w { top: 10px; bottom: 10px; width: 5px; cursor: ew-resize; }
+.prs.n { top: 0; } .prs.s { bottom: 0; } .prs.e { right: 0; } .prs.w { left: 0; }
+.prs.ne, .prs.nw, .prs.se, .prs.sw { width: 12px; height: 12px; }
+.prs.ne { top: 0; right: 0; cursor: nesw-resize; } .prs.sw { bottom: 0; left: 0; cursor: nesw-resize; }
+.prs.nw { top: 0; left: 0; cursor: nwse-resize; } .prs.se { bottom: 0; right: 0; cursor: nwse-resize; }
+/* The one that is drawn: two short diagonals in the bottom-right corner, brighter under the
+   pointer, so a panel says it can be resized before anyone has to find out. */
+.prs.se { background: linear-gradient(135deg, transparent 0 55%, var(--fg-3) 55% 62%, transparent 62% 72%, var(--fg-3) 72% 79%, transparent 79%); }
+.prs.se:hover, .panel.resizing .prs.se { background: linear-gradient(135deg, transparent 0 55%, var(--accent) 55% 62%, transparent 62% 72%, var(--accent) 72% 79%, transparent 79%); }
+.panel.resizing { user-select: none; }
 /* A panel dragged against the window's edge: past it, it becomes a window of its own. */
 .edge-hint { position: absolute; top: 0; bottom: 0; width: 4px; z-index: 40; pointer-events: none; border-left: 4px dashed var(--accent); }
 .edge-hint span {

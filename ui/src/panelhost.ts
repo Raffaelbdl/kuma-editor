@@ -121,7 +121,10 @@ class PanelHost {
   toggle(id: string): void {
     const spec = this.specs.get(id);
     if (!spec) return;
-    if (this.out.has(id)) { this.windows.get(id)?.focus(); return; }
+    // Out in a window of its own: the letter calls it back. Focusing that window instead
+    // would do nothing at all if it had gone without saying so, and the panel would be
+    // unreachable until a reload.
+    if (this.out.has(id)) { this.recall(id); return; }
     const mode = store.state.mode;
     if (mode === "power" && spec.dock === "side") {
       this.layouts.power.rail = id;
@@ -258,7 +261,7 @@ class PanelHost {
     const title = el("span", "ptitle", spec.title);
     const tools = el("span", "ptools");
     const pop = button("⧉", () => this.popOut(id), "Open in a window of its own (or drag it past the window's edge)", "pbtn pop");
-    const close = button("×", () => this.solo ? window.close() : this.setFloating(id, false), "Close", "pbtn pfloat-only");
+    const close = button("×", () => this.solo ? this.leave() : this.setFloating(id, false), "Close", "pbtn pfloat-only");
     head.append(tile, title, ...(spec.note ? [spec.note] : []), el("span", "spacer"), tools, pop, close);
     if (spec.note) spec.note.classList.add("pnote");
     const body = el("div", "panel-body");
@@ -362,19 +365,49 @@ class PanelHost {
       const poll = window.setInterval(() => { if (win.closed) { clearInterval(poll); this.returned(id); } }, 800);
     }
     this.out.add(id);
+    this.outSince.set(id, Date.now());
     this.apply();
   }
 
-  /** A panel's window closed (or said so): it comes back where it was. */
+  /** A panel's window closed (or said so): it comes back where it was — summoned, in den,
+   *  whether or not it was before it went out, since putting it back is asking for it. */
   returned(id: string): void {
     this.windows.delete(id);
+    this.outSince.delete(id);
     if (!this.out.delete(id)) return;
+    const spec = this.specs.get(id);
+    const l = this.layouts[store.state.mode];
+    if (spec && !(store.state.mode === "power" && spec.dock) && !l.open.includes(id)) {
+      const body = spec.body;
+      l.open = l.open.filter((x) => this.specs.get(x)?.body !== body).concat(id);
+      this.save(store.state.mode);
+    }
     this.apply();
+  }
+
+  /** Bring a panel back from its window, closing the window if it is still there. */
+  recall(id: string): void {
+    this.onRecall(id);
+    this.windows.get(id)?.close();
+    this.returned(id);
+  }
+
+  /** How the editor window asks a panel's window to close (`viewsync.ts` sets it). */
+  onRecall: (id: string) => void = () => {};
+  /** How a panel's window leaves: told to the editor window first, then closed. */
+  leave: () => void = () => window.close();
+
+  /** When each panel went out, for the heartbeat's grace (`viewsync.ts`). */
+  readonly outSince = new Map<string, number>();
+  get outIds(): string[] {
+    return [...this.out];
   }
 
   /** Told that a panel is in a window (a window opened before this page reloaded). */
   claimed(id: string): void {
-    if (this.out.has(id) || !this.specs.has(id)) return;
+    if (!this.specs.has(id)) return;
+    this.outSince.set(id, Date.now());
+    if (this.out.has(id)) return;
     this.out.add(id);
     this.apply();
   }
@@ -391,7 +424,7 @@ class PanelHost {
     const pop = f.root.querySelector<HTMLButtonElement>(".pop")!;
     pop.textContent = "↙";
     pop.title = "Put it back in the editor window";
-    pop.onclick = () => window.close();
+    pop.onclick = () => this.leave();
     this.layer().appendChild(f.root);
     this.attach(f);
     document.title = `${spec.title} — kuma`;

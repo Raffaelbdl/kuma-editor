@@ -7,6 +7,7 @@
 // Same origin only, which is a daemon's port: windows of another project never hear it.
 
 import { forwardUnknown, run } from "./commands";
+import { desktop } from "./desktop";
 import { panels } from "./panelhost";
 import { store, type State } from "./store";
 
@@ -15,10 +16,17 @@ type Message =
   | { type: "state"; from: string; state: Partial<Shared> }
   | { type: "hello"; from: string; panel: string | null }
   | { type: "bye"; from: string; panel: string | null }
+  | { type: "alive"; from: string; panel: string }
+  | { type: "recall"; from: string; panel: string }
   | { type: "run"; from: string; id: string; arg?: unknown };
 
 const KEYS: (keyof Shared)[] = ["selection", "playhead", "sequence", "sequences", "tab", "overlays", "zoom", "track"];
 const me = Math.random().toString(36).slice(2);
+/** A panel's window says it is there this often; the editor window takes the panel back when
+ *  it has not heard for `LOST`, after a `GRACE` for the window to load. */
+const BEAT = 1000;
+const LOST = 4000;
+const GRACE = 15000;
 
 export function installViewSync(panel: string | null): void {
   if (typeof BroadcastChannel === "undefined") return;
@@ -50,7 +58,15 @@ export function installViewSync(panel: string | null): void {
         if (m.panel) panels.claimed(m.panel);
       }
     } else if (m.type === "bye") {
-      if (!panel && m.panel) panels.returned(m.panel);
+      if (!panel && m.panel) { gone.set(m.panel, Date.now()); panels.returned(m.panel); }
+    } else if (m.type === "alive") {
+      if (panel) return;
+      heard.set(m.panel, Date.now());
+      // A beat already on its way when the panel was called back is not a window coming
+      // back: it would hide the panel again until the beats stopped.
+      if (!panels.isOut(m.panel) && Date.now() - (gone.get(m.panel) ?? 0) > LOST) panels.claimed(m.panel);
+    } else if (m.type === "recall") {
+      if (panel && m.panel === panel) close();
     } else if (m.type === "run") {
       // A command a panel's window does not have (play, reload): the editor window runs it.
       if (!panel) run(m.id, m.arg);
@@ -64,9 +80,35 @@ export function installViewSync(panel: string | null): void {
     if (!applying && ready) post({ type: "state", from: me, state: snapshot() });
   });
 
+  // A panel's window closes itself only after saying so: a message posted while the page
+  // unloads can be lost (the desktop shell's windows lost it), and an editor window that
+  // still thinks the panel is out keeps it hidden.
+  const close = () => {
+    post({ type: "bye", from: me, panel });
+    const app = desktop();
+    if (app) void app.windowControl("close");
+    else window.close();
+  };
+  const heard = new Map<string, number>();
+  /** When each panel last came back, by its window's goodbye, a recall or a lost beat. */
+  const gone = new Map<string, number>();
   if (panel) {
     forwardUnknown((id, arg) => { post({ type: "run", from: me, id, arg }); return true; });
+    panels.leave = close;
     addEventListener("pagehide", () => post({ type: "bye", from: me, panel }));
+    setInterval(() => post({ type: "alive", from: me, panel }), BEAT);
+  } else {
+    panels.onRecall = (id) => { gone.set(id, Date.now()); heard.delete(id); post({ type: "recall", from: me, panel: id }); };
+    // However a panel's window went — closed by the window manager, crashed, its goodbye
+    // lost — its heartbeat stops, and the panel comes back here.
+    setInterval(() => {
+      const now = Date.now();
+      for (const id of panels.outIds) {
+        const last = Math.max(heard.get(id) ?? 0, panels.outSince.get(id) ?? 0);
+        const wait = heard.has(id) ? LOST : GRACE;
+        if (now - last > wait) { heard.delete(id); gone.set(id, now); panels.returned(id); }
+      }
+    }, BEAT);
   }
   post({ type: "hello", from: me, panel });
 }

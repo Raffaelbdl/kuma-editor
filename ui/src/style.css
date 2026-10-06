@@ -292,8 +292,8 @@ body.solo #floating { position: static; height: 100%; pointer-events: auto; }
 
 .stage { position: relative; background: #000; box-shadow: 0 0 0 1px var(--line); }
 .stage canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
-.stage .overlay-layer { position: absolute; inset: 0; overflow: hidden; pointer-events: none; }
-.stage .ov { position: absolute; left: 0; top: 0; transform-origin: 0 0; }
+.stage .overlay-layer { position: absolute; left: 0; top: 0; overflow: hidden; pointer-events: none; transform-origin: 0 0; }
+.stage .ov { position: absolute; left: 0; top: 0; }
 /* `color-scheme: normal` is load-bearing, not decoration: it keeps the embedder's scheme
    matching the template's so Chromium composites the iframe transparently. Without it a
    dark scheme anywhere above puts an opaque backdrop behind every overlay.

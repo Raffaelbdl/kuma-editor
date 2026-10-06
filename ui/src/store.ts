@@ -368,16 +368,24 @@ class Store {
     return this.selectedClips.at(-1) ?? null;
   }
 
-  async undo() { await api.undo(); await this.refresh(); }
-  async redo() { await api.redo(); await this.refresh(); }
+  async undo() { await this.reach((await api.undo()).revision); }
+  async redo() { await this.reach((await api.redo()).revision); }
+
+  /** Be at `revision` (or past it). Its `project_changed` usually lands while the request
+   *  that made it is still answering, and has a refresh under way already: wait for that,
+   *  and fetch again only if it read an older document. Refreshing regardless fetched and
+   *  redrew every edit twice. */
+  async reach(revision: number | null): Promise<void> {
+    if (this.refreshing) await this.refreshing;
+    if (revision === null || (this.state.project?.revision ?? -1) < revision) await this.refresh();
+  }
 
   /** Send a patch against the current revision. On a 409, refetch and report. */
   async patch(ops: PatchOp[], note: string): Promise<boolean> {
     const p = this.state.project;
     if (!p) return false;
     try {
-      await api.patch(ops, p.revision, `ui: ${note}`);
-      await this.refresh();
+      await this.reach((await api.patch(ops, p.revision, `ui: ${note}`)).revision);
       return true;
     } catch (e) {
       await this.refused(e);

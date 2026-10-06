@@ -68,7 +68,7 @@ function entryRow(h: HistoryEntry, current: number): HTMLElement {
     row.appendChild(button("⟲", async () => {
       try {
         const r = await api.restore(rev);
-        await store.refresh();
+        await store.reach(r.revision);
         toast(`Restored r${rev} as r${r.revision} — undo takes it back`, "ok");
       } catch (e) { toast((e as Error).message, "err", 8000); }
     }, `Go back to r${rev}: the document as it was then, as a new edit`, "hist-restore"));

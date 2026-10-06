@@ -43,8 +43,11 @@ export const capitalize = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
  *  which reloads every iframe inside it (the dock's frame is full of them), and lays out a
  *  long list again when one row was added at its top. */
 export function reconcile(parent: HTMLElement, kids: HTMLElement[]): void {
+  // What goes, first: left in place, one replaced row would shift every row after it by
+  // one, and each would be moved.
+  const keep = new Set(kids);
+  for (const c of [...parent.children]) if (!keep.has(c as HTMLElement)) c.remove();
   kids.forEach((k, i) => { if (parent.children[i] !== k) parent.insertBefore(k, parent.children[i] ?? null); });
-  while (parent.children.length > kids.length) parent.lastElementChild!.remove();
 }
 
 /** Set `e`'s text only when it differs: an unchanged string written again still replaces

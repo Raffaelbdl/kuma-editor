@@ -722,6 +722,14 @@ export const moveMarker = (i: number, t: number) => patchMarker(i, { t }, `move 
 
 export const removeMarker = (i: number) => patchMarker(i, null, `remove marker at ${at(store.markers[i]?.t ?? 0)}`);
 
+/** Remove the marker on `t`'s frame — whoever left it — from the markers panel, which knows
+ *  a marker by its time, not by where it sits in the document's array. */
+export async function removeMarkerAt(t: number) {
+  const i = markerAt(t);
+  if (i < 0) { toast("That marker is gone already", "err"); return; }
+  await removeMarker(i);
+}
+
 // ---------- transitions ----------
 //
 // A transition joins two clips that touch on one track, `from` → `to`, and is centred on

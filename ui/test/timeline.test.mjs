@@ -159,6 +159,13 @@ describe("the timeline's tracks", { skip: why ? `skipping: ${why}` : false }, ()
     // Every marker edit is one undoable patch.
     await page.eval(`(${key("z", { ctrlKey: true })})`);
     await page.until(`${FLAGS} === "cold open: cut the first second|the title comes in too early"`);
+
+    // The markers panel removes one too: its card's ✕, found by its time, not its place.
+    await page.eval(`([...document.querySelectorAll(".mk-card")].find(c => c.textContent.includes("too early")).querySelector(".mk-remove").click(), true)`);
+    await page.until(`${FLAGS} === "cold open: cut the first second"`);
+    assert.equal(await page.eval(`document.querySelectorAll(".mk-card").length`), 1, "and its card goes with it");
+    await page.eval(`(${key("z", { ctrlKey: true })})`);
+    await page.until(`${FLAGS} === "cold open: cut the first second|the title comes in too early"`);
   });
 
   it("moves a marker by its flag, and edits it on a double-click", async () => {

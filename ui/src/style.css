@@ -814,8 +814,12 @@ button.hist-restore:hover { color: var(--accent-text); }
 .mk-meta { font-size: 10.5px; color: var(--sel); }
 .mk-card.done .mk-meta { color: var(--ok); }
 .mk-card:not(.done):not(.reading) .mk-meta { color: var(--fg-2); }
-button.mk-tick { background: none; border: 0; padding: 0 2px; color: var(--fg-3); }
-button.mk-tick:hover { color: var(--fg); }
+.mk-acts { display: flex; gap: 6px; }
+button.mk-act { background: none; border: 0; padding: 0 2px; color: var(--fg-3); }
+button.mk-act:hover { color: var(--fg); }
+/* Removing is there when you reach for it, not a column of crosses at rest. */
+.mk-card:not(:hover):not(:focus-within) .mk-remove { visibility: hidden; }
+button.mk-remove:hover { color: var(--danger); }
 /* The agent's own markers: its notes, in its colour, never waiting for it. */
 .mk-card.agent .mk-n { background: var(--accent); color: var(--on-accent); }
 .mk-card.agent .mk-meta { color: var(--accent-text); }

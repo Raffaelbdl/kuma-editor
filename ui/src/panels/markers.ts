@@ -11,7 +11,7 @@
 import { markersOn, who, watchAgent } from "../agent";
 import { Cmd, command } from "../commands";
 import { button, el, setText } from "../dom";
-import { markerOn, placeMarker } from "../edits";
+import { markerOn, placeMarker, removeMarkerAt } from "../edits";
 import { api } from "../api";
 import { panels } from "../panelhost";
 import { keysFor } from "../shortcuts";
@@ -94,15 +94,19 @@ function markerCard(m: MarkerInfo, reading: boolean): HTMLElement {
     : m.waiting ? "waiting" : "a moment marked";
   main.appendChild(el("div", "mk-meta", `${fmtTime(m.t, store.fps)} · ${state}`));
   card.appendChild(main);
+  const acts = el("div", "mk-acts");
   // Ticking by hand is for an answer the agent did not say it gave — on a comment left for
   // it. The daemon tells every client, this one included, with the new list.
   if (mine && m.label) {
-    const tick = button(done !== null ? "↺" : "✓", async () => {
+    acts.appendChild(button(done !== null ? "↺" : "✓", async () => {
       try { await api.markerDone(m.id, done === null); } catch (e) { toast(`Cannot tick markers with this daemon: ${(e as Error).message}`, "err"); }
-    }, done !== null ? "Waiting again" : "Mark it answered yourself", "mk-tick");
-    tick.onpointerdown = (e) => e.stopPropagation();
-    card.appendChild(tick);
+    }, done !== null ? "Waiting again" : "Mark it answered yourself", "mk-act"));
   }
+  // Removing is an edit like any other, so it is undoable — and anyone's to make, the
+  // agent's notes included.
+  acts.appendChild(button("✕", () => void removeMarkerAt(m.t), "Remove this marker (undoable)", "mk-act mk-remove"));
+  acts.onpointerdown = (e) => e.stopPropagation();
+  card.appendChild(acts);
   card.onclick = (e) => { if (!(e.target as HTMLElement).closest("button")) store.seek(m.t); };
   card.title = `${m.label || "no comment"}\n\n${fmtTime(m.t, store.fps)} — click to go there`;
   return card;

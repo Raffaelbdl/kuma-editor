@@ -28,6 +28,11 @@ let recents: Recents;
 let launcher: BrowserWindow | null = null;
 /** Every open editor window, and the daemon behind it. */
 const editors = new Map<BrowserWindow, Daemon>();
+/** Panels popped out of an editor into windows of their own (`?panel=<id>`), with the
+ *  editor window they belong to. They share its daemon and close with it. */
+const panelWindows = new Map<BrowserWindow, { editor: BrowserWindow; daemon: Daemon }>();
+/** Every window's colour before its page paints: the editor's `--bg-0` (`ui/src/themes.css`). */
+const BACKGROUND = "#121722";
 /** The application menu as a template, so an editor window can pop one submenu of it.
  *  The title bar is ours, but the menus that drop out of it stay native — they keep
  *  accelerator labels, checkmarks and platform behaviour that HTML would only mimic. */
@@ -78,7 +83,7 @@ function showLauncher() {
     minWidth: 720,
     minHeight: 520,
     title: "kuma",
-    backgroundColor: "#121317",
+    backgroundColor: BACKGROUND,
     show: false,
     autoHideMenuBar: true,
     webPreferences: {
@@ -100,40 +105,26 @@ function hideLauncher() {
   if (launcher && !launcher.isDestroyed()) launcher.hide();
 }
 
-function editorFor(d: Daemon): BrowserWindow {
-  const win = new BrowserWindow({
-    width: 1500,
-    height: 940,
-    minWidth: 1000,
-    minHeight: 640,
-    title: `${nameOf(d.projectFile)} — kuma`,
-    backgroundColor: "#121317",
-    show: false,
-    // The editor draws its own title bar, with the menu in it. The launcher keeps a
-    // normal frame: it has no menu, so there would be nothing to gain.
-    frame: false,
-    webPreferences: {
-      preload: path.join(APP_DIR, "preload", "editor.cjs"),
-      contextIsolation: true,
-      nodeIntegration: false,
-      // Read by the preload, which has no other way to learn which project this is:
-      // the page itself is remote content served by the daemon.
-      additionalArguments: [
-        `--kuma-project=${d.projectFile}`,
-        `--kuma-daemon=${d.url}`,
-        `--kuma-owned=${d.owned ? "1" : "0"}`,
-        `--kuma-version=${app.getVersion()}`,
-      ],
-    },
-  });
-  // The UI's <title> is just "kuma"; keep the project name in the title bar.
-  win.on("page-title-updated", (e) => e.preventDefault());
-  win.once("ready-to-show", () => win.show());
-  const sendState = () => win.webContents.send("kuma:window-state", { maximized: win.isMaximized(), fullScreen: win.isFullScreen() });
-  win.on("maximize", sendState);
-  win.on("unmaximize", sendState);
-  win.on("enter-full-screen", sendState);
-  win.on("leave-full-screen", sendState);
+/** The preload's view of which project a window shows: the same for an editor window and
+ *  for a panel popped out of it. */
+function editorPreferences(d: Daemon): Electron.WebPreferences {
+  return {
+    preload: path.join(APP_DIR, "preload", "editor.cjs"),
+    contextIsolation: true,
+    nodeIntegration: false,
+    // Read by the preload, which has no other way to learn which project this is:
+    // the page itself is remote content served by the daemon.
+    additionalArguments: [
+      `--kuma-project=${d.projectFile}`,
+      `--kuma-daemon=${d.url}`,
+      `--kuma-owned=${d.owned ? "1" : "0"}`,
+      `--kuma-version=${app.getVersion()}`,
+    ],
+  };
+}
+
+/** A window carrying the editor's preload may show the daemon's pages and nothing else. */
+function guardNavigation(win: BrowserWindow, d: Daemon) {
   // External links belong in the user's browser, never in a new chromeless window.
   win.webContents.setWindowOpenHandler(({ url }) => {
     if (/^https?:$/.test(new URL(url).protocol)) shell.openExternal(url);
@@ -147,8 +138,60 @@ function editorFor(d: Daemon): BrowserWindow {
     e.preventDefault();
     if (/^https?:$/.test(new URL(url).protocol)) shell.openExternal(url);
   });
+}
+
+/** One panel of an editor in a frameless window of its own — the page is the editor's,
+ *  with `?panel=<id>`, which draws that panel alone and its own title bar. Not a child
+ *  window, so it can go to another screen; it closes with the editor it came from. */
+function panelWindowFor(editor: BrowserWindow, d: Daemon, id: string, size: { width: number; height: number }): BrowserWindow {
+  const win = new BrowserWindow({
+    // The page asks for the size the panel had; kept to something a screen can hold.
+    width: Math.max(260, Math.min(2400, Math.round(size.width) || 360)),
+    height: Math.max(160, Math.min(1600, Math.round(size.height) || 480)),
+    minWidth: 240,
+    minHeight: 140,
+    title: `${id} — ${nameOf(d.projectFile)} — kuma`,
+    backgroundColor: BACKGROUND,
+    show: false,
+    frame: false,
+    webPreferences: editorPreferences(d),
+  });
+  win.on("page-title-updated", (e) => e.preventDefault());
+  win.once("ready-to-show", () => win.show());
+  guardNavigation(win, d);
+  // It closes with its editor: the editor's own "closed" closes every window it popped.
+  panelWindows.set(win, { editor, daemon: d });
+  win.on("closed", () => panelWindows.delete(win));
+  win.loadURL(`${d.url}/?panel=${encodeURIComponent(id)}`);
+  return win;
+}
+
+function editorFor(d: Daemon): BrowserWindow {
+  const win = new BrowserWindow({
+    width: 1500,
+    height: 940,
+    minWidth: 1000,
+    minHeight: 640,
+    title: `${nameOf(d.projectFile)} — kuma`,
+    backgroundColor: BACKGROUND,
+    show: false,
+    // The editor draws its own title bar, with the menu in it. The launcher keeps a
+    // normal frame: it has no menu, so there would be nothing to gain.
+    frame: false,
+    webPreferences: editorPreferences(d),
+  });
+  // The UI's <title> is just "kuma"; keep the project name in the title bar.
+  win.on("page-title-updated", (e) => e.preventDefault());
+  win.once("ready-to-show", () => win.show());
+  const sendState = () => win.webContents.send("kuma:window-state", { maximized: win.isMaximized(), fullScreen: win.isFullScreen() });
+  win.on("maximize", sendState);
+  win.on("unmaximize", sendState);
+  win.on("enter-full-screen", sendState);
+  win.on("leave-full-screen", sendState);
+  guardNavigation(win, d);
   win.on("closed", () => {
     editors.delete(win);
+    for (const [panel, of] of panelWindows) if (of.editor === win && !panel.isDestroyed()) panel.close();
     daemon.stop(d);
     rebuildMenu();
     // Closing the last project window ends the session. The launcher is somewhere you go
@@ -355,6 +398,11 @@ function rebuildMenu() {
         // The page owns the theme — it is one attribute and a `localStorage` key there,
         // and the same dialog the top bar's button opens. Nothing about it lives here.
         { label: "Theme…", click: () => sendCommand("theme") },
+        // No accelerators, for the reason Undo has none: the page binds the keys (⌘K, the
+        // backquote) where it can tell a text field has focus.
+        { label: "Command Palette…", click: () => sendCommand("palette") },
+        { label: "Den", click: () => sendCommand("den") },
+        { label: "Power", click: () => sendCommand("power") },
         { type: "separator" },
         { role: "reload" },
         { role: "forceReload" },
@@ -477,9 +525,11 @@ function wireIpc() {
   /** The editor window that called and the daemon behind it. Anything else throws, so a
    *  renderer can only ever act on its own project — and past this point both are known
    *  to exist, which is why nothing below re-checks them. */
+  /** The window that asked, and its project's daemon: an editor, or a panel popped out of
+   *  one (which acts for the same project). */
   const editorOf = (e: Electron.IpcMainInvokeEvent): { win: BrowserWindow; daemon: Daemon } => {
     const win = BrowserWindow.fromWebContents(e.sender);
-    const daemon = win ? editors.get(win) : undefined;
+    const daemon = win ? editors.get(win) ?? panelWindows.get(win)?.daemon : undefined;
     if (!win || !daemon) throw new Error("not an editor window");
     return { win, daemon };
   };
@@ -541,6 +591,16 @@ function wireIpc() {
       case "close": win.close(); break;
     }
     return { maximized: win.isDestroyed() ? false : win.isMaximized() };
+  });
+
+  /** Pop a panel out of an editor window into one of its own. Only from an editor, and
+   *  only a panel's id: the page decides what a panel is. */
+  ipcMain.handle("window:panel", (e, id: string, size: { width: number; height: number }) => {
+    const win = BrowserWindow.fromWebContents(e.sender);
+    const d = win ? editors.get(win) : undefined;
+    if (!win || !d) throw new Error("not an editor window");
+    if (!/^[a-z]{1,24}$/.test(String(id))) throw new Error("not a panel");
+    panelWindowFor(win, d, String(id), { width: Number(size?.width), height: Number(size?.height) });
   });
 
   ipcMain.handle("window:state", (e) => {

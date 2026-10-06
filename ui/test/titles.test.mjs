@@ -51,7 +51,7 @@ describe("titles from the bin", { skip: why ? `skipping: ${why}` : false }, () =
   });
 
   it("offers the blueprints that say `create`, then the other things a bin makes", async () => {
-    await page.eval(`document.querySelector('#library .lib-tools button[title^="New —"]').click()`);
+    await page.eval(`document.querySelector('button[title^="New —"]').click()`);
     await page.until(`document.querySelector(".popup-menu")`);
     const items = await page.eval(menuItems);
     assert.deepEqual(items.slice(0, 2), ["Title", "Title + subtitle"]);
@@ -88,6 +88,9 @@ describe("titles from the bin", { skip: why ? `skipping: ${why}` : false }, () =
   });
 
   it("picks a font from the installed families", async () => {
+    // The families come from the daemon's first font scan, which can still be under way
+    // (most of a second in a debug build): the picker fills in when they arrive.
+    await page.until(`[...${fieldInput("Text", "Font", "select")}.options].length > 1`);
     const families = await page.eval(`[...${fieldInput("Text", "Font", "select")}.options].map(o => o.value)`);
     assert.ok(families.includes("Inter") && families.includes("Bebas Neue"), families.join(", "));
     await page.eval(`(() => { const s = ${fieldInput("Text", "Font", "select")}; s.value = "Bebas Neue"; s.dispatchEvent(new Event("change")); })()`);
@@ -107,7 +110,7 @@ describe("titles from the bin", { skip: why ? `skipping: ${why}` : false }, () =
   });
 
   it("names the next one after it, in a folder of its own", async () => {
-    await page.eval(`document.querySelector('#library .lib-tools button[title^="New —"]').click()`);
+    await page.eval(`document.querySelector('button[title^="New —"]').click()`);
     await page.until(`document.querySelector(".popup-menu")`);
     await page.eval(`${menuItem("Title")}.click()`);
     const p = await page.until(`${PROJECT_NOW}.then(p => p.bin["title-2"] ? p : null)`);

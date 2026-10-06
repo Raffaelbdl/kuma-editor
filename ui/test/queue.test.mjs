@@ -17,7 +17,7 @@ const why = missing();
 describe("the render and queue buttons", { skip: why ? `skipping: ${why}` : false }, () => {
   let tmp, daemon, page;
   const HEADING = `document.querySelector("dialog.modal.render h3")?.textContent`;
-  const button = (text) => `[...document.querySelectorAll("#topbar button")].find(b => b.textContent === ${JSON.stringify(text)})`;
+  const button = (text) => `[...document.querySelectorAll("#topbar button")].find(b => b.firstChild?.textContent === ${JSON.stringify(text)})`;
 
   before(async () => {
     tmp = fs.mkdtempSync(path.join(os.tmpdir(), "kuma-queue-"));
@@ -31,7 +31,7 @@ describe("the render and queue buttons", { skip: why ? `skipping: ${why}` : fals
     }));
     daemon = await startDaemon(projectFile);
     page = await driver(daemon.url);
-    await page.until(`!!${button("Queue")}`);
+    await page.until(`!!${button("queue")}`);
   });
 
   after(() => {
@@ -40,17 +40,20 @@ describe("the render and queue buttons", { skip: why ? `skipping: ${why}` : fals
     if (tmp) fs.rmSync(tmp, { recursive: true, force: true });
   });
 
-  it("opens the dialog on the tab each one names", async () => {
-    await page.eval(`${button("Queue")}.click(); true`);
-    await page.until(`${HEADING} === "Job queue"`);
-    assert.equal(await page.eval(`document.querySelector("dialog.modal.render .tabs .on")?.textContent`), "Job queue");
-    await page.eval(`${button("Render")}.click(); true`);
+  it("shows the render queue for one and the render dialog for the other", async () => {
+    await page.eval(`${button("queue")}.click(); true`);
+    await page.until(`document.querySelector('.dock-group .panel[data-panel="queue"]:not([hidden])') && document.querySelector('#rail .rail-key.on')?.dataset.panel === "queue"`);
+    await page.eval(`${button("render")}.click(); true`);
     await page.until(`${HEADING} === "Render"`);
+    await page.eval(`[...document.querySelectorAll("dialog.modal.render button.tab")].find(b => b.textContent === "Job queue").click()`);
+    await page.until(`${HEADING} === "Job queue"`);
+    await page.eval(`document.querySelector("dialog.modal.render .queue-pane .modal-actions button:last-child").click()`);
+    await page.until(`!document.querySelector("dialog.modal.render")`);
   });
 
   it("lists a job started outside the editor, saying what it works on", async () => {
-    await page.eval(`${button("Queue")}.click(); true`);
+    await page.eval(`${button("queue")}.click(); true`);
     const { job } = await page.eval(`fetch("/api/sample/job", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ t0: 0, times: [0.5] }) }).then(r => r.json())`);
-    await page.until(`[...document.querySelectorAll("dialog.modal.render .job-title")].some(t => t.textContent === "#${job} · sample · Main")`);
+    await page.until(`[...document.querySelectorAll('.q-job[data-id="${job}"] .q-title')].some(t => t.textContent === "sample · Main")`);
   });
 });

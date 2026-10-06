@@ -3,6 +3,7 @@
 //! Every tool is a thin call into the daemon's HTTP API, so the agent and the UI always
 //! see the same state; `sample_frames` returns rendered frames as image content.
 
+mod activity;
 pub mod client;
 pub mod server;
 

@@ -9,10 +9,11 @@
 import { Cmd, command, run } from "./commands";
 import { el, row } from "./dom";
 import { showInfo } from "./modal";
+import { panels } from "./panelhost";
 import { SEQUENCE_TAB, store } from "./store";
 
 /** Which part of the shortcut list a binding belongs to, in the order they are shown. */
-const SECTIONS = ["Transport", "Editing", "Overlay workbench"] as const;
+const SECTIONS = ["Panels", "Transport", "Editing", "Overlay workbench"] as const;
 type Section = (typeof SECTIONS)[number];
 
 /** Matched top to bottom; the first whose `when` passes wins. */
@@ -28,11 +29,30 @@ interface Binding {
 }
 
 const mod = (e: KeyboardEvent) => e.ctrlKey || e.metaKey;
+/** A bare letter: no Ctrl, Cmd or Alt (Shift is its own binding). */
+const bare = (e: KeyboardEvent, k: string) => e.key.toLowerCase() === k && !mod(e) && !e.altKey && !e.shiftKey;
+/** The panel letters, read off the panels that have one (`PanelSpec.key`): in den they
+ *  summon a panel, in power they bring it forward. The panels register after this module
+ *  loads, so they are asked for each time; `PANELS` marks where they go in the table. */
+const panelBindings = (): Binding[] => panels.all.filter((s) => s.key).map((s) => ({
+  when: (e: KeyboardEvent) => bare(e, s.letter), action: `panel.${s.id}`, list: { where: "Panels" as const, keys: s.letter.toUpperCase(), what: s.key! },
+}));
+const PANELS: Binding = { when: () => false, action: "" };
+const bindings = (): Binding[] => BINDINGS.flatMap((b) => (b === PANELS ? panelBindings() : [b]));
 const frame = () => 1 / store.fps;
 /** The overlay workbench is on screen, and has its own clock. */
 const onOverlay = () => store.state.tab !== SEQUENCE_TAB;
 
 const BINDINGS: Binding[] = [
+  { when: (e) => mod(e) && e.key.toLowerCase() === "k", action: Cmd.palette, preventDefault: true,
+    list: { where: "Panels", keys: "Ctrl + K", what: "Every command, by name" } },
+  { when: (e) => e.key === "`" && !mod(e) && !e.altKey, action: Cmd.toggleMode, preventDefault: true,
+    list: { where: "Panels", keys: "`", what: "Den or power: the frame and what the agent did, or every panel docked" } },
+  PANELS,
+  // A marker is a note on the frame you are looking at; the workbench has no timeline to
+  // hold one.
+  { when: (e) => bare(e, "p") && !onOverlay(), action: Cmd.addMarker, preventDefault: true,
+    list: { where: "Panels", keys: "P", what: "A marker at the playhead: a note on this frame — for the agent, or for you" } },
   // Transport means the surface you are looking at: on the workbench it is that overlay's
   // own time, not the sequence's. Everything below here is the same key on the timeline.
   { when: (e) => e.code === "Space" && onOverlay(), action: Cmd.overlayTogglePlay, preventDefault: true,
@@ -58,12 +78,10 @@ const BINDINGS: Binding[] = [
   { when: (e) => e.key === "End", action: () => store.seek(store.duration), preventDefault: true },
   { when: (e) => e.key.toLowerCase() === "s" && !mod(e) && !e.altKey, action: Cmd.split,
     list: { where: "Editing", keys: "S", what: "Split the selected clips at the playhead" } },
-  // A marker is a note on the timeline you are looking at, so the workbench, which has
-  // none, leaves M alone.
-  { when: (e) => e.key.toLowerCase() === "m" && !mod(e) && !e.altKey && !onOverlay(), action: Cmd.addMarker,
-    list: { where: "Editing", keys: "M", what: "Add a marker at the playhead, with a comment for you or an agent (on a marker already there: edit it)" } },
-  { when: (e) => e.key.toLowerCase() === "r" && !mod(e) && !e.altKey && !onOverlay(), action: Cmd.autoKey,
-    list: { where: "Editing", keys: "R", what: "Auto-key: while on, changing an effect's value writes a keyframe at the playhead" } },
+  // Auto-key gave R to the render queue (the letters are the panels' now) and kept it with
+  // Shift: still R for record, as Kdenlive and Blender have it.
+  { when: (e) => e.key.toLowerCase() === "r" && e.shiftKey && !mod(e) && !e.altKey && !onOverlay(), action: Cmd.autoKey,
+    list: { where: "Editing", keys: "Shift + R", what: "Auto-key: while on, changing an effect's value writes a keyframe at the playhead" } },
   { when: (e) => e.key === "Delete" || e.key === "Backspace", action: Cmd.deleteClip,
     list: { where: "Editing", keys: "Del", what: "Delete the selected clips" } },
   // The clipboard is the timeline's, so it is bound off the workbench only: the workbench
@@ -105,7 +123,9 @@ const GESTURES: { section: Section; does: string; what: string }[] = [
   { section: "Editing", does: "Drag a marker's flag", what: "Move it; click it to go there" },
   { section: "Editing", does: "Double-click a marker's flag", what: "Edit its comment (right-click: delete it)" },
   { section: "Editing", does: "Right-click a clip", what: "Split it there, add a transition, copy, group, delete" },
-  { section: "Editing", does: "Right-click the ruler", what: "Add a marker there" },
+  { section: "Editing", does: "Right-click the ruler", what: "A marker there, with a note or none" },
+  { section: "Panels", does: "Drag a panel's title bar", what: "Move it; near an edge it docks there, past the window's edge it becomes a window" },
+  { section: "Panels", does: "⧉ on a panel", what: "Open it in a window of its own" },
   { section: "Editing", does: "Double-click a track's name", what: "Rename it (or right-click its head)" },
   { section: "Editing", does: "Drag a track's bottom edge", what: "Make it taller or shorter; its caret folds it to a line" },
   { section: "Transport", does: "Ctrl + wheel", what: "Zoom the timeline around the pointer" },
@@ -116,7 +136,7 @@ const GESTURES: { section: Section; does: string; what: string }[] = [
 /** How a command's key is written, for the places that name one beside a button or in a
  *  tooltip — read off the binding, so it cannot say something the key does not do. */
 export function keysFor(cmd: string): string | undefined {
-  return BINDINGS.find((b) => b.action === cmd)?.list?.keys;
+  return bindings().find((b) => b.action === cmd)?.list?.keys;
 }
 
 /** Show the list: the documented bindings, then the gestures, by section. Registered as a
@@ -130,7 +150,7 @@ function showShortcuts(): void {
     // A chord is drawn as keys — `Ctrl + C / X` as three of them with the words between —
     // and a gesture as the sentence it is, because "Drag a clip" is three words, not three
     // keys to press.
-    for (const b of BINDINGS) {
+    for (const b of bindings()) {
       if (b.list?.where !== section) continue;
       const how = el("span", "sc-keys");
       for (const part of b.list.keys.split(" ")) how.appendChild(part === "+" || part === "/" ? el("span", "muted", part) : el("kbd", "", part));
@@ -161,7 +181,7 @@ export function installShortcuts(): void {
     // that after clicking a track's mute — the last thing clicked keeps the focus — the
     // arrows did nothing here and scrolled the timeline instead.
     if (target.closest?.("button") && (e.code === "Space" || e.key === "Enter")) return;
-    const b = BINDINGS.find((x) => x.when(e));
+    const b = bindings().find((x) => x.when(e));
     if (!b) return;
     if (b.preventDefault) e.preventDefault();
     if (typeof b.action === "string") run(b.action);

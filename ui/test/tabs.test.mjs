@@ -75,7 +75,7 @@ describe("the open sequence", { skip: why ? `skipping: ${why}` : false }, () => 
   });
 
   it("opening another sequence gives it a tab and makes it the one being edited", async () => {
-    await page.eval(`(() => { const s = document.querySelector("#topbar select"); s.value = "intro"; s.dispatchEvent(new Event("change", { bubbles: true })); })()`);
+    await page.eval(`(() => { document.querySelector('#library .bin-row[data-sel="bin:intro"]').dispatchEvent(new MouseEvent("dblclick", { bubbles: true })); })()`);
     await page.until(`${TABS} === "Main | Intro*"`);
     assert.equal(await page.eval(OPEN_SEQUENCE), "intro", "the daemon must hold what the strip shows as open");
     // The timeline is the open sequence's, not the tab's neighbour's.
@@ -111,7 +111,7 @@ describe("the open sequence", { skip: why ? `skipping: ${why}` : false }, () => 
     const pick = (v) => `(() => { const t = ${seqSel}; t.value = ${JSON.stringify(v)}; t.dispatchEvent(new Event("change", { bubbles: true })); })()`;
 
     // Even while another sequence is being edited, the master is what is offered first.
-    await page.eval(`(() => { const s = document.querySelector("#topbar select"); s.value = "intro"; s.dispatchEvent(new Event("change", { bubbles: true })); })()`);
+    await page.eval(`(() => { document.querySelector('#library .bin-row[data-sel="bin:intro"]').dispatchEvent(new MouseEvent("dblclick", { bubbles: true })); })()`);
     await page.until(`${TABS} === "Main | Intro*"`);
     await page.eval(`${renderBtn}.click()`);
     await page.until(`${dialog} && ${dialog}.querySelector(".render-pane select:not([title]) option")`);
@@ -121,7 +121,7 @@ describe("the open sequence", { skip: why ? `skipping: ${why}` : false }, () => 
     await page.until(`${dialog}.querySelector(".render-pane input").placeholder === "renders/tabs-youtube-1080p.mp4"`);
 
     await page.eval(`${go}.click()`);
-    assert.deepEqual(await page.until(`window.__rendered`), { preset: "youtube-1080p", sequence: "main" }, "the master, named: the person picked it");
+    assert.deepEqual(await page.until(`window.__rendered`), { preset: "youtube-1080p", sequence: "main", origin: "ui: render" }, "the master, named: the person picked it");
     // Asking for a render shows the queue it joined.
     await page.until(`${dialog}.querySelector(".queue-pane").hidden === false`);
 
@@ -130,7 +130,7 @@ describe("the open sequence", { skip: why ? `skipping: ${why}` : false }, () => 
     await page.eval(pick("intro"));
     await page.until(`${dialog}.querySelector(".render-pane input").placeholder === "renders/tabs-intro-youtube-1080p.mp4"`);
     await page.eval(`window.__rendered = null; ${go}.click()`);
-    assert.deepEqual(await page.until(`window.__rendered`), { preset: "youtube-1080p", sequence: "intro" });
+    assert.deepEqual(await page.until(`window.__rendered`), { preset: "youtube-1080p", sequence: "intro", origin: "ui: render" });
 
     // Put the page back as it was found: these cases share one browser, in order.
     await page.eval(`${dialog}.querySelector(".queue-pane .modal-actions button:last-child").click()`);

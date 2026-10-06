@@ -38,6 +38,35 @@ export const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n ==
 /** `brightness` → `Brightness`: a key or a kind as a label. */
 export const capitalize = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 
+/** Make `parent`'s children exactly `kids`, in order, moving only what is out of place. An
+ *  element re-inserted where it already is would still be detached and attached again —
+ *  which reloads every iframe inside it (the dock's frame is full of them), and lays out a
+ *  long list again when one row was added at its top. */
+export function reconcile(parent: HTMLElement, kids: HTMLElement[]): void {
+  // What goes, first: left in place, one replaced row would shift every row after it by
+  // one, and each would be moved.
+  const keep = new Set(kids);
+  for (const c of [...parent.children]) if (!keep.has(c as HTMLElement)) c.remove();
+  kids.forEach((k, i) => { if (parent.children[i] !== k) parent.insertBefore(k, parent.children[i] ?? null); });
+}
+
+/** Set `e`'s text only when it differs: an unchanged string written again still replaces
+ *  the text node, and a page that changed lays itself out again. For what is written on
+ *  every tick or every job event. */
+export function setText(e: HTMLElement, text: string): void {
+  if (e.textContent !== text) e.textContent = text;
+}
+
+/** What this browser keeps for the editor (`localStorage`). A private window has no
+ *  storage and throws on access, which must cost only the remembering: null then, and a
+ *  write that keeps nothing beyond this session. */
+export const loadLocal = (key: string): string | null => { try { return localStorage.getItem(key); } catch { return null; } };
+export const saveLocal = (key: string, v: string): void => { try { localStorage.setItem(key, v); } catch { /* this session only */ } };
+/** A kept object, laid over `fallback` so a field added since it was kept has its default. */
+export function loadLocalJSON<T extends object>(key: string, fallback: T): T {
+  try { return { ...fallback, ...JSON.parse(loadLocal(key) ?? "{}") }; } catch { return fallback; }
+}
+
 /** Under this many pixels a press is a click, not a drag. */
 export const DEAD_ZONE = 3;
 

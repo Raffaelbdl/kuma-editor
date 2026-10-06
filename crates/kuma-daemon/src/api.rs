@@ -12,12 +12,12 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use kuma_core::edit::EditError;
 use kuma_core::{BinSource, Project};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tower_http::services::ServeDir;
 use tower_http::set_header::SetResponseHeaderLayer;
 
-use crate::jobs::{self, MeasureRequest, MediaMeasureRequest, RenderRequest, SampleRequest, TranscribeRequest};
+use crate::jobs::{self, Asked, MeasureRequest, MediaMeasureRequest, RenderRequest, SampleRequest, TranscribeRequest};
 use crate::preview::{self, EngineEvent};
 use crate::state::{lock, read, AppState};
 
@@ -32,6 +32,11 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/project/redo", post(redo))
         .route("/api/project/validate", get(validate_project))
         .route("/api/project/canonical", post(canonical_project))
+        .route("/api/history", get(history))
+        .route("/api/history/restore", post(restore))
+        .route("/api/activity", get(activity).post(report_activity))
+        .route("/api/markers", get(markers))
+        .route("/api/markers/done", post(tick_marker))
         .route("/api/sequence", get(get_sequence).post(open_sequence))
         .route("/api/schema", get(schema))
         .route("/api/blueprints", get(blueprints).post(reload_blueprints))
@@ -60,6 +65,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/bake", post(bake))
         .route("/api/sample", post(sample))
         .route("/api/sample/job", post(sample_job))
+        .route("/api/samples/{*file}", get(sample_file))
         .route("/api/audio/measure", post(measure_audio))
         .route("/api/media/measure", post(measure_media))
         .route("/api/snapshot", get(snapshot))
@@ -210,6 +216,10 @@ struct PatchProject {
     base_revision: Option<u64>,
     #[serde(default = "default_origin")]
     origin: String,
+    /// Ids of the markers this edit answers (`GET /api/markers`), recorded on its history
+    /// entry.
+    #[serde(default)]
+    answers: Vec<String>,
 }
 fn default_origin() -> String {
     "ui".into()
@@ -224,7 +234,7 @@ async fn patch_project(State(st): S, Json(req): Json<PatchProject>) -> ApiResult
             (None, Some(path)) => read_patch(&st, &path).map_err(bad_request_err)?,
             _ => return Err(ApiError::bad_request("pass the operations as `patch`, or a file in the project holding them as `patch_path`: one of the two")),
         };
-        let (rev, warnings) = st.apply_patch(&patch.0, req.base_revision, &req.origin)?;
+        let (rev, warnings) = st.apply_patch(&patch.0, req.base_revision, &req.origin, &req.answers)?;
         Ok(json!({ "revision": rev, "warnings": warnings, "ops": patch.0.len() }))
     })
     .await??;
@@ -240,11 +250,115 @@ fn read_patch(st: &AppState, path: &str) -> anyhow::Result<json_patch::Patch> {
     serde_json::from_str(&text).with_context(|| format!("`{path}` is not a JSON Patch (an array of operations)"))
 }
 
-async fn undo(State(st): S) -> ApiResult {
-    Ok(Json(json!({ "revision": blocking(move || st.undo()).await?? })))
+/// Who asks for an undo or redo (`ui`, `mcp`), for the history to name. Optional: the
+/// step is the same whoever asks, and an empty body is still an undo.
+#[derive(Deserialize, Default)]
+struct StepBy {
+    #[serde(default)]
+    origin: Option<String>,
 }
-async fn redo(State(st): S) -> ApiResult {
-    Ok(Json(json!({ "revision": blocking(move || st.redo()).await?? })))
+
+async fn undo(State(st): S, body: Option<Json<StepBy>>) -> ApiResult {
+    let by = body.and_then(|b| b.0.origin);
+    Ok(Json(json!({ "revision": blocking(move || st.undo(by.as_deref())).await?? })))
+}
+async fn redo(State(st): S, body: Option<Json<StepBy>>) -> ApiResult {
+    let by = body.and_then(|b| b.0.origin);
+    Ok(Json(json!({ "revision": blocking(move || st.redo(by.as_deref())).await?? })))
+}
+
+// ---------- history, activity, markers' answers (session state, never the document) ----------
+
+#[derive(Deserialize)]
+struct Limit {
+    #[serde(default)]
+    limit: Option<usize>,
+}
+
+/// `body` as a JSON response, serialised now rather than once the handler has returned
+/// (which is when `Json` does it), so a list can be written straight from the lock it is
+/// read under instead of copied out first.
+fn json_now(body: &impl Serialize) -> Result<Response, ApiError> {
+    let bytes = serde_json::to_vec(body).map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    Ok(([(header::CONTENT_TYPE, "application/json")], bytes).into_response())
+}
+
+#[derive(Serialize)]
+struct HistoryList<'a> {
+    current: u64,
+    entries: Vec<&'a crate::history::Entry>,
+}
+
+/// Every revision made and patch refused, newest first, beside the current revision.
+async fn history(State(st): S, Query(q): Query<Limit>) -> Result<Response, ApiError> {
+    let h = lock(&st.history);
+    // The history's lock is taken before the project's, never after.
+    let current = read(&st.project).revision;
+    json_now(&HistoryList { current, entries: h.newest(q.limit.unwrap_or(crate::history::ENTRIES)) })
+}
+
+#[derive(Deserialize)]
+struct Restore {
+    revision: u64,
+    #[serde(default)]
+    origin: Option<String>,
+}
+
+/// The document as it was at a revision, as one new undoable edit.
+async fn restore(State(st): S, Json(req): Json<Restore>) -> ApiResult {
+    let (rev, warnings) = blocking(move || st.restore(req.revision, req.origin.as_deref())).await?.map_err(|e| match e {
+        crate::state::RestoreError::Unknown(_) => ApiError::not_found(e),
+        crate::state::RestoreError::Edit(e) => ApiError::from(e),
+    })?;
+    Ok(Json(json!({ "revision": rev, "warnings": warnings })))
+}
+
+#[derive(Serialize)]
+struct ActivityList<'a> {
+    activity: Vec<&'a crate::activity::Record>,
+}
+
+/// The agent's recent tool calls, newest first.
+async fn activity(State(st): S, Query(q): Query<Limit>) -> Result<Response, ApiError> {
+    let a = lock(&st.activity);
+    json_now(&ActivityList { activity: a.newest(q.limit.unwrap_or(crate::activity::RECORDS)) })
+}
+
+/// The MCP server reporting a tool call that started no job, once it has ended (a call
+/// that started one is the job's to record, `jobs::spawn_inner`). Answered with its id.
+async fn report_activity(State(st): S, Json(report): Json<crate::activity::Report>) -> ApiResult {
+    let current = read(&st.project).revision;
+    let record = lock(&st.activity).call(report, current, crate::history::now_ms(), &st.config.samples_dir());
+    let id = record.id;
+    let _ = st.events.send(crate::state::Event::Activity(Box::new(record)));
+    Ok(Json(json!({ "id": id })))
+}
+
+#[derive(Serialize)]
+struct MarkerList {
+    markers: Vec<crate::markers::MarkerInfo>,
+}
+
+/// Every marker, the master's first, each with who left it and whether it is done.
+async fn markers(State(st): S) -> Json<MarkerList> {
+    Json(MarkerList { markers: st.marker_list() })
+}
+
+#[derive(Deserialize)]
+struct TickMarker {
+    id: String,
+    done: bool,
+    /// Who ticks it, as an edit's origin: the answer's `done_by` is its author.
+    #[serde(default = "default_origin")]
+    origin: String,
+}
+
+/// Tick a marker done by hand, or untick it.
+async fn tick_marker(State(st): S, Json(req): Json<TickMarker>) -> ApiResult {
+    if !st.tick_marker(&req.id, req.done, &req.origin) {
+        return Err(ApiError::not_found(format!("no marker `{}`: `GET /api/markers` lists them", req.id)));
+    }
+    Ok(Json(json!({ "id": req.id, "done": req.done })))
 }
 
 /// The document's issues, and what its overlay entries will not be drawn in (fonts that are
@@ -498,9 +612,10 @@ struct ThumbsReq {
 
 /// Previews (a still and an animated WebP) for blueprints and overlay bin entries, as a
 /// background job: the ones named, or all of them.
-async fn thumbs(State(st): S, Json(req): Json<ThumbsReq>) -> Json<Value> {
+async fn thumbs(State(st): S, Json(asked): Json<Asked<ThumbsReq>>) -> Json<Value> {
+    let (by, req) = asked.split();
     let s2 = st.clone();
-    let id = jobs::spawn(st, "thumbs", move |progress| {
+    let id = jobs::spawn_with(st, "thumbs", Value::Null, by, move |progress| {
         let _cache = read(&s2.cache_users);
         let all = req.blueprints.is_none() && req.bins.is_none();
         let wants = |list: &Option<Vec<String>>, id: &String| all || list.as_ref().is_some_and(|l| l.contains(id));
@@ -707,13 +822,29 @@ async fn unused_entries(State(st): S) -> Json<Value> {
 
 /// Speech to text on a media entry, as a job: whisper takes seconds to minutes. The
 /// result names the new `subtitles` bin entry.
-async fn transcribe(State(st): S, Json(req): Json<TranscribeRequest>) -> Json<Value> {
+async fn transcribe(State(st): S, Json(asked): Json<Asked<TranscribeRequest>>) -> Json<Value> {
+    // The job's origin is its edit's too.
+    let origin = asked.origin.clone().filter(|o| !o.trim().is_empty()).unwrap_or_else(jobs::default_origin);
+    let (by, mut req) = asked.split();
+    req.origin = origin;
     let s2 = st.clone();
     let params = json!({ "bin": req.bin, "clip": req.clip });
-    Json(json!({ "job": jobs::spawn_with(st, "transcribe", params, move |progress| jobs::transcribe(&s2, &req, progress)) }))
+    Json(json!({ "job": jobs::spawn_with(st, "transcribe", params, by, move |progress| jobs::transcribe(&s2, &req, progress)) }))
 }
 
 // ---------- jobs ----------
+
+/// A sampled frame or contact sheet, from `.kuma/samples/`: what the editor shows of the
+/// frames the agent looked at. Holds the cache shared, as every reader of it does, so a
+/// prune cannot delete the file mid-read.
+async fn sample_file(State(st): S, Path(file): Path<String>) -> Result<Response, ApiError> {
+    let path = safe_join(&st.config.samples_dir(), &file).ok_or(ApiError::bad_request("bad path"))?;
+    blocking(move || {
+        let _cache = read(&st.cache_users);
+        file_response(&path)
+    })
+    .await?
+}
 
 
 /// `jobs::render_target` off the async threads: it can try a hardware encoder.
@@ -724,7 +855,8 @@ async fn target(st: &Arc<AppState>, req: &RenderRequest) -> Result<(String, &'st
 
 /// Queue a render. Sequence and output are settled now, so the queue shows what will be
 /// written whatever is opened meanwhile, and a bad preset is refused here.
-async fn render(State(st): S, Json(mut req): Json<RenderRequest>) -> ApiResult {
+async fn render(State(st): S, Json(asked): Json<Asked<RenderRequest>>) -> ApiResult {
+    let (by, mut req) = asked.split();
     let (sequence, preset, output) = target(&st, &req).await?;
     let params = json!({
         "sequence": sequence, "preset": preset.id, "output": output, "path": jobs::project_relative(&st, &output),
@@ -733,7 +865,7 @@ async fn render(State(st): S, Json(mut req): Json<RenderRequest>) -> ApiResult {
     req.sequence = Some(sequence);
     req.output = Some(output);
     let s2 = st.clone();
-    let id = jobs::spawn_cancellable(st, "render", params, move |progress, cancel| jobs::render(&s2, &req, progress, cancel));
+    let id = jobs::spawn_cancellable(st, "render", params, by, move |progress, cancel| jobs::render(&s2, &req, progress, cancel));
     Ok(Json(json!({ "job": id })))
 }
 
@@ -755,9 +887,10 @@ struct BakeReq {
     clips: Option<Vec<String>>,
 }
 
-async fn bake(State(st): S, Json(req): Json<BakeReq>) -> Json<Value> {
+async fn bake(State(st): S, Json(asked): Json<Asked<BakeReq>>) -> Json<Value> {
+    let (by, req) = asked.split();
     let s2 = st.clone();
-    let id = jobs::spawn_with(st, "bake", json!({ "clips": req.clips }), move |progress| {
+    let id = jobs::spawn_with(st, "bake", json!({ "clips": req.clips }), by, move |progress| {
         let project = read(&s2.project).clone();
         let bakes = jobs::bake_all(&s2, &project, req.clips.as_deref(), progress)?;
         Ok(json!({ "bakes": bakes.iter().map(|(k, b)| json!({ "clip": k, "resource": b.resource, "still": b.is_still })).collect::<Vec<_>>() }))
@@ -772,30 +905,34 @@ async fn sample(State(st): S, Json(req): Json<SampleRequest>) -> ApiResult {
 
 /// The same sample as a job, for a caller that must not block on the bakes it needs:
 /// progress names the overlay baking, and the result is what `/api/sample` answers.
-async fn sample_job(State(st): S, Json(req): Json<SampleRequest>) -> Json<Value> {
+async fn sample_job(State(st): S, Json(asked): Json<Asked<SampleRequest>>) -> Json<Value> {
+    let (by, req) = asked.split();
     let s2 = st.clone();
-    // The sequence it samples, the master unless named, so the queue can say so.
+    // The sequence it samples, the master unless named, so the queue can say so; and the
+    // moments and region, which the agent's activity shows.
     let sequence = req.overlay.is_none().then(|| req.sequence.clone().unwrap_or_else(|| read(&st.project).master.clone()));
-    let params = json!({ "sequence": sequence, "overlay": req.overlay, "times": req.times });
-    let id = jobs::spawn_with(st, "sample", params, move |progress| jobs::sample(&s2, &req, progress));
+    let params = json!({ "sequence": sequence, "overlay": req.overlay, "times": req.times, "t0": req.t0, "t1": req.t1, "rect": req.rect });
+    let id = jobs::spawn_with(st, "sample", params, by, move |progress| jobs::sample(&s2, &req, progress));
     Json(json!({ "job": id }))
 }
 
 /// How loud a sequence is, as a cancellable job: it renders the sound, which takes a while
 /// for a long video. The result is `jobs::measure_audio`'s.
-async fn measure_audio(State(st): S, Json(req): Json<MeasureRequest>) -> Json<Value> {
+async fn measure_audio(State(st): S, Json(asked): Json<Asked<MeasureRequest>>) -> Json<Value> {
+    let (by, req) = asked.split();
     let s2 = st.clone();
     let params = json!({ "sequence": req.sequence, "mute": req.mute, "solo": req.solo });
-    Json(json!({ "job": jobs::spawn_cancellable(st, "measure", params, move |progress, cancel| jobs::measure_audio(&s2, &req, progress, cancel)) }))
+    Json(json!({ "job": jobs::spawn_cancellable(st, "measure", params, by, move |progress, cancel| jobs::measure_audio(&s2, &req, progress, cancel)) }))
 }
 
 /// How loud one source is and where it is quiet, as a cancellable job: ffmpeg decodes the
 /// whole stretch, which takes a while for a long recording. The result is
 /// `jobs::measure_media`'s.
-async fn measure_media(State(st): S, Json(req): Json<MediaMeasureRequest>) -> Json<Value> {
+async fn measure_media(State(st): S, Json(asked): Json<Asked<MediaMeasureRequest>>) -> Json<Value> {
+    let (by, req) = asked.split();
     let s2 = st.clone();
     let params = json!({ "bin": req.bin, "path": req.path, "range": req.range });
-    Json(json!({ "job": jobs::spawn_cancellable(st, "measure-media", params, move |progress, cancel| jobs::measure_media(&s2, &req, progress, cancel)) }))
+    Json(json!({ "job": jobs::spawn_cancellable(st, "measure-media", params, by, move |progress, cancel| jobs::measure_media(&s2, &req, progress, cancel)) }))
 }
 
 async fn cache_usage(State(st): S) -> ApiResult {
@@ -809,9 +946,10 @@ struct PruneReq {
 }
 
 /// A job: it waits for renders using the cache.
-async fn cache_prune(State(st): S, Json(req): Json<PruneReq>) -> Json<Value> {
+async fn cache_prune(State(st): S, Json(asked): Json<Asked<PruneReq>>) -> Json<Value> {
+    let (by, req) = asked.split();
     let s2 = st.clone();
-    let id = jobs::spawn(st, "prune", move |progress| Ok(json!(crate::cache::prune(&s2, req.all, progress)?)));
+    let id = jobs::spawn_with(st, "prune", json!({ "all": req.all }), by, move |progress| Ok(json!(crate::cache::prune(&s2, req.all, progress)?)));
     Json(json!({ "job": id }))
 }
 
@@ -873,7 +1011,12 @@ async fn events_ws(State(st): S, ws: WebSocketUpgrade) -> Response {
                     Ok(ev) => {
                         if socket.send(Message::Text(serde_json::to_string(&ev).unwrap().into())).await.is_err() { break; }
                     }
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                    // Events were dropped, and a client appends history and activity
+                    // from them: close, and it reconnects and reloads everything.
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                        let _ = socket.send(Message::Close(None)).await;
+                        break;
+                    }
                     Err(_) => break,
                 },
                 msg = socket.recv() => match msg {

@@ -9,6 +9,8 @@ use kuma_core::edit::{self, EditError};
 use kuma_core::manifest::{ManifestError, OverlayManifest};
 use kuma_core::{Issue, Project, ValidationContext};
 use kuma_overlay::{Baker, Transcriber};
+
+use crate::history::{self, Change, History, Kind, Snapshot, Target};
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 
@@ -183,11 +185,23 @@ pub enum Event {
     Job(crate::jobs::Job),
     /// Finished jobs were cleared from the table; clients drop them too.
     JobsCleared { ids: Vec<u64> },
+    /// An agent's tool call started or ended (`crate::activity`).
+    /// Boxed: a record is several times the size of every other event.
+    Activity(Box<crate::activity::Record>),
+    /// A revision was made, or a patch refused (`crate::history`).
+    History(crate::history::Entry),
+    /// The marker list, whole and as `GET /api/markers` lists it, sent whenever it can
+    /// have changed: a marker edited (by an edit, a step or a restore), answered, ticked or
+    /// unticked. At most one per operation, after its `history`.
+    Markers { markers: Vec<crate::markers::MarkerInfo> },
 }
 
+/// Documents to step back and forward to, each with the origin of the edit that left it.
+/// Snapshots, shared with the history's: the document a step leaves is the one the history
+/// kept when it was made, so it costs nothing more to keep here.
 pub struct UndoStack {
-    pub past: Vec<(Project, String)>,
-    pub future: Vec<(Project, String)>,
+    pub past: Vec<(Snapshot, String)>,
+    pub future: Vec<(Snapshot, String)>,
 }
 
 /// The blueprints installed in the libraries, by folder name.
@@ -219,6 +233,48 @@ pub struct AppState {
     /// Shared by renders, samples, bakes and thumbnails while they read the cache;
     /// exclusive for a prune.
     pub cache_users: RwLock<()>,
+    /// Every revision made and patch refused, and recent documents to restore. Appended
+    /// under the edit lock, where the change happens, so its order is the revisions' order.
+    pub history: Mutex<History>,
+    /// The agent's recent tool calls, as the MCP server reports them.
+    pub activity: Mutex<crate::activity::Activity>,
+    /// Which markers are done, by id. Session state like the history it is derived from.
+    answers: Mutex<crate::markers::Answers>,
+}
+
+/// Why a revision could not be restored.
+#[derive(Debug, thiserror::Error)]
+pub enum RestoreError {
+    #[error("revision {0} is not kept: only the last {n} revisions this daemon made can be restored", n = crate::history::SNAPSHOTS)]
+    Unknown(u64),
+    #[error(transparent)]
+    Edit(#[from] EditError),
+}
+
+/// What an edit records about itself beyond its origin.
+#[derive(Default)]
+pub struct Step<'a> {
+    pub base_revision: Option<u64>,
+    /// The markers it answers, by id.
+    pub answers: &'a [String],
+}
+
+/// An edit's result as `AppState::edit` wants it from the closure that makes it: the
+/// document, and what the history says it touched and changed.
+struct Edited {
+    outcome: edit::EditOutcome,
+    targets: Vec<Target>,
+    changes: Vec<Change>,
+    ops: usize,
+}
+
+impl Edited {
+    /// A patch's, made from `before`: what it names, and how those changed.
+    fn patch(before: &Project, outcome: edit::EditOutcome, ops: &[json_patch::PatchOperation]) -> Edited {
+        let targets = history::patch_targets(before, Some(&outcome.project), ops);
+        let changes = history::changes(before, &outcome.project, &targets);
+        Edited { outcome, targets, changes, ops: ops.len() }
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -268,8 +324,17 @@ impl AppState {
             preview: crate::preview::PreviewHandle::default(),
             open_sequence: Mutex::new(None),
             cache_users: RwLock::new(()),
+            history: Mutex::new(History::default()),
+            activity: Mutex::new(Default::default()),
+            answers: Mutex::new(Default::default()),
             config,
         };
+        // The revision it opened at can be restored like any it makes.
+        let opened = {
+            let p = read(&st.project);
+            (p.revision, history::snapshot(&p)?)
+        };
+        lock(&st.history).keep(opened.0, opened.1);
         st.reload_blueprints();
         if !st.config.project_file.is_file() {
             st.save()?;
@@ -358,8 +423,9 @@ impl AppState {
         Ok(())
     }
 
-    /// Persist `next`, then make it current. Nothing changes in memory if the write
-    /// fails, so a failed edit never leaves clients on a revision the disk lacks.
+    /// Persist `next`, then make it current, handing back the document it replaced. Nothing
+    /// changes in memory if the write fails, so a failed edit never leaves clients on a
+    /// revision the disk lacks.
     fn commit(&self, next: Project, origin: &str) -> anyhow::Result<Project> {
         self.write_file(&next)?;
         let rev = next.revision;
@@ -368,27 +434,102 @@ impl AppState {
         Ok(prev)
     }
 
-    fn edit<F>(&self, origin: &str, f: F) -> Result<(u64, Vec<Issue>), EditError>
+    fn edit<F>(&self, origin: &str, kind: Kind, step: &Step, f: F) -> Result<(u64, Vec<Issue>), EditError>
     where
-        F: FnOnce(&Project) -> Result<edit::EditOutcome, EditError>,
+        F: FnOnce(&Project) -> Result<Edited, EditError>,
     {
         let _guard = lock(&self.edit);
-        // Validate on a copy: no user-facing code runs while the project lock is held.
-        let current = read(&self.project).clone();
-        let out = f(&current)?;
-        let rev = out.project.revision;
-        let prev = self.commit(out.project, origin).map_err(|e| EditError::Patch(e.to_string()))?;
-        let mut u = lock(&self.undo);
-        u.past.push((prev, origin.to_string()));
-        if u.past.len() > 200 {
-            u.past.remove(0);
+        // Read in place, not copied: `commit` is the only writer and runs under the edit
+        // lock held here, so the read lock blocks nobody while `f` runs. Let go before the
+        // commit takes the write lock.
+        let current = read(&self.project);
+        let Edited { mut outcome, targets, changes, ops } = f(&current)?;
+        // A step restores a document as it was; an edit's new markers say who left them,
+        // in what is saved and what the history keeps.
+        if kind == Kind::Edit {
+            crate::markers::stamp(&current, &mut outcome.project, origin);
         }
-        u.future.clear();
-        Ok((rev, out.warnings))
+        let markers_differ = crate::markers::differ(&current, &outcome.project);
+        drop(current);
+        let rev = outcome.project.revision;
+        let next = history::snapshot(&outcome.project).map_err(|e| EditError::Patch(e.to_string()))?;
+        let prev = self.commit(outcome.project, origin).map_err(|e| EditError::Patch(e.to_string()))?;
+        let prev = self.kept(&prev);
+        let entry = history::Entry { ops, base_revision: step.base_revision, changes, answers: step.answers.to_vec(), ..history::Entry::new(kind, origin, Some(rev), &targets) };
+        self.landed(rev, next, entry, markers_differ, |u| {
+            u.past.push((prev, origin.to_string()));
+            if u.past.len() > 200 {
+                u.past.remove(0);
+            }
+            u.future.clear();
+        });
+        Ok((rev, outcome.warnings))
     }
 
-    pub fn apply_patch(&self, patch: &[json_patch::PatchOperation], base: Option<u64>, origin: &str) -> Result<(u64, Vec<Issue>), EditError> {
-        self.edit(origin, |p| edit::apply_patch(p, base, patch, &self.validation_context()))
+    /// `p`, a document just replaced, as the snapshot the history kept when it landed — it
+    /// was current, so it is the newest kept — or serialised afresh should it not be there.
+    fn kept(&self, p: &Project) -> Snapshot {
+        let kept = lock(&self.history).snapshot(p.revision);
+        // It was written to disk as JSON when it landed, so it serialises.
+        kept.unwrap_or_else(|| history::snapshot(p).expect("a committed document serialises"))
+    }
+
+    /// What every step does once committed at `revision`, the history's entry and whether
+    /// the markers changed worked out from the two documents before: `push` onto the undo
+    /// stack, record `entry`, send the markers if they can have changed, keep `next` (the
+    /// committed document) to restore.
+    fn landed(&self, revision: u64, next: Snapshot, entry: history::Entry, markers_differ: bool, push: impl FnOnce(&mut UndoStack)) {
+        push(&mut lock(&self.undo));
+        let answered = self.record(entry);
+        if answered || markers_differ {
+            self.send_markers(&lock(&self.answers));
+        }
+        lock(&self.history).keep(revision, next);
+    }
+
+    /// Append to the history and tell every client; an entry naming markers answers them.
+    /// Returns whether it did, for the caller to send the markers once with whatever else
+    /// changed them.
+    fn record(&self, entry: history::Entry) -> bool {
+        let answering = entry.revision.filter(|_| !entry.answers.is_empty());
+        if let Some(revision) = answering {
+            let mut answers = lock(&self.answers);
+            for id in &entry.answers {
+                answers.insert(id.clone(), crate::markers::Done { revision, by: entry.author.clone() });
+            }
+        }
+        lock(&self.history).push(entry.clone());
+        let _ = self.events.send(Event::History(entry));
+        answering.is_some()
+    }
+
+    /// Every marker, the master's first, each with who left it and whether it is done:
+    /// `GET /api/markers`.
+    pub fn marker_list(&self) -> Vec<crate::markers::MarkerInfo> {
+        let answers = lock(&self.answers);
+        crate::markers::list(&read(&self.project), &answers)
+    }
+
+    /// Broadcast the marker list. Built and sent while `answers` (its lock) is held, so
+    /// whichever list is sent last was built last and clients end on the current one. The
+    /// answers lock is always taken before the project's.
+    fn send_markers(&self, answers: &crate::markers::Answers) {
+        let markers = crate::markers::list(&read(&self.project), answers);
+        let _ = self.events.send(Event::Markers { markers });
+    }
+
+    /// A patch, naming the markers it answers (none: `&[]`). A refusal is recorded too: the
+    /// person sees what was tried and why it did not land, not only what did.
+    pub fn apply_patch(&self, patch: &[json_patch::PatchOperation], base: Option<u64>, origin: &str, answers: &[String]) -> Result<(u64, Vec<Issue>), EditError> {
+        let step = Step { base_revision: base, answers };
+        let ctx = self.validation_context();
+        let applied = self.edit(origin, Kind::Edit, &step, |p| Ok(Edited::patch(p, edit::apply_patch(p, base, patch, &ctx)?, patch)));
+        if let Err(e) = &applied {
+            let targets = history::patch_targets(&read(&self.project), None, patch);
+            // Answers nothing: it made no revision.
+            self.record(history::Entry { ops: patch.len(), base_revision: base, error: Some(history::refusal(e)), answers: answers.to_vec(), ..history::Entry::new(Kind::Refused, origin, None, &targets) });
+        }
+        applied
     }
 
     /// Compose a patch *from the project as it is now* and apply it, both under the edit
@@ -398,43 +539,113 @@ impl AppState {
     /// like any patch's.
     pub fn apply_built<T>(&self, origin: &str, base: Option<u64>, build: impl FnOnce(&Project) -> anyhow::Result<(Vec<json_patch::PatchOperation>, T)>) -> anyhow::Result<(T, u64, Vec<Issue>)> {
         let mut carried = None;
-        let (rev, warnings) = self.edit(origin, |p| {
+        let step = Step { base_revision: base, ..Default::default() };
+        let (rev, warnings) = self.edit(origin, Kind::Edit, &step, |p| {
             let (ops, value) = build(p).map_err(|e| EditError::Patch(format!("{e:#}")))?;
             carried = Some(value);
-            edit::apply_patch(p, base, &ops, &self.validation_context())
+            Ok(Edited::patch(p, edit::apply_patch(p, base, &ops, &self.validation_context())?, &ops))
         })?;
         Ok((carried.expect("build ran"), rev, warnings))
     }
 
+    /// Make the document what it was at `revision`, as one new edit: validated, undoable,
+    /// and at a new revision number, so no client mistakes it for the old one — the stance
+    /// undo takes. `origin` says who asked (`ui`, `mcp`).
+    pub fn restore(&self, revision: u64, origin: Option<&str>) -> Result<(u64, Vec<Issue>), RestoreError> {
+        // Copied out (a shared handle) and parsed after the history is let go of.
+        let snap = lock(&self.history).snapshot(revision).ok_or(RestoreError::Unknown(revision))?;
+        let doc = history::parse(&snap).map_err(|e| EditError::Patch(e.to_string()))?;
+        drop(snap);
+        let label = format!("{}: restore r{revision}", origin.unwrap_or("other"));
+        let ctx = self.validation_context();
+        Ok(self.edit(&label, Kind::Restore, &Step::default(), |p| {
+            // `replace_project` sets the revision past the current one, whatever the snapshot says.
+            let outcome = edit::replace_project(p, None, doc, &ctx)?;
+            let (targets, changes) = history::diff(p, &outcome.project);
+            Ok(Edited { targets, changes, ops: 1, outcome })
+        })?)
+    }
+
+    /// Tick a marker done by hand (the current revision, by the user), or untick it, which
+    /// forgets an edit's answer too, and send the list. `false` when there is no such marker.
+    /// Tick a marker done, or untick it. `origin` says who (`ui`, `cli: …`), read as an
+    /// edit's author is, so a tick from anywhere but the editor is not taken for a person's.
+    pub fn tick_marker(&self, id: &str, done: bool, origin: &str) -> bool {
+        let mut answers = lock(&self.answers);
+        let revision = {
+            let p = read(&self.project);
+            if !crate::markers::exists(&p, id) {
+                return false;
+            }
+            p.revision
+        };
+        if done {
+            answers.insert(id.to_string(), crate::markers::Done { revision, by: crate::history::author(origin).into() });
+        } else {
+            answers.remove(id);
+        }
+        self.send_markers(&answers);
+        true
+    }
+
     /// Undo/redo swap whole snapshots; the revision keeps increasing so clients never
     /// confuse an undone state with an older one. `Ok(None)` means nothing to undo/redo.
-    pub fn undo(&self) -> anyhow::Result<Option<u64>> {
-        self.swap(false)
+    /// `by` is the origin of the request (`ui`, `mcp`), which the history names as the
+    /// step's author; the step itself is the same either way.
+    pub fn undo(&self, by: Option<&str>) -> anyhow::Result<Option<u64>> {
+        self.swap(false, by)
     }
 
-    pub fn redo(&self) -> anyhow::Result<Option<u64>> {
-        self.swap(true)
+    pub fn redo(&self, by: Option<&str>) -> anyhow::Result<Option<u64>> {
+        self.swap(true, by)
     }
 
-    fn swap(&self, redo: bool) -> anyhow::Result<Option<u64>> {
+    fn swap(&self, redo: bool, by: Option<&str>) -> anyhow::Result<Option<u64>> {
         let _guard = lock(&self.edit);
-        let mut u = lock(&self.undo);
-        let Some((mut restored, origin)) = (if redo { u.future.pop() } else { u.past.pop() }) else { return Ok(None) };
-        let keep = restored.clone();
-        restored.revision = read(&self.project).revision + 1;
+        // The undo stack is only ever changed under the edit lock, so it can be let go of
+        // between the pop and the push without anyone seeing the step missing.
+        let popped = {
+            let mut u = lock(&self.undo);
+            if redo { u.future.pop() } else { u.past.pop() }
+        };
+        let Some((snap, origin)) = popped else { return Ok(None) };
+        let verb = if redo { "redo" } else { "undo" };
+        let label = format!("{verb}:{origin}");
+        // Worked out against the current document in place (as `edit` does), then committed.
+        let ready = (|| {
+            let current = read(&self.project);
+            let mut restored = history::parse(&snap)?;
+            restored.revision = current.revision + 1;
+            let (targets, changes) = history::diff(&current, &restored);
+            let markers_differ = crate::markers::differ(&current, &restored);
+            drop(current);
+            anyhow::Ok((history::snapshot(&restored)?, restored, targets, changes, markers_differ))
+        })();
+        let (next, restored, targets, changes, markers_differ) = match ready {
+            Ok(r) => r,
+            Err(e) => return Err(self.unpop(redo, snap, origin, e)),
+        };
         let rev = restored.revision;
-        let label = format!("{}:{origin}", if redo { "redo" } else { "undo" });
-        match self.commit(restored, &label) {
-            Ok(now) => {
-                if redo { &mut u.past } else { &mut u.future }.push((now, origin));
-                Ok(Some(rev))
-            }
-            Err(e) => {
-                // A failed save changed nothing; the history step must survive it.
-                if redo { &mut u.future } else { &mut u.past }.push((keep, origin));
-                Err(e)
-            }
-        }
+        let now = match self.commit(restored, &label) {
+            Ok(now) => self.kept(&now),
+            // A failed save changed nothing; the history step must survive it.
+            Err(e) => return Err(self.unpop(redo, snap, origin, e)),
+        };
+        let entry = history::Entry {
+            author: by.map(history::author).unwrap_or("other").to_string(),
+            summary: format!("{verb}: {}", history::summary(&origin)),
+            changes,
+            ..history::Entry::new(if redo { Kind::Redo } else { Kind::Undo }, &label, Some(rev), &targets)
+        };
+        self.landed(rev, next, entry, markers_differ, |u| if redo { &mut u.past } else { &mut u.future }.push((now, origin)));
+        Ok(Some(rev))
+    }
+
+    /// Put a step that did not land back where it was popped from, and pass its error on.
+    fn unpop(&self, redo: bool, snap: Snapshot, origin: String, e: anyhow::Error) -> anyhow::Error {
+        let mut u = lock(&self.undo);
+        if redo { &mut u.future } else { &mut u.past }.push((snap, origin));
+        e
     }
 }
 

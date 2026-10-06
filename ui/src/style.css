@@ -3,12 +3,9 @@
    never a colour, which is what makes a new theme a block there rather than a sweep
    through here. `@import` has to come first in the file. */
 @import "./themes.css";
+@import "./fonts.css";
+@import "./chrome.css";
 
-:root {
-  --mono: ui-monospace, "JetBrains Mono", "SF Mono", Menlo, monospace;
-  --sans: Inter, system-ui, -apple-system, "Segoe UI", sans-serif;
-}
-* { box-sizing: border-box; }
 /* Dark built-in controls — select popups, checkboxes, spinners.
    **Not on :root.** A dark root makes every overlay iframe composite against an opaque
    backdrop instead of staying transparent: Chromium will not let a light-scheme document
@@ -16,52 +13,54 @@
    embedder, so the preview paints the template's white canvas over the video. Scoped to
    the controls that need it, the stage keeps compositing as it did. */
 button, input, select, textarea, option { color-scheme: dark; }
-html, body { height: 100%; margin: 0; background: var(--bg); color: var(--fg); font: 13px/1.4 var(--sans); }
 
-/* Scrollbars, themed. `scrollbar-*` is the standard property; the `::-webkit-` rules are
-   what Chromium actually honours, and they allow the inset thumb this palette wants. */
-* { scrollbar-width: thin; scrollbar-color: var(--bg-3) transparent; }
-::-webkit-scrollbar { width: 11px; height: 11px; }
-::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: var(--bg-3); border: 3px solid transparent; background-clip: content-box; border-radius: 8px; }
-::-webkit-scrollbar-thumb:hover { background: var(--line); background-clip: content-box; }
-::-webkit-scrollbar-thumb:active { background: var(--fg-2); background-clip: content-box; }
-::-webkit-scrollbar-corner { background: transparent; }
 button, input, select, textarea { font: inherit; color: inherit; }
-button { background: var(--bg-3); border: 1px solid var(--line); border-radius: 6px; padding: 4px 10px; cursor: pointer; }
+button { background: var(--bg-0); border: 1px solid var(--line); border-radius: 0; padding: 3px 9px; cursor: pointer; }
 button:hover { border-color: var(--fg-2); }
 /* A button whose whole label is an icon: no text to lay out, so the box is the icon plus
    the padding that makes it the height of the buttons beside it (13px/1.4 text). */
-button.icon { padding: 6px 10px; line-height: 0; }
+button.icon { padding: 5px 8px; line-height: 0; }
 button.reload.busy svg { animation: spin 0.9s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 button svg { display: block; }
-button.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); box-shadow: var(--glow); }
-input, select, textarea { background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; width: 100%; }
+input, select, textarea { background: var(--bg-0); border: 1px solid var(--line); border-radius: 0; padding: 3px 6px; width: 100%; }
+input:focus, select:focus, textarea:focus { outline: none; border-color: var(--accent); }
+/* A slider in the chrome's terms: a hairline and a square, not the browser's blue pill. */
+input[type="range"] { appearance: none; -webkit-appearance: none; height: 16px; padding: 0; border: 0; background: none; cursor: pointer; }
+input[type="range"]::-webkit-slider-runnable-track { height: 2px; background: var(--line); }
+input[type="range"]::-webkit-slider-thumb { -webkit-appearance: none; width: 10px; height: 10px; margin-top: -4px; border: 0; border-radius: 0; background: var(--fg-2); }
+input[type="range"]:hover::-webkit-slider-thumb, input[type="range"]:focus-visible::-webkit-slider-thumb { background: var(--sel); }
+input[type="range"]::-moz-range-track { height: 2px; background: var(--line); }
+input[type="range"]::-moz-range-thumb { width: 10px; height: 10px; border: 0; border-radius: 0; background: var(--fg-2); }
+input[type="range"]:hover::-moz-range-thumb { background: var(--sel); }
 /* A tick is its own size: full width would leave it floating in the middle of the field. */
 input[type="checkbox"] { width: auto; justify-self: start; }
 input[type="color"] { padding: 0; height: 26px; }
 input[type="checkbox"] { width: auto; }
 textarea { font-family: var(--mono); font-size: 12px; min-height: 80px; resize: vertical; }
-h3 { margin: 12px 0 6px; font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--fg-2); }
-.muted { color: var(--fg-2); }
-.mono { font-family: var(--mono); }
+/* A section label: the pixel face, small and lower case, as every label in the design is. */
+h3 { margin: 14px 0 6px; font: 400 10px/1.3 var(--label); text-transform: lowercase; color: var(--fg-2); }
 
-#app { height: 100%; display: grid; grid-template-rows: 40px minmax(0, 1fr) var(--bottom-h, 300px); position: relative; }
+/* ---- the window, in power mode ----------------------------------------------------
+   Top to bottom: the top bar, the rail beside the dock (the panels round the frame), the
+   status line. */
+/* The heights are `chrome.css`'s; the title bar is the desktop shell's (below). */
+body.has-titlebar { --titlebar-h: 32px; }
+#app { position: relative; overflow: hidden; }
 /* The desktop shell's windows are frameless, so the page draws the title bar and the
    grid gains a row for it. A browser never sets this class and keeps the old layout. */
-body.has-titlebar #app { grid-template-rows: 32px 40px minmax(0, 1fr) var(--bottom-h, 300px); }
+body.has-titlebar #app { grid-template-rows: var(--titlebar-h) var(--topbar-h) minmax(0, 1fr) var(--status-h); }
 
 #titlebar { display: none; }
 body.has-titlebar #titlebar {
   display: grid; grid-template-columns: auto 1fr auto; align-items: center;
-  background: var(--bg-2); border-bottom: 1px solid var(--line); height: 32px;
+  background: var(--bg-bar); border-bottom: 1px solid var(--line-2); height: var(--titlebar-h);
   /* The bar moves the window; every control inside it opts back out. */
   -webkit-app-region: drag; user-select: none;
 }
 .tb-menu { display: flex; align-items: center; padding-left: 4px; }
 .tb-item {
-  background: none; border: 0; border-radius: 4px; padding: 3px 9px; font-size: 12.5px;
+  background: none; border: 0; border-radius: 2px; padding: 3px 9px; font-size: 12px;
   color: var(--fg); line-height: 20px;
 }
 .tb-item:hover { background: var(--bg-3); border-color: transparent; }
@@ -78,49 +77,197 @@ body.has-titlebar #titlebar {
 .tb-btn:hover { background: var(--bg-3); color: var(--fg); border-color: transparent; }
 /* Red on close only, the one destructive button — matching what every desktop does. */
 .tb-btn.close:hover { background: var(--danger); color: #fff; }
-#topbar { display: flex; align-items: center; gap: 10px; padding: 0 12px; background: var(--bg-2); border-bottom: 1px solid var(--line); }
-#topbar .name { font-weight: 600; }
-#topbar .spacer { flex: 1; }
-#topbar .status { font-family: var(--mono); font-size: 12px; color: var(--fg-2); max-width: 40vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-#main { display: grid; grid-template-columns: var(--lib-w, 240px) minmax(0, 1fr) var(--insp-w, 300px); min-height: 0; position: relative; }
-/* The seams between panels (`splitters.ts`): invisible until hovered or held. */
-.splitter { position: absolute; z-index: 6; }
-.splitter.x { top: 0; bottom: 0; width: 6px; cursor: col-resize; }
-.splitter.y { left: 0; right: 0; height: 6px; cursor: row-resize; }
-.splitter:hover, .splitter.on { background: color-mix(in srgb, var(--accent) 45%, transparent); }
-#library, #inspector { background: var(--bg-2); border-right: 1px solid var(--line); overflow: auto; padding: 8px 10px; }
-/* The library scrolls its list only: the tabs and the toolbar stay put above it. */
-#library { display: flex; flex-direction: column; overflow: hidden; padding: 0; min-width: 0; }
-.lib-head { flex: none; padding: 8px 10px 0; border-bottom: 1px solid var(--line); }
-.lib-head .tabs { margin: -2px -10px 0; }
-.lib-tools { display: flex; gap: 2px; padding: 4px 0; }
-button.tool { background: none; border-color: transparent; padding: 5px 7px; color: var(--fg-2); }
-button.tool:hover { background: var(--bg-3); color: var(--fg); }
-.lib-body { flex: 1; min-height: 0; overflow: auto; padding: 8px 10px; }
-#inspector { border-right: 0; border-left: 1px solid var(--line); }
+/* ---- the top bar: bear, wordmark, editor tabs, ⌘K, mode, render, queue */
+#topbar .spacer { flex: 1 1 0; min-width: 8px; }
+#editor-tabs { display: flex; align-items: stretch; gap: 2px; margin-left: 10px; min-width: 0; overflow-x: auto; overflow-y: hidden; scrollbar-width: none; }
+.etab {
+  display: flex; align-items: center; gap: 8px; padding: 6px 12px; cursor: pointer;
+  color: var(--fg-2); white-space: nowrap; border-top: 2px solid transparent;
+}
+.etab:hover { color: var(--fg); background: var(--bg-2); }
+.etab.on { color: var(--fg); background: var(--bg-2); border-top-color: var(--accent); }
+.etab .etab-name { max-width: 180px; overflow: hidden; text-overflow: ellipsis; }
+.etab .x { background: none; border: 0; padding: 0 2px; color: var(--fg-3); line-height: 1; }
+.etab .x:hover { color: var(--fg); }
+.etab-add { align-self: center; padding: 4px 6px; background: none; border-color: transparent; color: var(--fg-3); }
+.etab-add:hover { color: var(--fg); }
+/* ⌘K: a field to look at, a button to press. The palette is `palette.ts`. */
+.kfield {
+  flex: 0 1 320px; min-width: 120px; height: 28px; display: flex; align-items: center; gap: 10px; padding: 0 10px;
+  background: var(--bg-0); border: 1px solid var(--line); border-radius: 0; color: var(--fg-2); text-align: left; overflow: hidden; white-space: nowrap;
+}
+.kfield:hover { border-color: var(--fg-3); color: var(--fg-body); }
+.kfield kbd { font-size: 10.5px; padding: 0 4px; border-radius: 0; flex: none; }
+/* The two modes, one segment each: the one on is lit. */
+.modes { display: flex; flex: none; border: 1px solid var(--line); border-radius: 4px; overflow: hidden; }
+.modes button { border: 0; border-radius: 0; background: none; padding: 6px 12px; font: 400 10px var(--label); color: var(--fg-2); }
+.modes button.on { background: var(--fg); color: var(--bg-0); }
+#topbar button.primary { padding: 6px 14px; border-radius: 0; flex: none; }
+.queue-btn { display: flex; align-items: center; gap: 8px; padding: 5px 10px; border-radius: 0; color: var(--fg); flex: none; white-space: nowrap; }
+.queue-btn .status { font-size: 10.5px; color: var(--fg-2); }
+.queue-btn .status:empty { display: none; }
 
-/* The centre is one editor at a time: the tab strip, then the editors stacked in one
-   grid cell so switching costs nothing and neither is rebuilt. `[hidden]` needs saying
-   out loud — both panels set a `display`, which would otherwise win over it. */
-#center { display: grid; grid-template-rows: 30px minmax(0, 1fr); min-width: 0; min-height: 0; }
+/* ---- rail, side slot, centre, inspector slot */
+#main { display: grid; grid-template-columns: 44px minmax(0, 1fr); min-height: 0; position: relative; }
+
+/* ---- the dock (`dock.ts`, drawn by `panelhost.ts`): splits of tab groups round the frame.
+   Every child of a split but one has its size in pixels (set inline); the fill takes the
+   rest. No split may be `contain`ed or transformed: den lifts the frame out of the dock
+   with `position: fixed`, which either would trap. A group never holds the frame, so den
+   can skip the groups outright (below). */
+#dock { display: flex; min-width: 0; min-height: 0; overflow: hidden; background: var(--bg-0); }
+#dock > * { flex: 1 1 0; }
+.dock-split { display: flex; min-width: 0; min-height: 0; overflow: hidden; }
+.dock-split.row { flex-direction: row; }
+.dock-split.col { flex-direction: column; }
+.dock-split > * { min-width: 0; min-height: 0; }
+/* The frame keeps a little of itself whatever the panels round it take. */
+.dock-split.row > #center, .dock-split.row > .dock-split:has(#center) { min-width: 160px; }
+.dock-split.col > #center, .dock-split.col > .dock-split:has(#center) { min-height: 120px; }
+/* A seam: a hairline you can grab a few pixels either side of. */
+.dock-grip { flex: none; position: relative; z-index: 6; background: var(--line-2); }
+.dock-grip.row { width: 1px; cursor: col-resize; }
+.dock-grip.col { height: 1px; cursor: row-resize; }
+.dock-grip::after { content: ""; position: absolute; inset: -3px; }
+.dock-grip.row::after { inset: 0 -3px; }
+.dock-grip.col::after { inset: -3px 0; }
+.dock-grip:hover, .dock-grip.on { background: var(--accent); }
+.dock-group { display: flex; flex-direction: column; overflow: hidden; background: var(--bg-0); }
+.dock-group[hidden] { display: none; }
+.dock-group.flash, .panel.flash { box-shadow: inset 0 0 0 1px var(--accent); }
+/* A group's head is its tabs — the letter, and the title of the one in front — then the
+   front panel's note and tools. The head's empty part, like a tab, is what you drag. */
+/* It wraps rather than clipping: a tab out of sight is a panel nobody finds, so in a narrow
+   group the tools go under the tabs. */
+.dock-head { flex: none; display: flex; flex-wrap: wrap; align-items: center; gap: 0 6px; min-height: 30px; padding: 4px 8px 4px 6px; background: var(--bg-bar); border-bottom: 1px solid var(--line-2); cursor: grab; user-select: none; min-width: 0; }
+.dock-head .spacer { flex: 1; align-self: stretch; }
+.dock-tabs { display: flex; flex-wrap: wrap; gap: 3px; min-width: 0; }
+.dock-tab { display: flex; align-items: center; gap: 6px; height: 22px; padding: 0 1px; cursor: pointer; color: var(--fg-2); flex: none; }
+.dock-tab.on { padding: 0 6px 0 1px; }
+/* A panel's letter, as its tab, its title bar and the dragged ghost show it. */
+.ptile { width: 16px; height: 16px; display: grid; place-items: center; font: 400 10px var(--label); background: var(--fg); color: var(--bg-0); flex: none; }
+.dock-tab .ptile { background: var(--bg-3); color: var(--fg-2); }
+.dock-tab .ptitle { display: none; font: 400 10px var(--label); text-transform: lowercase; white-space: nowrap; }
+.dock-tab:hover .ptile { color: var(--fg); }
+.dock-tab.on .ptile { background: var(--fg); color: var(--bg-0); }
+.dock-tab.on .ptitle { display: inline; color: var(--fg); }
+/* In a window of its own: its tab stays, so you know where it comes back to. */
+.dock-tab.out .ptile { background: none; outline: 1px dashed var(--fg-3); color: var(--fg-3); }
+/* The agent's tile is the accent: it is the one panel about somebody else. */
+.dock-tab[data-panel="agent"].on .ptile, .panel[data-panel="agent"] .ptile { background: var(--accent); color: var(--on-accent); }
+.dock-note, .panel-head .pnote { color: var(--fg-3); font-size: 10.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.dock-tools, .panel-head .ptools { display: flex; align-items: center; gap: 2px; }
+.dock-head button.pbtn, .panel-head button.pbtn { background: none; border: 0; padding: 2px 4px; color: var(--fg-2); line-height: 1; font-size: 12px; }
+.dock-head button.pbtn:hover, .panel-head button.pbtn:hover { color: var(--fg); }
+.dock-head button.pbtn { color: var(--fg-3); display: none; }
+/* ⧉ and × only while the head is under the pointer: a narrow group needs the room for its tabs. */
+.dock-head:hover button.pbtn { display: block; }
+.dock-body { flex: 1; min-height: 0; min-width: 0; display: flex; flex-direction: column; }
+.dock-body > .panel { flex: 1; min-height: 0; }
+.dock-body > .panel[hidden] { display: none; }
+/* Dragging a panel: what follows the pointer, and where it would land. */
+.dock-ghost { position: fixed; z-index: 2000; pointer-events: none; display: flex; align-items: center; gap: 6px; padding: 3px 8px 3px 3px; background: var(--bg-2); border: 1px solid var(--line); box-shadow: var(--float-shadow); font: 400 10px var(--label); color: var(--fg); }
+#dock-drop { position: fixed; z-index: 1999; pointer-events: none; background: color-mix(in srgb, var(--accent) 18%, transparent); outline: 2px solid var(--accent); outline-offset: -2px; }
+
+/* The rail: a letter per panel, the same keys that summon them in den. */
+#rail { display: flex; flex-direction: column; align-items: center; gap: 6px; padding-top: 10px; border-right: 1px solid var(--line-2); background: var(--bg-0); }
+.rail-key {
+  position: relative; width: 30px; height: 30px; display: grid; place-items: center; padding: 0;
+  font: 400 12px var(--label); color: var(--fg-2); background: none; border: 0; border-radius: 0;
+}
+.rail-key:hover { color: var(--fg); background: var(--bg-2); }
+.rail-key.on { background: var(--accent); color: var(--on-accent); }
+/* A marker is waiting: the letter and a dot in the selection colour. */
+.rail-key.flag:not(.on) { color: var(--sel); }
+.rail-key.flag::after { content: ""; position: absolute; right: 2px; top: 3px; width: 6px; height: 6px; border-radius: 50%; background: var(--sel); }
+/* The tooltip is drawn, not the browser's: it says the key, and it is the design's. */
+.rail-key .tip {
+  display: none; position: absolute; left: 38px; top: 4px; z-index: 20; white-space: nowrap; pointer-events: none;
+  font: 11px var(--mono); background: var(--fg); color: var(--bg-0); padding: 2px 7px;
+}
+.rail-key:hover .tip { display: block; }
+.rail-key.lock { margin-top: auto; margin-bottom: 10px; color: var(--fg-3); }
+.rail-key.lock.free { color: var(--accent-text); }
+.rail-key.lock .tip { top: auto; bottom: 4px; }
+/* Locked: nothing in a group's head says it can be dragged or closed. */
+#app.dock-locked .dock-head { cursor: default; }
+#app.dock-locked .dock-head button.pclose { display: none; }
+
+#center { display: grid; grid-template-rows: minmax(0, 1fr) 34px; min-width: 0; min-height: 0; background: var(--bg-stage); }
 #stages { display: grid; min-width: 0; min-height: 0; }
 #preview, #workbench { grid-area: 1 / 1; min-width: 0; min-height: 0; }
 #preview[hidden], #workbench[hidden] { display: none; }
-#preview { display: flex; align-items: center; justify-content: center; background: #000; position: relative; overflow: hidden; }
+#preview { display: flex; align-items: center; justify-content: center; background: var(--bg-stage); position: relative; overflow: hidden; }
 
-#editor-tabs { display: flex; align-items: stretch; gap: 2px; padding: 0 6px; background: var(--bg-2); border-bottom: 1px solid var(--line); overflow-x: auto; overflow-y: hidden; }
-.etab {
-  display: flex; align-items: center; gap: 6px; padding: 0 8px; cursor: pointer;
-  color: var(--fg-2); white-space: nowrap; border-bottom: 2px solid transparent;
+/* ---- a panel, wherever it is: head and body. Docked, the head is a label row (or
+   nothing); floating, it is a title bar you drag; in a window of its own, it is the
+   window's title bar. */
+.panel { display: flex; flex-direction: column; min-width: 0; min-height: 0; height: 100%; background: var(--bg-0); }
+/* Its head shows only when it floats or has a window: then it is a title bar. */
+.panel-head { flex: none; display: flex; align-items: center; gap: 8px; padding: 0 8px; height: 28px; min-width: 0; background: var(--bg-2); cursor: grab; user-select: none; }
+.panel-head .ptitle { font: 400 10px var(--label); color: var(--fg); white-space: nowrap; }
+.panel-head .spacer { flex: 1; }
+.panel-body { flex: 1; min-height: 0; min-width: 0; position: relative; display: flex; flex-direction: column; }
+.panel-body > * { flex: 1; min-height: 0; }
+/* Docked, its group's head is its head. */
+.panel.docked > .panel-head { display: none; }
+/* Floating: over whatever is behind it, and the only thing in the editor with a shadow. */
+#floating { position: absolute; left: 0; right: 0; top: calc(var(--titlebar-h) + var(--topbar-h)); bottom: var(--status-h); pointer-events: none; z-index: 30; }
+.panel.floating {
+  position: absolute; pointer-events: auto; height: auto; overflow: hidden;
+  background: var(--float-bg); border: 1px solid var(--line); box-shadow: var(--float-shadow);
 }
-.etab:hover { background: var(--bg-3); }
-.etab.on { color: var(--fg); background: var(--bg-3); border-bottom-color: var(--accent); }
-.etab .etab-name { max-width: 180px; overflow: hidden; text-overflow: ellipsis; }
-.etab .x { background: none; border: 0; padding: 0 2px; color: var(--fg-2); line-height: 1; }
-.etab .x:hover { color: var(--fg); }
-.etab-add { align-self: center; margin-left: 4px; padding: 4px 6px; background: none; border-color: transparent; color: var(--fg-2); }
-.etab-add:hover { color: var(--fg); }
+.panel.floating .panel-body { background: transparent; }
+.panel.floating.dragging { opacity: 0.92; }
+/* Resizing a floating panel: a strip along each side and a square at each corner, inside
+   its border (the panel clips what is outside it). Only while it floats. */
+.prs { position: absolute; z-index: 3; display: none; }
+.panel.floating .prs { display: block; }
+.prs.n, .prs.s { left: 10px; right: 10px; height: 5px; cursor: ns-resize; }
+.prs.e, .prs.w { top: 10px; bottom: 10px; width: 5px; cursor: ew-resize; }
+.prs.n { top: 0; } .prs.s { bottom: 0; } .prs.e { right: 0; } .prs.w { left: 0; }
+.prs.ne, .prs.nw, .prs.se, .prs.sw { width: 12px; height: 12px; }
+.prs.ne { top: 0; right: 0; cursor: nesw-resize; } .prs.sw { bottom: 0; left: 0; cursor: nesw-resize; }
+.prs.nw { top: 0; left: 0; cursor: nwse-resize; } .prs.se { bottom: 0; right: 0; cursor: nwse-resize; }
+/* The one that is drawn: two short diagonals in the bottom-right corner, brighter under the
+   pointer, so a panel says it can be resized before anyone has to find out. */
+.prs.se { background: linear-gradient(135deg, transparent 0 55%, var(--fg-3) 55% 62%, transparent 62% 72%, var(--fg-3) 72% 79%, transparent 79%); }
+.prs.se:hover, .panel.resizing .prs.se { background: linear-gradient(135deg, transparent 0 55%, var(--accent) 55% 62%, transparent 62% 72%, var(--accent) 72% 79%, transparent 79%); }
+.panel.resizing { user-select: none; }
+/* A panel dragged against the window's edge: past it, it becomes a window of its own. */
+.edge-hint { position: absolute; top: 0; bottom: 0; width: 4px; z-index: 40; pointer-events: none; border-left: 4px dashed var(--accent); }
+.edge-hint span {
+  position: absolute; top: 50%; white-space: nowrap; padding: 6px 10px; font-size: 11px;
+  color: var(--accent-text); background: var(--float-bg); border: 1px solid var(--line);
+}
+.edge-hint.right span { right: 10px; }
+.edge-hint.left span { left: 6px; }
+/* A panel in a window of its own fills it. */
+body.solo #app { display: block; }
+body.solo #app > :not(#floating):not(#toasts):not(#titlebar) { display: none; }
+body.solo #floating { position: static; height: 100%; pointer-events: auto; }
+.panel.solo { height: 100vh; }
+.panel.solo > .panel-head { -webkit-app-region: drag; cursor: default; }
+.panel.solo > .panel-head button { -webkit-app-region: no-drag; }
+
+/* ---- the transport, under the frame */
+#transport { display: flex; align-items: center; gap: 10px; padding: 0 16px; background: var(--bg-bar); border-top: 1px solid var(--line-2); font-size: 12px; min-width: 0; overflow: hidden; }
+#transport button { background: none; border: 0; padding: 2px 4px; color: var(--fg); }
+#transport button:hover { color: var(--accent-text); }
+#transport .time { min-width: 0; white-space: nowrap; color: var(--fg); }
+#transport .time .dur { color: var(--fg-2); }
+#transport .spacer { flex: 1; }
+#transport select { width: auto; background: none; border: 0; color: var(--fg-2); padding: 2px; }
+#transport .size { color: var(--fg-2); }
+
+/* ---- the status line, vim's: the mode, then what you have, then what the agent is doing */
+#statusline .mode { cursor: pointer; }
+#statusline .agent::before { content: "● "; }
+#statusline .agent.idle::before { content: "○ "; }
+#statusline .clickable { cursor: pointer; }
+#statusline .clickable:hover { background: color-mix(in srgb, var(--on-accent) 12%, transparent); }
+#statusline :empty { display: none; }
 
 /* The overlay workbench: head, stage, transport — and nothing of the timeline. */
 #workbench { grid-template-rows: auto minmax(0, 1fr) auto auto; background: var(--bg-2); }
@@ -154,8 +301,8 @@ button.tool:hover { background: var(--bg-3); color: var(--fg); }
 
 .stage { position: relative; background: #000; box-shadow: 0 0 0 1px var(--line); }
 .stage canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
-.stage .overlay-layer { position: absolute; inset: 0; overflow: hidden; pointer-events: none; }
-.stage .ov { position: absolute; left: 0; top: 0; transform-origin: 0 0; }
+.stage .overlay-layer { position: absolute; left: 0; top: 0; overflow: hidden; pointer-events: none; transform-origin: 0 0; }
+.stage .ov { position: absolute; left: 0; top: 0; }
 /* `color-scheme: normal` is load-bearing, not decoration: it keeps the embedder's scheme
    matching the template's so Chromium composites the iframe transparently. Without it a
    dark scheme anywhere above puts an opaque backdrop behind every overlay.
@@ -164,24 +311,56 @@ button.tool:hover { background: var(--bg-3); color: var(--fg); }
 .stage .ov iframe, .wb-holder iframe { border: 0; background: transparent; display: block; color-scheme: normal; }
 .stage .badge { position: absolute; right: 8px; top: 8px; font: 11px var(--mono); color: var(--fg-2); background: rgba(0,0,0,0.5); padding: 2px 6px; border-radius: 4px; }
 
-#bottom { display: grid; grid-template-rows: 32px 1fr; border-top: 1px solid var(--line); background: var(--bg-2); min-height: 0; }
-#transport { display: flex; align-items: center; gap: 8px; padding: 0 10px; border-bottom: 1px solid var(--line); }
-#transport .time { font-family: var(--mono); min-width: 130px; }
-#transport input[type="range"] { width: 120px; }
+/* The bin and the inspector draw into these; the panel around them (`panelhost.ts`) is
+   what is docked or floats. */
+#library, #blueprints { display: flex; flex-direction: column; overflow: hidden; min-width: 0; padding-top: 8px; }
+.lib-filter { flex: none; margin: 0 10px 8px; padding: 0 8px; height: 26px; display: flex; align-items: center; gap: 6px; border: 1px solid var(--line); color: var(--fg-3); }
+.lib-filter input { border: 0; padding: 0; background: none; height: 100%; }
+.lib-filter input::placeholder { color: var(--fg-3); }
+.lib-tools { display: flex; gap: 2px; }
+button.tool { background: none; border-color: transparent; padding: 3px 4px; color: var(--fg-2); }
+button.tool:hover { color: var(--fg); }
+.lib-body { flex: 1; min-height: 0; overflow: auto; padding: 0 10px 8px; }
+#inspector { overflow: auto; padding: 12px 14px; min-width: 0; }
+.panel.floating #inspector { padding: 10px 12px; }
+#inspector .insp-head { margin: 0 0 4px; }
+#inspector .insp-kicker { font: 400 10px/1.3 var(--label); color: var(--fg-2); text-transform: lowercase; margin-bottom: 4px; }
+#inspector .insp-name { font-size: 14px; color: var(--fg); overflow-wrap: anywhere; }
+#inspector .insp-sub { font-size: 11px; color: var(--fg-2); }
+/* A thing's history, at the bottom of the inspector: the edits that touched it, newest
+   first, and who made each. This is what says a field changed — fields are not coloured. */
+.insp-history { margin-top: 18px; }
+.hist-mini { display: grid; grid-template-columns: 40px minmax(0, 1fr) auto; gap: 2px 8px; align-items: baseline; padding: 5px 0; font-size: 11px; }
+.hist-mini .rev { color: var(--fg-2); }
+.hist-mini:first-of-type .rev { color: var(--accent-text); }
+.hist-mini .what { color: var(--fg); overflow-wrap: anywhere; }
+.hist-mini .who { color: var(--fg-2); }
 
-#timeline { position: relative; overflow: auto; user-select: none; }
+#timeline { position: relative; overflow: auto; user-select: none; background: var(--bg-bar); }
 .tl { position: relative; min-width: 100%; }
-.tl-ruler { position: sticky; top: 0; height: 22px; background: var(--bg-3); border-bottom: 1px solid var(--line); z-index: 3; }
-.tl-ruler .tick { position: absolute; top: 0; height: 100%; border-left: 1px solid var(--line); padding-left: 3px; font: 10px var(--mono); color: var(--fg-2); }
+.tl-ruler { position: sticky; top: 0; height: 24px; background: var(--bg-bar); border-bottom: 1px solid var(--line-2); z-index: 3; }
+.tl-ruler .tick { position: absolute; top: 0; height: 100%; border-left: 1px solid var(--line-2); padding: 5px 0 0 6px; font: 10px var(--mono); color: var(--fg-3); }
+/* The ruler's first cell, over the track heads: zoom and a new track. */
+.tl-corner {
+  position: sticky; left: 0; z-index: 4; width: 150px; height: 100%; display: flex; align-items: center; gap: 2px;
+  padding: 0 6px; background: var(--bg-bar); border-right: 1px solid var(--line-2); font-size: 10.5px; color: var(--fg-2);
+}
+.tl-corner button { background: none; border: 0; padding: 0 3px; color: var(--fg-2); font-size: 12px; line-height: 1; }
+.tl-corner button:hover { color: var(--fg); }
+/* The zoom is a slider drawn as the word: an invisible range laid over "zoom", so the
+   word itself is the thing you drag. */
+.tl-corner .zoom-word { position: relative; padding: 0 2px; cursor: ew-resize; }
+.tl-corner input.zoom { position: absolute; inset: 0; width: 100%; height: 100%; padding: 0; margin: 0; opacity: 0; cursor: ew-resize; }
+.tl-corner select { width: auto; border: 0; background: none; padding: 0 2px; margin-left: auto; color: var(--fg-2); font-size: 10.5px; }
 /* The height is set per track (`timeline.ts`): view state, dragged at the head's edge. */
-.tl-track { position: relative; border-bottom: 1px solid var(--line); }
+.tl-track { position: relative; border-bottom: 1px solid var(--line-2); }
 /* Kind and name stacked, toggles beside them — not underneath. Stacked all three, the
    buttons fell outside a 36px audio track and were clipped. Beside, the head needs the
    height of the label alone and fits every track kind. */
 .tl-head {
-  position: sticky; left: 0; width: 136px; height: 100%; z-index: 2;
-  background: var(--bg-2); border-right: 1px solid var(--line);
-  padding: 3px 6px; font-size: 11px;
+  position: sticky; left: 0; width: 150px; height: 100%; z-index: 2;
+  background: var(--bg-bar); border-right: 1px solid var(--line-2);
+  padding: 2px 8px 2px 4px; font-size: 12px;
   display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 0 6px;
   /* The kind's own colour, the same one the bin badge and its clips carry. */
   border-left: 3px solid var(--kind, var(--line));
@@ -191,27 +370,29 @@ button.tool:hover { background: var(--bg-3); color: var(--fg); }
 .tl-track.audio .tl-head { --kind: var(--audio); }
 /* The track a paste lands on, and so the one the last click chose. Deliberately quieter
    than a selection: it is a target, not a thing being edited. */
-.tl-track.focus .tl-head { background: var(--bg-3); }
+.tl-track.focus .tl-head { background: var(--bg-2); }
 .tl-track.focus .tl-head .tname { color: var(--fg); }
-.tl-head .label { min-width: 0; display: grid; grid-template-columns: 14px minmax(0, 1fr); align-items: center; }
-.tl-head .label .fold { grid-row: span 2; width: 14px; padding: 0; border: 0; background: none; color: var(--fg-2); font-size: 10px; line-height: 1; }
+.tl-head .label { min-width: 0; display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 0 8px; align-items: center; padding-left: 8px; }
+.tl-head:hover .label .fold { opacity: 1; }
+/* The fold caret shows on hover only: the head is the kind, the name and a toggle. */
+.tl-head .label .fold { position: absolute; left: 0; top: 0; bottom: 0; opacity: 0; width: 12px; padding: 0; border: 0; background: none; color: var(--fg-2); font-size: 10px; line-height: 1; }
 .tl-head .label .fold:hover { color: var(--fg); }
 .tl-resize { position: absolute; left: 0; right: 0; bottom: 0; height: 5px; cursor: row-resize; z-index: 1; }
 .tl-resize:hover { background: color-mix(in srgb, var(--accent) 45%, transparent); }
 /* Folded: one line — kind and name side by side, and clips that say only what they are. */
 .tl-track.folded .tl-head { padding-top: 0; padding-bottom: 0; }
-.tl-track.folded .tl-head .label { grid-template-columns: 14px auto minmax(0, 1fr); gap: 0 6px; }
-.tl-track.folded .tl-head .label .fold { grid-row: auto; }
 .tl-track.folded .tl-head .toggles button { line-height: 12px; }
 .tl-track.folded .clip { top: 2px; bottom: 2px; padding: 1px 6px; font-size: 10px; }
-.tl-track.folded .clip .sub, .tl-track.folded .clip .kf-lane { display: none; }
-.tl-head .kind { color: var(--kind, var(--fg-2)); text-transform: uppercase; font-size: 9px; letter-spacing: 0.06em; }
+.tl-track.folded .clip .sub, .tl-track.folded .clip .kf-lane, .tl-track.short .clip .sub { display: none; }
+/* A short code, not a word: `ov`, `v1`, `a1`, in the kind's colour. */
+.tl-head .kind { color: var(--kind, var(--fg-2)); font-size: 10.5px; }
 .tl-head .tname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tl-head .toggles { display: flex; gap: 3px; }
-.tl-head .toggles button { padding: 0 5px; font-size: 10px; line-height: 16px; }
+.tl-head .toggles button { padding: 0 4px; font-size: 10px; line-height: 16px; background: none; border: 0; color: var(--fg-3); }
+.tl-head .toggles button:hover { color: var(--fg); }
 .tl-head .toggles button.on { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
-.tl-lane { position: absolute; left: 136px; top: 0; right: 0; height: 100%; }
-.clip { position: absolute; top: 4px; bottom: 4px; border-radius: 5px; background: var(--video); border: 1px solid var(--clip-edge); overflow: hidden; cursor: grab; padding: 3px 8px; font-size: 11px; white-space: nowrap; }
+.tl-lane { position: absolute; left: 150px; top: 0; right: 0; height: 100%; }
+.clip { position: absolute; top: 4px; bottom: 4px; border-radius: 2px; background: var(--video); border: 1px solid var(--clip-edge); overflow: hidden; cursor: grab; padding: 3px 6px; font: 10.5px/1.5 var(--mono); white-space: nowrap; }
 .clip.overlay { background: var(--overlay); }
 .clip.audio { background: var(--audio); }
 .clip.color { background: var(--color-clip); }
@@ -255,17 +436,18 @@ body.autokey #inspector { box-shadow: inset 0 3px 0 var(--rec); }
    same pixel. Every line and dot below follows it; they disagreed by half a pixel to a
    pixel and a half before, each for its own accidental reason, which reads as "not quite
    aligned" and is hard to name. */
-.tl-playhead { position: absolute; top: 0; bottom: 0; width: 0; margin-left: -1px; border-left: 2px solid var(--accent); box-shadow: var(--glow); z-index: 4; pointer-events: none; }
-.tl-playhead::before { content: ""; position: absolute; top: 0; left: -6px; border: 6px solid transparent; border-top: 8px solid var(--accent); }
+.tl-playhead { position: absolute; top: 0; bottom: 0; left: 0; width: 0; margin-left: -1px; will-change: transform; border-left: 2px solid var(--accent); box-shadow: var(--glow); z-index: 4; pointer-events: none; }
+/* A square head, 10×10, as the design's. */
+.tl-playhead::before { content: ""; position: absolute; top: 0; left: -6px; width: 10px; height: 10px; background: var(--accent); }
 .tl-marker, .tl-marker-flag { --c: var(--sel); }
-.tl-marker { position: absolute; top: 22px; bottom: 0; margin-left: -0.5px; border-left: 1px dashed var(--c); z-index: 1; pointer-events: none; }
+.tl-marker { position: absolute; top: 24px; bottom: 0; margin-left: -0.5px; border-left: 1px dashed var(--c); z-index: 1; pointer-events: none; }
 /* A marker's flag sits on the ruler: its left edge is the marker's moment, its text the
    first line of the comment. Opaque, so the tick labels behind it do not read through. */
 .tl-marker-flag {
-  position: absolute; bottom: 2px; height: 14px; max-width: 160px; margin-left: -1px; padding: 0 5px 0 4px;
-  border-left: 2px solid var(--c); border-radius: 0 3px 3px 0;
-  background: color-mix(in srgb, var(--c) 22%, var(--bg-3));
-  font: 10px/14px var(--sans); color: var(--fg); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  position: absolute; bottom: 4px; height: 16px; max-width: 160px; margin-left: -1px; padding: 0 6px 0 5px;
+  border-left: 2px solid var(--c); border-radius: 0;
+  background: color-mix(in srgb, var(--c) 12%, var(--bg-bar));
+  font: 10px/16px var(--mono); color: var(--fg); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   cursor: ew-resize; z-index: 1;
 }
 .tl-marker-flag:hover { max-width: 320px; z-index: 2; }
@@ -290,18 +472,28 @@ textarea.comment { font-family: var(--sans); font-size: 13px; min-height: 96px; 
 
 /* The bin is a list, not a stack of cards: one line per entry, name and kind. Detail
    lives in the inspector, which is where selecting a row sends it. */
-.bin-list { display: flex; flex-direction: column; gap: 1px; margin-bottom: 8px; }
+.bin-list { display: flex; flex-direction: column; gap: 0; margin: 0 -10px 8px; }
 /* Grid, not flex: `1fr auto` pins the badge to the right edge whatever the name is, so
    every row is the same full width and the badges line up down the panel. */
 .bin-row {
-  display: grid; grid-template-columns: 12px minmax(0, 1fr) auto; align-items: center; gap: 6px;
-  width: 100%; padding: 4px 6px; border-radius: 4px;
+  display: grid; grid-template-columns: 12px 8px minmax(0, 1fr) auto; align-items: center; gap: 8px;
+  width: 100%; padding: 3px 10px; border-radius: 0; line-height: 19px;
   cursor: grab; border: 1px solid transparent; user-select: none;
 }
-.bin-row:hover { background: var(--bg-3); }
-.bin-row.selected { background: var(--bg-3); border-color: var(--fg-2); }
-/* The sequence you are editing, marked the way the topbar picker marks it. */
+.bin-row:hover { background: var(--bg-2); }
+.bin-row.selected { background: var(--bg-2); border-color: var(--line); }
+/* The sequence you are editing, marked as its tab is: raised, in the selection colour. */
+.bin-row.open { background: var(--bg-2); }
 .bin-row.open .bin-name { color: var(--sel); }
+.bin-open { font-size: 10.5px; color: var(--fg-2); }
+/* A kind is a square of its colour: the same colour its clips and its track wear. */
+.kind-sq { width: 8px; height: 8px; background: var(--line); }
+.kind-sq.overlay { background: var(--overlay); }
+.kind-sq.video, .kind-sq.image { background: var(--video); }
+.kind-sq.audio { background: var(--audio); }
+.kind-sq.sequence { background: var(--sequence); }
+.kind-sq.folder { background: var(--folder); }
+.kind-sq.color { background: var(--color-clip); }
 .bin-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* Panel tabs, Kdenlive's shape: the strip sits above the content it switches. */
@@ -315,24 +507,20 @@ button.tab:hover { color: var(--fg); }
 button.tab.on { color: var(--fg); border-bottom-color: var(--accent); }
 
 .insp-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
-.insp-thumb { width: 100%; border-radius: 4px; margin: 6px 0; background: repeating-conic-gradient(var(--check-a) 0 25%, var(--check-b) 0 50%) 0 0 / 12px 12px; }
+.insp-thumb { width: 100%; border-radius: 0; margin: 6px 0; background: repeating-conic-gradient(var(--check-a) 0 25%, var(--check-b) 0 50%) 0 0 / 12px 12px; }
 .tiny { font-size: 11px; margin: 2px 0 8px; }
 /* Navigation, not an edit: it moves the panel to the entry this clip plays. */
 button.linkish { background: none; border: 0; padding: 0; color: var(--sel); text-align: left; }
 button.linkish:hover { text-decoration: underline; }
 
-.lib-item { border: 1px solid var(--line); border-radius: 8px; padding: 8px; margin-bottom: 8px; background: var(--bg-3); cursor: grab; }
+.lib-item { border: 1px solid var(--line); border-radius: 2px; padding: 8px; margin-bottom: 8px; background: var(--bg-0); cursor: grab; }
 .lib-item:hover { border-color: var(--fg-2); }
 .lib-item .title { font-weight: 600; }
 .lib-item .actions { margin-top: 6px; display: flex; gap: 6px; }
 .lib-item .title { display: flex; align-items: center; gap: 6px; justify-content: space-between; }
 .badge-kind { font: 9px var(--mono); text-transform: uppercase; letter-spacing: 0.06em; padding: 1px 5px; border-radius: 3px; background: var(--line); color: var(--fg-2); font-weight: 400; flex: none; }
 .badge-kind.overlay { background: var(--overlay); color: #fff; }
-.badge-kind.video, .badge-kind.image { background: var(--video); color: #fff; }
-.badge-kind.audio { background: var(--audio); color: #fff; }
-.badge-kind.sequence { background: var(--sequence); color: #fff; }
-.badge-kind.folder { background: var(--folder); color: #fff; }
-.bin-row .caret { width: 12px; padding: 0; font-size: 10px; line-height: 1; background: none; border: 0; color: var(--fg-2); text-align: center; }
+.bin-row .caret { width: 12px; padding: 0; font-size: 9px; line-height: 1; background: none; border: 0; color: var(--fg-2); text-align: center; }
 .bin-row.drop { border-color: var(--accent); background: var(--bg-3); }
 .bin-row.drop-before { box-shadow: 0 -2px 0 0 var(--accent); }
 .bin-row.drop-after { box-shadow: 0 2px 0 0 var(--accent); }
@@ -352,26 +540,26 @@ button.linkish:hover { text-decoration: underline; }
 /* ---- property fields (see ui/src/props.ts) ----------------------------------------
    A number is a thing you drag: the box says so with a resize cursor, and the letter on
    its left says which number it is. Typing in it turns the cursor back into a caret. */
-.num { display: flex; align-items: center; min-width: 0; background: var(--bg); border: 1px solid var(--line); border-radius: 5px; }
+.num { display: flex; align-items: center; min-width: 0; background: var(--bg-0); border: 1px solid var(--line); border-radius: 0; }
 .num:hover { border-color: var(--fg-2); }
 .num.dragging { border-color: var(--accent); }
 .num .tag {
   flex: none; align-self: stretch; display: flex; align-items: center; padding: 0 5px;
   font: 10px var(--mono); color: var(--fg-2); background: color-mix(in srgb, var(--fg) 5%, transparent);
-  border-right: 1px solid var(--line); border-radius: 4px 0 0 4px; cursor: ew-resize;
+  border-right: 1px solid var(--line); border-radius: 0; cursor: ew-resize;
 }
 .num.axis-x .tag { color: var(--axis-x); background: color-mix(in srgb, var(--axis-x) 14%, transparent); }
 .num.axis-y .tag { color: var(--axis-y); background: color-mix(in srgb, var(--axis-y) 14%, transparent); }
 .num.axis-z .tag { color: var(--axis-z); background: color-mix(in srgb, var(--axis-z) 14%, transparent); }
 .num.axis-w .tag { color: var(--axis-w); background: color-mix(in srgb, var(--axis-w) 14%, transparent); }
 .num input { flex: 1 1 0; min-width: 0; border: 0; background: none; padding: 3px 5px; font: 12px var(--mono); cursor: ew-resize; }
-.num input:focus { cursor: text; outline: 1px solid var(--sel); outline-offset: -1px; border-radius: 4px; }
+.num input:focus { cursor: text; outline: 1px solid var(--accent); outline-offset: -1px; border-radius: 0; }
 .num .suffix { flex: none; padding-right: 5px; font-size: 10px; color: var(--fg-2); cursor: ew-resize; }
 /* ---- the keyframe strip (see ui/src/keyframes.ts) ---------------------------------
    The clip's own length, with its keys on it. Small on purpose: it says where the keys
    are and lets you reach one, and is not trying to be a curve editor. */
 .kfs { margin: 0 0 6px; }
-.kfs-lane { position: relative; height: 18px; border: 1px solid var(--line); border-radius: 5px; background: var(--bg); cursor: pointer; }
+.kfs-lane { position: relative; height: 18px; border: 1px solid var(--line); border-radius: 0; background: var(--bg-0); cursor: pointer; }
 .kfs-track { position: absolute; top: 0; bottom: 0; left: 6px; right: 6px; }
 .kfs-key { position: absolute; top: 4px; width: 8px; height: 8px; margin-left: -4px; background: var(--sel); border: 1px solid rgba(0, 0, 0, 0.45); transform: rotate(45deg); cursor: ew-resize; }
 .kfs-key:hover { background: var(--hot); }
@@ -383,11 +571,12 @@ button.linkish:hover { text-decoration: underline; }
 .kf-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 3px; margin: 0 0 5px; }
 .kf-tools button { padding: 3px 5px; font-size: 11px; white-space: nowrap; }
 .kf-tools button:disabled { opacity: 0.4; cursor: default; }
+.kf-tools button { font: 400 10px var(--label); text-transform: lowercase; }
 .kf-tools button.on { border-color: var(--sel); color: var(--sel); }
 /* The curve view: the shape between the keys, which the strip cannot say. */
 .kf-curve { margin: 0 0 6px; }
 .kf-curve-param { width: 100%; margin-bottom: 4px; }
-.kf-plot { position: relative; height: 84px; border: 1px solid var(--line); border-radius: 5px; background: var(--bg); overflow: visible; }
+.kf-plot { position: relative; height: 84px; border: 1px solid var(--line); border-radius: 0; background: var(--bg-0); overflow: visible; }
 .kf-plot svg { position: absolute; inset: 0; width: 100%; height: 100%; }
 .kf-plot polyline { fill: none; stroke: var(--sel); stroke-width: 1.5; vector-effect: non-scaling-stroke; }
 .kf-plot-head { position: absolute; top: 0; bottom: 0; width: 0; margin-left: -1px; border-left: 2px solid var(--accent); pointer-events: none; }
@@ -417,9 +606,18 @@ body.scrubbing, body.scrubbing * { cursor: ew-resize !important; user-select: no
 .field > .wide { grid-column: 1 / -1; }
 .cue-row { display: grid; grid-template-columns: 58px 58px 1fr auto; gap: 4px; margin-bottom: 4px; }
 .cue-row .num input { padding: 3px 2px; }
-.effect { border: 1px solid var(--line); border-radius: 6px; padding: 6px; margin-bottom: 6px; background: var(--bg-3); }
-.effect .head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; font-weight: 600; }
-.effect .head button { padding: 0 6px; font-size: 11px; }
+/* An effect, or a section of vars: a square card, raised off the panel so its fields read
+   as one group, its name in the label face on a band of its own. */
+.effect { border: 1px solid var(--line); border-radius: 0; margin-bottom: 8px; background: var(--bg-2); }
+.effect:hover { border-color: var(--fg-3); }
+.effect .head {
+  display: flex; justify-content: space-between; align-items: center; gap: 4px; padding: 5px 6px;
+  background: var(--bg-3); border-bottom: 1px solid var(--line); font: 400 11px/1.3 var(--label); text-transform: lowercase; color: var(--fg);
+}
+.effect-body { padding: 6px 6px 0; }
+.effect .head button { padding: 0 4px; }
+button.fx-remove { border: 0; background: none; color: var(--fg-3); font: 13px/1 var(--sans); }
+button.fx-remove:hover { color: var(--danger); }
 /* An effect folds away, because a clip with four of them is longer than the panel. The
    head is the disclosure — it reads as the heading it replaced, not as a button — and the
    chevron turns to point at what it opens. */
@@ -441,8 +639,8 @@ body.scrubbing, body.scrubbing * { cursor: ew-resize !important; user-select: no
 .effect .head .kf-toggle.on { opacity: 1; color: var(--sel); }
 /* An effect with nothing on this clip to act on: said, and dimmed, rather than hidden. */
 .effect.inert .effect-body { opacity: 0.55; }
-.effect .head .inert-note { font-weight: 400; font-size: 10px; color: var(--fg-2); margin-left: 4px; }
-.effect.closed .head { margin-bottom: 0; }
+.effect .head .inert-note { font: 10.5px var(--mono); text-transform: none; color: var(--fg-2); margin-left: 4px; }
+.effect.closed .head { border-bottom: 0; }
 .effect.closed .effect-body { display: none; }
 
 dialog.modal {
@@ -495,10 +693,8 @@ dialog.modal.render .field { grid-template-columns: 80px 1fr; }
 .render-advanced .field input[type="number"] { width: 110px; flex: 0 0 110px; }
 .render-advanced .field .row select { flex: 0 0 140px; }
 .render-fixed { margin: 0 0 6px 88px; }
-#topbar .status.link { cursor: pointer; }
-#topbar .status.link:hover { color: var(--fg); text-decoration: underline; }
 
-#toasts { position: fixed; right: 12px; bottom: calc(var(--bottom-h, 300px) + 12px); display: flex; flex-direction: column; gap: 6px; z-index: 10; }
+#toasts { position: fixed; right: 12px; bottom: 36px; display: flex; flex-direction: column; gap: 6px; z-index: 10; }
 .toast { background: var(--bg-3); border: 1px solid var(--line); border-left: 3px solid var(--accent); padding: 8px 10px; border-radius: 6px; max-width: 360px; font-size: 12px; }
 .toast.err { border-left-color: var(--danger); }
 .toast.ok { border-left-color: var(--audio); }
@@ -517,3 +713,168 @@ kbd { font: 10px var(--mono); border: 1px solid var(--line); border-radius: 3px;
 
 /* A font var: the family list and the add button beside it. */
 .field .row select { flex: 1 1 0; min-width: 0; }
+
+/* ---- den: the frame, full-bleed, and what the agent did over it ---------------------
+   The panels are summoned over the frame (`#floating`); everything else of power's is
+   hidden, not unmounted, so switching is a class and nothing reloads. */
+#den { display: none; }
+#app.den { grid-template-rows: minmax(0, 1fr); }
+body.has-titlebar #app.den { grid-template-rows: var(--titlebar-h) minmax(0, 1fr); }
+#app.den #topbar, #app.den #rail, #app.den #statusline, #app.den #transport { display: none; }
+#app.den #main { grid-template-columns: minmax(0, 1fr); }
+/* The dock stays where it is, out of sight, and the frame is lifted out of it to fill the
+   window: moving the frame instead would reload every overlay iframe in it. */
+/* Skipped, not merely invisible: `visibility` is inherited, so hiding them restyled every
+   docked panel on each switch, and den still laid them out on every frame. */
+#app.den .dock-group, #app.den .dock-grip { content-visibility: hidden; }
+#app.den #center { position: fixed; left: 0; right: 0; top: var(--titlebar-h); bottom: 0; z-index: 5; grid-template-rows: minmax(0, 1fr) var(--den-rail-h); }
+#app.den #floating { top: var(--titlebar-h); bottom: var(--den-rail-h); }
+#app.den #toasts { bottom: calc(var(--den-rail-h) + 12px); }
+#app.den #den { display: block; position: absolute; inset: var(--titlebar-h) 0 0 0; pointer-events: none; z-index: 20; }
+#den > * { pointer-events: auto; }
+#den .den-scrim { position: absolute; left: 0; right: 0; top: 0; height: 110px; pointer-events: none; background: linear-gradient(var(--scrim), transparent); }
+.den-hud { position: absolute; left: 28px; top: 22px; display: flex; align-items: center; gap: 12px; font-size: 13px; color: var(--fg); pointer-events: none; }
+.den-chip { font: 400 13px var(--label); background: var(--accent); color: var(--on-accent); padding: 2px 7px; }
+.den-seq { color: var(--fg); }
+.den-status { color: var(--fg-2); }
+/* The cursor after what the agent is doing: on, off, on — a terminal's, not a fade. */
+.den-cursor { margin-left: -10px; color: var(--fg-2); }
+.den-cursor.live { animation: blink 1s steps(1) infinite; }
+@keyframes blink { 50% { opacity: 0; } }
+.den-power { position: absolute; right: 30px; top: 20px; background: var(--bg-0); border: 1px solid var(--line); border-radius: 0; color: var(--fg); padding: 5px 11px; }
+.den-power:hover { border-color: var(--fg-2); }
+/* Where the agent last looked: four corners, nothing between them. */
+.den-vf { position: absolute; pointer-events: none; }
+.den-vf[hidden] { display: none; }
+.vf-c { position: absolute; width: 28px; height: 28px; border: 0 solid var(--accent); }
+.vf-c.tl { left: -4px; top: -4px; border-left-width: 4px; border-top-width: 4px; }
+.vf-c.tr { right: -4px; top: -4px; border-right-width: 4px; border-top-width: 4px; }
+.vf-c.bl { left: -4px; bottom: -4px; border-left-width: 4px; border-bottom-width: 4px; }
+.vf-c.br { right: -4px; bottom: -4px; border-right-width: 4px; border-bottom-width: 4px; }
+.den-caption {
+  position: absolute; left: 50%; bottom: 130px; transform: translateX(-50%); max-width: min(900px, 80%);
+  display: flex; align-items: baseline; gap: 14px; padding: 9px 20px; background: var(--caption-bg); pointer-events: none;
+}
+.den-caption[hidden] { display: none; }
+.den-caption .rev { font: 14px var(--mono); color: var(--accent-text); flex: none; }
+.den-caption .text { font: 500 21px/1.3 var(--sans); color: var(--fg); }
+/* The rail under the frame. */
+.den-rail {
+  position: absolute; left: 0; right: 0; bottom: 0; height: var(--den-rail-h); display: flex; align-items: center; gap: 18px; padding: 0 30px;
+  background: var(--bg-0); border-top: 1px solid var(--line-2);
+}
+.den-play { width: 34px; height: 34px; border-radius: 50%; padding: 0; display: grid; place-items: center; background: none; border: 1px solid var(--line); color: var(--fg); flex: none; }
+.den-time { font-size: 13px; color: var(--fg); flex: none; }
+.den-time.end { color: var(--fg-2); }
+.den-track { position: relative; flex: 1; height: 54px; cursor: pointer; min-width: 80px; }
+.dr-ticks { position: absolute; left: 0; right: 0; top: 30px; height: 8px; border-bottom: 1px solid var(--line); }
+.dr-ticks span { position: absolute; bottom: 0; width: 1px; height: 4px; background: var(--line); }
+.dr-ticks span.big { height: 8px; background: var(--fg-3); }
+/* The track's width, moved by `translateX(n%)` — of its own width, the track's — with the
+   line at its left edge. */
+.dr-head { position: absolute; top: 16px; bottom: 0; left: 0; right: 0; pointer-events: none; will-change: transform; }
+.dr-head::before { content: ""; position: absolute; top: 0; bottom: 0; left: -1px; width: 2px; background: var(--fg); }
+.dr-rev { position: absolute; top: 20px; width: 9px; height: 9px; margin-left: -4.5px; background: var(--accent); cursor: pointer; }
+.dr-rev span { position: absolute; bottom: 13px; left: 50%; transform: translateX(-50%); font-size: 10px; color: var(--fg-2); white-space: nowrap; }
+.dr-rev.latest { width: 11px; height: 11px; margin-left: -5.5px; top: 19px; box-shadow: 0 0 0 3px var(--accent-ring); }
+.dr-rev.latest span { color: var(--accent-text); }
+.dr-marker { position: absolute; top: 44px; width: 9px; height: 9px; margin-left: -4.5px; border-radius: 50%; background: var(--sel); cursor: pointer; }
+.dr-marker.agent { background: var(--accent); }
+.den-keys { display: flex; gap: 4px; flex: none; }
+.den-key { width: 30px; height: 30px; padding: 0; border-radius: 0; background: none; border: 1px solid var(--line); color: var(--fg-body); }
+.den-key.on { background: var(--fg); border-color: var(--fg); color: var(--bg-0); }
+.den-key[data-panel="agent"].on { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+.den-marker { display: flex; align-items: center; gap: 7px; flex: none; background: none; border: 1px solid var(--sel); border-radius: 0; color: var(--sel); padding: 5px 12px; }
+.den-marker .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--sel); }
+
+/* ---- the new panels: agent, history, markers, render queue, fonts */
+.agent-panel, .history-panel, .markers-panel, .queue-panel, .fonts-panel { overflow: auto; padding: 10px 14px 14px; display: flex; flex-direction: column; gap: 4px; }
+.ag-now { display: flex; align-items: center; gap: 12px; padding: 4px 0 12px; }
+.ag-state { color: var(--accent-text); font-size: 13px; }
+.ag-doing { color: var(--fg-2); font-size: 11px; }
+.ag-calls { display: flex; flex-direction: column; gap: 12px; }
+.ag-call-head { font-size: 12px; }
+.ag-call-head b { font-weight: 700; }
+.ag-call-head .muted { color: var(--fg-2); }
+.ag-rev { color: var(--accent-text); margin-right: 6px; }
+.ag-look { margin-right: 6px; color: var(--fg); }
+.ag-ok { margin-right: 6px; color: var(--diff-add); }
+.ag-bad { margin-right: 6px; color: var(--diff-del); }
+.ag-summary { font: 13px/1.35 var(--sans); color: var(--fg); }
+.ag-error { font-size: 11px; color: var(--danger); }
+.ag-call.done:not(:first-child) .ag-call-head b { color: var(--fg-body); }
+.ag-call.cancelled .ag-call-head b { color: var(--fg-3); text-decoration: line-through; }
+.ag-frames { display: flex; gap: 4px; margin-top: 4px; }
+.ag-frames img { width: 64px; height: 36px; object-fit: cover; border: 1px solid var(--line); background: var(--bg-stage); }
+.ag-frames img:last-child { outline: 2px solid var(--accent); outline-offset: -2px; }
+
+.hist-filters { display: flex; gap: 4px; padding-bottom: 8px; }
+button.chip { padding: 1px 8px; border-radius: 0; color: var(--fg-2); font-size: 11px; }
+button.chip.on { background: var(--fg); border-color: var(--fg); color: var(--bg-0); }
+.hist-rev { color: var(--fg-2); font-size: 11px; }
+.hist-list { display: flex; flex-direction: column; margin: 0 -14px; }
+.hist-row { display: grid; grid-template-columns: 46px minmax(0, 1fr) auto; gap: 8px; align-items: start; padding: 8px 14px; }
+.hist-row.current { background: var(--bg-2); }
+.hist-row .rev { color: var(--accent-text); font-size: 12px; }
+.hist-what { color: var(--fg); overflow-wrap: anywhere; }
+.hist-meta { color: var(--fg-2); font-size: 10.5px; }
+.hist-now { color: var(--fg-2); font-size: 11px; }
+button.hist-restore { background: none; border: 0; padding: 0 2px; color: var(--fg-2); font-size: 13px; line-height: 1.2; }
+button.hist-restore:hover { color: var(--accent-text); }
+.hist-row.refused .rev, .hist-row.refused .hist-what, .hist-row.refused .hist-meta { color: var(--fg-3); }
+
+.mk-list { display: flex; flex-direction: column; gap: 10px; }
+.mk-card { display: grid; grid-template-columns: 22px minmax(0, 1fr) auto; gap: 10px; align-items: start; padding: 10px; border: 1px solid var(--line); cursor: pointer; }
+.mk-card:hover { border-color: var(--fg-3); }
+.mk-card.reading { border-color: var(--sel); background: var(--marker-bg); }
+.mk-n { width: 20px; height: 20px; border-radius: 50%; background: var(--sel); color: var(--bg-0); display: grid; place-items: center; font-size: 10.5px; font-weight: 700; }
+.mk-card.done .mk-n { background: none; border: 1px solid var(--sel); color: var(--sel); }
+.mk-text { font: 13px/1.35 var(--sans); color: var(--fg); overflow-wrap: anywhere; white-space: pre-line; }
+.mk-meta { font-size: 10.5px; color: var(--sel); }
+.mk-card.done .mk-meta { color: var(--ok); }
+.mk-card:not(.done):not(.reading) .mk-meta { color: var(--fg-2); }
+.mk-acts { display: flex; gap: 6px; }
+button.mk-act { background: none; border: 0; padding: 0 2px; color: var(--fg-3); }
+button.mk-act:hover { color: var(--fg); }
+/* Removing is there when you reach for it, not a column of crosses at rest. */
+.mk-card:not(:hover):not(:focus-within) .mk-remove { visibility: hidden; }
+button.mk-remove:hover { color: var(--danger); }
+/* The agent's own markers: its notes, in its colour, never waiting for it. */
+.mk-card.agent .mk-n { background: var(--accent); color: var(--on-accent); }
+.mk-card.agent .mk-meta { color: var(--accent-text); }
+.mk-draft { display: flex; align-items: center; gap: 10px; margin-top: 10px; padding: 9px 10px; border: 1px dashed var(--line); color: var(--fg-2); cursor: text; }
+.mk-draft kbd { margin-left: auto; }
+.mk-draft textarea { border: 0; padding: 0; background: none; font: 13px/1.35 var(--sans); min-height: 0; resize: none; field-sizing: content; }
+.mk-plus { width: 20px; height: 20px; border-radius: 50%; border: 1px dashed var(--sel); color: var(--sel); display: grid; place-items: center; flex: none; }
+
+.q-job { border: 1px solid var(--line); padding: 10px 12px; margin-bottom: 8px; display: flex; flex-direction: column; gap: 6px; }
+.q-job.queued .q-title { color: var(--fg-body); }
+.q-head { display: flex; justify-content: space-between; gap: 10px; }
+.q-title { font-weight: 500; color: var(--fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.q-action button.linkish { color: var(--fg-2); }
+.q-action button.linkish:hover { color: var(--fg); text-decoration: none; }
+.q-bar { height: 5px; background: var(--bg-3); }
+.q-bar[hidden] { display: none; }
+.q-bar > div { height: 100%; background: var(--accent); }
+.q-state { font-size: 10.5px; color: var(--fg-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.q-job.done .q-state { color: var(--ok); }
+.q-job.failed .q-state { color: var(--danger); }
+.q-foot { display: flex; gap: 8px; margin-top: 4px; position: sticky; bottom: 0; }
+.q-foot .q-render { flex: 1; border-radius: 0; padding: 8px; }
+.q-foot .q-done { border-radius: 0; color: var(--fg-body); }
+
+.font-row { padding: 6px 0; border-bottom: 1px solid var(--line-2); }
+.font-name { font-size: 15px; color: var(--fg); }
+.font-meta { font-size: 10.5px; color: var(--fg-2); }
+
+/* ---- ⌘K */
+.palette-scrim { position: fixed; inset: 0; z-index: 1000; background: color-mix(in srgb, var(--bg-stage) 55%, transparent); display: flex; justify-content: center; align-items: flex-start; padding-top: 12vh; }
+.palette { width: min(560px, 92vw); background: var(--bg-bar); border: 1px solid var(--line); box-shadow: var(--float-shadow); }
+.palette input { height: 40px; border: 0; border-bottom: 1px solid var(--line); border-radius: 0; padding: 0 14px; font-size: 14px; background: none; }
+.palette input:focus { outline: none; }
+.palette-list { max-height: 50vh; overflow: auto; padding: 4px 0; }
+.palette-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 6px 14px; color: var(--fg-body); cursor: pointer; }
+.palette-row.on { background: var(--bg-2); color: var(--fg); box-shadow: inset 2px 0 0 var(--accent); }
+.palette-empty { padding: 10px 14px; color: var(--fg-3); }
+/* In den the frame reaches the top corner, where "power ↗" is: the engine badge goes low. */
+#app.den .stage .badge { top: auto; bottom: 8px; }

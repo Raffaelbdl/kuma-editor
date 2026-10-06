@@ -83,6 +83,12 @@ fn upgrade(v: &mut Value) -> Result<(), String> {
         // `auto_level` and `freeze` are new kinds, so no older document has one. A stamp.
         version = 8;
     }
+    if version == 8 {
+        // 8 → 9: a marker may carry an `origin`, who left it; absent reads as a person's,
+        // which every older marker was. A stamp — the bump is only so that an older kuma
+        // refuses a v9 file rather than load it and drop the origins when it saves.
+        version = 9;
+    }
     v["version"] = Value::from(version);
     Ok(())
 }
@@ -116,7 +122,7 @@ mod tests {
     /// the current version too, not on 3-as-of-when-it-was-written.
     #[test]
     fn every_older_version_climbs_to_the_current_one() {
-        for from in [1, 2, 3, 4, 5, 6, 7] {
+        for from in [1, 2, 3, 4, 5, 6, 7, 8] {
             let text = V1.replace("\"version\": 1", &format!("\"version\": {from}"));
             assert_eq!(parse_project(&text).expect("parse").version, crate::PROJECT_VERSION, "from {from}");
         }

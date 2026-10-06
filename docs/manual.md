@@ -172,7 +172,7 @@ both clips play the same entry, which is what the model's split already means.
 
 **Right-click is where the timeline's actions are.** On a clip: split it at the pointer
 (`S` splits at the playhead), add a transition into the clip it touches, copy, cut, group,
-delete. On the ruler: a marker at that moment (`M` at the playhead). A **transition** joins
+delete. On the ruler: a marker at that moment (`P` leaves one at the playhead — a comment for the agent, below). A **transition** joins
 two clips that touch on one track and is centred on the cut, so it needs *handles* —
 material after the first clip's out point and before the second's in point; "Transition
 into the next clip" makes a one-second dissolve, or as long as the handles allow, and says
@@ -218,7 +218,7 @@ add), `‹ ›` step between them, `+ key` / `− key` add and remove one where 
 the diamond, filled **◆** now, stops animating while keeping the value you are looking at. The same keys are
 drawn along the bottom of the clip in the timeline, so an animated clip says so at a glance
 and you watch them go past while scrubbing — and can be dragged there too, or clicked to
-jump to. **Auto-key** (`R`, a red edge on the inspector while it is on) is record mode:
+jump to. **Auto-key** (`Shift+R`, a red edge on the inspector while it is on) is record mode:
 while it is on, changing any animatable value writes a key at the playhead, starting the
 animation if there was none. **curve** in the keys row opens a graph of one parameter over the clip, the shape
 between keys drawn as the render will produce it, with the keys as points you drag in both
@@ -227,8 +227,8 @@ axes at once. With the playhead outside the clip there is no
 
 **The overlay workbench.** The centre of the window is tabbed, Kdenlive style. A
 **sequence** tab is a timeline you have open — the engine's picture with that sequence's
-overlays live on top, driven by the timeline below; the topbar picker opens one and gives
-it a tab, and clicking between them switches which sequence is being edited (a round trip:
+overlays live on top, driven by the timeline below; double-clicking one in the bin (or ⌘K's
+*Open sequence*) opens it and gives it a tab, and clicking between them switches which sequence is being edited (a round trip:
 the daemon holds that choice, so switching recompiles, and the last tab stays put because
 something is always open). Every other tab is one **overlay entry**, open on its own. `+ overlay` (or the
 Blueprints tab's *Workbench*, or **New Overlay…** in the Project menu) copies a
@@ -296,7 +296,44 @@ bakes as one clip and is baked again after every correction. From a clip, the pi
 are made and each is placed over its stretch. **Replace** overwrites one entry's words, so it
 is offered when the media has one transcript, and the job refuses `replace` with `split`.
 
-**Themes.** The palette button in the top bar (or *View → Theme…* in the app) swaps the
+**Den and power.** The editor has two modes over one set of panels; the backquote key, the
+top bar's toggle or the status line's first cell switches between them, keeping the playhead
+and the selection. **Power** docks everything round the frame. The dock starts with the side panels as tabs on
+the left, the inspector on the right and the timeline along the bottom, and holds still until
+you let it move: the padlock at the foot of the rail (or ⌘K's *Movable panels*, or a tab's
+right-click) unlocks it, and it stays as you left it. Locked, a tab only switches and the seams
+still resize. Unlocked, it is yours to rearrange: drag a panel's tab (or its group's head) onto the middle of another group to join
+it, onto an edge of a group or of the frame to split the space there, or onto the dock's own
+edge to run the whole length of it; the hint shows where it will land. Drag a seam to share
+the space differently, × closes a panel, and its letter brings it back where it was. Dropped
+off the dock (over the top bar), or *Float* on its tab's right-click, it floats; a floating
+panel dragged onto the dock docks again. *Reset the dock* (⌘K, or a tab's right-click) puts
+everything back. The rail of letters on the left (`b` bin, `p` blueprints, `f` fonts, `m`
+markers, `h` history, `r` render queue) brings a panel to the front, and a status line along the
+bottom says the mode, the revision, the selection, the playhead, the frame and what the agent
+is doing. **Den** gives the frame the whole window and shows what the agent
+did and where it looked: the bear (asleep after a minute without a call, looking while it
+samples, at work while it edits), orange corners round the region its last `sample_frames`
+looked at, its last edit's summary as a caption, and a rail with its revisions placed where
+they edited and your markers. Panels are summoned there with the same letters (`B I T A H M
+R`), float, and dock to an edge dropped within 24 px of it. Any panel opens in a **window of
+its own** with ⧉ or by dragging it past the window's edge — in a browser a popup on
+`?panel=<id>`, in the app a frameless window — and keeps in step with the editor window: a
+clip selected in one is selected in the other. Which mode, which panels and where they float
+are this browser's, never the project's. **⌘K** (Ctrl+K) runs any command by name.
+
+The editor has no chat: you talk to the agent in your terminal. The one thing the editor
+writes to it is a **marker** — `P`, then type: a comment on the frame under the playhead,
+which the agent reads (`list_markers`) and can say it answered (`apply_edits`' `answers`).
+The agent leaves markers too — a moment to look at, a TODO, a zone's two edges — and each
+marker says who left it, so its own are never read back to it as your requests. The markers
+panel shows yours as open, being read, or done in the revision that answered it; you can
+tick one by hand. The **history** panel (`h`) is the one undo stack you
+and the agent share, newest first, with who made each step — ⟲ goes back to a revision as a
+new edit you can undo — and the patches the daemon refused, greyed. The inspector ends with
+the history of the clip or entry it shows.
+
+**Themes.** ⌘K's *Theme…* (or *View → Theme…* in the app) swaps the
 editor's colours: **Kuma**, the default, and **Tokyo Night**, retro neon on deep indigo.
 The choice lives in the browser, not the project, and stops at the editor's chrome — no
 overlay, bake or render sees it, so the video looks the same whichever one is on. Styling
@@ -313,9 +350,10 @@ native file picker, file drops, and a daemon that starts and stops with the wind
 npm run app                                  # installs its own deps on first run, builds, starts
 ```
 
-It opens a **launcher**: recent projects on the right, *New project* and *Open project…*
-on the left. You can also drop a `.kuma.json` on the window, or pass one on the command
-line. *New project* asks for a name, a location, a resolution and a frame rate, then runs
+It opens a **launcher**, dressed as the editor is: your recent projects, each with its
+frame's shape, size and rate, and *open…* (Ctrl+O) and *new project* (Ctrl+N) in the top bar;
+`/` filters the list. You can also drop a `.kuma.json` on the window, or pass one on the
+command line. *New project* asks for a name, a location, a resolution and a frame rate, then runs
 `kuma init` — so a project created here is identical to one created from the CLI, down to
 the `.mcp.json` that lets Claude Code join it.
 
@@ -333,7 +371,8 @@ app shares it instead and leaves it running.
 The shell needs to find the `kuma` binary and the checkout. It looks for `KUMA_BIN`, then
 `target/release/kuma`, then `target/debug/kuma`, then `PATH`; and for the repository the
 same way `kuma` itself does (`KUMA_REPO`, else the nearest ancestor with
-`node_modules/hyperframes`). The launcher's footer says what it found and what is missing.
+`node_modules/hyperframes`). The launcher's status line says which binary it found, and a note above the projects what is
+missing.
 
 Everything the app adds to the editor page sits behind one check in `ui/src/desktop.ts`,
 so the UI keeps working unchanged in an ordinary browser.
@@ -368,7 +407,7 @@ claude mcp add --scope user    kuma -- kuma mcp --project /abs/path.kuma.json  #
 
 `kuma mcp` starts the daemon in-process if none is running on the port, so the browser UI
 and the agent always share one state. Tools: `timeline_guide`, `get_project`, `get_schema`, `apply_edits`,
-`undo`, `redo`, `validate_project`, `list_presets`, `add_media`, `probe_media`, `reprobe_media`, `unused_entries`,
+`undo`, `redo`, `list_markers`, `validate_project`, `list_presets`, `add_media`, `probe_media`, `reprobe_media`, `unused_entries`,
 `transcribe`, **`sample_frames`**, `measure_audio`, `measure_media`, `bake_overlay`, `render`, `job_status`, `cancel_job`,
 `prune_cache`, `health`, and for overlays `overlay_guide`, `new_overlay`, `check_overlay`,
 `import_overlay`, `make_overlay_unique`, `list_blueprints`, `add_blueprint`,
@@ -399,6 +438,75 @@ a client that gives up on a silent call does not. A server that outlives a rebui
 tools are the old build's. `overlay_guide` returns `library/blueprints/CLAUDE.md`, and
 `timeline_guide` returns `crates/kuma-mcp/src/timeline_guide.md`: the server's own
 instructions are kept under the 2048 characters a client shows and point at both.
+
+**What the editor sees of the agent.** Besides the patches it lands, the editor follows the
+agent through three kinds of session state the daemon keeps in memory — never in the project
+file, and gone when the daemon stops:
+
+- **Activity.** The daemon keeps the agent's recent tool calls, and owns each record's life.
+  Every job says who asked for it, the way an edit does: a job's request (`/api/render`,
+  `/api/bake`, `/api/sample/job`, `/api/transcribe`, `/api/audio/measure`,
+  `/api/media/measure`, `/api/cache/prune`, `/api/blueprints/thumbs`) may carry an
+  `origin` — the editor sends `ui: render`, `ui: transcribe`, `ui: prune`, `ui: thumbs`; the
+  command line `cli: <command>`; `kuma mcp` `mcp: <tool>` — and `kuma mcp` adds
+  `"call": {"tool", "client"}` (the MCP client's name; null reads as `agent`). The job keeps
+  them as `asked_by`, `{"author", "origin", "tool", "client"}`, its author read off the
+  origin as an edit's is (`user`, `agent` or `other`; a call without an origin is the
+  agent's, `agent: <tool>`), `tool` and `client` null unless a call asked; and `null` when
+  the request said neither (an old client), in `GET /api/jobs` too; a transcription's edit
+  carries the job's origin. Only a job whose author is `agent` is a call in this feed: the
+  daemon records it `running` the moment the job is created, as `call`'s tool (else the
+  job's kind) and client (else `agent`) — its `args` the job's `params`, its `job` the
+  job's id — and finishes it wherever the job becomes final: `done`, `failed` (with the
+  job's message as `error`) or `cancelled`, whether by `cancel_job`, the editor's queue,
+  or a cancel while it was still queued. So a call the client gives up on leaves its job,
+  and the record, running until the job ends, which is the truth. Every other call is reported once, after it has answered, to
+  `POST /api/activity` (`{"phase":"call","tool","client","args","ok","error","result","revision","started_at"}`),
+  and kept already finished; a cancelled one is never reported. Its arguments are trimmed (a
+  patch is its op count) and its result reduced to a lint verdict or a sample's frame paths;
+  `revision` is the one the call made, read off its own answer (an edit's, an undo's, an
+  import's), absent or null when it made none. Nothing waits on a report and its failure is
+  ignored: the feed is never what slows or fails a tool. `GET /api/activity?limit=N` lists the
+  last 100 calls newest first (one still running is not forgotten to make room), each with
+  its state (`running`, `done`, `failed`, `cancelled`), `job`, `revision_before` (the
+  daemon's when its job was created; for a reported call the one before the revision it
+  made, else the daemon's) and `revision_after` (the one it made — a transcription's is its
+  job's — else `revision_before`, so the two differ exactly when the call edited, whatever
+  the person did meanwhile), a sample's times and `rect`, and its `frames`, served by
+  `GET /api/samples/<file>` from `.kuma/samples/`.
+- **History.** One entry per revision the daemon makes — edits, undos, redos, restores — and
+  per patch it refuses, with its author (`agent`, `user` or `other`, from the origin: `ui…`
+  is the person, `mcp…` the agent, anything else — `cli: …` among them — other; an
+  undo's is whoever asked, `{"origin": …}` in its body), the clips and entries it touched and
+  up to eight fields it changed: `GET /api/history?limit=N`, the last 500, newest first.
+  `POST /api/history/restore {"revision": n}` makes the document what it was at any of the
+  last 200 revisions as one new, validated, undoable edit, at a new revision number.
+- **Markers' answers.** The markers are the document's (a sequence's `markers`,
+  `{"t", "label", "color", "origin"}`), and each says who left it: `origin` is the head of
+  the origin of the edit that added it (`ui`, `mcp`, `cli`…), which the daemon stamps as the
+  edit lands — on every marker the new document has without one, carrying over the origin of
+  the marker at the same time of the same sequence before the edit if there was one (so a
+  client writing the whole array back re-attributes nothing, and an older file's marker
+  stays without), else the edit's (`ui` when it has none). A marker without an `origin` is
+  read as a person's. Undo, redo and restore put documents back as they were. What is
+  session state is whether one is answered: `GET /api/markers` lists every marker of every
+  sequence, the master's first, each in time order —
+  `{"id", "sequence", "index", "t", "label", "color", "origin", "author", "waiting", "done", "done_by"}`
+  with `id` `<sequence>@<t to 3 decimals>`, `index` its number in its sequence, `author`
+  `user`, `agent` or `other` (read off `origin` as an edit's is; none is `user`), `done` the
+  revision of the latest edit that named it in `answers` (`apply_edits`' `answers`, or the
+  patch body's) or of a tick by hand (`POST /api/markers/done {"id", "done", "origin"?}`, the
+  origin an edit's, `ui` when absent; unticking clears both), `done_by` who did, and `waiting` whether it is a request still open: a
+  label, an author other than the agent, and not done.
+
+Each change is broadcast on `/api/events` beside `project_changed` and `job`: `activity` and
+`history` carry the record (an entry's `answers` the markers it answered), and `markers`
+carries the whole list as `GET /api/markers` has it (`{"type":"markers","markers":[…]}`),
+sent at most once per operation whenever it can have changed — an edit, undo, redo or
+restore that changes a marker (or the master), an edit that names markers in `answers`, a
+tick or untick. A subscriber that falls too far behind is
+disconnected rather than skipped ahead, since a client appends `history` and `activity` as
+they come: it reconnects and reloads.
 
 ### CLI
 
@@ -431,8 +539,8 @@ kuma canonical plan.json                   # a project document (any version; `-
 
 When a daemon serves the project (`--bind`, `127.0.0.1:7455` by default), `render`, `bake`,
 `sample`, `measure-audio`, `measure-media` and `transcribe` run as its jobs: they show in the
-editor's job queue (the **Queue** button), wait their turn with its renders, and print the
-same result; Ctrl-C cancels the job. Without one, they run in the `kuma` process itself.
+editor's job queue (the **Queue** button), stamped `cli: <command>`, wait their turn with
+its renders, and print the same result; Ctrl-C cancels the job. Without one, they run in the `kuma` process itself.
 
 ## The project file
 
@@ -485,7 +593,7 @@ clips.
 holds the tracks, and `master` names the one that gets rendered. A sequence placed on
 another sequence is a nested sequence — edit a part separately, place it in the final cut,
 trim into it and put effects on this placement without touching the other. The editor
-opens one sequence at a time (the picker in the topbar); the preview compiles whichever is
+opens one sequence at a time (its tab in the top bar); the preview compiles whichever is
 open, since the engine loads one timeline. Overlays on that sequence stay live DOM so edits
 show as you type; overlays inside the sequences it nests are baked into the preview, which
 is content you are not editing and is what the render will show. A sequence cannot contain itself, and cannot be
@@ -607,8 +715,8 @@ and the values live with the rest of the project's decisions.
 
 ## Troubleshooting
 
-- **The preview looks stale or an overlay is missing from it?** Press the top bar's reload
-  button (the circular arrow). It hands the engine the timeline again even if nothing in
+- **The preview looks stale or an overlay is missing from it?** Press the reload
+  button under the frame (the circular arrow). It hands the engine the timeline again even if nothing in
   the project changed (a media file replaced on disk, say), then says how many overlays are
   drawn live and how many were baked. Overlays of nested sequences that have not been baked
   yet are left out at first and baked by a `preview-bake` job in the job queue; the preview

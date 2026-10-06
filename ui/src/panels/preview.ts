@@ -23,6 +23,9 @@ interface OverlayView {
   iframe: HTMLIFrameElement;
   ready: boolean;
   lastT: number;
+  /** The clip and playhead its effects were last applied for: unchanged, nothing to do. */
+  lastClip?: Clip;
+  lastAt?: number;
 }
 
 export class Preview {
@@ -54,7 +57,7 @@ export class Preview {
   private engineT = -1;
   private lastFrame = -1;
 
-  constructor(private host: HTMLElement) {
+  constructor(host: HTMLElement) {
     this.stage = document.createElement("div");
     this.stage.className = "stage";
     this.canvas = document.createElement("canvas");
@@ -65,11 +68,22 @@ export class Preview {
     this.badge.className = "badge";
     this.stage.append(this.canvas, this.layer, this.badge);
     host.appendChild(this.stage);
-    new ResizeObserver(() => this.layout()).observe(host);
-    store.subscribe((s) => this.onState(s.playhead, s.playing, s.project?.revision ?? -1, s.sequence));
+    // The host's size as the observer last saw it: measured by the browser after a layout,
+    // so fitting the stage never forces one (an edit used to, right after the timeline was
+    // rebuilt, at the cost of laying the whole new timeline out on the spot).
+    new ResizeObserver(([e]) => { this.hostSize = { w: e.contentRect.width, h: e.contentRect.height }; this.layout(); }).observe(host);
+    store.select((s) => [s.playhead, s.playing, s.project, s.sequence], (s) => this.onState(s.playhead, s.playing, s.project?.revision ?? -1, s.sequence));
     // A monitor nobody is looking at does not play: leaving the tab stops the engine
     // rather than leaving it streaming frames into a hidden canvas.
     store.select((s) => [s.tab], (s) => { if (s.tab !== SEQUENCE_TAB && s.playing) this.togglePlay(); });
+    // The store's "not playing" is the engine's too, whoever said it: opening another
+    // sequence, the engine reaching the end, another window. Only `togglePlay` used to
+    // pause the engine, so a sequence opened while one played went on playing — under
+    // controls that no longer reached it.
+    store.select((s) => [s.playing], (s) => { if (!s.playing && this.streaming) this.pause(); });
+    // A sequence that changes under a playing preview stops it, however it changed (a
+    // deleted sequence falling back to the master, another window opening one).
+    store.select((s) => [s.sequence], () => { if (store.state.playing) store.set({ playing: false }); });
     // The engine socket lives here, so the transport actions do too. Anything that wants
     // them — the strip under the stage, a key, the application menu — asks by id.
     command(Cmd.togglePlay, "Play/Pause", () => this.togglePlay());
@@ -95,7 +109,7 @@ export class Preview {
       // Taken before the await: decoding is async and can finish out of order, so order
       // of arrival — not of completion — decides which frame is the newer one.
       const seq = ++this.recvSeq;
-      const bmp = await createImageBitmap(new Blob([buf.slice(8)], { type: "image/jpeg" }));
+      const bmp = await decodeImage(new Uint8Array(buf, 8), "image/jpeg");
       if (seq < this.drawnSeq) { bmp.close(); return; }
       this.drawnSeq = seq;
       // While playing the engine streams in order; never step back over a late arrival.
@@ -112,6 +126,7 @@ export class Preview {
     };
     ws.onclose = () => {
       this.wsOk = false;
+      this.streaming = false;
       this.resetSeeks();
       this.badge.textContent = "snapshot (no engine)";
       if (store.state.playing) store.set({ playing: false });
@@ -201,7 +216,7 @@ export class Preview {
         const p = store.state.project;
         const want = Math.ceil(this.stage.clientWidth * (window.devicePixelRatio || 1));
         const width = Math.min(p?.width ?? 1920, Math.max(640, want));
-        const bmp = await createImageBitmap(await (await fetch(api.snapshotUrl(t, width))).blob());
+        const bmp = await decodeImage(new Uint8Array(await (await fetch(api.snapshotUrl(t, width))).arrayBuffer()), "image/png");
         // The engine may have connected while melt was rendering; its frame wins.
         if (this.wsOk) { bmp.close(); return; }
         this.draw(bmp);
@@ -230,9 +245,13 @@ export class Preview {
     // Playing streams frames unprompted; nothing is answering a seek any more.
     this.resetSeeks();
     this.send("play");
+    this.streaming = true;
     return true;
   }
+  /** The engine was told to play and has not been told to stop. */
+  private streaming = false;
   pause() {
+    this.streaming = false;
     this.send("pause");
     this.resetSeeks();
     // The next scrub back to this position must fetch a frame again.
@@ -301,10 +320,18 @@ export class Preview {
 
   // ---- rendering ---------------------------------------------------------------
 
+  private hostSize = { w: 0, h: 0 };
+  /** The frame size the stage was last fitted for: a change (the orientation flipped) is
+   *  the one edit that has to fit it again. */
+  private fitted = "";
+
   private layout() {
     const p = store.state.project;
     if (!p) return;
-    const hw = this.host.clientWidth - 24, hh = this.host.clientHeight - 24;
+    this.fitted = `${p.width}x${p.height}`;
+    // Den shows the frame full-bleed; power leaves it a margin inside the viewer.
+    const pad = document.getElementById("app")?.classList.contains("den") ? 0 : 56;
+    const hw = this.hostSize.w - pad, hh = this.hostSize.h - pad;
     // Hidden behind another tab: there is nothing to fit into, and sizing the stage to
     // zero would only have to be undone. The observer fires again when it comes back.
     if (hw <= 0 || hh <= 0) return;
@@ -312,15 +339,16 @@ export class Preview {
     const w = Math.floor(p.width * s), h = Math.floor(p.height * s);
     this.stage.style.width = `${w}px`;
     this.stage.style.height = `${h}px`;
-    for (const v of this.views.values()) v.wrap.style.transform = `scale(${s})`;
+    // One scale for every overlay: the layer is the project's size, scaled to the stage.
+    Object.assign(this.layer.style, { width: `${p.width}px`, height: `${p.height}px`, transform: `scale(${s})` });
   }
 
-  private draw(bmp: ImageBitmap) {
+  private draw(bmp: Decoded) {
     if (this.canvas.width !== bmp.width || this.canvas.height !== bmp.height) {
       this.canvas.width = bmp.width;
       this.canvas.height = bmp.height;
     }
-    this.ctx.drawImage(bmp, 0, 0);
+    this.ctx.drawImage(bmp.image, 0, 0);
     bmp.close();
   }
 
@@ -401,7 +429,7 @@ export class Preview {
       });
       this.views.set(id, view);
     }
-    this.layout();
+    if (this.fitted !== `${p.width}x${p.height}`) this.layout();
   }
 
   private updateOverlays(playhead: number) {
@@ -413,7 +441,9 @@ export class Preview {
       const c = f.clip;
       const visible = covers(c, playhead);
       v.wrap.style.visibility = visible ? "" : "hidden";
-      if (!visible || !v.ready) continue;
+      if (!visible || !v.ready || (v.lastClip === c && v.lastAt === playhead)) continue;
+      v.lastClip = c;
+      v.lastAt = playhead;
       // A freeze holds the overlay where the clip is `t` in, as the render's held frame
       // does; the clip's other effects still follow the playhead.
       const freeze = c.effects.find((e) => e.type === "freeze");
@@ -429,10 +459,43 @@ export class Preview {
   }
 }
 
+/** A decoded engine frame: what to draw, its size, and how to let it go. */
+interface Decoded { image: CanvasImageSource; width: number; height: number; close(): void }
+
+/**
+ * A frame's image — the engine's JPEG, a snapshot's PNG — decoded. `ImageDecoder` reads the bytes where they are, off the
+ * main thread; a `Blob` copies them first and `createImageBitmap` decodes later and slower
+ * (measured: about 2 ms of main thread a frame against 0.2, at 25 frames a second). The
+ * Blob is the fallback where WebCodecs is missing.
+ */
+async function decodeImage(bytes: Uint8Array<ArrayBuffer>, type: string): Promise<Decoded> {
+  if (typeof ImageDecoder !== "undefined") {
+    const decoder = new ImageDecoder({ data: bytes, type });
+    try {
+      const { image } = await decoder.decode();
+      return { image, width: image.displayWidth, height: image.displayHeight, close: () => image.close() };
+    } finally {
+      decoder.close();
+    }
+  }
+  const bmp = await createImageBitmap(new Blob([bytes], { type }));
+  return { image: bmp, width: bmp.width, height: bmp.height, close: () => bmp.close() };
+}
+
 /** Everything the overlay document is a function of: its injected `window.kuma`. The bin
  *  entry carries the overlay folder and its vars; the clip decides how long it runs. */
 function contentKey(p: Project, c: Clip): string {
-  return JSON.stringify([binItem(p, c)?.source, c.speed, c.end - c.start, p.width, p.height, p.fps]);
+  const source = binItem(p, c)?.source;
+  return `${source ? sourceJSON(source) : ""}|${JSON.stringify([c.speed, c.end - c.start, p.width, p.height, p.fps])}`;
+}
+
+/** An entry's source as JSON, once per document: a subtitles entry's source is the whole
+ *  transcript, and every clip placing it asks. */
+const sourceJSONs = new WeakMap<object, string>();
+function sourceJSON(source: object): string {
+  let s = sourceJSONs.get(source);
+  if (s === undefined) sourceJSONs.set(source, (s = JSON.stringify(source)));
+  return s;
 }
 
 /** Approximate MLT-side effects with CSS on the overlay iframe (see the header comment). */

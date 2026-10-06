@@ -2896,6 +2896,180 @@ encoder), `renders_reference_project_with_melt` ("melt reported no progress"), t
 `the render queue` (which waits for the same missing progress) and `titles from the bin`'s
 font picker, all of which fail the same way on the commit before this work.
 
+## Den and power: the editor around the agent
+
+The editor was redesigned from a design handoff (a written spec and a mock-up, not kept in
+the repository) around the agent that edits beside you over MCP. Two modes over
+one set of panels: **power**, every panel docked, styled as an IDE (a rail of letters, ⌘K, a
+status line); and **den**, the frame full-bleed with what the agent did and where it looked
+on it, and panels summoned over it.
+
+**A panel is a module; the container is view state** — adopted. `panelhost.ts` holds the
+panels (bin, blueprints, fonts, markers, history, render queue, inspector, timeline, agent) as
+elements that move between containers — a dock slot, the floating layer, the parking lot —
+and are never rebuilt, so their subscriptions and scroll positions live on. A panel never
+knows where it is. Mode, which panels are summoned and where they float are `localStorage`,
+per mode, beside the theme: a layout is not an edit and no agent or render reads it.
+
+**Power is a dock, not slots** — adopted, superseding the first cut, which docked the side
+panels, the inspector and the timeline into three fixed slots of a grid (with the rail choosing
+which side panel the side slot showed). Power is now a tree (`ui/src/dock.ts`) of **splits**
+(a row or a column) and **groups** (panels as tabs, one in front), with the frame as the one
+leaf that is not a panel and cannot be closed. Dragging a tab onto a group's middle joins it;
+onto an edge of a group, of the frame or of the whole dock splits the space there; off the
+dock it floats; past the window's edge it gets a window of its own. A floating panel dragged
+onto the dock docks. Closing a panel remembers its group, so its letter puts it back there,
+or where its kind lives when that group has gone.
+
+Sizes are pixels along the parent's axis. In the split that holds the frame, the frame's
+branch takes what the others leave, so a sidebar keeps its width as the window grows; in a
+split without it, children share in proportion to their sizes, so a group dropped under
+another never ends up with nothing (the first draft gave the space left over to the last
+child, which was the new group, which was zero). Kept sizes are preferences, not minimums:
+when the space runs short every group gives.
+
+The dock is drawn by **reconciling**, not rebuilding: every split and group keeps its element
+by id, and an element is moved only when it is out of place. Re-inserting even the same node
+where it already is detaches it, and an iframe that leaves the document reloads — the frame
+is full of them. The frame's containers are drawn before the preview mounts for the same
+reason. A drop that moves the frame does reload its overlays, once, which was judged an
+acceptable price for a layout change. The bin and the blueprints became two instances of one
+panel class rather than two views of one element, since two panels in two groups can both be
+on screen.
+
+**Moving panels is an option, off by default** — adopted, at the user's asking. A dock that
+rearranges on any drag of a tab rearranges on an accidental one too, and most sessions want
+power's layout as it is. So the dock is locked until the padlock at the foot of the rail (⌘K's
+*Movable panels*, a tab's right-click) unlocks it: locked, a tab only switches, the seams
+still resize, × and the drop targets are gone, and a floating panel cannot dock. The choice is
+view state, beside the arrangement it protects.
+
+**Den does not move the frame** — adopted, against the obvious implementation. Moving
+`#stages` into den's own container would reparent the overlay iframes, and an iframe that
+leaves the document reloads. Den is a class: the power chrome is hidden, the centre takes the
+window, and den's HUD and rail are drawn over it. Switching modes reloads nothing.
+
+**A panel's window is the same page** — adopted. `?panel=<id>` boots the editor with that
+panel alone; a browser opens it with `window.open`, the shell with a frameless
+`BrowserWindow` through the bridge (`openPanel`), which closes with its editor and is not a
+child window, so it can go to another screen. Each window has its own store; `viewsync.ts`
+sends the view state panels read (selection, playhead, open sequence and tabs, zoom) over a
+`BroadcastChannel`, and a command the panel's window does not have — play, reload — is run
+by the editor window. The document is never synced: every window reads it from the daemon.
+A panel's window says nothing until the editor window has told it where things are, or its
+defaults would overwrite the editor's selection and playhead.
+
+**Letters are commands** — adopted. `B I T A H M R` are `panel.<id>` commands and `P` is
+"marker at playhead", so the rail, den's keys, ⌘K and the shell's menus reach a panel one way,
+and ⌘K is the registry rather than a second list. Two keys moved to make room: **auto-key**
+is `Shift+R` (R is the render queue's letter; still R for record), and **`M`** shows the markers
+rather than opening the marker dialog — a comment is `P` and an inline field in the markers panel;
+the ruler's right-click and a flag's double-click still open the dialog. The backquote
+switches modes. Undo, redo, the theme, the shortcut list and the sequence picker left the top
+bar: they are commands, so ⌘K and the keys have them, and a sequence opens from the bin (or
+⌘K's *Open sequence*).
+
+**The agent's activity is reported by the MCP server, not inferred** — adopted. The UI used
+to see only the patches an agent landed. Now the daemon keeps every tool call `kuma mcp`
+serves (`crate::activity`), with its arguments trimmed and its result reduced to what the
+editor draws: a lint verdict, an edit's revision, a sample's frames and rect. The bear's
+states, the status line and den's viewfinder are read off that feed (`ui/src/agent.ts`), with
+a clock for "asleep after a minute": what the agent was told it is doing, never a model of it.
+
+**A call's record is the daemon's, and follows its job** — adopted, superseding the first
+cut, in which `kuma mcp` reported each call as it started and as it ended. That left records
+`running` for good whenever the end never came — the client cancelled the call (rmcp drops
+it before the end is sent), `kuma mcp` died, the report was lost, or the start's one-second
+wait for its id timed out after the daemon had recorded it — and the bear never slept; and
+every call waited up to a second on bookkeeping before it ran. The daemon runs every long
+call's work anyway, as a job, so the record now lives there: a call that starts a job stamps
+the job's request (`call`, kept as the job's `asked_by`), the record starts when the job is
+created and ends where every job ends (`jobs::spawn_inner`: done, failed, cancelled — a panic
+counts as failed), and a call the agent abandons leaves a job, and a record, that truly is
+still running. Every other call is quick and is reported once, after it has answered, as an
+already-finished record; one cancelled midway is not reported at all. Nothing is sent before
+a call runs, so there is nothing left for anyone to finish. Rejected: a timeout that
+marks old running records failed (a long render would be called failed while it encodes)
+and a heartbeat from `kuma mcp` (it would still lie about a job whose call was abandoned).
+An old `kuma mcp` speaking start/end is refused (422) and only loses its feed entries.
+
+**The stamp is every job's; the record is the agent's.** A job's request says who asked the
+way an edit does — an `origin`, `ui: …` from the editor, `cli: …` from the command line,
+`mcp: <tool>` from `kuma mcp` (which also adds its `call`) — and the job keeps it as
+`asked_by: {author, origin, tool, client}`, the author read off the origin by the same
+`history::author` an edit's is, so the queue can say whose render it is whoever asked. The
+activity feed follows only a job whose author is `agent`: whether a record opens is decided
+by who asked, not by whether a `call` came along, so an agent's origin without a call is
+still followed (under the job's kind) and the editor's job never is. A request with neither
+is `asked_by: null`, as an old client's always was. `kuma mcp` stamps `mcp`, not `claude`:
+the origin names the surface that sent it, as `ui` and `cli` do, and the client behind it
+is `call.client`; `claude` was dropped pre-release, so an older `kuma mcp`'s edits read as
+`other`.
+
+**History is the daemon's undo stack with authors** — adopted. Every revision the daemon
+makes, and every patch it refuses, is an entry recorded where it happens (under the edit
+lock), with its author from the origin (`ui` is you, `mcp` the agent; an undo's is whoever
+asked, which the undo endpoint now takes), the clips and entries it touched and the fields it
+changed. Fields in the inspector are no longer meant to be coloured when they change: the
+inspector ends with that thing's history, which says what changed, when, and who. **⟲
+restores** a revision as one new, validated, undoable edit (a whole-document replace through
+the ordinary patch path), so going back is never destructive. All of it is session state,
+like the undo stack it extends: gone when the daemon stops. The documents both keep are
+compact JSON, one shared copy per revision, parsed only when someone goes back: typed, the
+200 snapshots and 200 undo steps of a 300-clip project with a long transcript held half a
+gigabyte, and parsing a snapshot proved cheaper than the two copies an undo made of a typed one.
+
+**One name, marker; a marker says who left it, and done-ness is not in the document** —
+adopted, revising an earlier "a pin is a marker with a comment". That entry kept the format
+unchanged and called a labelled marker a *pin* on the agent's side (`list_pins`, `/api/pins`,
+`apply_edits`' `pins`) while the editor and the document said marker — two names for one
+thing. And the agent leaves markers of its own (a TODO, a moment to review, a zone's two
+edges), which came back to it from `list_pins` as feedback it was meant to answer. Now it is
+**marker** everywhere (`list_markers`, `GET /api/markers`, `POST /api/markers/done`, the
+`markers` event, `apply_edits`' and the patch body's `answers`, a history entry's `answers`),
+with no aliases for the old names, and a marker carries `origin`: the head of the origin of
+the edit that added it (`ui`, `mcp`, `cli`…), which is what tells a request from the agent's
+own note. That is a format change, so `PROJECT_VERSION` went 8 → 9 with an upgrade step that
+changes nothing: the bump is only so that an older kuma refuses a v9 file instead of loading it
+and dropping the origins when it saves. A marker without one is an older file's, and reads as a
+person's, which every older marker was.
+
+Clients do not write `origin`: **the daemon stamps it** in the edit path, as an edit (a patch, or
+work composed under the edit lock) lands and before it is saved, so the stamped document is the
+one on disk and the one the history keeps. Every marker of the new document without an origin
+takes that of the marker at the same time (to the millisecond) of the same sequence before the
+edit, if there was one — a client that writes the whole `markers` array back without origins
+re-attributes nothing, and an older marker stays unattributed rather than becoming whoever
+edited next — or else the edit's own (`ui` when it has none, the editor's default). A marker
+that has one keeps it, so editing someone else's marker never makes it yours. Undo, redo and
+restore put documents back as they were and stamp nothing. The list then says, per marker,
+`author` (as an edit's author: `user`, `agent`, `other`) and `waiting` — a label, not the
+agent's, not answered — which is what the editor counts and the agent reads as asked of it.
+
+Done-ness stays session state. A marker's id is `<sequence>@<t to the millisecond>`, since the
+format has no marker ids; it is done when an edit names it in `answers` or you tick it — kept
+by the daemon for the session, and the latest of an answer, a tick and an untick wins. Writing
+"done" into the marker (its colour, say) was rejected: it would make answering a comment an
+edit of the note, and an agent's undo would reopen it. The costs are known: moving a marker
+changes its id, and a restart forgets which were answered.
+
+**Fonts are bundled** — adopted. JetBrains Mono (chrome), IBM Plex Sans (sentences people and
+agents wrote) and Silkscreen (labels, the rail's letters, the wordmark) are woff2 files under
+`ui/src/fonts/` with their OFL licences, latin only: nothing is fetched at runtime.
+
+**The launcher wears the editor's files, not a copy of them** — adopted. The desktop shell's
+launcher page (`app/launcher/`) had its own palette, kept "in step" by hand, and it had already
+drifted. Now `app/scripts/copy-assets.mjs` copies `themes.css`, `fonts.css`, `chrome.css` (the
+faces, the scrollbars, the top bar and the status line, which the editor's `style.css` imports
+too), the fonts and the bear from `ui/src` into `dist/launcher` at build time. The page is the
+editor's shapes: the top bar with the bear and the wordmark, square corners, pixel-face labels,
+the orange status line saying which `kuma` it will run. It always shows the default theme — the theme you picked
+is the editor's view state, in another origin's storage.
+
+Still open here: the render queue cannot say a render was "asked by kuma" (a job does not
+record who asked for it); the agent panel's thumbnails are the sample's own PNGs, so a pruned
+cache leaves them blank; a marker that is dragged starts over unanswered (its id is where it is).
+
 ## Still open
 
 Nested sequences are done and the editor is an application now, so this list is the whole
@@ -3172,8 +3346,58 @@ because it is the part deliberately left out.
   JSON on the library search path, already are.
 - **Auto-key needs a home a person finds** — open. It was a red button in the transport
   strip and was taken out with Split and Marker: a record toggle beside play reads as a
-  recorder, and most people never want it. For now it is `R`, listed in the shortcuts,
+  recorder, and most people never want it. For now it is `Shift+R` (`R` is the render
+  queue's letter), listed in the shortcuts,
   with the inspector's red edge and a toast saying it is on. What it should become is not
   decided: a toggle in the inspector's keyframe row (where it acts), a per-effect record
   state, or Blender's model — keying is explicit (`I`) and auto-key a preference. Whichever
   it is has to keep the property that the whole page says when it is recording.
+- **Live overlay iframes only near the playhead** — open, measured, the largest cost left
+  in the editor. The preview keeps one `<iframe>` per overlay clip on the open sequence for
+  as long as it is open (`preview.ts`, `syncOverlays`), and one off the playhead is hidden
+  by `visibility`, so the browser still styles, lays out and composites it — and its GSAP
+  ticker still asks for frames. On a generated project of 480 clips, 120 of them overlays,
+  in headless Chromium: playback cost ≈ 830 ms of main thread a second with ≈ 1,770 style
+  recalcs, against ≈ 575 ms and ≈ 80 recalcs with the off-playhead iframes taken out of
+  rendering (−31%); startup to idle 5.5 s against 0.7 s for a ten-overlay project, and
+  ≈ 86 MB of heap against 8. Each window-resize step and each agent event costs about
+  four times what it would.
+
+  The direction: mount a *window* of iframes — the clips under the playhead and the next
+  few seconds' worth — loaded ahead so an overlay is `ready` before its clip starts, and
+  park or drop the rest, keyed by `contentKey` as views are today. Two constraints come
+  with it. A wrapper hidden by `display: none` gives its iframe a 0×0 viewport and an
+  overlay that measures itself on load reads zeros, so an iframe mounts at full size,
+  hidden by `visibility`, and is only taken *out* when far away. And a seek to somewhere
+  new mounts on demand and seeks on `load`, which is a frame or two late the first time —
+  the price of not keeping everything warm, and the reason for the look-ahead. Nothing
+  changes in what is shown: the live DOM is still the open sequence's own overlays only.
+
+- **The timeline rebuilt on every edit** — open, measured. `Timeline.render` clears the
+  panel and builds every track, clip, trim handle, strip tile and waveform canvas again
+  whenever the project changes, and an edit replaces the whole project object. On the
+  same 480-clip project an edit creates ≈ 5,000 elements: about 100 ms of script and
+  165 ms of style recalc, of which repainting 276 waveform canvases (≈ 1.3 Mpx, one
+  `fillRect` per pixel column in `clipmedia.ts`) is a third and 1,560 strip-tile `div`s
+  most of the rest. Out of sight it no longer runs at all (`panels.lazily`); on screen,
+  in power, it is most of an edit's 400 ms.
+
+  The direction: key clip elements by id (transitions by track and the clip pair) and
+  keep an element whose clip did not change — compared on what draws it (times, `in`,
+  speed, entry, label, effects, group, mute) plus the zoom and the row's height — moving
+  and resizing it in place and ordering with `reconcile`; and cache painted waveforms and
+  strips by entry, media, `in`, speed, length, zoom and height, a strip drawn as one
+  element rather than seven. The drag and trim code reads clips and rows back out of the
+  DOM by their data attributes, so a kept element has to stay the element those
+  attributes describe.
+
+- **One way for a request to say who asks** — open, deliberately not yet done. The idea
+  is shared — who asked is read off an `origin`, by `history::author` — but each route
+  writes it down its own way: jobs take `Asked<T>` (`origin` and the agent's `call`, kept
+  as `asked_by`); edits (the patch, imports, media) an `origin` that defaults to `ui`;
+  undo, redo and restore an optional one, since a step is the same whoever asks; and the
+  marker tick took none until its `done_by` was found always reading `user` — it takes an
+  edit's `origin` now. Unifying them was weighed and put off: nothing reads an author
+  wrongly, and the two defaults are meant. When the next route needs to know who asks,
+  make `Asked<T>` the one way (an `origin()` with the edit's `ui` default beside the
+  optional one) rather than adding a fifth.

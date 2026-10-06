@@ -123,7 +123,7 @@ describe("clip groups", { skip: why ? `skipping: ${why}` : false }, () => {
     page = await driver(daemon.url);
     await page.until(`!!document.querySelector('.clip[data-id="a"]')`);
     // The default zoom, so a pixel of drag is a known number of seconds.
-    await page.until(`document.querySelector("#transport input[type=range]").value === "60"`);
+    await page.until(`document.querySelector("#timeline .tl-corner input.zoom").value === "60"`);
   });
 
   after(() => {
@@ -250,11 +250,13 @@ describe("clip groups", { skip: why ? `skipping: ${why}` : false }, () => {
     assert.ok(rows.some((r) => r.startsWith("Space ")), "and so is the transport");
     // The gestures too: half of what the editor does is done with the mouse.
     assert.ok(rows.some((r) => r.startsWith("Drag a clip =")), `and the gestures: ${rows.join(" | ")}`);
-    assert.deepEqual(await page.eval(`[...document.querySelectorAll("dialog.modal h4")].map(h => h.textContent)`), ["Transport", "Editing", "Overlay workbench"]);
+    assert.deepEqual(await page.eval(`[...document.querySelectorAll("dialog.modal h4")].map(h => h.textContent)`), ["Panels", "Transport", "Editing", "Overlay workbench"]);
     await page.eval(`document.querySelector("dialog.modal .modal-actions button").click()`);
     await page.until(`!document.querySelector("dialog.modal")`);
-    // The button in the top bar is the same list.
-    await page.eval(`[...document.querySelectorAll("#topbar button")].find(b => b.textContent.trim() === "?").click()`);
+    // ⌘K names the same list.
+    await page.eval(`window.dispatchEvent(new KeyboardEvent("keydown", { key: "k", ctrlKey: true, bubbles: true }))`);
+    await page.until(`!!document.querySelector(".palette input")`);
+    await page.eval(`(() => { const i = document.querySelector(".palette input"); i.value = "shortcuts"; i.dispatchEvent(new Event("input")); i.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })); return true; })()`);
     await page.until(`!!document.querySelector("dialog.modal .shortcuts")`);
     await page.eval(`document.querySelector("dialog.modal .modal-actions button").click()`);
     await page.until(`!document.querySelector("dialog.modal")`);

@@ -1,13 +1,14 @@
-// The left panel, in two tabs.
+// The bin and the blueprints: two panels on one body.
 //
-// **Bin** is what this project can place on a track: media files, configured overlays,
-// colours, sequences and folders, one row each, as a tree by `parent`. **Blueprints** is
-// where you shop — reusable overlays in the user's library; adding one copies it into
+// **Bin** (`b`) is what this project can place on a track: media files, configured overlays,
+// colours, sequences and folders, one row each, as a tree by `parent`. **Blueprints** (`p`)
+// is where you shop — reusable overlays in the user's library; adding one copies it into
 // this project.
 //
-// They are tabs rather than two stacked lists because they answer different questions
-// ("what is in this video" against "what could be"), and stacked, the second one pushed
-// the first out of sight as soon as a project had more than a few entries.
+// They were tabs in this panel; they are two panels now, each its own instance of this
+// class, so they can sit side by side in the dock (`panelhost.ts`). They still answer
+// different questions ("what is in this video" against "what could be"). Each one's tools
+// go in the head of whatever holds it.
 
 import { api } from "../api";
 import { desktop, dropMedia, pickAndAddMedia } from "../desktop";
@@ -16,23 +17,36 @@ import { icon, type IconName } from "../icons";
 import { store, toast } from "../store";
 import { blueprintActions, moveBinItem, newItems, promptNewFolder } from "../edits";
 import { menuBelow, showMenu, type MenuItem } from "../menu";
+import { panels } from "../panelhost";
 import type { BinItem, Project } from "../types";
 import { childrenMap, isFileSource, isFolderSource, isOverlaySource, isSequenceSource, itemKind, parentOf } from "../types";
 
 export class Library {
-  constructor(private host: HTMLElement) {
-    store.select((s) => [s.project, s.blueprints, s.sequence, s.tab], () => this.render());
+  /** The head's tools — + new, a folder, import — rebuilt for whichever list is showing. */
+  readonly tools = el("div", "lib-tools");
+
+  /** Which list this is: the bin, or the blueprints. Each is a panel of its own. */
+  constructor(private host: HTMLElement, private readonly list: "bin" | "blueprints" = "bin") {
+    // Each list follows what it draws: the bin the document, the blueprints the library.
+    store.select((s) => (list === "bin" ? [s.project, s.sequence, s.tab] : [s.blueprints]), () => this.render());
     // Selection moves a class; it does not rebuild the panel.
     store.select((s) => [s.selection], () => this.markSelected());
-    this.acceptFiles();
+    // Files dropped on the window go to the bin; one instance takes them, not both.
+    if (list === "bin") this.acceptFiles();
     this.host.oncontextmenu = (e) => this.newMenu(e);
+    this.tools.oncontextmenu = (e) => e.preventDefault();
+    this.filter.type = "text";
+    this.filter.placeholder = "filter";
+    this.filter.oninput = () => this.render();
+    // Escape clears the filter and leaves it.
+    this.filter.onkeydown = (e) => { if (e.key === "Escape") { this.filter.value = ""; this.render(); this.filter.blur(); } };
   }
 
   /** Right-click makes something new where the pointer is: inside a folder row, beside any
    *  other row, at the top level below them. The bin's, so not over the Blueprints tab. */
   private newMenu(e: MouseEvent) {
     const p = store.state.project;
-    if (!p || this.tab !== "bin" || (e.target as HTMLElement).closest("input, textarea, select")) return;
+    if (!p || this.list !== "bin" || !this.host.contains(e.target as Node) || (e.target as HTMLElement).closest("input, textarea, select")) return;
     e.preventDefault();
     const id = (e.target as HTMLElement).closest<HTMLElement>(".bin-row")?.dataset.sel?.replace(/^bin:/, "");
     const parent = id ? (isFolderSource(p.bin[id]?.source) ? id : parentOf(p, id)) : null;
@@ -77,14 +91,17 @@ export class Library {
     window.addEventListener("drop", (e) => {
       if (!isFileDrag(e) || e.defaultPrevented) return;
       e.preventDefault();
-      if (this.tab !== "bin") { this.tab = "bin"; this.render(); }
+      // Where they are going: on screen, if the bin was not.
+      panels.show("bin");
       void dropMedia(e.dataTransfer!.files, null);
     });
   }
 
-  /** Which tab is showing, and which entries are folded. View state, so it lives here
-   *  rather than in the store. */
-  private tab: "bin" | "blueprints" = "bin";
+  /** Rows whose name holds this, and the folders on the way to them. */
+  readonly filter = el("input");
+  private filterRow: HTMLDivElement | null = null;
+
+  /** Which entries are folded. View state, so it lives here rather than in the store. */
   private collapsed = new Set<string>();
 
   /** The list, which scrolls under the tabs and the toolbar. Kept across a rebuild with
@@ -94,21 +111,18 @@ export class Library {
   private render() {
     const s = store.state;
     const p = s.project;
-    const scrolled = this.tab === this.body.dataset.tab ? this.body.scrollTop : 0;
-    this.host.replaceChildren();
+    const scrolled = this.body.scrollTop;
+    const typing = document.activeElement === this.filter;
     this.body.replaceChildren();
+    this.tools.replaceChildren();
     if (!p) return;
 
-    // The tabs and what you can do in the one showing, fixed above the list: the tools
-    // used to be buttons under the last entry, and scrolled away with it.
-    const tabs = el("div", "tabs");
-    for (const [id, label] of [["bin", "Bin"], ["blueprints", "Blueprints"]] as const) {
-      tabs.appendChild(button(label, () => { this.tab = id; this.render(); }, "", `tab${this.tab === id ? " on" : ""}`));
-    }
-    const tools = el("div", "lib-tools");
-    this.host.append(row("lib-head", tabs, tools), this.body);
-    this.body.dataset.tab = this.tab;
-    if (this.tab === "bin") this.renderBin(p, tools);
+    // The filter, fixed above the list; the tools are in the panel's head.
+    this.filterRow ??= row("lib-filter", el("span", "", "/"), this.filter);
+    if (this.host.firstChild !== this.filterRow || this.host.lastChild !== this.body) this.host.replaceChildren(this.filterRow, this.body);
+    if (typing && document.activeElement !== this.filter) this.filter.focus();
+    const tools = this.tools;
+    if (this.list === "bin") this.renderBin(p, tools);
     else this.renderBlueprints(tools);
     this.body.scrollTop = scrolled;
     this.markSelected();
@@ -133,9 +147,14 @@ export class Library {
     // a folder's contents) sit under it, indented, behind a caret. Cycle-safe because
     // the validator refuses a ring.
     const kids = childrenMap(p);
+    // A filter keeps the rows that match and the folders on the way to them, unfolded.
+    const q = this.filter.value.trim().toLowerCase();
+    const matches = (id: string, item: BinItem): boolean =>
+      (item.name || id).toLowerCase().includes(q) || (kids.get(id) ?? []).some(([cid, c]) => matches(cid, c));
     const walk = (parent: string | null, depth: number) => {
       for (const [id, item] of kids.get(parent) ?? []) {
-        const folded = this.collapsed.has(id);
+        if (q && !matches(id, item)) continue;
+        const folded = !q && this.collapsed.has(id);
         let caret: HTMLElement | undefined;
         if (isFolderSource(item.source) || kids.has(id)) {
           caret = button(folded ? "▸" : "▾", () => { folded ? this.collapsed.delete(id) : this.collapsed.add(id); this.render(); }, folded ? "Expand" : "Collapse", "caret");
@@ -156,7 +175,8 @@ export class Library {
   private renderBlueprints(tools: HTMLElement) {
     tools.appendChild(tool("refresh", "Rescan the blueprint libraries", async () => { store.set({ blueprints: await api.reloadBlueprints() }); }));
 
-    const blueprints = store.state.blueprints;
+    const q = this.filter.value.trim().toLowerCase();
+    const blueprints = store.state.blueprints.filter((b) => !q || (b.manifest.name || b.id).toLowerCase().includes(q));
     if (!blueprints.length) {
       this.body.appendChild(el("p", "muted", "No blueprints found. Run `kuma library` to install the starter set, point KUMA_LIBRARY at a folder of them, or save an overlay from the bin as one."));
       return;
@@ -205,7 +225,10 @@ function binRow(p: Project, id: string, item: BinItem, caret: HTMLElement | unde
   entry.draggable = true;
   entry.title = item.name || id;
   // Every row has the caret slot, so names line up whether or not there is one to show.
-  entry.append(caret ?? el("span", "caret"), el("span", "bin-name", item.name || id), el("span", `badge-kind ${kind}`, kind));
+  // A kind is a square of its colour, not a word: the colour is the one its clips wear.
+  const square = el("span", `kind-sq ${kind}`);
+  square.title = kind;
+  entry.append(caret ?? el("span", "caret"), square, el("span", "bin-name", item.name || id), el("span", "bin-open", entry.classList.contains("open") ? "open" : ""));
   entry.onclick = () => store.selectItem("bin", id);
   // Double-clicking opens the thing in its own editor, whatever kind of thing it is: a
   // sequence is a timeline, an overlay is a composition on the workbench.

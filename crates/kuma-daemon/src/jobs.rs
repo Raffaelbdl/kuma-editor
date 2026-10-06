@@ -12,6 +12,7 @@ use kuma_mlt::{compile, CompileOptions, OverlayBake, RenderJob, UnbakedPolicy};
 use kuma_overlay::{BakeRequest, TranscribeOptions};
 use serde::{Deserialize, Serialize};
 
+use crate::activity::Call;
 use crate::state::{lock, read, AppState, Event};
 
 /// Where a job is in its life: what clients read. `message` is only a label.
@@ -45,6 +46,69 @@ pub struct Job {
     /// What it was asked to do, as the queue shows it: a render's sequence, preset, output.
     #[serde(default)]
     pub params: serde_json::Value,
+    /// Who asked for it, as the request said: `null` when it said neither an origin nor a
+    /// call (an old client).
+    #[serde(default)]
+    pub asked_by: Option<AskedBy>,
+}
+
+/// Who asked for a job, stamped the way an edit is: its `origin` (`ui: render`,
+/// `mcp: sample_frames`, `cli: bake`), the author that reads as
+/// ([`crate::history::author`]), and the agent's tool call when one asked. Only an agent's
+/// job is followed in the activity feed ([`AskedBy::call`]).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AskedBy {
+    /// `user`, `agent` or `other`.
+    pub author: String,
+    pub origin: String,
+    pub tool: Option<String>,
+    /// The MCP client's name (`claude-code`), or `agent`, when a tool call asked.
+    pub client: Option<String>,
+}
+
+impl AskedBy {
+    /// From a request's `origin` and `call`: `None` when it gave neither. A call without an
+    /// origin is an agent's, `agent: <tool>`.
+    pub fn new(origin: Option<String>, call: Option<Call>) -> Option<AskedBy> {
+        let origin = origin.filter(|o| !o.trim().is_empty());
+        let origin = match (origin, &call) {
+            (Some(o), _) => o,
+            (None, Some(c)) => format!("agent: {}", c.tool),
+            (None, None) => return None,
+        };
+        let (tool, client) = call.map(|c| (c.tool, c.client)).unzip();
+        Some(AskedBy { author: crate::history::author(&origin).to_string(), origin, tool, client })
+    }
+
+    pub fn is_agent(&self) -> bool {
+        self.author == "agent"
+    }
+
+    /// The call a job of `kind` is recorded as in the activity feed — the agent's alone:
+    /// its tool, else the job's kind, and its client, else `agent`.
+    pub fn call(&self, kind: &str) -> Option<Call> {
+        self.is_agent().then(|| Call { tool: self.tool.clone().unwrap_or_else(|| kind.to_string()), client: self.client.clone().unwrap_or_else(|| "agent".into()) })
+    }
+}
+
+/// A job's request body as a client sends it: the request, with who is asking — its
+/// `origin`, as an edit's, and the tool call when an agent's is (`call`, which `kuma mcp`
+/// adds beside `origin: "mcp: <tool>"`).
+#[derive(Debug, Deserialize)]
+pub struct Asked<T> {
+    #[serde(default)]
+    pub origin: Option<String>,
+    #[serde(default)]
+    pub call: Option<Call>,
+    #[serde(flatten)]
+    pub req: T,
+}
+
+impl<T> Asked<T> {
+    /// Who asked, as the job keeps it, and the request.
+    pub fn split(self) -> (Option<AskedBy>, T) {
+        (AskedBy::new(self.origin, self.call), self.req)
+    }
 }
 
 impl JobState {
@@ -145,37 +209,40 @@ pub fn spawn<F>(state: Arc<AppState>, kind: &str, f: F) -> u64
 where
     F: FnOnce(&dyn Fn(u8, &str)) -> anyhow::Result<serde_json::Value> + Send + 'static,
 {
-    spawn_with(state, kind, serde_json::Value::Null, f)
+    spawn_with(state, kind, serde_json::Value::Null, None, f)
 }
 
-/// [`spawn`], with `params` saying what the job works on, for the queue to show.
-pub fn spawn_with<F>(state: Arc<AppState>, kind: &str, params: serde_json::Value, f: F) -> u64
+/// [`spawn`], with `params` saying what the job works on, for the queue to show, and who
+/// asked for it, if the request said.
+pub fn spawn_with<F>(state: Arc<AppState>, kind: &str, params: serde_json::Value, asked_by: Option<AskedBy>, f: F) -> u64
 where
     F: FnOnce(&dyn Fn(u8, &str)) -> anyhow::Result<serde_json::Value> + Send + 'static,
 {
-    spawn_inner(state, kind, params, false, move |progress, _| f(progress))
+    spawn_inner(state, kind, params, asked_by, false, move |progress, _| f(progress))
 }
 
 /// Spawn a cancellable job: `queued` until its first progress report. `f` watches the
 /// flag; once set, the job ends `cancelled` however `f` returns.
-pub fn spawn_cancellable<F>(state: Arc<AppState>, kind: &str, params: serde_json::Value, f: F) -> u64
+pub fn spawn_cancellable<F>(state: Arc<AppState>, kind: &str, params: serde_json::Value, asked_by: Option<AskedBy>, f: F) -> u64
 where
     F: FnOnce(&dyn Fn(u8, &str), &AtomicBool) -> anyhow::Result<serde_json::Value> + Send + 'static,
 {
-    spawn_inner(state, kind, params, true, f)
+    spawn_inner(state, kind, params, asked_by, true, f)
 }
 
 /// How often progress reaches clients when only the message moves: melt reports every frame.
 const PROGRESS_EVERY: std::time::Duration = std::time::Duration::from_millis(250);
 
-fn spawn_inner<F>(state: Arc<AppState>, kind: &str, params: serde_json::Value, cancellable: bool, f: F) -> u64
+/// Every job is created here, and ends here: so the activity record of a job the agent
+/// asked for starts and finishes here too, whichever way the job ends.
+fn spawn_inner<F>(state: Arc<AppState>, kind: &str, params: serde_json::Value, asked_by: Option<AskedBy>, cancellable: bool, f: F) -> u64
 where
     F: FnOnce(&dyn Fn(u8, &str), &AtomicBool) -> anyhow::Result<serde_json::Value> + Send + 'static,
 {
     let id = state.jobs.next.fetch_add(1, Ordering::SeqCst) + 1;
     // Only a cancellable job can wait for a turn; anything else starts at once.
     let (start, message) = if cancellable { (JobState::Queued, "queued") } else { (JobState::Running, "starting") };
-    let job = Job { id, kind: kind.to_string(), state: start, percent: 0, message: String::new(), result: serde_json::Value::Null, cancellable, params }.with_state(start, message);
+    let job = Job { id, kind: kind.to_string(), state: start, percent: 0, message: String::new(), result: serde_json::Value::Null, cancellable, params, asked_by }.with_state(start, message);
     let flag = Arc::new(AtomicBool::new(false));
     if cancellable {
         lock(&state.jobs.cancels).insert(id, flag.clone());
@@ -194,6 +261,11 @@ where
     }
     // Said at once, or a queued render would be invisible until its turn.
     let _ = state.events.send(Event::Job(job.clone()));
+    if let Some(call) = job.asked_by.as_ref().and_then(|a| a.call(kind)) {
+        let revision = read(&state.project).revision;
+        let record = lock(&state.activity).from_job(&job, &call, revision, crate::history::now_ms());
+        let _ = state.events.send(Event::Activity(Box::new(record)));
+    }
     tokio::task::spawn_blocking(move || {
         let publish = |job: Job| {
             lock(&state.jobs.table).insert(id, job.clone());
@@ -208,13 +280,21 @@ where
                 publish(Job { percent, ..job.clone() }.with_state(JobState::Running, message));
             }
         };
-        let outcome = f(&progress, &flag);
+        // A panic is a failure like any other: a job left running would never end, nor
+        // would the activity following it.
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(&progress, &flag))).unwrap_or_else(|_| Err(anyhow::anyhow!("the job panicked")));
         let percent = last.get().1;
-        publish(match outcome {
+        let end = match outcome {
             _ if flag.load(Ordering::SeqCst) => Job { percent, ..job.clone() }.with_state(JobState::Cancelled, "cancelled"),
             Ok(result) => Job { percent: 100, result, ..job.clone() }.with_state(JobState::Done, "done"),
             Err(e) => Job { percent, ..job.clone() }.with_state(JobState::Failed, format!("{e:#}")),
-        });
+        };
+        publish(end.clone());
+        if end.asked_by.as_ref().is_some_and(AskedBy::is_agent) {
+            if let Some(record) = lock(&state.activity).job_ended(&end, crate::history::now_ms(), &state.config.samples_dir()) {
+                let _ = state.events.send(Event::Activity(Box::new(record)));
+            }
+        }
         // Only now: a cancel just before the final state must not find it uncancellable.
         lock(&state.jobs.cancels).remove(&id);
     });
@@ -264,10 +344,12 @@ pub struct TranscribeRequest {
     pub split: Option<f64>,
     #[serde(flatten)]
     pub options: TranscribeOptions,
-    #[serde(default = "default_origin")]
+    /// The edit's origin: the request's `origin`, which [`Asked`] reads, so the handler
+    /// sets it.
+    #[serde(skip, default = "default_origin")]
     pub origin: String,
 }
-fn default_origin() -> String {
+pub fn default_origin() -> String {
     "ui".into()
 }
 
@@ -1649,6 +1731,27 @@ pub fn project_relative(state: &AppState, p: &Path) -> String {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// Every job says who asked, as an edit does; only the agent's is a call to follow.
+    #[test]
+    fn a_job_request_says_who_asked() {
+        let by = |body: serde_json::Value| serde_json::from_value::<Asked<serde_json::Value>>(body).unwrap().split().0;
+        let mcp = by(json!({ "origin": "mcp: render", "call": { "tool": "render", "client": "claude-code" }, "preset": "h264" })).unwrap();
+        assert_eq!(serde_json::to_value(&mcp).unwrap(), json!({ "author": "agent", "origin": "mcp: render", "tool": "render", "client": "claude-code" }));
+        assert_eq!(mcp.call("render"), Some(Call { tool: "render".into(), client: "claude-code".into() }));
+        let ui = by(json!({ "origin": "ui: render", "preset": "h264" })).unwrap();
+        assert_eq!((ui.author.as_str(), &ui.tool, ui.call("render")), ("user", &None, None));
+        assert_eq!(by(json!({ "origin": "cli: bake" })).unwrap().author, "other");
+        // An agent's origin without a call is still followed, under the job's kind.
+        assert_eq!(by(json!({ "origin": "agent: tidy" })).unwrap().call("prune"), Some(Call { tool: "prune".into(), client: "agent".into() }));
+        // A call alone is an agent's.
+        let bare = by(json!({ "call": { "tool": "bake_overlay" } })).unwrap();
+        assert_eq!((bare.author.as_str(), bare.origin.as_str(), bare.client.as_deref()), ("agent", "agent: bake_overlay", Some("agent")));
+        assert_eq!(by(json!({ "preset": "h264" })), None, "an old client says nothing");
+        assert_eq!(by(json!({ "origin": " " })), None);
+        let (_, req) = serde_json::from_value::<Asked<TranscribeRequest>>(json!({ "bin": "talk", "origin": "ui: transcribe" })).unwrap().split();
+        assert_eq!((req.bin.as_deref(), req.origin.as_str()), (Some("talk"), "ui"), "the handler sets a transcript's origin");
+    }
 
     fn seq(tracks: serde_json::Value) -> serde_json::Value {
         json!({ "source": { "tracks": tracks } })

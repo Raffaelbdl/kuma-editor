@@ -14,11 +14,13 @@ way it does, including what was tried and rejected, and what is still open.
 crates/kuma-core      project model (seconds, exclusive ends, rational fps), schema, validation, JSON Patch edits
 crates/kuma-mlt       JSON → MLT XML compiler (the only place MLT's rules live), melt driver, presets
 crates/kuma-overlay   hyperframes bake driver, content-hash cache, ffprobe helpers
-crates/kuma-daemon    HTTP/WS API, undo, jobs, overlay live-preview routes, preview engine transport
+crates/kuma-daemon    HTTP/WS API, undo, jobs, overlay live-preview routes, preview engine transport;
+                      the agent's activity, the history and markers' answers (session state, `activity.rs`/`history.rs`/`markers.rs`)
 crates/kuma-mcp       rmcp stdio MCP server proxying the daemon
 crates/kuma-cli       `kuma` binary: serve | mcp | render | bake | sample | lint | design-system | library | …
 engine/               C++ libmlt++ preview engine (JPEG over stdout, SDL2-paced audio)
-ui/                   Vite + TypeScript editor (no framework)
+ui/                   Vite + TypeScript editor (no framework); den/power modes over one set of panels
+                      (`panelhost.ts`), power's dock a tree of splits and tab groups (`dock.ts`)
 app/                  Electron shell: project launcher, windows, daemon lifecycle
 library/blueprints/   starter blueprints (folder = blueprint) + `_vendor/{gsap.min.js,kuma.js,kuma-motion.js,kuma-canvas.js,rough.min.js,kuma.css}`
 library/presets/      starter effect presets (typed params + `$expr` substitution)
@@ -60,6 +62,11 @@ rebuild downloads one; or `KUMA_WHISPER_MODEL`); tests stand a shell script in f
 Headless machines: MLT's Qt module needs a display; melt and the engine are wrapped in
 `xvfb-run -a` automatically when `DISPLAY` is unset. Set `HYPERFRAMES_BROWSER_PATH` to a
 Chrome headless shell if hyperframes should not download one.
+
+Testing by hand — looking at the editor headless, driving it with a real pointer, faking the
+preview engine, measuring a change — is written down in `docs/manual-testing.md`. Read it
+before checking a UI change by eye: it lists the traps (stale `ui/dist`, leftover
+`localStorage`, `pkill -f` killing its own shell).
 
 ## Rules that keep the design honest
 
@@ -166,5 +173,25 @@ Chrome headless shell if hyperframes should not download one.
   note the converse, which is easy to miss because it fails silently: Electron does not
   implement `prompt`, `alert` or `confirm`, so UI code that calls them works in a browser
   and throws in the app. Ask for text with `askText` in `ui/src/modal.ts`.
+- **A panel is one module in any container** (`ui/src/panelhost.ts`): a tab in power's dock
+  (`dock.ts`: splits and tab groups round the frame, rearranged by dragging a tab once the rail's
+  padlock lets panels move — locked by default), floating,
+  or a window of its own (`?panel=<id>`), and the panel never knows which. The frame is the
+  dock's one leaf that is not a panel; it is never re-parented except by a drop that moves
+  it (that reloads its overlay iframes), and den lifts it with CSS rather than moving it.
+  The dock, summoned panels and where they float are view state in `localStorage`; a panel's
+  window is the same page, kept in step by `viewsync.ts` (view state only — the document
+  comes from the daemon in every window). The letters `B I T A H M R` and `P` are commands,
+  so ⌘K, the rail, den's keys and the shell's menus all reach a panel the same way.
+- **What the agent did is the daemon's, never a client's model**: tool calls reach the UI as
+  `/api/activity` — a call that starts a job is that job's record, opened and closed by the
+  daemon with the job; every job says who asked (`asked_by`, read off its request's `origin`
+  as an edit's author is), and only an agent's opens a record; any other call the MCP server
+  reports once it has ended, and a report may never slow or fail a tool —
+  steps and refused patches as `/api/history`, markers and their answers as `/api/markers`.
+  All session state: none of it is in the project file, and a marker's done-ness never edits
+  it. Who left a marker is in the document (`origin`), and the daemon stamps it as the edit
+  that added it lands — never a client — so the agent's own markers are not read back to it
+  as requests.
 - Do not add a dependency on `mlt-sys`, `ffmpeg-next` or `wgpu` without a reason written
   in `docs/manual.md`; the PoC deliberately uses `melt`/`ffmpeg` as subprocesses.

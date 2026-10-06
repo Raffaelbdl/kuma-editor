@@ -152,7 +152,10 @@ export interface Transition { from: string; to: string; kind: "dissolve" | "wipe
  *  PGM/PNG under the project, which the inspector keeps but does not offer. */
 export const LUMAS = ["wipe_left", "wipe_right", "wipe_up", "wipe_down", "iris", "diagonal"];
 
-export interface Marker { t: number; label: string; color?: string | null }
+/** A marker: a moment on a sequence, with a comment or none. `origin` says who left it
+ *  (`ui`, `mcp`, `cli`…), stamped by the daemon from the edit that added it; absent on an
+ *  older file's, which read as a person's. */
+export interface Marker { t: number; label: string; color?: string | null; origin?: string | null }
 
 /** There is no project-level `tracks`: every timeline is a sequence entry in the bin, and
  *  `master` names the one that gets rendered. */
@@ -273,6 +276,12 @@ export type PatchOp =
 export type JobState = "queued" | "running" | "done" | "failed" | "cancelled";
 /** Done, failed or cancelled: it will not change again. */
 export const isFinal = (j: Job) => j.state !== "queued" && j.state !== "running";
+/** How many jobs are in each state. */
+export function jobCounts(jobs: Record<number, Job>): Record<JobState, number> {
+  const n: Record<JobState, number> = { running: 0, queued: 0, done: 0, failed: 0, cancelled: 0 };
+  for (const j of Object.values(jobs)) n[j.state]++;
+  return n;
+}
 
 export interface Job {
   id: number; kind: string; percent: number; message: string; result: unknown;
@@ -282,6 +291,10 @@ export interface Job {
   cancellable?: boolean;
   /** What it was asked to do, settled when it started — a render's `{sequence, preset, output}`. */
   params?: unknown;
+  /** Who asked for it, as an edit's history says who made it: the author its origin speaks
+   *  for (`ui…` you, `mcp…` the agent, the CLI and the rest other), and for the agent the
+   *  tool and client. Null from a client that did not say. */
+  asked_by?: { author: "user" | "agent" | "other"; origin: string; tool: string | null; client: string | null } | null;
 }
 
 /** One part of the project's `.kuma/` cache: entries (a bake is one) and their bytes. */
@@ -289,10 +302,66 @@ export interface CachePart { entries: number; bytes: number }
 /** How big the cache is, by part. */
 export interface CacheUsage { bakes: CachePart; samples: CachePart; thumbs: CachePart; bytes: number }
 
+/** One tool call an agent made over MCP (`/api/activity`). A call that started a job is
+ *  that job's record — running while it runs, ended with it, cancelled with it — and its
+ *  `args` are the job's params; any other call arrives already ended. Session state: the
+ *  daemon's, never the document's. */
+export interface Activity {
+  id: number; tool: string; client: string;
+  state: "running" | "done" | "failed" | "cancelled";
+  args: Record<string, unknown> | null;
+  /** The job it started, if it started one. */
+  job: number | null;
+  /** What the call said it did: an `apply_edits` note. */
+  summary: string | null;
+  revision_before: number; revision_after: number | null;
+  /** Milliseconds since the epoch. */
+  started_at: number; ended_at: number | null;
+  error: string | null;
+  /** Where a `sample_frames` looked: its times, and the rect if it zoomed into one. */
+  sample: { sequence: string | null; overlay: string | null; times: number[]; rect: { x: number; y: number; w: number; h: number } | null } | null;
+  lint: { ok: boolean; errors: number; warnings: number } | null;
+  /** A sample's frames, under `/api/samples/`. */
+  frames: string[];
+}
+
+/** One step of the project's history: the daemon's undo stack, with who made each step,
+ *  and the patches it refused (`revision` null). */
+export interface HistoryEntry {
+  revision: number | null;
+  kind: "edit" | "undo" | "redo" | "restore" | "refused";
+  origin: string;
+  author: "agent" | "user" | "other";
+  summary: string; ops: number; at: number;
+  base_revision: number | null;
+  error: string | null;
+  /** Clip and bin ids the step touched. */
+  targets: string[];
+  changes: { target: string; field: string; from: unknown; to: unknown }[];
+  /** Ids of the markers this step answered. */
+  answers: string[];
+}
+
+/** A marker as the daemon lists it (`/api/markers`): every sequence's, with an id
+ *  (`<sequence>@<t>`, the format having no marker ids), who left it, and whether it is
+ *  waiting — a person's comment for the agent, not yet answered. The agent's own markers
+ *  (its notes, the edges of a zone) never wait. */
+export interface MarkerInfo {
+  id: string; sequence: string; index: number; t: number; label: string; color: string | null;
+  origin: string | null; author: "user" | "agent" | "other";
+  waiting: boolean;
+  /** The revision that answered it, and whether the agent did or a person ticked it. */
+  done: number | null; done_by: "agent" | "user" | null;
+}
+
 export type DaemonEvent =
   | { type: "project_changed"; revision: number; origin: string }
   | ({ type: "job" } & Job)
-  | { type: "jobs_cleared"; ids: number[] };
+  | { type: "jobs_cleared"; ids: number[] }
+  | ({ type: "activity" } & Activity)
+  | ({ type: "history" } & HistoryEntry)
+  /** The marker list, whenever it may have changed: a marker edited, answered or ticked. */
+  | { type: "markers"; markers: MarkerInfo[] };
 
 export const fpsValue = (f: Fps) => f.num / f.den;
 
@@ -325,7 +394,9 @@ export function sequenceIds(p: Project): string[] {
 /** A sequence's own duration: its latest clip end. */
 export function seqDuration(p: Project, id: string): number {
   const seq = sequenceOf(p, id);
-  return seq ? Math.max(0, ...seq.tracks.flatMap((t) => t.clips.map((c) => c.end))) : 0;
+  let end = 0;
+  for (const t of seq?.tracks ?? []) for (const c of t.clips) if (c.end > end) end = c.end;
+  return end;
 }
 
 /** Every clip in the project, whichever sequence it sits on. Ids are unique across all of

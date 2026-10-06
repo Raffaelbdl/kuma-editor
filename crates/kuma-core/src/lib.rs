@@ -24,6 +24,7 @@ pub use validate::{validate, Issue, Severity, ValidationContext};
 
 /// Current on-disk project format version.
 ///
+/// 9 — a marker may carry an `origin`: who left it (the daemon stamps it).
 /// 8 — a sequence carries `effects` on its mix (`volume`, `limiter`, `auto_level`); the
 ///     effect kinds `limiter`, `auto_level` and `freeze` are new.
 /// 7 — an overlay entry names its own folder in the project (`overlay`), no longer a
@@ -36,4 +37,4 @@ pub use validate::{validate, Issue, Severity, ValidationContext};
 ///     keyframed effect now uses.
 /// 2 — keyframes gained `ease` (`linear`, `hold`, `smooth`).
 /// 1 — the first format.
-pub const PROJECT_VERSION: u32 = 8;
+pub const PROJECT_VERSION: u32 = 9;

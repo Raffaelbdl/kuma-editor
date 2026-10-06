@@ -1,4 +1,4 @@
-import type { BlueprintInfo, CacheUsage, DaemonEvent, EffectPreset, FontFamily, Issue, Job, LintReport, OverlayInfo, PatchOp, Preset, Project, SequenceState } from "./types";
+import type { Activity, BlueprintInfo, HistoryEntry, MarkerInfo, CacheUsage, DaemonEvent, EffectPreset, FontFamily, Issue, Job, LintReport, OverlayInfo, PatchOp, Preset, Project, SequenceState } from "./types";
 
 async function json<T>(url: string, init?: RequestInit): Promise<T> {
   const r = await fetch(url, { headers: { "content-type": "application/json" }, ...init });
@@ -25,8 +25,18 @@ export const api = {
   project: () => json<Project>("/api/project"),
   patch: (patch: PatchOp[], base_revision: number, origin = "ui") =>
     json<{ revision: number; warnings: Issue[] }>("/api/project/patch", { method: "POST", body: JSON.stringify({ patch, base_revision, origin }) }),
-  undo: () => json<{ revision: number | null }>("/api/project/undo", { method: "POST", body: "{}" }),
-  redo: () => json<{ revision: number | null }>("/api/project/redo", { method: "POST", body: "{}" }),
+  /** Who asked is recorded beside the step, for the history panel. */
+  undo: () => json<{ revision: number | null }>("/api/project/undo", { method: "POST", body: JSON.stringify({ origin: "ui" }) }),
+  redo: () => json<{ revision: number | null }>("/api/project/redo", { method: "POST", body: JSON.stringify({ origin: "ui" }) }),
+  /** What the agent has been doing, newest first: its tool calls over MCP. */
+  activity: (limit = 50) => json<{ activity: Activity[] }>(`/api/activity?limit=${limit}`),
+  /** The history, newest first, with the revision the document is at. */
+  history: (limit = 200) => json<{ current: number; entries: HistoryEntry[] }>(`/api/history?limit=${limit}`),
+  /** Make the document what it was at `revision`, as one new (undoable) edit. */
+  restore: (revision: number) => json<{ revision: number }>("/api/history/restore", { method: "POST", body: JSON.stringify({ revision, origin: "ui" }) }),
+  markers: () => json<{ markers: MarkerInfo[] }>("/api/markers"),
+  /** Tick a marker answered by hand, or open it again. Session state, not an edit. */
+  markerDone: (id: string, done: boolean) => json<unknown>("/api/markers/done", { method: "POST", body: JSON.stringify({ id, done }) }),
   sequence: () => json<SequenceState>("/api/sequence"),
   openSequence: (sequence: string) =>
     json<{ current: string }>("/api/sequence", { method: "POST", body: JSON.stringify({ sequence }) }),
@@ -52,7 +62,7 @@ export const api = {
   presets: () => json<Preset[]>("/api/presets"),
   effectPresets: () => json<EffectPreset[]>("/api/presets/effects"),
   /** Render previews of the given blueprints and overlay entries. */
-  thumbs: (which: { blueprints?: string[]; bins?: string[] }) => json<{ job: number }>("/api/blueprints/thumbs", { method: "POST", body: JSON.stringify(which) }),
+  thumbs: (which: { blueprints?: string[]; bins?: string[] }) => json<{ job: number }>("/api/blueprints/thumbs", { method: "POST", body: JSON.stringify({ ...which, origin: "ui: thumbs" }) }),
   /** What the timeline draws on a media entry's clips, made on first asking: its waveform,
    *  and the index of its filmstrip (`/api/bin/{id}/strip.jpg`). Looking, not an edit. */
   peaks: (bin: string) => json<{ rate: number; peaks: number[] }>(`/api/bin/${encodeURIComponent(bin)}/peaks.json`),
@@ -85,7 +95,7 @@ export const api = {
    *  daemon's own default, so the two agree without the client having to know which is
    *  the master. `output` is project-relative; the daemon names one when it is left out. */
   render: (preset: string, sequence?: string, output?: string, options: RenderOptions = {}) =>
-    json<{ job: number }>("/api/render", { method: "POST", body: JSON.stringify({ preset, sequence, output, ...options }) }),
+    json<{ job: number }>("/api/render", { method: "POST", body: JSON.stringify({ preset, sequence, output, ...options, origin: "ui: render" }) }),
   /** Where a render would write, whether a file is there already, and which unfinished
    *  renders will write the same path. Reads only. */
   renderTarget: (preset: string, sequence: string, output?: string) => {
@@ -101,7 +111,7 @@ export const api = {
   cancelJob: (id: number) => json<Job>(`/api/jobs/${id}/cancel`, { method: "POST", body: "{}" }),
   cache: () => json<CacheUsage>("/api/cache"),
   /** A job: delete what `.kuma/` holds that the project no longer uses. */
-  pruneCache: () => json<{ job: number }>("/api/cache/prune", { method: "POST", body: "{}" }),
+  pruneCache: () => json<{ job: number }>("/api/cache/prune", { method: "POST", body: JSON.stringify({ origin: "ui: prune" }) }),
   /** Compile the open sequence for the engine; `force` hands it over even unchanged. Says
    *  what it did: which halves the engine took, and the nested overlays it baked or not. */
   previewReload: (opts: { scale?: number; force?: boolean } = {}) =>

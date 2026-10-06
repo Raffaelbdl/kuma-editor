@@ -60,12 +60,29 @@ pub fn replace(
     finish(current, doc, ctx)
 }
 
+/// [`replace`] with a document already typed — one this editor kept, so there is no JSON
+/// to parse it from. The revision is still the editor's, and it is validated all the same.
+pub fn replace_project(
+    current: &Project,
+    base_revision: Option<u64>,
+    mut project: Project,
+    ctx: &ValidationContext,
+) -> Result<EditOutcome, EditError> {
+    check_base(current, base_revision)?;
+    project.revision = current.revision + 1;
+    checked(project, ctx)
+}
+
 fn finish(current: &Project, mut doc: Value, ctx: &ValidationContext) -> Result<EditOutcome, EditError> {
     // The revision is owned by the editor, never by the patch.
     if let Some(obj) = doc.as_object_mut() {
         obj.insert("revision".into(), Value::from(current.revision + 1));
     }
     let project: Project = serde_json::from_value(doc).map_err(|e| EditError::Patch(format!("result is not a valid project: {e}")))?;
+    checked(project, ctx)
+}
+
+fn checked(project: Project, ctx: &ValidationContext) -> Result<EditOutcome, EditError> {
     let issues = validate(&project, ctx);
     if has_errors(&issues) {
         return Err(EditError::Invalid(issues));
@@ -107,5 +124,14 @@ mod tests {
         .unwrap();
         let err = apply_patch(&out.project, None, &bad.0, &ValidationContext::default()).unwrap_err();
         assert!(matches!(err, EditError::Invalid(_)));
+
+        // A typed replace takes the revision past the current one, whatever the document
+        // says, and is validated like a patch.
+        let back = replace_project(&out.project, Some(1), Project { revision: 0, ..p.clone() }, &ValidationContext::default()).unwrap();
+        assert_eq!((back.project.revision, back.project.master_seq().unwrap().tracks[0].clips.len()), (2, 0));
+        let mut broken = out.project.clone();
+        broken.master = "nowhere".into();
+        assert!(matches!(replace_project(&out.project, None, broken, &ValidationContext::default()), Err(EditError::Invalid(_))));
+        assert!(matches!(replace_project(&out.project, Some(0), p, &ValidationContext::default()), Err(EditError::RevisionMismatch { .. })));
     }
 }

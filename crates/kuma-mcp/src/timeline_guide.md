@@ -62,14 +62,18 @@ sped up (MLT cannot time-warp a timeline: render it out and place the result as 
 be empty when placed. Track and clip ids are unique across the *whole project*, not per sequence.
 `sample_frames` and `render` take an optional `sequence` and default to the master.
 
-**Markers are the person's comments** (the schema's `Marker`: `t` in its own sequence's seconds,
-`label` the note). People add them in the editor (M at the playhead) to point at what they want
-changed, so "see the markers" or "I left comments" means: read every sequence's `markers` from
-`get_project` (at `/bin/<sequence>/source/markers`), look at each moment with `sample_frames` and
-`times` (pass `sequence` for a marker on a nested one; in the master it falls at the placing clip's
-`start` + `t` − `in`), and act on each note. Leave a marker in place unless you are asked to clear
-it, and say which ones you handled. You can add markers too, to point the person at moments to
-review.
+**Markers are notes on moments** (the schema's `Marker`: `t` in its own sequence's seconds, `label`
+the note, `origin` who left it — the daemon stamps it, never write it). A person adds one in the
+editor (P at the playhead) to point at what they want changed, so "see the markers" or "I left
+comments" means: `list_markers`, look at each moment with `sample_frames` and `times` (pass
+`sequence` for a marker on a nested one; in the master it falls at the placing clip's `start` + `t`
+− `in`), and act on each note. `list_markers` lists every sequence's markers, each with an id
+(`<sequence>@<t>`, e.g. `main@8.600`), its number in the editor, `author` (`user`, `agent`, `other`)
+and `waiting`: a person's comment no edit has answered yet — your requests. When an edit answers
+one, pass its id in `apply_edits`' `answers`, and the editor ticks it off against that revision.
+Leave a marker in place unless you are asked to clear it, and say which ones you handled. You can
+add markers too — a moment for the person to review, a TODO, a zone (two markers, its edges): they
+are listed as `author: "agent"`, yours, never waiting, so never answer your own.
 
 If the project directory holds a `design-system/` folder, read `design-system/DESIGN.md` before
 authoring or restyling an overlay and take its colours, type, geometry and motion from there;

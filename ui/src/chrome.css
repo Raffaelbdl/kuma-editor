@@ -1,0 +1,50 @@
+/* What the editor and the desktop shell's launcher (`app/launcher/`, which copies this file
+   in at build time) both wear: the three faces, the scrollbars, the top bar with the bear
+   and the wordmark, and the orange status line. Tokens only — the palette is `themes.css`. */
+
+/* Type is not palette: the same three faces in every theme. Mono is the chrome, sans the
+   sentences people and agents wrote, and the pixel face labels, letters and the wordmark. */
+:root {
+  --mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  --sans: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --label: "Silkscreen", var(--mono);
+}
+
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; background: var(--bg-0); color: var(--fg); font: 12px/1.4 var(--mono); }
+.muted { color: var(--fg-2); }
+.mono { font-family: var(--mono); }
+/* The one thing to press: the accent, with the app's own black on it. */
+button.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); font-weight: 700; box-shadow: var(--glow); }
+
+/* The window: the top bar, the page, the status line — the chrome's heights once, which
+   whatever lays itself out round them measures from. The editor's desktop windows add a
+   title bar above (`style.css`), nothing in a browser. */
+:root { --titlebar-h: 0px; --topbar-h: 44px; --status-h: 24px; --den-rail-h: 90px; }
+#app { height: 100%; display: grid; grid-template-rows: var(--topbar-h) minmax(0, 1fr) var(--status-h); }
+
+/* Scrollbars, themed. `scrollbar-*` is the standard property; the `::-webkit-` rules are
+   what Chromium actually honours, and they allow the inset thumb this palette wants. */
+* { scrollbar-width: thin; scrollbar-color: var(--bg-3) transparent; }
+::-webkit-scrollbar { width: 11px; height: 11px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--bg-3); border: 3px solid transparent; background-clip: content-box; border-radius: 8px; }
+::-webkit-scrollbar-thumb:hover { background: var(--line); background-clip: content-box; }
+::-webkit-scrollbar-thumb:active { background: var(--fg-2); background-clip: content-box; }
+::-webkit-scrollbar-corner { background: transparent; }
+
+/* The top bar: the bear, the wordmark, then whatever the window has. */
+#topbar { display: flex; align-items: center; gap: 12px; padding: 0 14px; background: var(--bg-bar); border-bottom: 1px solid var(--line-2); min-width: 0; }
+/* The bear is 12×10 and only ever scaled by whole numbers, so its pixels stay pixels. */
+.bear { image-rendering: pixelated; flex: none; display: block; }
+.wordmark { font: 400 14px var(--label); color: var(--fg); flex: none; }
+
+/* The status line, vim's: the mode first, then cells divided by hairlines. */
+#statusline {
+  display: flex; align-items: stretch; background: var(--accent); color: var(--on-accent);
+  font-size: 11px; line-height: 24px; white-space: nowrap; overflow: hidden; min-width: 0;
+}
+#statusline > * { padding: 0 12px; border-right: 1px solid color-mix(in srgb, var(--on-accent) 25%, transparent); }
+#statusline .mode { font: 400 10px/24px var(--label); background: var(--on-accent); color: var(--accent); }
+#statusline .grow { flex: 1; }
+#statusline .last { border-right: 0; }

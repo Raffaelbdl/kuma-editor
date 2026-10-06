@@ -10,7 +10,7 @@
 // design system is for.
 
 import { Cmd, command } from "./commands";
-import { selectInput } from "./dom";
+import { loadLocal, saveLocal, selectInput } from "./dom";
 import { askForm } from "./modal";
 
 export interface Theme {
@@ -25,7 +25,7 @@ export interface Theme {
  *  missing id falls back to. Every id needs a block in `themes.css`; the test holds the two
  *  together. */
 export const THEMES: Theme[] = [
-  { id: "kuma", label: "Kuma", note: "The default: warm orange on charcoal, and nothing on screen brighter than the picture." },
+  { id: "kuma", label: "Kuma", note: "The default: warm orange on deep slate blue, and nothing on screen brighter than the picture." },
   { id: "tokyo-night", label: "Tokyo Night", note: "Retro neon on deep indigo — hot pink playhead, violet overlays, and a glow where you look for the time." },
 ];
 
@@ -46,15 +46,13 @@ function wear(id: string): void {
  *  which must not cost the theme itself. */
 export function setTheme(id: string): void {
   wear(id);
-  try { localStorage.setItem(KEY, known(id)); } catch { /* no storage: this session only */ }
+  saveLocal(KEY, known(id));
 }
 
 /** Wear the remembered theme. Called before the panels mount: the document has already
  *  painted the default by then, and anything later is a flash of the wrong colours. */
 export function initTheme(): void {
-  let saved: string | null = null;
-  try { saved = localStorage.getItem(KEY); } catch { /* no storage: the default, then */ }
-  wear(known(saved));
+  wear(known(loadLocal(KEY)));
 }
 
 /** Pick a theme: the list, applied as you move through it so the choice is the thing

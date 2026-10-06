@@ -1,4 +1,4 @@
-// The editor tabs, over the centre of the window — Kdenlive's monitor and timeline tabs.
+// The editor tabs, in the top bar — Kdenlive's monitor and timeline tabs.
 //
 // Two kinds sit in one strip. A **sequence** tab is a timeline you have open: clicking it
 // makes it the one being edited, which is a round trip because the daemon holds that
@@ -75,7 +75,9 @@ function tab(t: Tab): HTMLDivElement {
   const e = el("div", `etab${t.on ? " on" : ""}`);
   e.tabIndex = 0;
   e.title = t.title;
-  e.append(el("span", `badge-kind ${t.kind}`, t.kind), el("span", "etab-name", t.label));
+  const square = el("span", `kind-sq ${t.kind}`);
+  square.title = t.kind;
+  e.append(square, el("span", "etab-name", t.label));
   e.onclick = () => t.open();
   e.onkeydown = (ev) => { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); t.open(); } };
   if (t.close) {

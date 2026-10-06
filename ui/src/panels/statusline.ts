@@ -1,0 +1,58 @@
+// The status line, vim's: the mode, the revision, what is selected and where the playhead
+// is; then the frame, and what the agent is doing, and the jobs. Everything here is read
+// off the store; the three things you can click are the same commands as their keys.
+
+import { watchAgent } from "../agent";
+import { Cmd, run } from "../commands";
+import { el, plural, setText } from "../dom";
+import { panels } from "../panelhost";
+import { fmtTime, store } from "../store";
+import { keysFor } from "../shortcuts";
+import { fpsValue, jobCounts } from "../types";
+
+export function mountStatusline(host: HTMLElement): void {
+  const mode = el("span", "mode");
+  mode.title = "Switch den / power";
+  mode.onclick = () => run(Cmd.toggleMode);
+  const rev = el("span", "rev");
+  const sel = el("span", "sel-count");
+  const at = el("span", "at");
+  const frame = el("span", "frame");
+  const agent = el("span", "agent clickable");
+  agent.title = `The agent: what it is doing and its last calls (${keysFor("panel.agent")})`;
+  agent.onclick = () => panels.toggle("agent");
+  const jobs = el("span", "jobs clickable last");
+  jobs.title = `The render queue (${keysFor("panel.queue")})`;
+  jobs.onclick = () => run(Cmd.queue);
+  host.append(mode, rev, sel, at, el("span", "grow"), frame, agent, jobs);
+
+  store.select((s) => [s.mode], (s) => { mode.textContent = s.mode; });
+  store.select((s) => [s.project, s.connected], (s) => {
+    rev.textContent = s.project ? `r${s.project.revision}${s.connected ? "" : " · offline"}` : "";
+    frame.textContent = s.project ? `${s.project.width}×${s.project.height} · ${+fpsValue(s.project.fps).toFixed(3)} fps` : "";
+  });
+  store.select((s) => [s.selection], (s) => {
+    const n = store.selectedClips.length;
+    sel.textContent = n ? `${plural(n, "clip")} selected` : s.selection?.kind === "bin" ? "1 entry selected" : "";
+    sel.title = n > 1 ? "Copy, cut, delete and split act on all of them" : "";
+  });
+  // Where the playhead is, to the frame when it is still; while it plays the transport
+  // counts every frame, and this says it a few times a second rather than restyling the
+  // window's foot 25 times a second too.
+  let said = 0;
+  store.select((s) => [s.playhead, s.playing, s.project], (s) => {
+    const now = performance.now();
+    if (s.playing && now - said < 250) return;
+    said = now;
+    setText(at, fmtTime(s.playhead, store.fps));
+  });
+  watchAgent((v) => {
+    agent.textContent = v.client ? `${v.client} · ${v.doing}` : "no agent yet";
+    agent.classList.toggle("idle", v.bear === "idle");
+  });
+  store.select((s) => [s.jobs], (s) => {
+    const n = jobCounts(s.jobs);
+    const running = n.running + n.queued, done = n.done;
+    setText(jobs, running ? `${plural(running, "job")} running · ${done} done` : done ? `${plural(done, "job")} done` : "");
+  });
+}

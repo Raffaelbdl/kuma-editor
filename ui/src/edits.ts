@@ -4,7 +4,7 @@
 // to place a clip.
 
 import { api } from "./api";
-import { button, checkbox, el, plural, row, selectInput } from "./dom";
+import { button, checkbox, el, loadLocal, plural, row, saveLocal, selectInput } from "./dom";
 import { askForm, askText } from "./modal";
 import { startJob, store, toast } from "./store";
 import type { ClipboardEntry, Found } from "./store";
@@ -335,9 +335,8 @@ const LANGUAGES: [string, string][] = [
   ["pt", "Portuguese"], ["ru", "Russian"], ["es", "Spanish"], ["sv", "Swedish"], ["tr", "Turkish"],
 ];
 // Remembered, because a person's videos are usually in one language and one model.
-// A private window has no storage and throws on access, which must not cost the dialog.
-const saved = (key: string, fallback: string): string => { try { return localStorage.getItem(`kuma.transcribe.${key}`) ?? fallback; } catch { return fallback; } };
-const save = (key: string, v: string) => { try { localStorage.setItem(`kuma.transcribe.${key}`, v); } catch { /* no storage */ } };
+const saved = (key: string, fallback: string): string => loadLocal(`kuma.transcribe.${key}`) ?? fallback;
+const save = (key: string, v: string) => saveLocal(`kuma.transcribe.${key}`, v);
 
 /**
  * Speech to text for the selection. From a clip the subtitles are placed over it, aligned
@@ -686,15 +685,26 @@ async function askComment(t: number, value: string, ok: string): Promise<string 
   return sent ? input.value.trim() : null;
 }
 
-/** Add a marker at the playhead with a comment — or, when one is already on that frame,
- *  edit that one's: two markers on one frame are one note written twice. */
-/** A marker at `t` — the playhead for M, the pointer for the ruler's right-click. */
-export async function addMarker(t = store.state.playhead) {
-  const there = store.markers.findIndex((m) => Math.abs(m.t - t) < store.halfFrame);
-  if (there >= 0) return editMarker(there);
-  const label = await askComment(t, "", "Add");
-  if (label === null) return;
-  await writeMarkers([...store.markers, { t, label }], `marker at ${at(t)}`);
+/** Which marker is on `t`'s frame, or -1. */
+const markerAt = (t: number): number => store.markers.findIndex((m) => Math.abs(m.t - t) < store.halfFrame);
+
+/** The comment of the marker on `t`'s frame, if there is one: what the marker field starts
+ *  from, so a marker on a frame that has one edits it rather than stacking a second. */
+export const markerOn = (t: number): string | null => store.markers[markerAt(t)]?.label ?? null;
+
+/** A marker at `t` with the comment typed in the markers panel (P, or the ruler's right-click)
+ *  — or none: a moment marked. On a frame that already has a marker, this is its comment now:
+ *  two markers on one frame are one note written twice. Who left it is the daemon's to stamp
+ *  (`origin`), from this edit's. */
+export async function placeMarker(t: number, label: string): Promise<boolean> {
+  const text = label.trim();
+  const i = markerAt(t);
+  if (i >= 0) {
+    if (store.markers[i].label !== text) await patchMarker(i, { label: text }, `marker at ${at(t)}`);
+    return true;
+  }
+  await writeMarkers([...store.markers, { t, label: text }], `marker at ${at(t)}`);
+  return true;
 }
 
 export async function editMarker(i: number) {
@@ -711,6 +721,14 @@ export async function editMarker(i: number) {
 export const moveMarker = (i: number, t: number) => patchMarker(i, { t }, `move marker to ${at(t)}`);
 
 export const removeMarker = (i: number) => patchMarker(i, null, `remove marker at ${at(store.markers[i]?.t ?? 0)}`);
+
+/** Remove the marker on `t`'s frame — whoever left it — from the markers panel, which knows
+ *  a marker by its time, not by where it sits in the document's array. */
+export async function removeMarkerAt(t: number) {
+  const i = markerAt(t);
+  if (i < 0) { toast("That marker is gone already", "err"); return; }
+  await removeMarker(i);
+}
 
 // ---------- transitions ----------
 //

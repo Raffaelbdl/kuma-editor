@@ -430,7 +430,7 @@ fn id_series(base: &str) -> impl Iterator<Item = String> + '_ {
 /// One entry in the project bin: something that can occupy time on a track. A clip is a
 /// placement of one of these, so everything that describes *what* is shown lives here and
 /// everything that describes *when* lives on the clip.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct BinItem {
     /// Display name in the library browser. Falls back to the id when empty.
@@ -457,7 +457,7 @@ pub struct BinItem {
 }
 
 /// What a bin entry actually is. Exactly one variant.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(untagged, deny_unknown_fields)]
 pub enum BinSource {
     /// A media file on disk: video, audio or a still image.
@@ -497,7 +497,7 @@ pub enum BinSource {
 /// A timeline: tracks and their markers. Held by a [`BinSource::Sequence`] entry rather
 /// than by the project, so the master timeline and a nested one are the same thing and
 /// every clip operation works on both.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Sequence {
     /// Tracks in **bottom-to-top** compositing order: `tracks[0]` is painted first. Every
@@ -579,7 +579,7 @@ pub enum MediaKind {
 
 /// Informational, written by the probe, and the probe's output evolves: unknown keys are
 /// tolerated so a project file written by another version still loads.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize, JsonSchema)]
 pub struct MediaMeta {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub duration: Option<f64>,
@@ -635,7 +635,7 @@ pub enum TrackKind {
     Overlay,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Track {
     pub id: TrackId,
@@ -660,7 +660,7 @@ pub struct Track {
 /// any documented path succeeds (only probed `MediaMeta` and manifest specs skip nulls).
 /// The one exception here is `group`, absent when empty so that an ungrouped file is the
 /// file it was: write it with `add`, which works whether or not it is there.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Clip {
     pub id: ClipId,
@@ -774,7 +774,7 @@ impl Ease {
 /// what lets a hand-written key set one parameter and why a key the editor writes carries
 /// every animated one. The validator checks the names against [`Effect::animatable`], so
 /// this struct cannot `deny_unknown_fields`: the parameters *are* its unknown fields.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize, JsonSchema)]
 pub struct Keyframe {
     /// Time relative to clip start, seconds.
     pub t: f64,
@@ -817,7 +817,7 @@ pub enum BlendMode {
 }
 
 /// An effect on a clip. `type` selects the variant.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Effect {
     /// Position / scale / rotation / opacity. `x`/`y` are pixel offsets from the centred
@@ -1085,7 +1085,7 @@ impl Effect {
 /// boundary between them; the transition spans `duration` seconds centred on it, so both
 /// clips are extended by `duration/2` **in source time** (scaled by their speed): the `to`
 /// clip needs that much handle before its `in` point, the `from` clip after its out point.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Transition {
     pub from: ClipId,
@@ -1114,7 +1114,7 @@ pub const LUMAS: &[&str] = &["wipe_left", "wipe_right", "wipe_up", "wipe_down", 
 
 /// A note pinned to a moment of a sequence. People add them in the editor to comment on
 /// the cut, and an agent told to "see the markers" reads them here; nothing renders them.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Marker {
     /// Seconds into the sequence that holds the marker, not into the master.
@@ -1125,6 +1125,12 @@ pub struct Marker {
     /// Colour of the marker in the editor (CSS), or null for the default.
     #[serde(default)]
     pub color: Option<String>,
+    /// Who left it: the head of the origin of the edit that added it (`ui`, `mcp`, `cli`,
+    /// `agent`…), stamped by the daemon. Absent on an older file's marker, which is read as
+    /// a person's. What tells a person's comment, a request for the agent, from the agent's
+    /// own note.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<String>,
 }
 
 #[cfg(test)]
@@ -1220,6 +1226,17 @@ mod tests {
         }
         let s: Sequence = serde_json::from_value(json!({ "tracks": [] })).unwrap();
         assert_eq!(serde_json::to_value(&s).unwrap()["effects"], json!([]));
+    }
+
+    /// A marker says who left it when it is known, and an older one, which does not, is
+    /// written back exactly as it was read.
+    #[test]
+    fn a_marker_carries_its_origin_only_when_it_has_one() {
+        let old: Marker = serde_json::from_value(json!({ "t": 1.0, "label": "too dark" })).unwrap();
+        assert_eq!(old.origin, None);
+        assert_eq!(serde_json::to_value(&old).unwrap(), json!({ "t": 1.0, "label": "too dark", "color": null }));
+        let mine: Marker = serde_json::from_value(json!({ "t": 2.0, "label": "TODO", "origin": "mcp" })).unwrap();
+        assert_eq!(serde_json::to_value(&mine).unwrap()["origin"], "mcp");
     }
 
     /// Which effects can act on a clip: picture where the track draws one and the source

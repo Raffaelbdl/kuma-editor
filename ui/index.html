@@ -8,27 +8,37 @@
     <link rel="stylesheet" href="/src/style.css" />
   </head>
   <body>
+    <!-- Two modes over one set of panels (`panelhost.ts`): **power**, the panels docked
+         around the frame, and **den**, the frame full-bleed with panels summoned over it.
+         A panel is a module; which container it is in — docked, floating, or a window of
+         its own (`?panel=<id>`) — is view state, never the document. -->
     <div id="app">
       <!-- Only drawn in the desktop shell, where the window has no frame of its own. -->
       <div id="titlebar"></div>
       <header id="topbar"></header>
       <main id="main">
-        <aside id="library"></aside>
-        <!-- The centre is tabbed: the sequence monitor, and an overlay workbench per
-             overlay entry being iterated on. One is shown at a time; both stay mounted. -->
-        <section id="center">
-          <nav id="editor-tabs"></nav>
-          <div id="stages">
-            <section id="preview"></section>
-            <section id="workbench"></section>
-          </div>
-        </section>
-        <aside id="inspector"></aside>
+        <nav id="rail"></nav>
+        <!-- Power's dock (`dock.ts`): splits and tab groups of panels round the frame, which
+             is the one part of it that is not a panel. -->
+        <div id="dock">
+          <!-- The centre is tabbed (the tabs are in the top bar): the sequence monitor, and
+               an overlay workbench per overlay entry being iterated on. One is shown at a
+               time; both stay mounted. -->
+          <section id="center">
+            <div id="stages">
+              <section id="preview"></section>
+              <section id="workbench"></section>
+            </div>
+            <div id="transport"></div>
+          </section>
+        </div>
       </main>
-      <footer id="bottom">
-        <div id="transport"></div>
-        <div id="timeline"></div>
-      </footer>
+      <div id="statusline"></div>
+      <div id="den"></div>
+      <div id="floating"></div>
+      <!-- Panels not on screen stay mounted here, so their subscriptions and listeners live
+           on and summoning one again costs nothing. -->
+      <div id="parking" hidden></div>
       <div id="toasts"></div>
     </div>
     <script type="module" src="/src/main.ts"></script>

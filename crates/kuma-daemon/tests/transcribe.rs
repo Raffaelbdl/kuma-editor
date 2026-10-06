@@ -89,7 +89,7 @@ fn a_transcript_becomes_an_editable_subtitles_entry() {
         "`replace` overwrites a transcript, never some other entry");
 
     // Fixing a misheard word is one var patch, and the validator still reads the cues.
-    let edit = |op: serde_json::Value| state.apply_patch(&serde_json::from_value::<Vec<json_patch::PatchOperation>>(json!([op])).unwrap(), None, "test");
+    let edit = |op: serde_json::Value| state.apply_patch(&serde_json::from_value::<Vec<json_patch::PatchOperation>>(json!([op])).unwrap(), None, "test", &[]);
     edit(json!({ "op": "replace", "path": "/bin/talk-subs/source/vars/cues/1/text", "value": "World!" })).unwrap();
     assert!(edit(json!({ "op": "replace", "path": "/bin/talk-subs/source/vars/cues/1/end", "value": 1.0 })).is_err(), "a cue ending before it starts is refused");
     let now = serde_json::to_value(&state.project.read().unwrap().bin["talk-subs"].source).unwrap();
@@ -98,8 +98,8 @@ fn a_transcript_becomes_an_editable_subtitles_entry() {
     // Removing the media while its transcript is listed under it would leave a dangling parent.
     assert!(edit(json!({ "op": "remove", "path": "/bin/talk" })).is_err());
     // Two undo steps: the edit, then the transcript itself.
-    state.undo().unwrap();
-    state.undo().unwrap();
+    state.undo(None).unwrap();
+    state.undo(None).unwrap();
     assert!(!state.project.read().unwrap().bin.contains_key("talk-subs"));
 
     // From a clip: the subtitles are placed over it, aligned — same start, end and speed,
@@ -118,7 +118,7 @@ fn a_transcript_becomes_an_editable_subtitles_entry() {
     let issues = kuma_core::validate(&p, &state.validation_context());
     assert!(issues.is_empty(), "{issues:?}");
     // Both ways are one undo step: the clip goes with the entry.
-    state.undo().unwrap();
+    state.undo(None).unwrap();
     assert!(state.project.read().unwrap().all_clips().all(|(_, _, c)| c.bin != "talk-subs"));
 
     // Where every overlay track is busy at that range, alignment wins over reuse: a new
@@ -276,11 +276,11 @@ fn a_long_transcript_has_real_gaps_and_is_cut_into_pieces_of_about_a_minute() {
     assert!(p.bin["talk-subs-2"].name.ends_with("(2/3)"), "{}", p.bin["talk-subs-2"].name);
     assert!(!p.all_clips().any(|(_, _, c)| c.bin.starts_with("talk-subs")), "from a bin entry nothing is placed");
     assert!(kuma_core::validate(&p, &state.validation_context()).is_empty());
-    state.undo().unwrap();
+    state.undo(None).unwrap();
 
     // From a clip playing 50–100 s of the source at 10–60 s: the two pieces it plays, side
     // by side on one overlay track, each with the source second it starts at as `offset`.
-    let edit = |op: serde_json::Value| state.apply_patch(&serde_json::from_value::<Vec<json_patch::PatchOperation>>(json!([op])).unwrap(), None, "test");
+    let edit = |op: serde_json::Value| state.apply_patch(&serde_json::from_value::<Vec<json_patch::PatchOperation>>(json!([op])).unwrap(), None, "test", &[]);
     edit(json!({ "op": "add", "path": "/bin/main/source/tracks/2/clips/-", "value": { "id": "c1", "start": 10.0, "end": 60.0, "bin": "talk", "in": 50.0 } })).unwrap();
     let out = jobs::transcribe(&state, &TranscribeRequest { bin: None, clip: Some("c1".into()), ..req.clone() }, &|_, _| {}).unwrap();
     let p = state.project.read().unwrap().clone();
@@ -294,7 +294,7 @@ fn a_long_transcript_has_real_gaps_and_is_cut_into_pieces_of_about_a_minute() {
     assert_eq!(out["pieces"].as_array().unwrap().len(), 2, "a piece the clip does not play is not made: {out:#}");
     let issues = kuma_core::validate(&p, &state.validation_context());
     assert!(issues.is_empty(), "{issues:?}");
-    state.undo().unwrap();
+    state.undo(None).unwrap();
 
     // One entry when asked; and what is not supported is refused before the model runs.
     let one = jobs::transcribe(&state, &TranscribeRequest { split: Some(0.0), ..req.clone() }, &|_, _| {}).unwrap();

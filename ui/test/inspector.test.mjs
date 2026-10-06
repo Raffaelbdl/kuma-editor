@@ -69,7 +69,7 @@ describe("the inspector's property fields", { skip: why ? `skipping: ${why}` : f
    *  which the daemon refuses — a race a person cannot lose, and a test can. */
   const settled = async () => {
     const rev = await page.eval(`fetch("/api/project").then(r => r.json()).then(p => p.revision)`);
-    await page.until(`document.querySelector("#topbar .mono").textContent.startsWith("r${rev}")`);
+    await page.until(`document.querySelector("#statusline .rev").textContent.startsWith("r${rev}")`);
   };
 
   /** Wait for a field of the effect to read `value` in the document, and for the page to
@@ -154,15 +154,15 @@ describe("the inspector's property fields", { skip: why ? `skipping: ${why}` : f
     assert.equal(await page.eval(reads(".effect .num.axis-y")), "-42.5");
   });
   it("records a key instead of a value while auto-key is on", async () => {
-    // R toggles it: the strip's button is gone until auto-key has a better home.
-    const REC = `window.dispatchEvent(new KeyboardEvent("keydown", { key: "r", bubbles: true }))`;
+    // Shift+R toggles it: R is the render queue's letter now.
+    const REC = `window.dispatchEvent(new KeyboardEvent("keydown", { key: "R", shiftKey: true, bubbles: true }))`;
     await page.eval(REC);
     await page.until(`document.body.classList.contains("autokey")`);
     // Two seconds in on an effect that has no keys: the edit becomes its first key, a
     // full sample of what the effect did there, with the one value changed — and the
     // static fields are left exactly as they were.
     await page.eval(`(() => { const tl = document.querySelector(".tl"), ruler = document.querySelector(".tl-ruler"); const r = tl.getBoundingClientRect();
-      ruler.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, clientX: r.left + 136 + 2 * 60, clientY: r.top + 2 })); window.dispatchEvent(new PointerEvent("pointerup", { bubbles: true })); return true; })()`);
+      ruler.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, clientX: r.left + 150 + 2 * 60, clientY: r.top + 2 })); window.dispatchEvent(new PointerEvent("pointerup", { bubbles: true })); return true; })()`);
     await page.until(`document.querySelector("#transport .time").textContent.startsWith("00:02")`);
     await page.eval(`(() => { const i = document.querySelector(".effect .num.axis-x input"); i.value = "33"; i.dispatchEvent(new Event("change", { bubbles: true })); return true; })()`);
     await page.until(`${EFFECT}.then(e => e.keyframes.length === 1)`);
@@ -250,7 +250,7 @@ describe("keyframes", { skip: why ? `skipping: ${why}` : false }, () => {
    *  which the daemon refuses — a race a person cannot lose, and a test can. */
   const settled = async () => {
     const rev = await page.eval(`fetch("/api/project").then(r => r.json()).then(p => p.revision)`);
-    await page.until(`document.querySelector("#topbar .mono").textContent.startsWith("r${rev}")`);
+    await page.until(`document.querySelector("#statusline .rev").textContent.startsWith("r${rev}")`);
   };
 
   const keysAre = async (expected) => {
@@ -264,9 +264,9 @@ describe("keyframes", { skip: why ? `skipping: ${why}` : false }, () => {
   /** Move the playhead in timeline time; the clip starts at 2s, so 4s is 2s into it. */
   const seek = (t) => `(() => {
     const tl = document.querySelector(".tl"), ruler = document.querySelector(".tl-ruler");
-    const zoom = Number(document.querySelector("#transport input[type=range]").value);
+    const zoom = Number(document.querySelector("#timeline .tl-corner input.zoom").value);
     const r = tl.getBoundingClientRect();
-    ruler.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, clientX: r.left + 136 + ${t} * zoom, clientY: r.top + 2 }));
+    ruler.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, clientX: r.left + 150 + ${t} * zoom, clientY: r.top + 2 }));
     window.dispatchEvent(new PointerEvent("pointerup", { bubbles: true }));
     return document.querySelector("#transport .time").textContent;
   })()`;
@@ -343,7 +343,13 @@ describe("keyframes", { skip: why ? `skipping: ${why}` : false }, () => {
       // strip makes, rather than an assumption about where a rotated diamond's box starts.
       return Math.round((((x + dx) - box.left) / box.width) * 8 * 30) / 30;
     })()`);
-    await keysAre(`0:0 ${to}:5 2:10 4:140`);
+    // Within float noise: the daemon stores a time as it parses it, and 59/30 can come back
+    // as 1.9666666666666663 — the frame is what is being checked, not the last bit.
+    await page.until(`${KEYS}.then(s => s.split(" ").length === 4)`);
+    const keys = (await page.eval(KEYS)).split(" ").map((k) => k.split(":").map(Number));
+    assert.deepEqual(keys.map(([, v]) => v), [0, 5, 10, 140]);
+    assert.ok(Math.abs(keys[1][0] - to) < 1e-9, `the key went to ${keys[1][0]}, not ${to}`);
+    await keysAre((await page.eval(KEYS)));
   });
 
   it("clears the keys and keeps the value where the playhead is", async () => {
@@ -624,7 +630,7 @@ describe("the effects a clip is offered", { skip: why ? `skipping: ${why}` : fal
     // the master has a mix to act on.
     await page.eval(`fetch("/api/project/patch", { method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify({ patch: [{ op: "replace", path: "/bin/main/source/tracks/1/clips/0/muted", value: false }] }) }).then(r => r.ok)`);
-    await page.until(`fetch("/api/project").then(r => r.json()).then(p => p.revision).then(rev => document.querySelector("#topbar .mono").textContent.startsWith("r" + rev))`);
+    await page.until(`fetch("/api/project").then(r => r.json()).then(p => p.revision).then(rev => document.querySelector("#statusline .rev").textContent.startsWith("r" + rev))`);
     // A click on an empty stretch of lane selects nothing.
     await page.eval(`(() => { const lane = document.querySelector(".tl-lane"); const r = lane.getBoundingClientRect();
       lane.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, clientX: r.right - 10, clientY: r.top + 5 }));

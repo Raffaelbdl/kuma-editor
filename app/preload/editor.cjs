@@ -47,6 +47,8 @@ contextBridge.exposeInMainWorld("kumaApp", {
     return () => ipcRenderer.off("kuma:menu", h);
   },
   windowControl: (action) => ipcRenderer.invoke("window:control", String(action)),
+  /** Open one of this editor's panels in a frameless window of its own. */
+  openPanel: (id, size) => ipcRenderer.invoke("window:panel", String(id), { width: Number(size?.width), height: Number(size?.height) }),
   windowState: () => ipcRenderer.invoke("window:state"),
   onWindowState: (fn) => {
     const h = (_e, state) => fn(state);

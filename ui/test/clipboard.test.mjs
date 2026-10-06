@@ -82,9 +82,9 @@ describe("the timeline clipboard", { skip: why ? `skipping: ${why}` : false }, (
   /** Put the playhead at `t` seconds by clicking the ruler, at the zoom the page is on. */
   const seek = (t) => `(() => {
     const tl = document.querySelector(".tl"), ruler = document.querySelector(".tl-ruler");
-    const zoom = Number(document.querySelector("#transport input[type=range]").value);
+    const zoom = Number(document.querySelector("#timeline .tl-corner input.zoom").value);
     const r = tl.getBoundingClientRect();
-    ruler.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, clientX: r.left + 136 + ${t} * zoom, clientY: r.top + 2 }));
+    ruler.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, clientX: r.left + 150 + ${t} * zoom, clientY: r.top + 2 }));
     window.dispatchEvent(new PointerEvent("pointerup", { bubbles: true }));
     return true;
   })()`;
@@ -103,7 +103,7 @@ describe("the timeline clipboard", { skip: why ? `skipping: ${why}` : false }, (
   };
 
   /** Switch the sequence being edited, the way the topbar picker does. */
-  const openSequence = (id) => `(() => { const s = document.querySelector("#topbar select"); s.value = ${JSON.stringify(id)}; s.dispatchEvent(new Event("change", { bubbles: true })); return true; })()`;
+  const openSequence = (id) => `(() => { document.querySelector('#library .bin-row[data-sel="bin:' + ${JSON.stringify(id)} + '"]').dispatchEvent(new MouseEvent("dblclick", { bubbles: true })); return true; })()`;
 
   before(async () => {
     tmp = fs.mkdtempSync(path.join(os.tmpdir(), "kuma-clipboard-"));
@@ -193,7 +193,7 @@ describe("the timeline clipboard", { skip: why ? `skipping: ${why}` : false }, (
     await page.eval(addClipOn("v3"));
     await page.until(`document.querySelectorAll("#timeline .clip.selected").length === 2`);
     // The one place the editor says how many: two outlines are countable, ten are not.
-    assert.equal(await page.eval(`document.querySelector("#transport .sel-count").textContent`), "2 clips selected");
+    assert.equal(await page.eval(`document.querySelector("#statusline .sel-count").textContent`), "2 clips selected");
     await page.eval(key("c"));
 
     await page.eval(seek(10));

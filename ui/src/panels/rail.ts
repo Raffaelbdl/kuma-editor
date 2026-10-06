@@ -1,6 +1,6 @@
-// Power's rail: a letter per side panel. The letters are the keys — the same ones that
-// summon the panels in den — and each is a command, so the rail is one more way to run
-// them rather than a second set of switches.
+// Power's rail: a letter per side panel, lit while that panel is on screen. The letters
+// are the keys — the same ones that summon the panels in den — and each is a command: a
+// docked panel comes to the front of its group, a closed one goes back where it was.
 
 import { el } from "../dom";
 import { keysFor } from "../shortcuts";
@@ -22,7 +22,7 @@ export function mountRail(host: HTMLElement): void {
     return b;
   });
   const mark = () => {
-    for (const b of keys) b.classList.toggle("on", panels.rail === b.dataset.panel && !panels.isOut(b.dataset.panel!));
+    for (const b of keys) b.classList.toggle("on", panels.isVisible(b.dataset.panel!));
     const open = store.state.pins.some((p) => p.done === null);
     keys[RAIL.indexOf("pins")].classList.toggle("flag", open);
   };

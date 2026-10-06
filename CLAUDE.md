@@ -19,7 +19,8 @@ crates/kuma-daemon    HTTP/WS API, undo, jobs, overlay live-preview routes, prev
 crates/kuma-mcp       rmcp stdio MCP server proxying the daemon
 crates/kuma-cli       `kuma` binary: serve | mcp | render | bake | sample | lint | design-system | library | …
 engine/               C++ libmlt++ preview engine (JPEG over stdout, SDL2-paced audio)
-ui/                   Vite + TypeScript editor (no framework); den/power modes over one set of panels (`panelhost.ts`)
+ui/                   Vite + TypeScript editor (no framework); den/power modes over one set of panels
+                      (`panelhost.ts`), power's dock a tree of splits and tab groups (`dock.ts`)
 app/                  Electron shell: project launcher, windows, daemon lifecycle
 library/blueprints/   starter blueprints (folder = blueprint) + `_vendor/{gsap.min.js,kuma.js,kuma-motion.js,kuma-canvas.js,rough.min.js,kuma.css}`
 library/presets/      starter effect presets (typed params + `$expr` substitution)
@@ -168,9 +169,12 @@ Chrome headless shell if hyperframes should not download one.
   note the converse, which is easy to miss because it fails silently: Electron does not
   implement `prompt`, `alert` or `confirm`, so UI code that calls them works in a browser
   and throws in the app. Ask for text with `askText` in `ui/src/modal.ts`.
-- **A panel is one module in any container** (`ui/src/panelhost.ts`): docked in power,
-  floating in den, or a window of its own (`?panel=<id>`), and the panel never knows which.
-  Mode, summoned panels and where they float are view state in `localStorage`; a panel's
+- **A panel is one module in any container** (`ui/src/panelhost.ts`): a tab in power's dock
+  (`dock.ts`: splits and tab groups round the frame, rearranged by dragging a tab), floating,
+  or a window of its own (`?panel=<id>`), and the panel never knows which. The frame is the
+  dock's one leaf that is not a panel; it is never re-parented except by a drop that moves
+  it (that reloads its overlay iframes), and den lifts it with CSS rather than moving it.
+  The dock, summoned panels and where they float are view state in `localStorage`; a panel's
   window is the same page, kept in step by `viewsync.ts` (view state only — the document
   comes from the daemon in every window). The letters `B I T A H M R` and `P` are commands,
   so ⌘K, the rail, den's keys and the shell's menus all reach a panel the same way.

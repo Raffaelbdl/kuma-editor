@@ -93,4 +93,5 @@ export const Cmd = {
   modePower: "view.power",
   toggleMode: "view.toggle-mode",
   addPin: "pins.add",
+  resetDock: "view.reset-dock",
 } as const;

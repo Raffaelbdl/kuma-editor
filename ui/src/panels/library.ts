@@ -5,9 +5,10 @@
 // is where you shop — reusable overlays in the user's library; adding one copies it into
 // this project.
 //
-// They were tabs in this panel; they are the rail's letters now (`panelhost.ts`), and they
-// still answer different questions ("what is in this video" against "what could be"), so
-// one is shown at a time. The tools of the one showing go in the panel's head.
+// They were tabs in this panel; they are two panels now, each its own instance of this
+// class, so they can sit side by side in the dock (`panelhost.ts`). They still answer
+// different questions ("what is in this video" against "what could be"). Each one's tools
+// go in the head of whatever holds it.
 
 import { api } from "../api";
 import { desktop, dropMedia, pickAndAddMedia } from "../desktop";
@@ -23,11 +24,13 @@ export class Library {
   /** The head's tools — + new, a folder, import — rebuilt for whichever list is showing. */
   readonly tools = el("div", "lib-tools");
 
-  constructor(private host: HTMLElement) {
+  constructor(private host: HTMLElement, list: "bin" | "blueprints" = "bin") {
+    this.tab = list;
     store.select((s) => [s.project, s.blueprints, s.sequence, s.tab], () => this.render());
     // Selection moves a class; it does not rebuild the panel.
     store.select((s) => [s.selection], () => this.markSelected());
-    this.acceptFiles();
+    // Files dropped on the window go to the bin; one instance takes them, not both.
+    if (list === "bin") this.acceptFiles();
     this.host.oncontextmenu = (e) => this.newMenu(e);
     this.tools.oncontextmenu = (e) => e.preventDefault();
     this.filter.type = "text";

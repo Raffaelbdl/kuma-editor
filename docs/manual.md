@@ -298,11 +298,18 @@ is offered when the media has one transcript, and the job refuses `replace` with
 
 **Den and power.** The editor has two modes over one set of panels; the backquote key, the
 top bar's toggle or the status line's first cell switches between them, keeping the playhead
-and the selection. **Power** docks everything round the frame: a rail of letters on the left
-(`b` bin, `p` blueprints, `f` fonts, `m` pins, `h` history, `r` render queue) picks what the
-side panel shows, the inspector is on the right and the timeline at the bottom, and a status
-line along the bottom says the mode, the revision, the selection, the playhead, the frame and
-what the agent is doing. **Den** gives the frame the whole window and shows what the agent
+and the selection. **Power** docks everything round the frame. The dock starts with the side panels as tabs on
+the left, the inspector on the right and the timeline along the bottom, and is yours to
+rearrange: drag a panel's tab (or its group's head) onto the middle of another group to join
+it, onto an edge of a group or of the frame to split the space there, or onto the dock's own
+edge to run the whole length of it; the hint shows where it will land. Drag a seam to share
+the space differently, × closes a panel, and its letter brings it back where it was. Dropped
+off the dock (over the top bar), or *Float* on its tab's right-click, it floats; a floating
+panel dragged onto the dock docks again. *Reset the dock* (⌘K, or a tab's right-click) puts
+everything back. The rail of letters on the left (`b` bin, `p` blueprints, `f` fonts, `m`
+pins, `h` history, `r` render queue) brings a panel to the front, and a status line along the
+bottom says the mode, the revision, the selection, the playhead, the frame and what the agent
+is doing. **Den** gives the frame the whole window and shows what the agent
 did and where it looked: the bear (asleep after a minute without a call, looking while it
 samples, at work while it edits), orange corners round the region its last `sample_frames`
 looked at, its last edit's summary as a caption, and a rail with its revisions placed where

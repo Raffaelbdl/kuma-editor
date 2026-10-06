@@ -18,20 +18,21 @@
       <header id="topbar"></header>
       <main id="main">
         <nav id="rail"></nav>
-        <aside id="side" class="slot"></aside>
-        <!-- The centre is tabbed (the tabs are in the top bar): the sequence monitor, and
-             an overlay workbench per overlay entry being iterated on. One is shown at a
-             time; both stay mounted. -->
-        <section id="center">
-          <div id="stages">
-            <section id="preview"></section>
-            <section id="workbench"></section>
-          </div>
-          <div id="transport"></div>
-        </section>
-        <aside id="right" class="slot"></aside>
+        <!-- Power's dock (`dock.ts`): splits and tab groups of panels round the frame, which
+             is the one part of it that is not a panel. -->
+        <div id="dock">
+          <!-- The centre is tabbed (the tabs are in the top bar): the sequence monitor, and
+               an overlay workbench per overlay entry being iterated on. One is shown at a
+               time; both stay mounted. -->
+          <section id="center">
+            <div id="stages">
+              <section id="preview"></section>
+              <section id="workbench"></section>
+            </div>
+            <div id="transport"></div>
+          </section>
+        </div>
       </main>
-      <footer id="bottom" class="slot"></footer>
       <div id="statusline"></div>
       <div id="den"></div>
       <div id="floating"></div>

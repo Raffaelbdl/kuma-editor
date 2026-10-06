@@ -65,12 +65,12 @@ describe("blueprints and overlays", { skip: why ? `skipping: ${why}` : false }, 
   it("lists the library's blueprints, and none of the project's overlays", async () => {
     // The rail's P: the blueprints, in the bin's place.
     await page.eval(`document.querySelector('#rail .rail-key[data-panel="blueprints"]').click()`);
-    await page.until(`document.querySelectorAll("#library .lib-item").length > 0`);
-    assert.deepEqual(await page.eval(`[...document.querySelectorAll("#library .lib-item .title")].map(t => t.firstChild.textContent)`), ["Card"]);
+    await page.until(`document.querySelectorAll("#blueprints .lib-item").length > 0`);
+    assert.deepEqual(await page.eval(`[...document.querySelectorAll("#blueprints .lib-item .title")].map(t => t.firstChild.textContent)`), ["Card"]);
   });
 
   it("shows a clicked blueprint's details in the inspector, with a preview button", async () => {
-    await page.eval(`document.querySelector("#library .lib-item .title").click()`);
+    await page.eval(`document.querySelector("#blueprints .lib-item .title").click()`);
     await page.until(`document.querySelector("#inspector h3")?.textContent.startsWith("Blueprint")`);
     const text = await page.eval(`document.querySelector("#inspector").textContent`);
     assert.match(text, /Card/);
@@ -80,7 +80,7 @@ describe("blueprints and overlays", { skip: why ? `skipping: ${why}` : false }, 
 
   it("places a blueprint by copying it into the project, entry and clip in one edit", async () => {
     const before = (await page.eval(PROJECT_NOW)).revision;
-    await page.eval(`${buttonNamed("#library .lib-item", "Timeline")}.click()`);
+    await page.eval(`${buttonNamed("#blueprints .lib-item", "Timeline")}.click()`);
     await page.until(`document.querySelectorAll("#timeline .clip").length === 1`);
     const p = await page.eval(PROJECT_NOW);
     assert.equal(p.revision, before + 1, "the entry and its clip are one patch, one undo step");

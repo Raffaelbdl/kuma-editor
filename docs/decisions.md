@@ -2911,6 +2911,32 @@ and are never rebuilt, so their subscriptions and scroll positions live on. A pa
 knows where it is. Mode, which panels are summoned and where they float are `localStorage`,
 per mode, beside the theme: a layout is not an edit and no agent or render reads it.
 
+**Power is a dock, not slots** — adopted, superseding the first cut, which docked the side
+panels, the inspector and the timeline into three fixed slots of a grid (with the rail choosing
+which side panel the side slot showed). Power is now a tree (`ui/src/dock.ts`) of **splits**
+(a row or a column) and **groups** (panels as tabs, one in front), with the frame as the one
+leaf that is not a panel and cannot be closed. Dragging a tab onto a group's middle joins it;
+onto an edge of a group, of the frame or of the whole dock splits the space there; off the
+dock it floats; past the window's edge it gets a window of its own. A floating panel dragged
+onto the dock docks. Closing a panel remembers its group, so its letter puts it back there,
+or where its kind lives when that group has gone.
+
+Sizes are pixels along the parent's axis. In the split that holds the frame, the frame's
+branch takes what the others leave, so a sidebar keeps its width as the window grows; in a
+split without it, children share in proportion to their sizes, so a group dropped under
+another never ends up with nothing (the first draft gave the space left over to the last
+child, which was the new group, which was zero). Kept sizes are preferences, not minimums:
+when the space runs short every group gives.
+
+The dock is drawn by **reconciling**, not rebuilding: every split and group keeps its element
+by id, and an element is moved only when it is out of place. Re-inserting even the same node
+where it already is detaches it, and an iframe that leaves the document reloads — the frame
+is full of them. The frame's containers are drawn before the preview mounts for the same
+reason. A drop that moves the frame does reload its overlays, once, which was judged an
+acceptable price for a layout change. The bin and the blueprints became two instances of one
+panel class rather than two views of one element, since two panels in two groups can both be
+on screen.
+
 **Den does not move the frame** — adopted, against the obvious implementation. Moving
 `#stages` into den's own container would reparent the overlay iframes, and an iframe that
 leaves the document reloads. Den is a class: the power chrome is hidden, the centre takes the

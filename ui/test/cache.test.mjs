@@ -41,8 +41,8 @@ describe("pruning the cache from the editor", { skip: why ? `skipping: ${why}` :
   it("shows the cache's size in the job queue and prunes it", async () => {
     // The queue button shows the render queue; its head opens the whole job queue.
     await page.eval(`document.querySelector("#topbar .queue-btn").click()`);
-    await page.until(`!!document.querySelector('.panel[data-panel="queue"] .q-cache')`);
-    await page.eval(`document.querySelector('.panel[data-panel="queue"] .q-cache').click()`);
+    await page.until(`!!document.querySelector('.q-cache')`);
+    await page.eval(`document.querySelector('.q-cache').click()`);
     const note = await page.until(`document.querySelector(".cache-size")?.textContent || ""`);
     assert.match(note, /^Cache 2\.5 MB · 1 bake, 0 frames$/);
 

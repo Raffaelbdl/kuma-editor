@@ -120,8 +120,8 @@ describe("the render queue", { skip: why ? `skipping: ${why}` : false }, () => {
     await page.eval(`location.reload()`);
     await page.until(`document.querySelector("#topbar .status").textContent !== ""`);
     await page.eval(`document.querySelector("#topbar .queue-btn").click()`);
-    await page.until(`!!document.querySelector('.panel[data-panel="queue"] .q-cache')`);
-    await page.eval(`document.querySelector('.panel[data-panel="queue"] .q-cache').click()`);
+    await page.until(`!!document.querySelector('.q-cache')`);
+    await page.eval(`document.querySelector('.q-cache').click()`);
     await page.until(`${dialog} && ${JOB_IDS}.length === 2 && ${dialog}.querySelector(".queue-pane").hidden === false`);
   });
 

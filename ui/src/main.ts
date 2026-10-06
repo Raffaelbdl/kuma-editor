@@ -22,7 +22,6 @@ import { mountStatusline } from "./panels/statusline";
 import { mountTopbar } from "./panels/topbar";
 import { mountTransport } from "./panels/transport";
 import { installShortcuts } from "./shortcuts";
-import { installSplitters } from "./splitters";
 import { store, toast } from "./store";
 import { installTheme } from "./theme";
 import { Timeline } from "./panels/timeline";
@@ -72,9 +71,12 @@ function projectCommands() {
 function registerPanels() {
   const libraryEl = el("aside");
   libraryEl.id = "library";
-  const library = new Library(libraryEl);
-  panels.register({ id: "bin", letter: "b", title: "bin", body: libraryEl, tools: library.tools, dock: "side", size: { w: 300, h: 420 }, show: () => library.setTab("bin") });
-  panels.register({ id: "blueprints", letter: "p", title: "blueprints", body: libraryEl, tools: library.tools, dock: "side", size: { w: 300, h: 420 }, show: () => library.setTab("blueprints") });
+  const library = new Library(libraryEl, "bin");
+  panels.register({ id: "bin", letter: "b", title: "bin", body: libraryEl, tools: library.tools, dock: "side", size: { w: 300, h: 420 } });
+  const blueprintsEl = el("aside");
+  blueprintsEl.id = "blueprints";
+  const blueprints = new Library(blueprintsEl, "blueprints");
+  panels.register({ id: "blueprints", letter: "p", title: "blueprints", body: blueprintsEl, tools: blueprints.tools, dock: "side", size: { w: 300, h: 420 } });
   const fonts = fontsPanel();
   panels.register({ id: "fonts", letter: "f", title: "fonts", body: fonts.body, tools: fonts.tools, dock: "side" });
   const pins = pinsPanel();
@@ -87,14 +89,14 @@ function registerPanels() {
   const inspectorEl = el("aside");
   inspectorEl.id = "inspector";
   new Inspector(inspectorEl);
-  panels.register({ id: "inspector", letter: "i", title: "inspector", body: inspectorEl, dock: "right", head: false, size: { w: 300, h: 460 } });
+  panels.register({ id: "inspector", letter: "i", title: "inspector", body: inspectorEl, dock: "right", size: { w: 300, h: 460 } });
 
   const timelineEl = el("div");
   timelineEl.id = "timeline";
   new Timeline(timelineEl);
   const seqNote = el("span");
   store.select((s) => [s.project, s.sequence], (s) => { seqNote.textContent = s.project?.bin[s.sequence]?.name || s.sequence; });
-  panels.register({ id: "timeline", letter: "t", title: "timeline", body: timelineEl, note: seqNote, dock: "bottom", head: false, size: { w: 1180, h: 260 } });
+  panels.register({ id: "timeline", letter: "t", title: "timeline", body: timelineEl, note: seqNote, dock: "bottom", size: { w: 1180, h: 260 } });
 
   const agent = agentPanel();
   panels.register({ id: "agent", letter: "a", title: "agent", body: agent.body, note: agent.note, dock: null, size: { w: 300, h: 300 } });
@@ -108,8 +110,10 @@ async function main() {
   // A panel in a window of its own is this page with `?panel=<id>`: that panel, alone.
   const solo = new URLSearchParams(location.search).get("panel");
   store.set({ mode: panels.initialMode() });
-  if (!solo) installSplitters();
   await store.init();
+  // The dock's containers, with the frame in its place, before the preview gives the frame
+  // iframes that moving it would reload.
+  if (!solo) panels.layoutDock();
   // Before the panels: the title bar adds a row to the grid, and settling the layout once
   // is tidier than having every panel measure itself and then measure again. A panel's
   // own window has no menu: its head is its title bar.

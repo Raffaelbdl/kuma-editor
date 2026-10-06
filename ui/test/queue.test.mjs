@@ -42,7 +42,7 @@ describe("the render and queue buttons", { skip: why ? `skipping: ${why}` : fals
 
   it("shows the render queue for one and the render dialog for the other", async () => {
     await page.eval(`${button("queue")}.click(); true`);
-    await page.until(`document.querySelector('#side .panel[data-panel="queue"]') && document.querySelector('#rail .rail-key.on')?.dataset.panel === "queue"`);
+    await page.until(`document.querySelector('.dock-group .panel[data-panel="queue"]:not([hidden])') && document.querySelector('#rail .rail-key.on')?.dataset.panel === "queue"`);
     await page.eval(`${button("render")}.click(); true`);
     await page.until(`${HEADING} === "Render"`);
     await page.eval(`[...document.querySelectorAll("dialog.modal.render button.tab")].find(b => b.textContent === "Job queue").click()`);

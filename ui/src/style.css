@@ -53,15 +53,12 @@ h3 { margin: 14px 0 6px; font: 400 10px/1.3 var(--label); text-transform: lowerc
 .mono { font-family: var(--mono); }
 
 /* ---- the window, in power mode ----------------------------------------------------
-   Top to bottom: the top bar, the panels around the frame, the timeline, the status line.
-   A slot a panel has left (popped out to a window, say) collapses rather than standing
-   empty: `no-side`, `no-right` and `no-bottom` are set by `panelhost.ts`. */
-#app { height: 100%; display: grid; grid-template-rows: 44px minmax(0, 1fr) var(--bottom-h, 300px) 24px; position: relative; overflow: hidden; }
+   Top to bottom: the top bar, the rail beside the dock (the panels round the frame), the
+   status line. */
+#app { height: 100%; display: grid; grid-template-rows: 44px minmax(0, 1fr) 24px; position: relative; overflow: hidden; }
 /* The desktop shell's windows are frameless, so the page draws the title bar and the
    grid gains a row for it. A browser never sets this class and keeps the old layout. */
-body.has-titlebar #app { grid-template-rows: 32px 44px minmax(0, 1fr) var(--bottom-h, 300px) 24px; }
-#app.no-bottom { grid-template-rows: 44px minmax(0, 1fr) 0 24px; }
-body.has-titlebar #app.no-bottom { grid-template-rows: 32px 44px minmax(0, 1fr) 0 24px; }
+body.has-titlebar #app { grid-template-rows: 32px 44px minmax(0, 1fr) 24px; }
 
 #titlebar { display: none; }
 body.has-titlebar #titlebar {
@@ -125,20 +122,62 @@ body.has-titlebar #titlebar {
 .queue-btn .status:empty { display: none; }
 
 /* ---- rail, side slot, centre, inspector slot */
-#main { display: grid; grid-template-columns: 44px var(--lib-w, 232px) minmax(0, 1fr) var(--insp-w, 288px); min-height: 0; position: relative; }
-#app.no-side #main { grid-template-columns: 44px 0 minmax(0, 1fr) var(--insp-w, 288px); }
-#app.no-right #main { grid-template-columns: 44px var(--lib-w, 232px) minmax(0, 1fr) 0; }
-#app.no-side.no-right #main { grid-template-columns: 44px 0 minmax(0, 1fr) 0; }
-#app.no-side .splitter.lib, #app.no-right .splitter.insp, #app.no-bottom .splitter.bottom { display: none; }
-/* The seams between panels (`splitters.ts`): invisible until hovered or held. */
-.splitter { position: absolute; z-index: 6; }
-.splitter.x { top: 0; bottom: 0; width: 6px; cursor: col-resize; }
-.splitter.y { left: 0; right: 0; height: 6px; cursor: row-resize; }
-.splitter:hover, .splitter.on { background: color-mix(in srgb, var(--accent) 45%, transparent); }
-.slot { min-width: 0; min-height: 0; overflow: hidden; background: var(--bg-0); }
-#side { border-right: 1px solid var(--line-2); }
-#right { border-left: 1px solid var(--line-2); }
-#bottom { border-top: 1px solid var(--line-2); background: var(--bg-bar); }
+#main { display: grid; grid-template-columns: 44px minmax(0, 1fr); min-height: 0; position: relative; }
+
+/* ---- the dock (`dock.ts`, drawn by `panelhost.ts`): splits of tab groups round the frame.
+   Every child of a split but one has its size in pixels (set inline); the fill takes the
+   rest. Nothing here may be `contain`ed or transformed: den lifts the frame out of the dock
+   with `position: fixed`, which either would trap. */
+#dock { display: flex; min-width: 0; min-height: 0; overflow: hidden; background: var(--bg-0); }
+#dock > * { flex: 1 1 0 !important; }
+.dock-split { display: flex; min-width: 0; min-height: 0; overflow: hidden; }
+.dock-split.row { flex-direction: row; }
+.dock-split.col { flex-direction: column; }
+.dock-split > * { min-width: 0; min-height: 0; }
+/* The frame keeps a little of itself whatever the panels round it take. */
+.dock-split.row > #center, .dock-split.row > .dock-split:has(#center) { min-width: 160px; }
+.dock-split.col > #center, .dock-split.col > .dock-split:has(#center) { min-height: 120px; }
+/* A seam: a hairline you can grab a few pixels either side of. */
+.dock-grip { flex: none; position: relative; z-index: 6; background: var(--line-2); }
+.dock-grip.row { width: 1px; cursor: col-resize; }
+.dock-grip.col { height: 1px; cursor: row-resize; }
+.dock-grip::after { content: ""; position: absolute; inset: -3px; }
+.dock-grip.row::after { inset: 0 -3px; }
+.dock-grip.col::after { inset: -3px 0; }
+.dock-grip:hover, .dock-grip.on { background: var(--accent); }
+.dock-group { display: flex; flex-direction: column; overflow: hidden; background: var(--bg-0); }
+.dock-group[hidden] { display: none; }
+.dock-group.flash { box-shadow: inset 0 0 0 1px var(--accent); }
+/* A group's head is its tabs — the letter, and the title of the one in front — then the
+   front panel's note and tools. The head's empty part, like a tab, is what you drag. */
+/* It wraps rather than clipping: a tab out of sight is a panel nobody finds, so in a narrow
+   group the tools go under the tabs. */
+.dock-head { flex: none; display: flex; flex-wrap: wrap; align-items: center; gap: 0 6px; min-height: 30px; padding: 4px 8px 4px 6px; background: var(--bg-bar); border-bottom: 1px solid var(--line-2); cursor: grab; user-select: none; min-width: 0; }
+.dock-head .spacer { flex: 1; align-self: stretch; }
+.dock-tabs { display: flex; flex-wrap: wrap; gap: 3px; min-width: 0; }
+.dock-tab { display: flex; align-items: center; gap: 6px; height: 22px; padding: 0 1px; cursor: pointer; color: var(--fg-2); flex: none; }
+.dock-tab.on { padding: 0 6px 0 1px; }
+.dock-tab .ptile { width: 16px; height: 16px; display: grid; place-items: center; font: 400 10px var(--label); background: var(--bg-3); color: var(--fg-2); }
+.dock-tab .ptitle { display: none; font: 400 10px var(--label); text-transform: lowercase; white-space: nowrap; }
+.dock-tab:hover .ptile { color: var(--fg); }
+.dock-tab.on .ptile { background: var(--fg); color: var(--bg-0); }
+.dock-tab.on .ptitle { display: inline; color: var(--fg); }
+/* In a window of its own: its tab stays, so you know where it comes back to. */
+.dock-tab.out .ptile { background: none; outline: 1px dashed var(--fg-3); color: var(--fg-3); }
+.dock-tab[data-panel="agent"].on .ptile { background: var(--accent); color: var(--on-accent); }
+.dock-note { color: var(--fg-3); font-size: 10.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.dock-tools { display: flex; align-items: center; gap: 2px; }
+.dock-head button.pbtn { background: none; border: 0; padding: 2px 4px; color: var(--fg-3); line-height: 1; font-size: 12px; display: none; }
+/* ⧉ and × only while the head is under the pointer: a narrow group needs the room for its tabs. */
+.dock-head:hover button.pbtn { display: block; }
+.dock-head button.pbtn:hover { color: var(--fg); }
+.dock-body { flex: 1; min-height: 0; min-width: 0; display: flex; flex-direction: column; }
+.dock-body > .panel { flex: 1; min-height: 0; }
+.dock-body > .panel[hidden] { display: none; }
+/* Dragging a panel: what follows the pointer, and where it would land. */
+.dock-ghost { position: fixed; z-index: 2000; pointer-events: none; display: flex; align-items: center; gap: 6px; padding: 3px 8px 3px 3px; background: var(--bg-2); border: 1px solid var(--line); box-shadow: var(--float-shadow); font: 400 10px var(--label); color: var(--fg); }
+.dock-ghost .ptile { width: 16px; height: 16px; display: grid; place-items: center; background: var(--fg); color: var(--bg-0); }
+#dock-drop { position: fixed; z-index: 1999; pointer-events: none; background: color-mix(in srgb, var(--accent) 18%, transparent); outline: 2px solid var(--accent); outline-offset: -2px; }
 
 /* The rail: a letter per panel, the same keys that summon them in den. */
 #rail { display: flex; flex-direction: column; align-items: center; gap: 6px; padding-top: 10px; border-right: 1px solid var(--line-2); background: var(--bg-0); }
@@ -280,7 +319,7 @@ body.solo #floating { position: static; height: 100%; pointer-events: auto; }
 
 /* The bin and the inspector draw into these; the panel around them (`panelhost.ts`) is
    what is docked or floats. */
-#library { display: flex; flex-direction: column; overflow: hidden; min-width: 0; }
+#library, #blueprints { display: flex; flex-direction: column; overflow: hidden; min-width: 0; padding-top: 8px; }
 .lib-filter { flex: none; margin: 0 10px 8px; padding: 0 8px; height: 26px; display: flex; align-items: center; gap: 6px; border: 1px solid var(--line); color: var(--fg-3); }
 .lib-filter input { border: 0; padding: 0; background: none; height: 100%; }
 .lib-filter input::placeholder { color: var(--fg-3); }
@@ -658,7 +697,7 @@ dialog.modal.render .field { grid-template-columns: 80px 1fr; }
 #topbar .status.link { cursor: pointer; }
 #topbar .status.link:hover { color: var(--fg); text-decoration: underline; }
 
-#toasts { position: fixed; right: 12px; bottom: calc(var(--bottom-h, 300px) + 12px); display: flex; flex-direction: column; gap: 6px; z-index: 10; }
+#toasts { position: fixed; right: 12px; bottom: 36px; display: flex; flex-direction: column; gap: 6px; z-index: 10; }
 .toast { background: var(--bg-3); border: 1px solid var(--line); border-left: 3px solid var(--accent); padding: 8px 10px; border-radius: 6px; max-width: 360px; font-size: 12px; }
 .toast.err { border-left-color: var(--danger); }
 .toast.ok { border-left-color: var(--audio); }
@@ -684,9 +723,13 @@ kbd { font: 10px var(--mono); border: 1px solid var(--line); border-radius: 3px;
 #den { display: none; }
 #app.den { grid-template-rows: minmax(0, 1fr); }
 body.has-titlebar #app.den { grid-template-rows: 32px minmax(0, 1fr); }
-#app.den #topbar, #app.den #rail, #app.den #side, #app.den #right, #app.den #bottom, #app.den #statusline, #app.den #transport, #app.den .splitter { display: none; }
+#app.den #topbar, #app.den #rail, #app.den #statusline, #app.den #transport { display: none; }
 #app.den #main { grid-template-columns: minmax(0, 1fr); }
-#app.den #center { grid-template-rows: minmax(0, 1fr) 90px; }
+/* The dock stays where it is, out of sight, and the frame is lifted out of it to fill the
+   window: moving the frame instead would reload every overlay iframe in it. */
+#app.den .dock-group, #app.den .dock-grip { visibility: hidden; }
+#app.den #center { position: fixed; left: 0; right: 0; top: 0; bottom: 0; z-index: 5; grid-template-rows: minmax(0, 1fr) 90px; }
+body.has-titlebar #app.den #center { top: 32px; }
 #app.den #floating { top: 0; bottom: 90px; }
 body.has-titlebar #app.den #floating { top: 32px; }
 #app.den #toasts { bottom: 102px; }

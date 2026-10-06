@@ -378,7 +378,9 @@ export function sequenceIds(p: Project): string[] {
 /** A sequence's own duration: its latest clip end. */
 export function seqDuration(p: Project, id: string): number {
   const seq = sequenceOf(p, id);
-  return seq ? Math.max(0, ...seq.tracks.flatMap((t) => t.clips.map((c) => c.end))) : 0;
+  let end = 0;
+  for (const t of seq?.tracks ?? []) for (const c of t.clips) if (c.end > end) end = c.end;
+  return end;
 }
 
 /** Every clip in the project, whichever sequence it sits on. Ids are unique across all of

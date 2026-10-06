@@ -8,7 +8,7 @@
 
 import { agentView, bear, pinsOn, setBear, watchAgent } from "../agent";
 import { Cmd, run } from "../commands";
-import { button, dragPointer, el } from "../dom";
+import { button, dragPointer, el, setText } from "../dom";
 import { panels } from "../panelhost";
 import { keysFor } from "../shortcuts";
 import { panelKeys } from "./rail";
@@ -32,7 +32,13 @@ export function mountDen(host: HTMLElement): void {
     const p = store.state.project;
     status.textContent = `${p ? `r${p.revision}` : ""}${v.client ? ` · kuma ${v.doing}` : ""}`;
   };
-  watchAgent((v) => { setBear(pet, v.bear); drawStatus(v); });
+  watchAgent((v) => {
+    setBear(pet, v.bear);
+    drawStatus(v);
+    // The cursor blinks while the agent is at work; asleep, it holds still and the page
+    // has nothing to draw.
+    cursor.classList.toggle("live", v.bear !== "idle");
+  });
   store.select((s) => [s.project, s.sequence], (s) => { seqName.textContent = binName(s.sequence); drawStatus(); });
 
   // ---- viewfinder: the corners of what the agent last looked at
@@ -58,9 +64,18 @@ export function mountDen(host: HTMLElement): void {
   };
   const observer = new ResizeObserver(() => placeFinder());
   observer.observe(host);
-  const watchStage = () => { const st = document.querySelector("#preview .stage"); if (st) observer.observe(st); };
+  let watched: Element | null = null;
+  const watchStage = () => {
+    const st = document.querySelector("#preview .stage");
+    if (st && st !== watched) { observer.observe(st); watched = st; }
+  };
   watchStage();
-  store.select((s) => [s.activity, s.sequence, s.mode, s.project], () => { watchStage(); requestAnimationFrame(placeFinder); });
+  // Once a frame, however many changes land in it: the stage has its new size by then.
+  let pending = 0;
+  store.select((s) => [s.activity, s.sequence, s.mode, s.project], () => {
+    watchStage();
+    if (!pending) pending = requestAnimationFrame(() => { pending = 0; placeFinder(); });
+  });
 
   // ---- caption: the agent's last edit, in its own words
   const caption = el("div", "den-caption");
@@ -98,7 +113,8 @@ export function mountDen(host: HTMLElement): void {
 
   // The sequence's length, taken once per redraw: `store.duration` walks every clip.
   let d = 1;
-  const x = (t: number) => `${(Math.min(Math.max(0, t), d) / d) * 100}%`;
+  const share = (t: number) => (Math.min(Math.max(0, t), d) / d) * 100;
+  const x = (t: number) => `${share(t)}%`;
   track.addEventListener("pointerdown", (e) => {
     if (e.button !== 0) return;
     const r = track.getBoundingClientRect();
@@ -111,8 +127,10 @@ export function mountDen(host: HTMLElement): void {
   const den = () => store.state.mode === "den";
   const drawHead = (s = store.state) => {
     if (!den()) return;
-    now.textContent = fmtTime(s.playhead, store.fps);
-    head.style.left = x(s.playhead);
+    setText(now, fmtTime(s.playhead, store.fps));
+    // The head spans the track and moves by a transform: a share of its own width, which is
+    // the track's, so the window is not laid out again 25 times a second.
+    head.style.transform = `translateX(${share(s.playhead)}%)`;
   };
   store.select((s) => [s.playhead], drawHead);
   let ticked = 0;

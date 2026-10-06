@@ -23,6 +23,9 @@ interface OverlayView {
   iframe: HTMLIFrameElement;
   ready: boolean;
   lastT: number;
+  /** The clip and playhead its effects were last applied for: unchanged, nothing to do. */
+  lastClip?: Clip;
+  lastAt?: number;
 }
 
 export class Preview {
@@ -66,7 +69,7 @@ export class Preview {
     this.stage.append(this.canvas, this.layer, this.badge);
     host.appendChild(this.stage);
     new ResizeObserver(() => this.layout()).observe(host);
-    store.subscribe((s) => this.onState(s.playhead, s.playing, s.project?.revision ?? -1, s.sequence));
+    store.select((s) => [s.playhead, s.playing, s.project, s.sequence], (s) => this.onState(s.playhead, s.playing, s.project?.revision ?? -1, s.sequence));
     // A monitor nobody is looking at does not play: leaving the tab stops the engine
     // rather than leaving it streaming frames into a hidden canvas.
     store.select((s) => [s.tab], (s) => { if (s.tab !== SEQUENCE_TAB && s.playing) this.togglePlay(); });
@@ -428,7 +431,9 @@ export class Preview {
       const c = f.clip;
       const visible = covers(c, playhead);
       v.wrap.style.visibility = visible ? "" : "hidden";
-      if (!visible || !v.ready) continue;
+      if (!visible || !v.ready || (v.lastClip === c && v.lastAt === playhead)) continue;
+      v.lastClip = c;
+      v.lastAt = playhead;
       // A freeze holds the overlay where the clip is `t` in, as the render's held frame
       // does; the clip's other effects still follow the playhead.
       const freeze = c.effects.find((e) => e.type === "freeze");
@@ -447,7 +452,17 @@ export class Preview {
 /** Everything the overlay document is a function of: its injected `window.kuma`. The bin
  *  entry carries the overlay folder and its vars; the clip decides how long it runs. */
 function contentKey(p: Project, c: Clip): string {
-  return JSON.stringify([binItem(p, c)?.source, c.speed, c.end - c.start, p.width, p.height, p.fps]);
+  const source = binItem(p, c)?.source;
+  return `${source ? sourceJSON(source) : ""}|${JSON.stringify([c.speed, c.end - c.start, p.width, p.height, p.fps])}`;
+}
+
+/** An entry's source as JSON, once per document: a subtitles entry's source is the whole
+ *  transcript, and every clip placing it asks. */
+const sourceJSONs = new WeakMap<object, string>();
+function sourceJSON(source: object): string {
+  let s = sourceJSONs.get(source);
+  if (s === undefined) sourceJSONs.set(source, (s = JSON.stringify(source)));
+  return s;
 }
 
 /** Approximate MLT-side effects with CSS on the overlay iframe (see the header comment). */

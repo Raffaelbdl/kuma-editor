@@ -265,13 +265,15 @@ export function cancelButton(id: number, label: string, cls = ""): HTMLButtonEle
  * dialog's queue and the queue panel draw rows of their own through it. Returns the jobs.
  */
 export function jobList(list: HTMLElement, make: (id: number) => JobRow, empty: HTMLElement): (jobs: Record<number, Job>) => Job[] {
-  const rows = new Map<number, JobRow>();
+  const rows = new Map<number, JobRow & { shown?: Job }>();
   let order = "";
   return (jobs) => {
     const all = Object.values(jobs).sort((a, b) => b.id - a.id);
     for (const j of all) {
       if (!rows.has(j.id)) rows.set(j.id, make(j.id));
-      rows.get(j.id)!.update(j);
+      // A job's record is replaced when it changes: the same one has nothing new to show.
+      const row = rows.get(j.id)!;
+      if (row.shown !== j) { row.shown = j; row.update(j); }
     }
     const now = all.map((j) => j.id).join();
     if (now !== order) {

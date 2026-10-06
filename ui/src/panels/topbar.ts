@@ -7,7 +7,7 @@
 
 import { watchAgent, bear, setBear } from "../agent";
 import { Cmd, command, run } from "../commands";
-import { button, el } from "../dom";
+import { button, el, setText } from "../dom";
 import { panels } from "../panelhost";
 import { keysFor } from "../shortcuts";
 import { store } from "../store";
@@ -51,6 +51,6 @@ export function mountTopbar(host: HTMLElement): void {
 
   store.select((s) => [s.jobs], (s) => {
     const n = jobCounts(s.jobs);
-    status.textContent = (Object.keys(n) as JobState[]).filter((k) => n[k]).map((k) => `${n[k]} ${k}`).join(" · ");
+    setText(status, (Object.keys(n) as JobState[]).filter((k) => n[k]).map((k) => `${n[k]} ${k}`).join(" · "));
   });
 }

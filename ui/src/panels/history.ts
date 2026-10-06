@@ -7,7 +7,8 @@
 
 import { api } from "../api";
 import { clock, who } from "../agent";
-import { button, el, plural } from "../dom";
+import { button, el, plural, reconcile } from "../dom";
+import { panels } from "../panelhost";
 import { store, toast } from "../store";
 import type { HistoryEntry } from "../types";
 
@@ -40,14 +41,14 @@ export function historyPanel(): { body: HTMLElement; tools: HTMLElement } {
       list.replaceChildren(el("p", "muted tiny", s.history.length ? "Nothing by them yet." : "No steps yet this session. Every edit, yours and the agent's, lands here."));
       return;
     }
-    list.replaceChildren(...rows.map((h) => {
+    reconcile(list, rows.map((h) => {
       const now = h.revision === current;
       let m = made.get(h);
       if (!m || m.now !== now) made.set(h, (m = { row: entryRow(h, current), now }));
       return m.row;
     }));
   };
-  store.select((s) => [s.history], draw);
+  store.select((s) => [s.history], panels.lazily("history", draw).run);
   store.select((s) => [s.project?.revision], (s) => { tools.textContent = `r${s.project?.revision ?? 0}`; });
   return { body, tools };
 }

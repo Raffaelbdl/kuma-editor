@@ -4,7 +4,7 @@
 
 import { watchAgent } from "../agent";
 import { Cmd, run } from "../commands";
-import { el, plural } from "../dom";
+import { el, plural, setText } from "../dom";
 import { panels } from "../panelhost";
 import { fmtTime, store } from "../store";
 import { keysFor } from "../shortcuts";
@@ -36,7 +36,16 @@ export function mountStatusline(host: HTMLElement): void {
     sel.textContent = n ? `${plural(n, "clip")} selected` : s.selection?.kind === "bin" ? "1 entry selected" : "";
     sel.title = n > 1 ? "Copy, cut, delete and split act on all of them" : "";
   });
-  store.select((s) => [s.playhead, s.project], (s) => { at.textContent = fmtTime(s.playhead, store.fps); });
+  // Where the playhead is, to the frame when it is still; while it plays the transport
+  // counts every frame, and this says it a few times a second rather than restyling the
+  // window's foot 25 times a second too.
+  let said = 0;
+  store.select((s) => [s.playhead, s.playing, s.project], (s) => {
+    const now = performance.now();
+    if (s.playing && now - said < 250) return;
+    said = now;
+    setText(at, fmtTime(s.playhead, store.fps));
+  });
   watchAgent((v) => {
     agent.textContent = v.client ? `${v.client} · ${v.doing}` : "no agent yet";
     agent.classList.toggle("idle", v.bear === "idle");
@@ -44,6 +53,6 @@ export function mountStatusline(host: HTMLElement): void {
   store.select((s) => [s.jobs], (s) => {
     const n = jobCounts(s.jobs);
     const running = n.running + n.queued, done = n.done;
-    jobs.textContent = running ? `${plural(running, "job")} running · ${done} done` : done ? `${plural(done, "job")} done` : "";
+    setText(jobs, running ? `${plural(running, "job")} running · ${done} done` : done ? `${plural(done, "job")} done` : "");
   });
 }

@@ -12,7 +12,7 @@
 // render or an agent reads.
 
 import { Cmd, command } from "./commands";
-import { button, dragPointer, el, loadLocal, loadLocalJSON, saveLocal } from "./dom";
+import { button, dragPointer, el, loadLocal, loadLocalJSON, reconcile, saveLocal } from "./dom";
 import { desktop } from "./desktop";
 import { defaultTree, find, type Homes, fillOf, groupOf, hasViewer, insert, panelsIn, remove, sanitize, type Group, type Node, type Split, type Target } from "./dock";
 import { showMenu, type MenuItem } from "./menu";
@@ -70,14 +70,6 @@ const parsed = (key: string): unknown => { try { return JSON.parse(loadLocal(key
 const floatSize = (spec: PanelSpec) => ({ w: spec.size?.w ?? 300, h: spec.size?.h ?? 340 });
 /** Past the window's edge: where a drag becomes a window of its own. */
 const pastEdge = (ev: PointerEvent) => ev.clientX <= 0 || ev.clientY <= 0 || ev.clientX >= innerWidth - 1 || ev.clientY >= innerHeight - 1;
-
-/** Make `parent`'s children exactly `kids`, in order, moving only what is out of place. An
- *  element re-inserted where it already is would still be detached and attached again —
- *  which reloads every iframe inside it, and the frame is full of them. */
-function reconcile(parent: HTMLElement, kids: HTMLElement[]) {
-  kids.forEach((k, i) => { if (parent.children[i] !== k) parent.insertBefore(k, parent.children[i] ?? null); });
-  while (parent.children.length > kids.length) parent.lastElementChild!.remove();
-}
 
 class PanelHost {
   private specs = new Map<string, PanelSpec>();
@@ -146,6 +138,28 @@ class PanelHost {
     if (this.out.has(id)) return false;
     if (this.isFloating(id)) return true;
     return store.state.mode === "power" && groupOf(this.tree, id)?.active === id;
+  }
+
+  /** On screen, wherever: a panel's own window shows its one panel. */
+  onScreen(id: string): boolean {
+    return this.solo ? this.solo === id : this.isVisible(id);
+  }
+
+  /**
+   * `draw`, run only while panel `id` is on screen: called while it is parked, behind
+   * another tab or in den unsummoned, it waits and runs once the panel is shown. For a
+   * redraw that costs something — a whole timeline, five hundred history rows — and shows
+   * nothing unseen. `stop` lets it go, for one made per render.
+   */
+  lazily(id: string, draw: () => void): { run: () => void; stop: () => void } {
+    let stale = false;
+    const run = () => {
+      stale = !this.onScreen(id);
+      if (!stale) draw();
+    };
+    const shown = () => { if (stale) run(); };
+    document.addEventListener("kuma:panels", shown);
+    return { run, stop: () => document.removeEventListener("kuma:panels", shown) };
   }
 
   setMode(mode: Mode): void {
@@ -481,18 +495,26 @@ class PanelHost {
 
   // ---- moving panels by dragging -------------------------------------------------------
 
+  /** The dock as a drag sees it: its box, and each group's and the frame's. Measured once
+   *  when a drag starts — nothing in the dock moves under one — so a move only does sums. */
+  private dockBoxes(): { dock: DOMRect; boxes: { e: HTMLElement; box: DOMRect }[] } {
+    const dock = this.dockEl();
+    const boxes = [...dock.querySelectorAll<HTMLElement>(".dock-group:not([hidden]), #center")].map((e) => ({ e, box: e.getBoundingClientRect() }));
+    return { dock: dock.getBoundingClientRect(), boxes };
+  }
+
   /** Where a drop at (x, y) would put a panel in the dock: a group's middle or edge, the
    *  frame's edge, or the dock's own edge. Null off the dock. */
-  private targetAt(x: number, y: number): { target: Target; box: DOMRect } | null {
+  private targetAt(x: number, y: number, at: ReturnType<PanelHost["dockBoxes"]>): { target: Target; box: DOMRect } | null {
     if (store.state.mode !== "power" || !this.movable) return null;
-    const dock = this.dockEl().getBoundingClientRect();
+    const { dock } = at;
     if (x < dock.left || x > dock.right || y < dock.top || y > dock.bottom) return null;
     const edge = (["left", "right", "top", "bottom"] as const).find((z) =>
       z === "left" ? x - dock.left < ROOT_EDGE : z === "right" ? dock.right - x < ROOT_EDGE : z === "top" ? y - dock.top < ROOT_EDGE : dock.bottom - y < ROOT_EDGE);
     if (edge) return { target: { root: edge }, box: half(dock, edge, 0.25) };
-    const hit = document.elementsFromPoint(x, y).map((e) => (e as HTMLElement).closest<HTMLElement>(".dock-group, #center")).find((e) => e && this.dockEl().contains(e));
-    if (!hit) return null;
-    const box = hit.getBoundingClientRect();
+    const found = at.boxes.find(({ box: b }) => x >= b.left && x <= b.right && y >= b.top && y <= b.bottom);
+    if (!found) return null;
+    const { e: hit, box } = found;
     const rx = (x - box.left) / box.width, ry = (y - box.top) / box.height;
     const viewer = hit.id === "center";
     const near = [["left", rx], ["right", 1 - rx], ["top", ry], ["bottom", 1 - ry]] as const;
@@ -510,11 +532,14 @@ class PanelHost {
   private dropTracker() {
     let at: ReturnType<PanelHost["targetAt"]> = null;
     let outside = false;
+    let boxes: ReturnType<PanelHost["dockBoxes"]> | null = null;
     return {
+      /** Called before the caller moves anything, so the measuring is never forced. */
       move: (ev: PointerEvent) => {
         outside = pastEdge(ev);
+        boxes ??= this.dockBoxes();
         // Under the pointer, not the panel's box: that is what is asked where it lands.
-        at = this.targetAt(ev.clientX, ev.clientY);
+        at = this.targetAt(ev.clientX, ev.clientY, boxes);
         this.dropHint(at);
       },
       finish: (id: string, moved: boolean): boolean => {
@@ -553,8 +578,8 @@ class PanelHost {
           ghost.append(el("span", "ptile", spec.letter), el("span", "", spec.title));
           document.body.appendChild(ghost);
         }
-        Object.assign(ghost.style, { left: `${ev.clientX + 12}px`, top: `${ev.clientY + 10}px` });
         drop.move(ev);
+        Object.assign(ghost.style, { left: `${ev.clientX + 12}px`, top: `${ev.clientY + 10}px` });
       },
       end: (moved) => {
         ghost?.remove();
@@ -662,8 +687,8 @@ class PanelHost {
           g.x = x0 + dx;
           g.y = y0 + dy;
           g.edge = undefined;
-          this.place(f, g, layer);
           drop.move(ev);
+          this.place(f, g, layer);
           const side = g.x <= 0 ? "left" : g.x + g.w >= layer.width ? "right" : null;
           if (side && !hint) {
             hint = el("div", `edge-hint ${side}`);
@@ -815,6 +840,7 @@ class PanelHost {
     this.layer().appendChild(f.root);
     this.attach(f, f.tools, f.note);
     document.title = `${spec.title} — kuma`;
+    document.dispatchEvent(new CustomEvent("kuma:panels"));
     return true;
   }
 }

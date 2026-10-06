@@ -38,6 +38,22 @@ export const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n ==
 /** `brightness` → `Brightness`: a key or a kind as a label. */
 export const capitalize = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 
+/** Make `parent`'s children exactly `kids`, in order, moving only what is out of place. An
+ *  element re-inserted where it already is would still be detached and attached again —
+ *  which reloads every iframe inside it (the dock's frame is full of them), and lays out a
+ *  long list again when one row was added at its top. */
+export function reconcile(parent: HTMLElement, kids: HTMLElement[]): void {
+  kids.forEach((k, i) => { if (parent.children[i] !== k) parent.insertBefore(k, parent.children[i] ?? null); });
+  while (parent.children.length > kids.length) parent.lastElementChild!.remove();
+}
+
+/** Set `e`'s text only when it differs: an unchanged string written again still replaces
+ *  the text node, and a page that changed lays itself out again. For what is written on
+ *  every tick or every job event. */
+export function setText(e: HTMLElement, text: string): void {
+  if (e.textContent !== text) e.textContent = text;
+}
+
 /** What this browser keeps for the editor (`localStorage`). A private window has no
  *  storage and throws on access, which must cost only the remembering: null then, and a
  *  write that keeps nothing beyond this session. */

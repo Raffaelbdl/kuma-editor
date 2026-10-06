@@ -12,6 +12,7 @@ import { button, capitalize, checkbox, dragPointer, el, options, plural, row, se
 import { keysFor } from "../shortcuts";
 import { desktop } from "../desktop";
 import { askForm } from "../modal";
+import { panels } from "../panelhost";
 import { store, toast } from "../store";
 import type { BinItem, Clip, Cue, Ease, Effect, FontFamily, PatchOp, Project, Streams, Transition, VarSpec } from "../types";
 import { blueprintActions, makeOverlayUnique, removeTransition, setTransitionDuration, setTransitionKind, updateTransition, manifestOf, moveBinItem, overlayError, placeBinItem, previewImg, renderPreview, saveAsBlueprint, sharersOf } from "../edits";
@@ -395,7 +396,8 @@ export class Inspector {
     // selected clip decides what the panel can edit at all — a keyed value has no "now" to
     // write to from outside it — and that flips rarely. The values themselves follow the
     // playhead without a re-render; see `renderEffects`.
-    store.select((s) => [s.project, s.selection, s.manifests, s.fonts, s.blueprints, s.sequence, playheadInClip(), s.previewStamp], () => this.render());
+    // Rebuilt while it is on screen; in den, unsummoned, it waits to be.
+    store.select((s) => [s.project, s.selection, s.manifests, s.fonts, s.blueprints, s.sequence, playheadInClip(), s.previewStamp], panels.lazily("inspector", () => this.render()).run);
   }
 
   private render() {
@@ -801,7 +803,11 @@ export class Inspector {
       if (kind) store.patch([{ op: "add", path: `${owner.path}/-`, value: owner.add(kind) }], `add ${kind}`);
     };
     this.host.appendChild(add);
-    if (followers.length) this.off.push(store.select((s) => [s.playhead], () => { for (const f of followers) f(); }));
+    if (followers.length) {
+      // Unseen, the values wait, and catch up when the panel is shown.
+      const follow = panels.lazily("inspector", () => { for (const f of followers) f(); });
+      this.off.push(store.select((s) => [s.playhead], follow.run), follow.stop);
+    }
   }
 
   /** Presets expand to ordinary effects; their params are edited here before applying. */

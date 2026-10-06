@@ -8,7 +8,7 @@
 
 import { pinsOn, watchAgent } from "../agent";
 import { Cmd, command } from "../commands";
-import { button, el } from "../dom";
+import { button, el, setText } from "../dom";
 import { addPin, markerOn } from "../edits";
 import { api } from "../api";
 import { panels } from "../panelhost";
@@ -69,7 +69,8 @@ export function pinsPanel(): { body: HTMLElement; note: HTMLElement } {
   };
   store.select((s) => [s.pins, s.sequence], draw);
   watchAgent((v) => { if (v.pin?.id !== reading) { reading = v.pin?.id; draw(); } });
-  store.select((s) => [s.playhead], (s) => { when.textContent = `pin at ${fmtTime(s.playhead, store.fps)}`; });
+  // The draft's time follows the playhead only while anyone can read it.
+  store.select((s) => [s.playhead], panels.lazily("pins", () => setText(when, `pin at ${fmtTime(store.state.playhead, store.fps)}`)).run);
   return { body, note };
 }
 

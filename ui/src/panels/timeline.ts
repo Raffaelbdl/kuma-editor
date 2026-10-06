@@ -7,6 +7,7 @@ import { showMenu } from "../menu";
 import { icon } from "../icons";
 import { animationOf, keysOf } from "../keyframes";
 import { keysFor } from "../shortcuts";
+import { panels } from "../panelhost";
 import { store } from "../store";
 import type { Clip, Marker, PatchOp, Project, Track, TrackKind, Transition } from "../types";
 import { binItem, clipKind, hasAudio, isFileSource, isOverlaySource, isSequenceSource, isTimedMedia, seqDuration, sourceAfter } from "../types";
@@ -88,7 +89,9 @@ export class Timeline {
     host.appendChild(this.root);
     // Only the project, the open sequence and the zoom rebuild the DOM; selection and
     // playhead are cheap updates.
-    store.select((s) => [s.project, s.sequence, s.zoom], () => this.render());
+    // Not while it is out of sight (den, another tab): it is thousands of elements.
+    const render = panels.lazily("timeline", () => this.render());
+    store.select((s) => [s.project, s.sequence, s.zoom], render.run);
     store.select((s) => [s.selection], () => {
       const sel = new Set(store.selectedClips);
       for (const c of this.root.querySelectorAll<HTMLElement>(".clip:not(.ghost)")) c.classList.toggle("selected", sel.has(c.dataset.id!));
@@ -252,7 +255,8 @@ export class Timeline {
   }
 
   private movePlayhead(t: number) {
-    if (this.playhead) this.playhead.style.left = `${this.x(t)}px`;
+    // A transform, not `left`: it moves 25 times a second and must not lay the timeline out.
+    if (this.playhead) this.playhead.style.transform = `translateX(${this.x(t)}px)`;
   }
 
   private trackEl(p: Project, t: Track, ti: number): HTMLDivElement {

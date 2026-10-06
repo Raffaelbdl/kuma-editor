@@ -7,7 +7,8 @@
 
 import { api } from "../api";
 import { desktop } from "../desktop";
-import { button, el, plural } from "../dom";
+import { button, el, plural, reconcile } from "../dom";
+import { panels } from "../panelhost";
 import { binName, store, toast } from "../store";
 import { isFinal, jobCounts } from "../types";
 import { cancelButton, defaultPreset, jobList, openRenderDialog, subject, type JobRow, type RenderParams } from "./render";
@@ -24,11 +25,12 @@ export function queuePanel(): { body: HTMLElement; tools: HTMLElement } {
   body.lastElementChild!.append(renderMaster, done);
 
   const rows = jobList(list, jobRow, el("p", "muted tiny", "No jobs yet. Renders, bakes, samples and transcripts show up here, the agent's too."));
-  store.select((s) => [s.jobs], (s) => {
+  store.select((s) => [s.jobs], panels.lazily("queue", () => {
+    const s = store.state;
     const all = rows(s.jobs);
     done.textContent = `${jobCounts(s.jobs).done} done`;
     done.disabled = !all.some(isFinal);
-  });
+  }).run);
   return { body, tools };
 }
 
@@ -72,7 +74,8 @@ function jobRow(id: number): JobRow {
         : j.state === "failed" ? `failed: ${j.message}`
         : j.state;
       state.title = j.message;
-      action.replaceChildren(...(!isFinal(j) && j.cancellable ? [cancel] : j.state === "done" && file && desktop() ? [open] : []));
+      // Moved only when it changes: a press on cancel must outlast a progress event.
+      reconcile(action, !isFinal(j) && j.cancellable ? [cancel] : j.state === "done" && file && desktop() ? [open] : []);
       root.title = `#${j.id} · ${j.kind}${j.state === "queued" ? ` · ${plural(1, "job")} ahead or more` : ""}`;
     },
   };

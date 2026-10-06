@@ -3,7 +3,8 @@
 // the one thing the editor can write to it is a pin.
 
 import { ago, bear, sampleSpan, setBear, watchAgent } from "../agent";
-import { el } from "../dom";
+import { el, reconcile } from "../dom";
+import { panels } from "../panelhost";
 import { store } from "../store";
 import type { Activity } from "../types";
 
@@ -29,11 +30,11 @@ export function agentPanel(): { body: HTMLElement; note: HTMLElement } {
   // A call's record is replaced when it changes, so a row is made once per state of it:
   // the frames it shows are not fetched again for every other call that lands.
   const made = new WeakMap<Activity, HTMLElement>();
-  store.select((s) => [s.activity], (s) => calls.replaceChildren(...s.activity.slice(0, 5).map((a) => {
+  store.select((s) => [s.activity], panels.lazily("agent", () => reconcile(calls, store.state.activity.slice(0, 5).map((a) => {
     let row = made.get(a);
     if (!row) made.set(a, (row = callRow(a)));
     return row;
-  })));
+  }))).run);
   // "14s ago" has to keep counting: only those words, while the panel is on screen.
   setInterval(() => {
     if (!calls.offsetParent) return;

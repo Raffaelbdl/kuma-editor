@@ -3,7 +3,7 @@
 // Zoom and "+ track" are the timeline's own, in its ruler's corner.
 
 import { Cmd, run } from "../commands";
-import { button, el, options } from "../dom";
+import { button, el, options, setText } from "../dom";
 import { icon } from "../icons";
 import { keysFor } from "../shortcuts";
 import { fmtTime, store } from "../store";
@@ -54,6 +54,6 @@ export function mountTransport(host: HTMLElement): void {
     size.textContent = `${width}×${height} ⇄`;
     size.title = `Switch to ${orientation({ width: height, height: width })} (${height}×${width})`;
   });
-  store.select((s) => [s.playhead, s.project], (s) => { now.textContent = fmtTime(s.playhead, store.fps); });
-  store.select((s) => [s.project, s.sequence], () => { dur.textContent = ` / ${fmtTime(store.duration, store.fps)}`; });
+  store.select((s) => [s.playhead, s.project], (s) => setText(now, fmtTime(s.playhead, store.fps)));
+  store.select((s) => [s.project, s.sequence], () => setText(dur, ` / ${fmtTime(store.duration, store.fps)}`));
 }

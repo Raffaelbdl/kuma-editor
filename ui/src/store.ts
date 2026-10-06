@@ -231,8 +231,10 @@ class Store {
           // A tab's subject can be removed out from under us (undo, an agent edit), so
           // every tab is checked against the document it names — and the one being
           // edited always has a tab, whether it was opened or fallen back to.
-          const sequences = withId(this.state.sequences.filter((id) => sequenceOf(project, id)), sequence);
-          const overlays = this.state.overlays.filter((id) => isOverlayEntry(project, id));
+          // Kept as they were when nothing went: a new array is a change to everything that
+          // follows it, and an edit rarely touches them.
+          const sequences = same(this.state.sequences, withId(this.state.sequences.filter((id) => sequenceOf(project, id)), sequence));
+          const overlays = same(this.state.overlays, this.state.overlays.filter((id) => isOverlayEntry(project, id)));
           const tab = overlays.includes(this.state.tab) ? this.state.tab : SEQUENCE_TAB;
           this.set({ project, manifests, sequence, sequences, selection, track, overlays, tab });
         } while (this.refreshAgain);
@@ -275,7 +277,8 @@ class Store {
     if (sel.kind === "transition") return this.findTransition(project, sel) ? sel : null;
     const live = new Set(allClips(project).map((c) => c.id));
     const ids = sel.ids.filter((id) => live.has(id));
-    return ids.length ? { kind: "clip", ids } : null;
+    // Every clip still there: the same selection, so nothing keyed on it redraws.
+    return ids.length === sel.ids.length ? sel : ids.length ? { kind: "clip", ids } : null;
   }
 
   /**
@@ -402,11 +405,16 @@ class Store {
     return this.state.project ? fpsValue(this.state.project.fps) : 30;
   }
 
-  /** Duration of the sequence being edited, not of the whole project. */
+  /** Duration of the sequence being edited, not of the whole project. Kept until the
+   *  document or the sequence changes: a seek asks for it on every pointer move. */
   get duration(): number {
     const p = this.state.project;
-    return p ? seqDuration(p, this.state.sequence) : 0;
+    if (!p) return 0;
+    const d = this.durationOf;
+    if (d.project !== p || d.sequence !== this.state.sequence) this.durationOf = { project: p, sequence: this.state.sequence, value: seqDuration(p, this.state.sequence) };
+    return this.durationOf.value;
   }
+  private durationOf: { project: Project | null; sequence: string; value: number } = { project: null, sequence: "", value: 0 };
 
   /** The tracks on screen: those of the open sequence. */
   get tracks(): Track[] {
@@ -425,21 +433,22 @@ class Store {
     return seqPath(this.state.sequence);
   }
 
-  /** Find a clip anywhere in the project; ids are unique across every sequence. Stops at
-   *  the match rather than building the whole project's clip list: the preview calls this
-   *  for every visible overlay on every frame. */
+  /** Find a clip anywhere in the project; ids are unique across every sequence. The preview
+   *  asks for every visible overlay on every frame, and the inspector on every change, so
+   *  the clips are indexed once per document — it is replaced, never changed, by an edit. */
   findClip(id: string | null): Found | null {
     const p = this.state.project;
     if (!p || !id) return null;
-    for (const seq of sequenceIds(p)) {
-      const tracks = sequenceOf(p, seq)!.tracks;
-      for (let ti = 0; ti < tracks.length; ti++) {
-        const ci = tracks[ti].clips.findIndex((c) => c.id === id);
-        if (ci >= 0) return { seq, track: tracks[ti], ti, clip: tracks[ti].clips[ci], ci };
+    if (this.clipIndex.project !== p) {
+      const byId = new Map<string, Found>();
+      for (const seq of sequenceIds(p)) {
+        sequenceOf(p, seq)!.tracks.forEach((track, ti) => track.clips.forEach((clip, ci) => byId.set(clip.id, { seq, track, ti, clip, ci })));
       }
+      this.clipIndex = { project: p, byId };
     }
-    return null;
+    return this.clipIndex.byId.get(id) ?? null;
   }
+  private clipIndex: { project: Project | null; byId: Map<string, Found> } = { project: null, byId: new Map() };
 
   /** The clips of `ids` that are in the project, in the same order; the rest are skipped. */
   findClips(ids: string[]): Found[] {
@@ -538,6 +547,9 @@ export async function startJob(label: string, start: () => Promise<{ job: number
 export const binName = (id?: string) => (id && store.state.project?.bin[id]?.name) || id || "?";
 /** A sequence as a list offers it, the master said so. */
 export const sequenceLabel = (id: string) => `${binName(id)}${id === store.state.project?.master ? " (master)" : ""}`;
+
+/** `prev` when `next` holds the same ids in the same order, else `next`. */
+const same = (prev: string[], next: string[]): string[] => (prev.length === next.length && prev.every((x, i) => x === next[i]) ? prev : next);
 
 /** `mm:ss.ff`, computed from whole frames so the frame field never reaches `fps`. */
 export const fmtTime = (t: number, fps: number) => {

@@ -59,7 +59,7 @@
   /* The neon a theme can put on the playhead and the primary button. Off here: this
      palette is flat by design, and a glow would be the one thing shouting in it. */
   --glow: none;
-  /* The den/power redesign (`docs/design/den-power/`). The stage is the darkest thing on
+  /* The den/power redesign. The stage is the darkest thing on
      screen, the bars a step above the app, and lines come in two weights. */
   --bg-stage: #0c1018;
   --bg-bar: #151b27;

@@ -2898,8 +2898,8 @@ font picker, all of which fail the same way on the commit before this work.
 
 ## Den and power: the editor around the agent
 
-The editor was redesigned from a handoff (`docs/design/den-power/`: the README is the spec,
-the `.dc.html` the visuals) around the agent that edits beside you over MCP. Two modes over
+The editor was redesigned from a design handoff (a written spec and a mock-up, not kept in
+the repository) around the agent that edits beside you over MCP. Two modes over
 one set of panels: **power**, every panel docked, styled as an IDE (a rail of letters, ⌘K, a
 status line); and **den**, the frame full-bleed with what the agent did and where it looked
 on it, and panels summoned over it.

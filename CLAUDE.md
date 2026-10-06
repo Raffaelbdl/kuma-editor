@@ -63,6 +63,11 @@ Headless machines: MLT's Qt module needs a display; melt and the engine are wrap
 `xvfb-run -a` automatically when `DISPLAY` is unset. Set `HYPERFRAMES_BROWSER_PATH` to a
 Chrome headless shell if hyperframes should not download one.
 
+Testing by hand — looking at the editor headless, driving it with a real pointer, faking the
+preview engine, measuring a change — is written down in `docs/manual-testing.md`. Read it
+before checking a UI change by eye: it lists the traps (stale `ui/dist`, leftover
+`localStorage`, `pkill -f` killing its own shell).
+
 ## Rules that keep the design honest
 
 - Times in the model are seconds; `end` is exclusive; fps is rational. Seconds → frames

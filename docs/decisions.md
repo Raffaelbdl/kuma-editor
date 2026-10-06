@@ -3001,6 +3001,14 @@ were answered.
 agents wrote) and Silkscreen (labels, the rail's letters, the wordmark) are woff2 files under
 `ui/src/fonts/` with their OFL licences, latin only: nothing is fetched at runtime.
 
+**The launcher wears the editor's files, not a copy of them** — adopted. The desktop shell's
+launcher page (`app/launcher/`) had its own palette, kept "in step" by hand, and it had already
+drifted. Now `app/scripts/copy-assets.mjs` copies `themes.css`, `fonts.css`, the fonts and the
+bear from `ui/src` into `dist/launcher` at build time, and the page is the editor's shapes: the
+top bar with the bear and the wordmark, square corners, pixel-face labels, the orange status
+line saying which `kuma` it will run. It always shows the default theme — the theme you picked
+is the editor's view state, in another origin's storage.
+
 Still open here: the render queue cannot say a render was "asked by kuma" (a job does not
 record who asked for it); the agent panel's thumbnails are the sample's own PNGs, so a pruned
 cache leaves them blank; a pin whose marker is dragged starts over as a new pin.

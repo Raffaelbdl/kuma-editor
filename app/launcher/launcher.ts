@@ -92,7 +92,7 @@ function ago(ms: number): string {
 
 const main = document.getElementById("main")!;
 const actions = document.getElementById("actions")!;
-const envBox = document.getElementById("env")!;
+const statusLine = document.getElementById("statusline")!;
 const dropHint = document.getElementById("drop-hint")!;
 
 let info: AppInfo;
@@ -100,74 +100,115 @@ let recents: Recent[] = [];
 let filter = "";
 let view: "recents" | "new" = "recents";
 
-// ---- side panel ----
+const MOD = navigator.platform.startsWith("Mac") ? "⌘" : "Ctrl ";
 
-function renderSide() {
-  actions.replaceChildren();
-  const make = (label: string, sub: string, onClick: () => void, cls = "") => {
-    const b = button(label, onClick, cls);
-    b.appendChild(el("span", "sub", sub));
+/** A page: the one column the launcher reads in, with what is wrong with kuma on top. */
+function page(): HTMLElement {
+  const p = el("div", "page");
+  const notes = notices();
+  if (notes) p.appendChild(notes);
+  main.replaceChildren(p);
+  return p;
+}
+
+// ---- the chrome: the top bar's two ways in, and the status line ----
+
+function renderChrome() {
+  const ready = !!info.kuma;
+  const key = (label: string, k: string) => {
+    const b = el("button");
+    b.append(label, el("kbd", "", `${MOD}${k}`));
     return b;
   };
-  const ready = !!info.kuma;
-  const newBtn = make("New project", "Create a folder and a .kuma.json", () => showNew(), "primary");
-  newBtn.disabled = !ready;
-  const openBtn = make("Open project…", "Pick an existing .kuma.json", () => void openDialog());
-  openBtn.disabled = !ready;
-  actions.append(newBtn, openBtn);
+  const openBtn = key("open…", "O");
+  openBtn.title = "Open a .kuma.json you already have — or drop one on this window";
+  openBtn.onclick = () => void openDialog();
+  const newBtn = key("new project", "N");
+  newBtn.className = "primary";
+  newBtn.title = "Create a folder with a .kuma.json in it";
+  newBtn.onclick = () => showNew();
+  openBtn.disabled = newBtn.disabled = !ready;
+  actions.replaceChildren(openBtn, newBtn);
 
-  envBox.replaceChildren();
-  envBox.appendChild(el("div", "", `kuma app ${info.version}`));
+  // Which kuma this app will run, and from where: the usual cause of a project the app
+  // cannot open is a `kuma` from somewhere other than the checkout you think you are running.
+  statusLine.replaceChildren(el("span", "mode", "launcher"), el("span", "", `app ${info.version}`));
   if (info.kuma) {
-    envBox.appendChild(el("div", "mono", info.kuma.version));
-    // Which binary, not just which version: the usual cause of a project the app cannot
-    // open is a `kuma` from somewhere other than the checkout you think you are running.
-    const where = el("div", "mono muted", shortPath(info.kuma.bin, 46));
+    statusLine.appendChild(el("span", "", info.kuma.version));
+    const where = el("span", "grow", shortPath(info.kuma.bin, 80));
     where.title = info.kuma.bin;
-    envBox.appendChild(where);
-    if (info.libraryFallback) {
-      const note = el("div", "muted", `no template library installed — using the checkout's starter set (\`kuma library\` installs it properly)`);
-      note.title = info.libraryFallback;
-      envBox.appendChild(note);
-    }
-    for (const w of info.warnings) envBox.appendChild(el("div", "warn", w));
+    statusLine.appendChild(where);
   } else {
-    envBox.appendChild(el("div", "bad", info.error ?? "kuma binary not found"));
+    statusLine.appendChild(el("span", "bad grow", "kuma binary not found"));
   }
+  statusLine.appendChild(el("span", "last", "drop a .kuma.json to open it"));
+}
+
+/** What is wrong, or worth knowing, about the kuma this app found; null when nothing is. */
+function notices(): HTMLElement | null {
+  const box = el("div", "notices");
+  if (!info.kuma) box.appendChild(el("div", "notice bad", info.error ?? "kuma binary not found"));
+  else {
+    if (info.libraryFallback) {
+      const note = el("div", "notice");
+      note.append("No template library is installed, so the checkout's starter set is used. ", el("code", "", "kuma library"), " installs it properly.");
+      note.title = info.libraryFallback;
+      box.appendChild(note);
+    }
+    for (const w of info.warnings) box.appendChild(el("div", "notice", w));
+  }
+  return box.childElementCount ? box : null;
 }
 
 // ---- recents ----
 
 function showRecents() {
   view = "recents";
-  main.replaceChildren();
+  const p = page();
 
   const head = el("div", "head");
-  const titles = el("div");
-  titles.append(el("h1", "", "Projects"), el("div", "muted", "Pick up where you left off, or start something new."));
+  const count = el("span", "count", recents.length ? String(recents.length) : "");
+  const filterBox = el("label", "filter");
   const search = el("input");
   search.type = "search";
-  search.placeholder = "Filter…";
+  search.placeholder = "filter by name or path";
+  search.spellcheck = false;
   search.value = filter;
   search.oninput = () => {
     filter = search.value;
     renderList(list);
   };
-  head.append(titles, el("span", "spacer"), search);
+  filterBox.append(el("span", "", "/"), search);
+  head.append(el("h1", "", "projects"), count, el("span", "spacer"));
   if (recents.length) {
-    head.appendChild(button("Clear", async () => {
+    head.appendChild(filterBox);
+    const clear = button("clear", async () => {
       recents = await launcher.clearRecents();
       showRecents();
-    }));
+    }, "ghost");
+    clear.title = "Forget every project here — the files stay where they are";
+    head.appendChild(clear);
   }
-  main.appendChild(head);
+  p.appendChild(head);
 
-  main.appendChild(el("h2", "", "Recent"));
   const list = el("div", "list");
-  main.appendChild(list);
+  p.appendChild(list);
   renderList(list);
   // The filter is the only thing worth typing into here.
   if (recents.length > 6) search.focus();
+}
+
+/** The frame's shape, to scale inside a 36px box, so a vertical project looks like one. */
+function shape(r: Recent): HTMLElement {
+  const box = el("div", "shape");
+  const frame = el("i");
+  const w = r.width && r.height ? r.width : 16;
+  const h = r.width && r.height ? r.height : 9;
+  const k = 30 / Math.max(w, h);
+  frame.style.width = `${Math.max(6, Math.round(w * k))}px`;
+  frame.style.height = `${Math.max(6, Math.round(h * k))}px`;
+  box.appendChild(frame);
+  return box;
 }
 
 function renderList(list: HTMLElement) {
@@ -176,38 +217,57 @@ function renderList(list: HTMLElement) {
   const shown = recents.filter((r) => !q || r.name.toLowerCase().includes(q) || r.path.toLowerCase().includes(q));
 
   if (!shown.length) {
+    // The list's own frame is for rows; the empty state draws its own.
+    list.className = "";
     const empty = el("div", "empty");
-    empty.append(
-      el("div", "", recents.length ? "Nothing matches that filter." : "No projects yet."),
-      el("div", "muted", recents.length ? "" : "Create one, or open a .kuma.json you already have — you can also drop it on this window."),
-    );
+    if (recents.length) {
+      empty.append(el("div", "what", "nothing matches"), el("div", "how", "No project here has that in its name or its path."));
+    } else {
+      const sleeping = el("img", "bear");
+      sleeping.src = "bear-sleep.png";
+      sleeping.alt = "";
+      sleeping.width = 72;
+      sleeping.height = 60;
+      empty.append(sleeping, el("div", "what", "no projects yet"), el("div", "how", "Start a new one, or open a .kuma.json you already have — you can drop it on this window too."));
+    }
     list.appendChild(empty);
     return;
   }
+  list.className = "list";
 
   for (const r of shown) {
     const row = el("div", `recent${r.missing ? " missing" : ""}`);
-    const left = el("div");
+    const who = el("div", "who");
     const name = el("div", "name");
     name.appendChild(el("span", "", r.name));
-    if (r.missing) name.appendChild(el("span", "tag missing", "missing"));
-    const meta = [r.width && r.height ? `${r.width}×${r.height}` : "", r.fps ? `${r.fps} fps` : "", ago(r.openedAt)].filter(Boolean).join(" · ");
+    if (r.missing) name.appendChild(el("span", "tag", "missing"));
     const pathLine = el("div", "path", shortPath(r.path));
     pathLine.title = r.path;
-    left.append(name, pathLine, el("div", "meta", meta));
+    who.append(name, pathLine);
+
+    const meta = el("div", "meta");
+    meta.append(
+      el("div", "", [r.width && r.height ? `${r.width}×${r.height}` : "", r.fps ? `${r.fps} fps` : ""].filter(Boolean).join(" · ")),
+      el("div", "when", ago(r.openedAt)),
+    );
 
     // Forgetting keeps the project on disk; it only drops it from this list.
-    const forget = button("Forget", () => {});
+    const forget = button("forget", () => {}, "forget");
+    forget.title = "Drop it from this list — the project stays on disk";
     forget.onclick = async (e) => {
       e.stopPropagation();
       recents = await launcher.forget(r.path);
       showRecents();
     };
-    const right = el("div", "right");
-    right.appendChild(forget);
 
-    row.append(left, right);
-    if (!r.missing) row.onclick = () => void open(r.path);
+    row.append(shape(r), who, meta, forget);
+    if (!r.missing) {
+      row.tabIndex = 0;
+      row.onclick = () => void open(r.path);
+      row.onkeydown = (e) => {
+        if (e.key === "Enter" && e.target === row) void open(r.path);
+      };
+    }
     list.appendChild(row);
   }
 }
@@ -225,11 +285,11 @@ const RATES = ["30", "29.97", "25", "24", "23.976", "50", "60"];
 
 function showNew() {
   view = "new";
-  main.replaceChildren();
+  const p = page();
   const form = el("div", "form");
-  const titles = el("div");
-  titles.append(el("h1", "", "New project"), el("div", "muted", "kuma creates a folder with the project file inside it."));
-  form.appendChild(titles);
+  const head = el("div", "head");
+  head.appendChild(el("h1", "", "new project"));
+  form.append(head, el("p", "lede", "kuma creates a folder with the project file inside it."));
   const errorBox = el("div", "error");
   errorBox.style.display = "none";
   form.appendChild(errorBox);
@@ -242,7 +302,7 @@ function showNew() {
   const parentInput = el("input");
   parentInput.value = info.defaultParent;
   parentInput.spellcheck = false;
-  const browse = button("Browse…", async () => {
+  const browse = button("browse…", async () => {
     const picked = await launcher.pickParent();
     if (picked) {
       parentInput.value = picked;
@@ -288,11 +348,13 @@ function showNew() {
 
   const busy = el("div", "busy");
   busy.style.display = "none";
-  const createBtn = button("Create project", () => void submit(), "primary");
+  const createBtn = button("create project", () => void submit(), "primary");
   const rowActions = el("div", "actions");
-  rowActions.append(createBtn, button("Cancel", () => showRecents()));
-  form.append(rowActions, busy);
-  main.appendChild(form);
+  const cancel = button("cancel", () => showRecents(), "ghost");
+  cancel.appendChild(el("kbd", "", "esc"));
+  rowActions.append(createBtn, cancel, busy);
+  form.appendChild(rowActions);
+  p.appendChild(form);
 
   const spec = (): NewProject => {
     const [w, h] = sizeSel.value === "custom" ? [Number(customW.value), Number(customH.value)] : sizeSel.value.split("x").map(Number);
@@ -313,7 +375,9 @@ function showNew() {
       return;
     }
     createBtn.disabled = false;
-    hint.textContent = `will create ${await launcher.previewPath(s.parentDir, s.name)}`;
+    const to = await launcher.previewPath(s.parentDir, s.name);
+    hint.replaceChildren("will create ", el("span", "to", shortPath(to, 200)));
+    hint.title = to;
   }
 
   async function submit() {
@@ -323,7 +387,7 @@ function showNew() {
     errorBox.style.display = "none";
     createBtn.disabled = true;
     busy.style.display = "block";
-    busy.textContent = "Creating the project and starting its daemon…";
+    busy.textContent = "creating the project and starting its daemon…";
     try {
       await launcher.create(s);
     } catch (e) {
@@ -350,7 +414,7 @@ function showNew() {
 
 function field(label: string, control: HTMLElement): HTMLDivElement {
   const f = el("div", "field");
-  f.append(el("label", "", label), control);
+  f.append(el("label", "label", label), control);
   return f;
 }
 
@@ -409,13 +473,21 @@ window.addEventListener("drop", (e) => {
 
 window.addEventListener("keydown", (e) => {
   if (e.key === "Escape" && view === "new") showRecents();
+  // `/` finds, as it does in a pager or an editor, unless a field is already taking keys.
+  if (e.key === "/" && view === "recents" && !(e.target instanceof HTMLInputElement)) {
+    const search = document.querySelector<HTMLInputElement>(".filter input");
+    if (search) {
+      e.preventDefault();
+      search.focus();
+    }
+  }
 });
 
 // ---- start ----
 
 async function start() {
   [info, recents] = await Promise.all([launcher.info(), launcher.recents()]);
-  renderSide();
+  renderChrome();
   showRecents();
   launcher.onCommand((name) => {
     if (name === "new-project" && info.kuma) showNew();

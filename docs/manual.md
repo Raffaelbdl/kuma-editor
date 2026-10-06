@@ -348,9 +348,10 @@ native file picker, file drops, and a daemon that starts and stops with the wind
 npm run app                                  # installs its own deps on first run, builds, starts
 ```
 
-It opens a **launcher**: recent projects on the right, *New project* and *Open project…*
-on the left. You can also drop a `.kuma.json` on the window, or pass one on the command
-line. *New project* asks for a name, a location, a resolution and a frame rate, then runs
+It opens a **launcher**, dressed as the editor is: your recent projects, each with its
+frame's shape, size and rate, and *open…* (Ctrl+O) and *new project* (Ctrl+N) in the top bar;
+`/` filters the list. You can also drop a `.kuma.json` on the window, or pass one on the
+command line. *New project* asks for a name, a location, a resolution and a frame rate, then runs
 `kuma init` — so a project created here is identical to one created from the CLI, down to
 the `.mcp.json` that lets Claude Code join it.
 
@@ -368,7 +369,8 @@ app shares it instead and leaves it running.
 The shell needs to find the `kuma` binary and the checkout. It looks for `KUMA_BIN`, then
 `target/release/kuma`, then `target/debug/kuma`, then `PATH`; and for the repository the
 same way `kuma` itself does (`KUMA_REPO`, else the nearest ancestor with
-`node_modules/hyperframes`). The launcher's footer says what it found and what is missing.
+`node_modules/hyperframes`). The launcher's status line says which binary it found, and a note above the projects what is
+missing.
 
 Everything the app adds to the editor page sits behind one check in `ui/src/desktop.ts`,
 so the UI keeps working unchanged in an ordinary browser.

@@ -2,27 +2,23 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'none'" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' data:; connect-src 'none'" />
     <title>kuma</title>
     <link rel="stylesheet" href="launcher.css" />
   </head>
   <body>
     <div id="app">
-      <aside id="side">
-        <div class="brand">
-          <span class="dot"></span>
-          <div>
-            <div class="brand-name">kuma</div>
-            <div class="brand-sub muted">hybrid video editor</div>
-          </div>
-        </div>
+      <header id="topbar">
+        <img class="bear" id="pet" src="bear.png" width="24" height="20" alt="" />
+        <span class="wordmark">kuma</span>
+        <span class="tagline">hybrid video editor</span>
+        <span class="spacer"></span>
         <div id="actions"></div>
-        <div class="spacer"></div>
-        <div id="env" class="muted"></div>
-      </aside>
+      </header>
       <main id="main"></main>
+      <footer id="statusline"></footer>
     </div>
-    <div id="drop-hint"><div>Drop a <span class="mono">.kuma.json</span> to open it</div></div>
+    <div id="drop-hint"><div><img class="bear" src="bear-look.png" width="72" height="60" alt="" /><span>drop a <span class="mono">.kuma.json</span> to open it</span></div></div>
     <script type="module" src="launcher.js"></script>
   </body>
 </html>

@@ -81,7 +81,7 @@ function showLauncher() {
     minWidth: 720,
     minHeight: 520,
     title: "kuma",
-    backgroundColor: "#121317",
+    backgroundColor: "#121722",
     show: false,
     autoHideMenuBar: true,
     webPreferences: {

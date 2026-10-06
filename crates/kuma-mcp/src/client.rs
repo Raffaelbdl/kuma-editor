@@ -8,8 +8,6 @@ use serde_json::Value;
 pub struct Client {
     base: String,
     http: reqwest::Client,
-    /// For reports nobody waits on (`report`): a second's patience, then they are dropped.
-    quick: reqwest::Client,
 }
 
 /// How long a report may take before it is given up on: a tool must never wait on the
@@ -44,8 +42,7 @@ impl Client {
         // Sampling and renders can take a while; the daemon streams progress over WS but
         // these calls block until done.
         let http = reqwest::Client::builder().no_proxy().timeout(Duration::from_secs(3600)).build().unwrap();
-        let quick = reqwest::Client::builder().no_proxy().timeout(REPORT_TIMEOUT).build().unwrap();
-        Client { base, http, quick }
+        Client { base, http }
     }
 
     fn url(&self, path: &str) -> String {
@@ -80,11 +77,8 @@ impl Client {
     /// Tell the daemon about a tool call (`POST /api/activity`). Best effort: the answer, or
     /// `None` when the daemon is slow, gone or refuses — never an error for the tool.
     pub async fn report(&self, body: &Value) -> Option<Value> {
-        let r = self.quick.post(self.url("/api/activity")).json(body).send().await.ok()?;
-        if !r.status().is_success() {
-            return None;
-        }
-        r.json::<Value>().await.ok()
+        let r = self.http.post(self.url("/api/activity")).timeout(REPORT_TIMEOUT).json(body).send().await.ok()?;
+        Self::check(r).await.ok()
     }
 
     /// Poll a job until it finishes (or `timeout` elapses, returning it still running).

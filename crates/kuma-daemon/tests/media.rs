@@ -24,7 +24,7 @@ fn beep(path: &Path, seconds: u32) {
 
 fn patch(state: &AppState, ops: serde_json::Value) {
     let ops: Vec<json_patch::PatchOperation> = serde_json::from_value(ops).unwrap();
-    state.apply_patch(&ops, None, "test").unwrap();
+    state.apply_patch(&ops, None, "test", &[]).unwrap();
 }
 
 fn revision(state: &AppState) -> u64 {
@@ -72,9 +72,9 @@ fn a_folder_of_media_is_added_in_one_edit_and_says_what_it_passed_over() {
     assert!(reason("media/notes.txt").contains("not named like a media file"));
     assert_eq!(reasons.len(), 4, "a hidden file is passed over without a word: {reasons:?}");
 
-    state.undo().unwrap();
+    state.undo(None).unwrap();
     assert!(!state.project.read().unwrap().bin.contains_key("take_b"), "one undo takes the whole folder back");
-    state.redo().unwrap();
+    state.redo(None).unwrap();
 
     let again = media::add(&state, &[media.clone()], AddHow { recursive: true, ..Default::default() }, None, "test").unwrap();
     assert_eq!(again.ids, ["deep"], "only what is new");
@@ -145,9 +145,9 @@ fn a_replaced_file_is_probed_again_on_asking_and_only_what_changed_is_written() 
     assert_eq!(out["changed"], json!([{ "id": "a", "changes": { "meta.duration": { "from": 1.0, "to": 2.0 } } }]));
     assert_eq!(out["unchanged"], json!(["b"]));
     assert_eq!(state.project.read().unwrap().bin["a"].meta.as_ref().and_then(|m| m.duration), Some(2.0));
-    state.undo().unwrap();
+    state.undo(None).unwrap();
     assert_eq!(state.project.read().unwrap().bin["a"].meta.as_ref().and_then(|m| m.duration), Some(1.0), "one undo");
-    state.redo().unwrap();
+    state.redo(None).unwrap();
     let before = revision(&state);
     let out = reprobe(Some(&["a".into()]), None);
     assert_eq!((out["changed"].clone(), out["revision"].clone()), (json!([]), json!(before)), "nothing new, nothing written");

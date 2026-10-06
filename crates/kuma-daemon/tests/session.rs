@@ -98,7 +98,7 @@ async fn a_tool_call_is_reported_from_start_to_end() {
     let (a, b) = (sample["id"].as_u64().unwrap(), edit["id"].as_u64().unwrap());
     assert!(b > a);
 
-    let frames = json!({ "count": 2, "paths": [samples.join("x/1.png"), samples.join("x/2.png")], "sheet": null });
+    let frames = json!({ "paths": [samples.join("x/1.png"), samples.join("x/2.png")], "sheet": null });
     post(&addr, "/api/activity", json!({ "phase": "end", "id": a, "ok": true, "error": null, "result": frames }));
     post(&addr, "/api/activity", json!({ "phase": "end", "id": b, "ok": false, "error": "409: stale", "result": null }));
 
@@ -106,7 +106,7 @@ async fn a_tool_call_is_reported_from_start_to_end() {
     assert_eq!(all.iter().map(|r| r["id"].as_u64().unwrap()).collect::<Vec<_>>(), [b, a], "newest first");
     let (e, s) = (&all[0], &all[1]);
     assert_eq!((e["state"].as_str(), e["client"].as_str(), e["summary"].as_str()), (Some("failed"), Some("agent"), Some("Moved + trimmed the umbrella")));
-    assert_eq!((e["error"].as_str(), &e["pins"]), (Some("409: stale"), &json!(["main@8.600"])));
+    assert_eq!((e["error"].as_str(), &e["args"]["pins"]), (Some("409: stale"), &json!(["main@8.600"])));
     assert_eq!((s["state"].as_str(), s["client"].as_str(), s["revision_before"].as_u64(), s["revision_after"].as_u64()), (Some("done"), Some("claude-code"), Some(rev), Some(rev)));
     assert_eq!(s["sample"], json!({ "sequence": null, "overlay": null, "times": [46.0, 49.0], "rect": { "x": 0, "y": 0, "w": 960, "h": 540 } }));
     assert_eq!(s["frames"], json!(["x/1.png", "x/2.png"]));
@@ -134,7 +134,7 @@ async fn a_call_is_credited_only_with_the_revision_it_made() {
     post(&addr, "/api/project/patch", json!({ "patch": [{ "op": "replace", "path": "/bin/black/name", "value": "Coal" }], "origin": "ui" }));
     assert_eq!(revision(&state), rev + 2);
 
-    post(&addr, "/api/activity", json!({ "phase": "end", "id": edit, "ok": true, "result": { "revision": made, "ops": 1 }, "revision": made }));
+    post(&addr, "/api/activity", json!({ "phase": "end", "id": edit, "ok": true, "result": null, "revision": made }));
     post(&addr, "/api/activity", json!({ "phase": "end", "id": look, "ok": true, "result": null }));
     let all = get(&addr, "/api/activity")["activity"].as_array().unwrap().clone();
     let after = |id: u64| all.iter().find(|r| r["id"] == id).map(|r| (r["revision_before"].as_u64(), r["revision_after"].as_u64())).unwrap();

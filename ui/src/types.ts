@@ -310,7 +310,6 @@ export interface Activity {
   /** Where a `sample_frames` looked: its times, and the rect if it zoomed into one. */
   sample: { sequence: string | null; overlay: string | null; times: number[]; rect: { x: number; y: number; w: number; h: number } | null } | null;
   lint: { ok: boolean; errors: number; warnings: number } | null;
-  pins: string[];
   /** A sample's frames, under `/api/samples/`. */
   frames?: string[];
 }

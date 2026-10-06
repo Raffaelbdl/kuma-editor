@@ -4,7 +4,7 @@
 // to place a clip.
 
 import { api } from "./api";
-import { button, checkbox, el, plural, row, selectInput } from "./dom";
+import { button, checkbox, el, loadLocal, plural, row, saveLocal, selectInput } from "./dom";
 import { askForm, askText } from "./modal";
 import { startJob, store, toast } from "./store";
 import type { ClipboardEntry, Found } from "./store";
@@ -335,9 +335,8 @@ const LANGUAGES: [string, string][] = [
   ["pt", "Portuguese"], ["ru", "Russian"], ["es", "Spanish"], ["sv", "Swedish"], ["tr", "Turkish"],
 ];
 // Remembered, because a person's videos are usually in one language and one model.
-// A private window has no storage and throws on access, which must not cost the dialog.
-const saved = (key: string, fallback: string): string => { try { return localStorage.getItem(`kuma.transcribe.${key}`) ?? fallback; } catch { return fallback; } };
-const save = (key: string, v: string) => { try { localStorage.setItem(`kuma.transcribe.${key}`, v); } catch { /* no storage */ } };
+const saved = (key: string, fallback: string): string => loadLocal(`kuma.transcribe.${key}`) ?? fallback;
+const save = (key: string, v: string) => saveLocal(`kuma.transcribe.${key}`, v);
 
 /**
  * Speech to text for the selection. From a clip the subtitles are placed over it, aligned
@@ -686,12 +685,12 @@ async function askComment(t: number, value: string, ok: string): Promise<string 
   return sent ? input.value.trim() : null;
 }
 
-/** Add a marker at the playhead with a comment — or, when one is already on that frame,
- *  edit that one's: two markers on one frame are one note written twice. */
 /** Which marker is on `t`'s frame, or -1. */
 const markerAt = (t: number): number => store.markers.findIndex((m) => Math.abs(m.t - t) < store.halfFrame);
 
-/** A marker at `t` — the playhead for M, the pointer for the ruler's right-click. */
+/** A marker at `t` — the playhead for M, the pointer for the ruler's right-click — with a
+ *  comment; or, when one is already on that frame, edit that one's: two markers on one
+ *  frame are one note written twice. */
 export async function addMarker(t = store.state.playhead) {
   const there = markerAt(t);
   if (there >= 0) return editMarker(there);

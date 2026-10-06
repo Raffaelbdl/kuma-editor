@@ -31,6 +31,8 @@ const editors = new Map<BrowserWindow, Daemon>();
 /** Panels popped out of an editor into windows of their own (`?panel=<id>`), with the
  *  editor window they belong to. They share its daemon and close with it. */
 const panelWindows = new Map<BrowserWindow, { editor: BrowserWindow; daemon: Daemon }>();
+/** Every window's colour before its page paints: the editor's `--bg-0` (`ui/src/themes.css`). */
+const BACKGROUND = "#121722";
 /** The application menu as a template, so an editor window can pop one submenu of it.
  *  The title bar is ours, but the menus that drop out of it stay native — they keep
  *  accelerator labels, checkmarks and platform behaviour that HTML would only mimic. */
@@ -81,7 +83,7 @@ function showLauncher() {
     minWidth: 720,
     minHeight: 520,
     title: "kuma",
-    backgroundColor: "#121722",
+    backgroundColor: BACKGROUND,
     show: false,
     autoHideMenuBar: true,
     webPreferences: {
@@ -143,12 +145,13 @@ function guardNavigation(win: BrowserWindow, d: Daemon) {
  *  window, so it can go to another screen; it closes with the editor it came from. */
 function panelWindowFor(editor: BrowserWindow, d: Daemon, id: string, size: { width: number; height: number }): BrowserWindow {
   const win = new BrowserWindow({
+    // The page asks for the size the panel had; kept to something a screen can hold.
     width: Math.max(260, Math.min(2400, Math.round(size.width) || 360)),
     height: Math.max(160, Math.min(1600, Math.round(size.height) || 480)),
     minWidth: 240,
     minHeight: 140,
     title: `${id} — ${nameOf(d.projectFile)} — kuma`,
-    backgroundColor: "#121722",
+    backgroundColor: BACKGROUND,
     show: false,
     frame: false,
     webPreferences: editorPreferences(d),
@@ -156,10 +159,9 @@ function panelWindowFor(editor: BrowserWindow, d: Daemon, id: string, size: { wi
   win.on("page-title-updated", (e) => e.preventDefault());
   win.once("ready-to-show", () => win.show());
   guardNavigation(win, d);
+  // It closes with its editor: the editor's own "closed" closes every window it popped.
   panelWindows.set(win, { editor, daemon: d });
   win.on("closed", () => panelWindows.delete(win));
-  const closeWithEditor = () => { if (!win.isDestroyed()) win.close(); };
-  editor.once("closed", closeWithEditor);
   win.loadURL(`${d.url}/?panel=${encodeURIComponent(id)}`);
   return win;
 }
@@ -171,7 +173,7 @@ function editorFor(d: Daemon): BrowserWindow {
     minWidth: 1000,
     minHeight: 640,
     title: `${nameOf(d.projectFile)} — kuma`,
-    backgroundColor: "#121722",
+    backgroundColor: BACKGROUND,
     show: false,
     // The editor draws its own title bar, with the menu in it. The launcher keeps a
     // normal frame: it has no menu, so there would be nothing to gain.
@@ -189,6 +191,7 @@ function editorFor(d: Daemon): BrowserWindow {
   guardNavigation(win, d);
   win.on("closed", () => {
     editors.delete(win);
+    for (const [panel, of] of panelWindows) if (of.editor === win && !panel.isDestroyed()) panel.close();
     daemon.stop(d);
     rebuildMenu();
     // Closing the last project window ends the session. The launcher is somewhere you go
@@ -597,7 +600,7 @@ function wireIpc() {
     const d = win ? editors.get(win) : undefined;
     if (!win || !d) throw new Error("not an editor window");
     if (!/^[a-z]{1,24}$/.test(String(id))) throw new Error("not a panel");
-    panelWindowFor(win, d, String(id), size ?? { width: 360, height: 480 });
+    panelWindowFor(win, d, String(id), { width: Number(size?.width), height: Number(size?.height) });
   });
 
   ipcMain.handle("window:state", (e) => {

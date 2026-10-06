@@ -27,6 +27,9 @@ export function historyPanel(): { body: HTMLElement; tools: HTMLElement } {
   const list = el("div", "hist-list");
   body.append(filters, list);
 
+  // A step's row is kept for as long as the step is (the history only grows at the front),
+  // and made again only when it becomes, or stops being, the one that is now.
+  const made = new WeakMap<HistoryEntry, { row: HTMLElement; now: boolean }>();
   const draw = () => {
     for (const c of chips) c.classList.toggle("on", c.dataset.f === filter);
     const s = store.state;
@@ -37,7 +40,12 @@ export function historyPanel(): { body: HTMLElement; tools: HTMLElement } {
       list.replaceChildren(el("p", "muted tiny", s.history.length ? "Nothing by them yet." : "No steps yet this session. Every edit, yours and the agent's, lands here."));
       return;
     }
-    list.replaceChildren(...rows.map((h) => entryRow(h, current)));
+    list.replaceChildren(...rows.map((h) => {
+      const now = h.revision === current;
+      let m = made.get(h);
+      if (!m || m.now !== now) made.set(h, (m = { row: entryRow(h, current), now }));
+      return m.row;
+    }));
   };
   store.select((s) => [s.history], draw);
   store.select((s) => [s.project?.revision], (s) => { tools.textContent = `r${s.project?.revision ?? 0}`; });

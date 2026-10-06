@@ -5,17 +5,23 @@
 import { Cmd, run } from "../commands";
 import { button, el, options } from "../dom";
 import { icon } from "../icons";
+import { keysFor } from "../shortcuts";
 import { fmtTime, store } from "../store";
 import { orientation } from "../types";
 
+/** Play/pause, its icon following the store (swapped only when playing flips: the playhead
+ *  ticks 25 times a second). The transport's, and den's rail's. */
+export function playButton(cls: string): HTMLButtonElement {
+  const play = button(icon("play"), () => run(Cmd.togglePlay), `Play/pause (${keysFor(Cmd.togglePlay)})`, cls);
+  store.select((s) => [s.playing], (s) => {
+    play.dataset.playing = String(s.playing);
+    play.replaceChildren(icon(s.playing ? "pause" : "play"));
+  });
+  return play;
+}
+
 export function mountTransport(host: HTMLElement): void {
-  const play = button(icon("play"), () => run(Cmd.togglePlay), "Play/pause (Space)", "icon");
-  // The icon is swapped only when the state changes: the playhead ticks 25 times a second.
-  const showPlaying = (playing: boolean) => {
-    if (play.dataset.playing === String(playing)) return;
-    play.dataset.playing = String(playing);
-    play.replaceChildren(icon(playing ? "pause" : "play"));
-  };
+  const play = playButton("icon");
   const time = el("span", "time");
   const now = el("span", "now");
   const dur = el("span", "dur");
@@ -48,9 +54,6 @@ export function mountTransport(host: HTMLElement): void {
     size.textContent = `${width}×${height} ⇄`;
     size.title = `Switch to ${orientation({ width: height, height: width })} (${height}×${width})`;
   });
-  store.subscribe((s) => {
-    showPlaying(s.playing);
-    now.textContent = fmtTime(s.playhead, store.fps);
-    dur.textContent = ` / ${fmtTime(store.duration, store.fps)}`;
-  });
+  store.select((s) => [s.playhead, s.project], (s) => { now.textContent = fmtTime(s.playhead, store.fps); });
+  store.select((s) => [s.project, s.sequence], () => { dur.textContent = ` / ${fmtTime(store.duration, store.fps)}`; });
 }

@@ -10,6 +10,19 @@
   --label: "Silkscreen", var(--mono);
 }
 
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; background: var(--bg-0); color: var(--fg); font: 12px/1.4 var(--mono); }
+.muted { color: var(--fg-2); }
+.mono { font-family: var(--mono); }
+/* The one thing to press: the accent, with the app's own black on it. */
+button.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); font-weight: 700; box-shadow: var(--glow); }
+
+/* The window: the top bar, the page, the status line — the chrome's heights once, which
+   whatever lays itself out round them measures from. The editor's desktop windows add a
+   title bar above (`style.css`), nothing in a browser. */
+:root { --titlebar-h: 0px; --topbar-h: 44px; --status-h: 24px; --den-rail-h: 90px; }
+#app { height: 100%; display: grid; grid-template-rows: var(--topbar-h) minmax(0, 1fr) var(--status-h); }
+
 /* Scrollbars, themed. `scrollbar-*` is the standard property; the `::-webkit-` rules are
    what Chromium actually honours, and they allow the inset thumb this palette wants. */
 * { scrollbar-width: thin; scrollbar-color: var(--bg-3) transparent; }

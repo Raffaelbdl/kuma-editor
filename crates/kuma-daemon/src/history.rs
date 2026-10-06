@@ -11,7 +11,8 @@
 use std::collections::{BTreeMap, VecDeque};
 
 use kuma_core::edit::EditError;
-use kuma_core::{Clip, Project};
+use json_patch::jsonptr::Pointer;
+use kuma_core::{BinItem, BinSource, Clip, Project, Sequence};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -175,14 +176,14 @@ impl Target {
 }
 
 /// The JSON pointer's tokens, unescaped.
-fn tokens(pointer: &str) -> Vec<String> {
-    pointer.split('/').skip(1).map(|t| t.replace("~1", "/").replace("~0", "~")).collect()
+fn tokens(pointer: &Pointer) -> Vec<String> {
+    pointer.tokens().map(|t| t.decoded().into_owned()).collect()
 }
 
 /// The clip or entry a pointer lands in, in `doc`: `/bin/<seq>/source/tracks/<i>/clips/<j>…`
 /// is clip `j`'s id (`-` is the last), any other `/bin/<id>…` is entry `<id>`, and the rest
 /// of the document (`/width`, `/master`) is nobody's.
-fn resolve(doc: &Project, pointer: &str) -> Option<Target> {
+fn resolve(doc: &Project, pointer: &Pointer) -> Option<Target> {
     let t = tokens(pointer);
     let (first, id) = (t.first()?, t.get(1)?);
     if first != "bin" {
@@ -210,17 +211,16 @@ pub fn patch_targets(before: &Project, after: Option<&Project>, ops: &[json_patc
     for op in ops {
         let found = match op {
             Op::Add(a) => {
-                let path = a.path.to_string();
-                let tk = tokens(&path);
+                let tk = tokens(&a.path);
                 let whole_clip = tk.len() == 7 && tk[0] == "bin" && tk[2] == "source" && tk[3] == "tracks" && tk[5] == "clips";
                 match a.value.get("id").and_then(Value::as_str) {
                     Some(id) if whole_clip => vec![Some(Target::Clip(id.to_string()))],
-                    _ => vec![resolve(after.unwrap_or(before), &path)],
+                    _ => vec![resolve(after.unwrap_or(before), &a.path)],
                 }
             }
-            Op::Remove(RemoveOperation { path }) | Op::Replace(ReplaceOperation { path, .. }) => vec![resolve(before, &path.to_string())],
+            Op::Remove(RemoveOperation { path }) | Op::Replace(ReplaceOperation { path, .. }) => vec![resolve(before, path)],
             Op::Move(MoveOperation { from, path }) | Op::Copy(CopyOperation { from, path }) => {
-                vec![resolve(before, &from.to_string()), resolve(after.unwrap_or(before), &path.to_string())]
+                vec![resolve(before, from), resolve(after.unwrap_or(before), path)]
             }
             Op::Test(_) => vec![],
         };
@@ -237,13 +237,26 @@ fn clips_by_id(p: &Project) -> BTreeMap<&str, &Clip> {
     p.all_clips().map(|(_, _, c)| (c.id.as_str(), c)).collect()
 }
 
-/// A bin entry as JSON, without a sequence's tracks: those are its clips, which are diffed
-/// one by one, and would otherwise make every sequence "changed" by any clip edit.
-fn entry_value(p: &Project, id: &str) -> Option<Value> {
-    let mut v = serde_json::to_value(p.bin.get(id)?).ok()?;
-    if let Some(source) = v.get_mut("source").and_then(Value::as_object_mut) {
-        source.remove("tracks");
-    }
+/// A bin entry as what it is beside its clips: a sequence's tracks are those, which are
+/// diffed one by one, and would otherwise make every sequence "changed" by any clip edit.
+/// Borrowed, so comparing two costs no copy and no JSON.
+fn entry_parts(e: &BinItem) -> impl PartialEq + '_ {
+    let BinItem { name, source, meta, parent, order, volume } = e;
+    let source = match source {
+        BinSource::Sequence(Sequence { tracks: _, markers, effects }) => Err((markers, effects)),
+        other => Ok(other),
+    };
+    (name, source, meta, parent, order, volume)
+}
+
+/// What a bin entry's fields are as JSON for [`changes`], its source left out: that is
+/// never a scalar field, and a sequence's is all its tracks. Serialised as the entry is,
+/// so a field written only when it is not its default is absent here too.
+fn entry_value(e: &BinItem) -> Option<Value> {
+    let BinItem { name, source: _, meta, parent, order, volume } = e;
+    let stand_in = BinSource::Folder { folder: true };
+    let mut v = serde_json::to_value(BinItem { name: name.clone(), source: stand_in, meta: meta.clone(), parent: parent.clone(), order: *order, volume: *volume }).ok()?;
+    v.as_object_mut()?.remove("source");
     Some(v)
 }
 
@@ -251,27 +264,15 @@ fn entry_value(p: &Project, id: &str) -> Option<Value> {
 /// (undo, redo, restore): clips added, removed or changed, by id, then bin entries likewise.
 pub fn diff_targets(before: &Project, after: &Project) -> Vec<Target> {
     let (a, b) = (clips_by_id(before), clips_by_id(after));
-    let differs = |x: Option<&&Clip>, y: Option<&&Clip>| match (x, y) {
-        (Some(x), Some(y)) => serde_json::to_value(x).ok() != serde_json::to_value(y).ok(),
-        _ => true,
-    };
     let mut ids: Vec<&str> = a.keys().chain(b.keys()).copied().collect();
     ids.sort_unstable();
     ids.dedup();
-    let mut out: Vec<Target> = ids.into_iter().filter(|id| differs(a.get(id), b.get(id))).map(|id| Target::Clip(id.to_string())).collect();
+    let mut out: Vec<Target> = ids.into_iter().filter(|id| a.get(id) != b.get(id)).map(|id| Target::Clip(id.to_string())).collect();
     let mut entries: Vec<&String> = before.bin.keys().chain(after.bin.keys()).collect();
     entries.sort_unstable();
     entries.dedup();
-    out.extend(entries.into_iter().filter(|id| entry_value(before, id) != entry_value(after, id)).map(|id| Target::Bin(id.clone())));
+    out.extend(entries.into_iter().filter(|id| before.bin.get(*id).map(entry_parts) != after.bin.get(*id).map(entry_parts)).map(|id| Target::Bin(id.clone())));
     out
-}
-
-/// A target's object in `p`, as JSON.
-fn value_of(p: &Project, t: &Target) -> Option<Value> {
-    match t {
-        Target::Clip(id) => p.find_clip(id).and_then(|(_, _, c)| serde_json::to_value(c).ok()),
-        Target::Bin(id) => entry_value(p, id),
-    }
 }
 
 /// The top-level scalar fields that differ on each target present on both sides, at most
@@ -279,9 +280,15 @@ fn value_of(p: &Project, t: &Target) -> Option<Value> {
 /// `group`) reads as null where it is absent.
 pub fn changes(before: &Project, after: &Project, targets: &[Target]) -> Vec<Change> {
     let scalar = |v: &Value| !v.is_object() && !v.is_array();
+    let (a, b) = (clips_by_id(before), clips_by_id(after));
+    // A target's object on one side, as JSON.
+    let value_of = |p: &Project, clips: &BTreeMap<&str, &Clip>, t: &Target| match t {
+        Target::Clip(id) => clips.get(id.as_str()).and_then(|c| serde_json::to_value(c).ok()),
+        Target::Bin(id) => p.bin.get(id).and_then(entry_value),
+    };
     let mut out = Vec::new();
     for t in targets {
-        let (Some(Value::Object(x)), Some(Value::Object(y))) = (value_of(before, t), value_of(after, t)) else { continue };
+        let (Some(Value::Object(x)), Some(Value::Object(y))) = (value_of(before, &a, t), value_of(after, &b, t)) else { continue };
         let mut fields: Vec<&String> = x.keys().chain(y.keys()).collect();
         fields.sort_unstable();
         fields.dedup();

@@ -36,19 +36,19 @@ export function installViewSync(panel: string | null): void {
   // A panel's window says nothing until the editor window has told it where things are, or
   // its defaults (playhead 0, nothing selected) would overwrite the editor's.
   let ready = !panel;
+  // Nobody to tell until another window has spoken: an editor window alone keeps quiet
+  // through playback. A panel's window always has the editor's.
+  let others = !!panel;
   /** What this window last told the others. */
   let sent: Partial<Shared> = {};
-  const snapshot = (): Partial<Shared> => {
-    const s = store.state;
-    const out: Partial<Shared> = Object.fromEntries(KEYS.map((k) => [k, s[k]]));
-    // Only the editor window plays: it has the engine. A panel's window follows.
-    if (!panel) out.playing = s.playing;
-    return out;
-  };
+  // Only the editor window plays: it has the engine. A panel's window follows.
+  const keys: (keyof Shared)[] = panel ? KEYS : [...KEYS, "playing"];
+  const snapshot = (): Partial<Shared> => Object.fromEntries(keys.map((k) => [k, store.state[k]]));
 
   ch.onmessage = (e: MessageEvent<Message>) => {
     const m = e.data;
     if (!m || m.from === me) return;
+    others = true;
     if (m.type === "state") {
       ready = true;
       // The channel copies what it carries, so an object (the selection) arrives as a new
@@ -71,7 +71,7 @@ export function installViewSync(panel: string | null): void {
       heard.set(m.panel, Date.now());
       // A beat already on its way when the panel was called back is not a window coming
       // back: it would hide the panel again until the beats stopped.
-      if (!panels.isOut(m.panel) && Date.now() - (gone.get(m.panel) ?? 0) > LOST) panels.claimed(m.panel);
+      if (!panels.out.has(m.panel) && Date.now() - (gone.get(m.panel) ?? 0) > LOST) panels.claimed(m.panel);
     } else if (m.type === "recall") {
       if (panel && m.panel === panel) close();
     } else if (m.type === "run") {
@@ -83,8 +83,8 @@ export function installViewSync(panel: string | null): void {
   // Every change of these, from here, goes to the others — what changed, not the lot. The
   // playhead ticks 25 times a second while playing; a channel message is cheap, and a
   // timeline in another window that lags the picture is the thing this exists to prevent.
-  store.select((s) => KEYS.map((k) => s[k]).concat(panel ? [] : [s.playing]), () => {
-    if (applying || !ready) return;
+  store.select((s) => keys.map((k) => s[k]), () => {
+    if (applying || !ready || !others) return;
     const now = snapshot();
     const state = Object.fromEntries(Object.entries(now).filter(([k, v]) => sent[k as keyof Shared] !== v)) as Partial<Shared>;
     sent = now;

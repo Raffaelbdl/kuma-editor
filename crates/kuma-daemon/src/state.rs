@@ -427,22 +427,30 @@ impl AppState {
         let rev = outcome.project.revision;
         let next = outcome.project.clone();
         let prev = self.commit(outcome.project, origin).map_err(|e| EditError::Patch(e.to_string()))?;
-        let changes = history::changes(&prev, &next, &targets);
-        let pins_differ = crate::pins::differ(&prev, &next);
-        {
-            let mut u = lock(&self.undo);
+        let entry = history::Entry { ops, base_revision: step.base_revision, pins: step.pins.to_vec(), ..history::Entry::new(kind, origin, Some(rev), &targets) };
+        self.landed(prev, next, &targets, entry, |u, prev| {
             u.past.push((prev, origin.to_string()));
             if u.past.len() > 200 {
                 u.past.remove(0);
             }
             u.future.clear();
-        }
-        let answered = self.record(history::Entry { ops, base_revision: step.base_revision, changes, pins: step.pins.to_vec(), ..history::Entry::new(kind, origin, Some(rev), &targets) });
+        });
+        Ok((rev, outcome.warnings))
+    }
+
+    /// What every step does once `next` is committed over `prev`, in this order: diff the
+    /// two, `push` `prev` onto the undo stack, record `entry` with the changes, send the
+    /// pins if they can have changed, keep `next` to restore. The undo stack is not locked
+    /// while the documents are diffed.
+    fn landed(&self, prev: Project, next: Project, targets: &[Target], entry: history::Entry, push: impl FnOnce(&mut UndoStack, Project)) {
+        let changes = history::changes(&prev, &next, targets);
+        let pins_differ = crate::pins::differ(&prev, &next);
+        push(&mut lock(&self.undo), prev);
+        let answered = self.record(history::Entry { changes, ..entry });
         if answered || pins_differ {
             self.send_pins(&lock(&self.pins));
         }
         lock(&self.history).keep(next);
-        Ok((rev, outcome.warnings))
     }
 
     /// Append to the history and tell every client; an entry naming pins answers them.
@@ -475,13 +483,9 @@ impl AppState {
         let _ = self.events.send(Event::Pins { pins });
     }
 
-    pub fn apply_patch(&self, patch: &[json_patch::PatchOperation], base: Option<u64>, origin: &str) -> Result<(u64, Vec<Issue>), EditError> {
-        self.apply_patch_answering(patch, base, origin, &[])
-    }
-
-    /// A patch, naming the pins it answers. A refusal is recorded too: the person sees what
-    /// was tried and why it did not land, not only what did.
-    pub fn apply_patch_answering(&self, patch: &[json_patch::PatchOperation], base: Option<u64>, origin: &str, pins: &[String]) -> Result<(u64, Vec<Issue>), EditError> {
+    /// A patch, naming the pins it answers (none: `&[]`). A refusal is recorded too: the
+    /// person sees what was tried and why it did not land, not only what did.
+    pub fn apply_patch(&self, patch: &[json_patch::PatchOperation], base: Option<u64>, origin: &str, pins: &[String]) -> Result<(u64, Vec<Issue>), EditError> {
         let step = Step { base_revision: base, pins };
         let ctx = self.validation_context();
         let applied = self.edit(origin, Kind::Edit, &step, |p| {
@@ -553,21 +557,13 @@ impl AppState {
 
     /// Undo/redo swap whole snapshots; the revision keeps increasing so clients never
     /// confuse an undone state with an older one. `Ok(None)` means nothing to undo/redo.
-    pub fn undo(&self) -> anyhow::Result<Option<u64>> {
-        self.swap(false, None)
-    }
-
-    pub fn redo(&self) -> anyhow::Result<Option<u64>> {
-        self.swap(true, None)
-    }
-
-    /// Undo on someone's behalf: `by` is the origin of the request (`ui`, `claude`), which
-    /// the history names as the step's author. The step itself is the same either way.
-    pub fn undo_by(&self, by: Option<&str>) -> anyhow::Result<Option<u64>> {
+    /// `by` is the origin of the request (`ui`, `claude`), which the history names as the
+    /// step's author; the step itself is the same either way.
+    pub fn undo(&self, by: Option<&str>) -> anyhow::Result<Option<u64>> {
         self.swap(false, by)
     }
 
-    pub fn redo_by(&self, by: Option<&str>) -> anyhow::Result<Option<u64>> {
+    pub fn redo(&self, by: Option<&str>) -> anyhow::Result<Option<u64>> {
         self.swap(true, by)
     }
 
@@ -589,22 +585,12 @@ impl AppState {
         match self.commit(restored, &label) {
             Ok(now) => {
                 let targets = history::diff_targets(&now, &next);
-                let changes = history::changes(&now, &next, &targets);
-                let pins_differ = crate::pins::differ(&now, &next);
-                {
-                    let mut u = lock(&self.undo);
-                    if redo { &mut u.past } else { &mut u.future }.push((now, origin.clone()));
-                }
-                self.record(history::Entry {
+                let entry = history::Entry {
                     author: by.map(history::author).unwrap_or("other").to_string(),
                     summary: format!("{verb}: {}", history::summary(&origin)),
-                    changes,
                     ..history::Entry::new(if redo { Kind::Redo } else { Kind::Undo }, &label, Some(rev), &targets)
-                });
-                if pins_differ {
-                    self.send_pins(&lock(&self.pins));
-                }
-                lock(&self.history).keep(next);
+                };
+                self.landed(now, next, &targets, entry, |u, now| if redo { &mut u.past } else { &mut u.future }.push((now, origin)));
                 Ok(Some(rev))
             }
             Err(e) => {

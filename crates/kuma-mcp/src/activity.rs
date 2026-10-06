@@ -22,7 +22,7 @@ const MAX_PATHS: usize = 32;
 /// Tools that edit, and answer the revision they made ([`revision_made`]).
 const EDITS: &[&str] = &["apply_edits", "undo", "redo", "add_blueprint", "add_media", "reprobe_media", "import_overlay", "make_overlay_unique", "transcribe"];
 /// Tools [`summary`] reduces to more than whether they finished.
-const SUMMARISED: &[&str] = &["check_overlay", "apply_edits", "sample_frames"];
+const SUMMARISED: &[&str] = &["check_overlay", "sample_frames"];
 
 /// The start of a call. A client that gave no name is the daemon's to name.
 pub fn start(tool: &str, client: Option<&str>, args: Option<&Map<String, Value>>) -> Value {
@@ -84,8 +84,8 @@ fn revision_made(tool: &str, v: &Value) -> Option<u64> {
     }
 }
 
-/// What the editor shows of a finished call: a lint's verdict, an edit's revision, the
-/// frames a sample made. Read off the JSON the tool answered; `null` for every other tool,
+/// What the editor shows of a finished call: a lint's verdict, the frames a sample made
+/// (an edit's revision travels beside it, [`revision_made`]). Read off the JSON the tool answered; `null` for every other tool,
 /// and for a sample still baking.
 pub fn summary(tool: &str, v: &Value) -> Value {
     match tool {
@@ -95,11 +95,10 @@ pub fn summary(tool: &str, v: &Value) -> Value {
             let errors = count("error");
             json!({ "ok": errors == 0, "errors": errors, "warnings": count("warning") })
         }
-        "apply_edits" => json!({ "revision": v["revision"], "ops": v["ops"] }),
         "sample_frames" => match v["samples"].as_array() {
             Some(samples) => {
                 let paths: Vec<&Value> = samples.iter().map(|s| &s["path"]).filter(|p| p.is_string()).take(MAX_PATHS).collect();
-                json!({ "count": samples.len(), "paths": paths, "sheet": v["sheet"] })
+                json!({ "paths": paths, "sheet": v["sheet"] })
             }
             None => Value::Null,
         },
@@ -139,9 +138,8 @@ mod tests {
     fn a_result_is_reduced_to_what_the_editor_shows() {
         let lint = json!({ "overlay": "title", "findings": [{ "level": "warning", "code": "a", "message": "" }, { "level": "warning", "code": "b", "message": "" }] });
         assert_eq!(summary("check_overlay", lint), json!({ "ok": true, "errors": 0, "warnings": 2 }));
-        assert_eq!(summary("apply_edits", json!({ "revision": 59, "warnings": [], "ops": 2 })), json!({ "revision": 59, "ops": 2 }));
         let sample = json!({ "samples": [{ "t": 1.0, "frame": 30, "path": "/p/.kuma/samples/a.png" }], "sheet": null });
-        assert_eq!(summary("sample_frames", sample), json!({ "count": 1, "paths": ["/p/.kuma/samples/a.png"], "sheet": null }));
+        assert_eq!(summary("sample_frames", sample), json!({ "paths": ["/p/.kuma/samples/a.png"], "sheet": null }));
         assert_eq!(summary("sample_frames", json!({ "job": 3, "state": "running" })), Value::Null, "still baking");
         assert_eq!(summary("get_project", json!({ "revision": 4 })), Value::Null);
     }
@@ -163,7 +161,7 @@ mod tests {
     #[test]
     fn an_end_says_whether_the_call_failed() {
         let ok = end(7, "apply_edits", &Ok(answered(json!({ "revision": 3, "ops": 1 })).into()));
-        assert_eq!(ok, json!({ "phase": "end", "id": 7, "ok": true, "error": null, "result": { "revision": 3, "ops": 1 }, "revision": 3 }));
+        assert_eq!(ok, json!({ "phase": "end", "id": 7, "ok": true, "error": null, "result": null, "revision": 3 }));
         let failed = end(8, "undo", &Err(McpError::invalid_request("nothing to undo", None)));
         assert_eq!((failed["ok"].as_bool(), failed["error"].as_str(), &failed["revision"]), (Some(false), Some("nothing to undo"), &Value::Null));
     }

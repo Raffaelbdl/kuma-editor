@@ -27,7 +27,8 @@ export class Library {
 
   /** Which list this is: the bin, or the blueprints. Each is a panel of its own. */
   constructor(private host: HTMLElement, private readonly list: "bin" | "blueprints" = "bin") {
-    store.select((s) => [s.project, s.blueprints, s.sequence, s.tab], () => this.render());
+    // Each list follows what it draws: the bin the document, the blueprints the library.
+    store.select((s) => (list === "bin" ? [s.project, s.sequence, s.tab] : [s.blueprints]), () => this.render());
     // Selection moves a class; it does not rebuild the panel.
     store.select((s) => [s.selection], () => this.markSelected());
     // Files dropped on the window go to the bin; one instance takes them, not both.

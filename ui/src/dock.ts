@@ -11,12 +11,12 @@
 // keeps its width when the window grows, as an editor's sidebar does. In a split without
 // it, the children share the space in proportion to their sizes, so none is squeezed out.
 
-export type Dir = "row" | "col";
-export type Zone = "center" | "left" | "right" | "top" | "bottom";
+type Dir = "row" | "col";
+type Zone = "center" | "left" | "right" | "top" | "bottom";
 
 export interface Split { id: string; kind: "split"; dir: Dir; children: Node[]; size?: number }
 export interface Group { id: string; kind: "group"; tabs: string[]; active: string; size?: number }
-export interface Viewer { id: "viewer"; kind: "viewer"; size?: number }
+interface Viewer { id: "viewer"; kind: "viewer"; size?: number }
 export type Node = Split | Group | Viewer;
 
 /** Where a dragged panel lands: a node and the part of it, or an edge of the whole dock. */
@@ -40,7 +40,7 @@ export function defaultTree(homes: Homes): Node {
 let seq = 0;
 const newId = (prefix: string) => `${prefix}-${Date.now().toString(36)}${(seq++).toString(36)}`;
 
-export function* walk(n: Node): Generator<Node> {
+function* walk(n: Node): Generator<Node> {
   yield n;
   if (n.kind === "split") for (const c of n.children) yield* walk(c);
 }
@@ -50,7 +50,7 @@ export const find = (root: Node, id: string): Node | undefined => [...walk(root)
 export const groupOf = (root: Node, panel: string): Group | undefined =>
   [...walk(root)].find((n): n is Group => n.kind === "group" && n.tabs.includes(panel));
 
-export const parentOf = (root: Node, id: string): Split | undefined =>
+const parentOf = (root: Node, id: string): Split | undefined =>
   [...walk(root)].find((n): n is Split => n.kind === "split" && n.children.some((c) => c.id === id));
 
 export const hasViewer = (n: Node): boolean => [...walk(n)].some((x) => x.kind === "viewer");
@@ -72,7 +72,7 @@ export function remove(root: Node, panel: string): Node {
   return normalize(root);
 }
 
-export function normalize(n: Node): Node {
+function normalize(n: Node): Node {
   if (n.kind !== "split") return n;
   n.children = n.children.map(normalize).filter((c) => c.kind !== "group" || c.tabs.length > 0);
   // A split inside a split of the same direction is one split.
@@ -90,7 +90,7 @@ export function insert(root: Node, panel: string, target: Target, measured: { w:
   root = remove(root, panel);
   if ("node" in target && target.zone === "center") {
     const g = find(root, target.node);
-    if (g?.kind === "group") { g.tabs.push(panel); g.active = panel; return root; }
+    if (g?.kind === "group") { g.tabs.push(panel); g.active = panel; }
     return root;
   }
   const zone = "root" in target ? target.root : (target.zone as Exclude<Zone, "center">);

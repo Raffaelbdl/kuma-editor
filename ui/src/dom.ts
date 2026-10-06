@@ -38,6 +38,16 @@ export const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n ==
 /** `brightness` → `Brightness`: a key or a kind as a label. */
 export const capitalize = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 
+/** What this browser keeps for the editor (`localStorage`). A private window has no
+ *  storage and throws on access, which must cost only the remembering: null then, and a
+ *  write that keeps nothing beyond this session. */
+export const loadLocal = (key: string): string | null => { try { return localStorage.getItem(key); } catch { return null; } };
+export const saveLocal = (key: string, v: string): void => { try { localStorage.setItem(key, v); } catch { /* this session only */ } };
+/** A kept object, laid over `fallback` so a field added since it was kept has its default. */
+export function loadLocalJSON<T extends object>(key: string, fallback: T): T {
+  try { return { ...fallback, ...JSON.parse(loadLocal(key) ?? "{}") }; } catch { return fallback; }
+}
+
 /** Under this many pixels a press is a click, not a drag. */
 export const DEAD_ZONE = 3;
 

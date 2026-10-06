@@ -2,39 +2,51 @@
 // are the keys — the same ones that summon the panels in den — and each is a command: a
 // docked panel comes to the front of its group, a closed one goes back where it was.
 
+import { openPins } from "../agent";
 import { Cmd, run } from "../commands";
 import { el } from "../dom";
 import { icon } from "../icons";
 import { keysFor } from "../shortcuts";
-import { panels } from "../panelhost";
+import { panels, type PanelSpec } from "../panelhost";
 import { store } from "../store";
 
-export function mountRail(host: HTMLElement): void {
-  // The side panels, top down, in the order they were registered. `m` lights up while a
-  // pin is open.
-  const side = panels.all.filter((s) => s.dock === "side").map((s) => s.id);
-  const keys = side.map((id) => {
-    const spec = panels.spec(id)!;
-    const b = el("button", "rail-key", spec.letter);
-    const key = keysFor(`panel.${id}`);
-    b.appendChild(el("span", "tip", `${spec.title}${key ? ` · ${key}` : ""}`));
-    b.onclick = () => panels.toggle(id);
-    b.dataset.panel = id;
-    host.appendChild(b);
+/** A letter per panel: pressed, it is the panel's letter (`panels.toggle`); lit while the
+ *  panel is on screen. The rail's keys, and den's; `dress` adds what each says about itself. */
+export function panelKeys(specs: PanelSpec[], cls: string, dress: (b: HTMLButtonElement, spec: PanelSpec) => void): HTMLButtonElement[] {
+  const keys = specs.map((spec) => {
+    const b = el("button", cls, spec.letter);
+    b.dataset.panel = spec.id;
+    b.onclick = () => panels.toggle(spec.id);
+    dress(b, spec);
     return b;
   });
+  const mark = () => { for (const b of keys) b.classList.toggle("on", panels.isVisible(b.dataset.panel!)); };
+  document.addEventListener("kuma:panels", mark);
+  mark();
+  return keys;
+}
+
+export function mountRail(host: HTMLElement): void {
+  // The side panels, top down, in the order they were registered.
+  const keys = panelKeys(panels.all.filter((s) => s.dock === "side"), "rail-key", (b, spec) => {
+    const key = keysFor(`panel.${spec.id}`);
+    b.appendChild(el("span", "tip", `${spec.title}${key ? ` · ${key}` : ""}`));
+  });
+  host.append(...keys);
   // At the foot of the rail: whether the panels can be moved. Off, the dock holds still.
   const lock = el("button", "rail-key lock");
   lock.onclick = () => run(Cmd.movablePanels);
   host.appendChild(lock);
-  const mark = () => {
-    const free = panels.canMove;
+  let free: boolean | null = null;
+  const markLock = () => {
+    if (free === panels.canMove) return;
+    free = panels.canMove;
     lock.replaceChildren(icon(free ? "unlock" : "lock", 14), el("span", "tip", free ? "panels move · click to lock them" : "panels locked · click to let them move"));
     lock.classList.toggle("free", free);
-    for (const b of keys) b.classList.toggle("on", panels.isVisible(b.dataset.panel!));
-    const open = store.state.pins.some((p) => p.done === null);
-    keys[side.indexOf("pins")]?.classList.toggle("flag", open);
   };
-  document.addEventListener("kuma:panels", mark);
-  store.select((s) => [s.pins], mark);
+  document.addEventListener("kuma:panels", markLock);
+  markLock();
+  // `m` has a dot while a pin on the open sequence is waiting for an answer.
+  const pins = keys.find((b) => b.dataset.panel === "pins");
+  store.select((s) => [s.pins, s.sequence], (s) => pins?.classList.toggle("flag", openPins(s.pins, s.sequence).length > 0));
 }

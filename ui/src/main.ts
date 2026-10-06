@@ -134,7 +134,9 @@ async function main() {
     mountTransport(document.getElementById("transport")!);
     mountStatusline(document.getElementById("statusline")!);
   }
-  panelCommands();
+  // A panel's own window has no dock and no modes: its letters, ⌘K's "Den mode" and the
+  // rest are the editor window's, and reach it as commands this page does not have.
+  if (!solo) panelCommands();
   installPalette();
   installShortcuts();
   if (solo) {

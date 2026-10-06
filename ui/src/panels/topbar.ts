@@ -9,6 +9,7 @@ import { watchAgent, bear, setBear } from "../agent";
 import { Cmd, command, run } from "../commands";
 import { button, el } from "../dom";
 import { panels } from "../panelhost";
+import { keysFor } from "../shortcuts";
 import { store } from "../store";
 import { jobCounts, type JobState } from "../types";
 import { openRenderDialog } from "./render";
@@ -24,7 +25,7 @@ export function mountTopbar(host: HTMLElement): void {
   const tabs = el("nav");
   tabs.id = "editor-tabs";
 
-  const k = button("", () => run(Cmd.palette), "Every command, by name (Ctrl+K)", "kfield");
+  const k = button("", () => run(Cmd.palette), `Every command, by name (${keysFor(Cmd.palette)})`, "kfield");
   k.append(el("kbd", "", navigator.platform.startsWith("Mac") ? "⌘K" : "Ctrl K"), el("span", "", "split, add track, render…"));
 
   // The two modes over one set of panels. The playhead and the selection stay put: they

@@ -79,7 +79,7 @@ fn wav(secs: u32) -> Vec<u8> {
 
 fn patch(state: &AppState, path: &str, value: Value) {
     let ops: json_patch::Patch = serde_json::from_value(json!([{ "op": "replace", "path": path, "value": value }])).unwrap();
-    state.apply_patch(&ops.0, None, "test").expect("patch accepted");
+    state.apply_patch(&ops.0, None, "test", &[]).expect("patch accepted");
 }
 
 /// The whole point of moving the decision into the daemon: an edit that cannot reach the
@@ -184,7 +184,7 @@ async fn a_reload_leaves_unbaked_nested_overlays_to_a_background_job() {
         { "op": "add", "path": "/bin/main/source/tracks/0/clips/-", "value": { "id": "nest", "start": 2, "end": 3, "bin": "inner" } }
     ]))
     .unwrap();
-    state.apply_patch(&ops.0, None, "test").expect("patch accepted");
+    state.apply_patch(&ops.0, None, "test", &[]).expect("patch accepted");
 
     let r = preview::reload(&state).await.unwrap();
     assert_eq!(r.baking, vec!["tag1".to_string()], "left out of the picture, and said");

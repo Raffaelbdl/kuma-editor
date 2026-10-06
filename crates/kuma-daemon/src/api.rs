@@ -233,7 +233,7 @@ async fn patch_project(State(st): S, Json(req): Json<PatchProject>) -> ApiResult
             (None, Some(path)) => read_patch(&st, &path).map_err(bad_request_err)?,
             _ => return Err(ApiError::bad_request("pass the operations as `patch`, or a file in the project holding them as `patch_path`: one of the two")),
         };
-        let (rev, warnings) = st.apply_patch_answering(&patch.0, req.base_revision, &req.origin, &req.pins)?;
+        let (rev, warnings) = st.apply_patch(&patch.0, req.base_revision, &req.origin, &req.pins)?;
         Ok(json!({ "revision": rev, "warnings": warnings, "ops": patch.0.len() }))
     })
     .await??;
@@ -259,11 +259,11 @@ struct StepBy {
 
 async fn undo(State(st): S, body: Option<Json<StepBy>>) -> ApiResult {
     let by = body.and_then(|b| b.0.origin);
-    Ok(Json(json!({ "revision": blocking(move || st.undo_by(by.as_deref())).await?? })))
+    Ok(Json(json!({ "revision": blocking(move || st.undo(by.as_deref())).await?? })))
 }
 async fn redo(State(st): S, body: Option<Json<StepBy>>) -> ApiResult {
     let by = body.and_then(|b| b.0.origin);
-    Ok(Json(json!({ "revision": blocking(move || st.redo_by(by.as_deref())).await?? })))
+    Ok(Json(json!({ "revision": blocking(move || st.redo(by.as_deref())).await?? })))
 }
 
 // ---------- history, activity, pins (session state, never the document) ----------

@@ -1,7 +1,7 @@
 // Timeline: tracks, clips (move/trim), transitions, playhead, zoom.
 
 import { Cmd, run } from "../commands";
-import { button, dragPayload, dragPointer, el, isFileDrag, options } from "../dom";
+import { button, dragPayload, dragPointer, el, isFileDrag, loadLocalJSON, options, saveLocal } from "../dom";
 import { addMarker, addTransition, renameTrack, editMarker, editTransitionDuration, joinedAfter, moveMarker, placeBinItem, placeBlueprint, removeMarker, removeTransition, setTransitionKind, splitAt, transitionBlocked } from "../edits";
 import { showMenu } from "../menu";
 import { icon } from "../icons";
@@ -15,7 +15,7 @@ import { drawStrip, drawWave } from "./clipmedia";
 const HEAD = 150;
 
 /** Track heights, by kind, until one is dragged; a folded track is one line. */
-const TRACK_H: Record<TrackKind, number> = { video: 36, overlay: 36, audio: 36 };
+const TRACK_H = 36;
 const FOLDED_H = 22;
 const MIN_H = 30;
 const MAX_H = 240;
@@ -64,19 +64,17 @@ export class Timeline {
     keep: boolean;
   } = null;
 
-  private rows: Rows = (() => {
-    try { return { h: {}, folded: [], ...JSON.parse(localStorage.getItem(ROWS_KEY) ?? "{}") }; } catch { return { h: {}, folded: [] }; }
-  })();
+  private rows: Rows = loadLocalJSON<Rows>(ROWS_KEY, { h: {}, folded: [] });
 
   private saveRows() {
-    try { localStorage.setItem(ROWS_KEY, JSON.stringify(this.rows)); } catch { /* this session only */ }
+    saveLocal(ROWS_KEY, JSON.stringify(this.rows));
   }
 
   /** The waveform's colour, the theme's, read once a render rather than once a clip. */
   private waveColor = "";
 
   private folded(t: Track) { return this.rows.folded.includes(t.id); }
-  private heightOf(t: Track) { return this.folded(t) ? FOLDED_H : this.rows.h[t.id] ?? TRACK_H[t.kind]; }
+  private heightOf(t: Track) { return this.folded(t) ? FOLDED_H : this.rows.h[t.id] ?? TRACK_H; }
 
   private zoomInput = el("input");
   private cornerEl = this.corner();

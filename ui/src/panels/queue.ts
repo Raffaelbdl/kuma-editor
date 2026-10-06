@@ -10,7 +10,7 @@ import { desktop } from "../desktop";
 import { button, el, plural } from "../dom";
 import { binName, store, toast } from "../store";
 import { isFinal, jobCounts } from "../types";
-import { jobList, lastRenderPreset, openRenderDialog, subject, type JobRow } from "./render";
+import { cancelButton, defaultPreset, jobList, openRenderDialog, subject, type JobRow, type RenderParams } from "./render";
 
 export function queuePanel(): { body: HTMLElement; tools: HTMLElement } {
   const body = el("div", "queue-panel");
@@ -34,9 +34,7 @@ export function queuePanel(): { body: HTMLElement; tools: HTMLElement } {
 
 async function renderMasterNow() {
   try {
-    const presets = await api.presets();
-    const usable = presets.filter((p) => !p.unavailable);
-    const preset = usable.find((p) => p.id === lastRenderPreset()) ?? usable[0];
+    const preset = defaultPreset(await api.presets());
     if (!preset) { toast("No export preset can run on this machine", "err"); return; }
     await api.render(preset.id);
     toast(`Rendering the master · ${preset.id}`, "ok");
@@ -57,15 +55,12 @@ function jobRow(id: number): JobRow {
   root.append(el("div", "q-head"), bar, state);
   root.firstElementChild!.append(title, action);
   let file = "";
-  const cancel = button("cancel", () => {
-    cancel.disabled = true;
-    api.cancelJob(id).catch((e) => { cancel.disabled = false; toast((e as Error).message, "err"); });
-  }, "Stop this job; a render keeps nothing it wrote", "linkish");
+  const cancel = cancelButton(id, "cancel", "linkish");
   const open = button("open", () => void desktop()?.reveal(file), "Show the file in its folder", "linkish");
   return {
     root,
     update(j) {
-      const p = (j.params ?? {}) as { sequence?: string; preset?: string; output?: string; path?: string };
+      const p = (j.params ?? {}) as RenderParams;
       file = p.output ?? "";
       root.className = `q-job ${j.state}`;
       title.textContent = j.kind === "render" ? `${binName(p.sequence)} · ${p.preset ?? ""}` : `${j.kind}${subject(j.params)}`;

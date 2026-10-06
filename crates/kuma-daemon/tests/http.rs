@@ -280,7 +280,7 @@ async fn an_entry_is_made_unique_and_an_overlay_saved_as_a_blueprint() {
     // Saved from an entry: its vars become the blueprint's defaults, the rest survives.
     std::fs::write(dir.path().join("overlays/twin/overlay.json"), r#"{ "name": "Twin", "vars": { "label": { "type": "string", "default": "Hello" } } }"#).unwrap();
     let edit = serde_json::from_value::<Vec<json_patch::PatchOperation>>(serde_json::json!([{ "op": "add", "path": "/bin/twin/source/vars/label", "value": "Paris" }])).unwrap();
-    state.apply_patch(&edit, None, "test").unwrap();
+    state.apply_patch(&edit, None, "test", &[]).unwrap();
     let save = |body: &str| post(&addr, "/api/overlays/save-blueprint", body).0;
     assert!(save(r#"{ "bin": "twin", "id": "twin" }"#).contains("200"));
     let saved = kuma_core::OverlayManifest::load(&dir.path().join("library/blueprints/twin")).unwrap();

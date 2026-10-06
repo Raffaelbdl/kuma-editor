@@ -6,7 +6,7 @@
 // revision said it answered it, or you ticked it. Done-ness is the daemon's session state,
 // not the document's — the marker itself never changes when it is answered.
 
-import { watchAgent } from "../agent";
+import { pinsOn, watchAgent } from "../agent";
 import { Cmd, command } from "../commands";
 import { button, el } from "../dom";
 import { addPin, markerOn } from "../edits";
@@ -62,7 +62,7 @@ export function pinsPanel(): { body: HTMLElement; note: HTMLElement } {
   // The daemon's pins: it numbers them and knows which are answered (`pins.rs`).
   let reading: string | undefined;
   const draw = () => {
-    const pins = store.state.pins.filter((p) => p.sequence === store.state.sequence);
+    const pins = pinsOn(store.state.pins, store.state.sequence);
     note.textContent = pins.length ? String(pins.length) : "";
     if (!pins.length) list.replaceChildren(el("p", "muted tiny", "No pins on this sequence. A pin is a note on a frame for the agent: press P to leave one at the playhead."));
     else list.replaceChildren(...pins.map((p) => pinCard(p, p.id === reading)));
@@ -80,7 +80,7 @@ function pinCard(p: Pin, reading: boolean): HTMLElement {
   const main = el("div", "pin-main");
   main.appendChild(el("div", "pin-text", p.label));
   const state = done !== null ? `done in r${done}${p.done_by === "user" ? " · ticked" : ""}` : reading ? "kuma is reading it" : "open";
-  main.appendChild(el("div", "pin-meta", `${+p.t.toFixed(2)}s · ${state}`));
+  main.appendChild(el("div", "pin-meta", `${fmtTime(p.t, store.fps)} · ${state}`));
   card.appendChild(main);
   // Ticking by hand is for an answer the agent did not say it gave. The daemon tells every
   // client, this one included, with the new list.
@@ -90,6 +90,6 @@ function pinCard(p: Pin, reading: boolean): HTMLElement {
   tick.onpointerdown = (e) => e.stopPropagation();
   card.appendChild(tick);
   card.onclick = (e) => { if (!(e.target as HTMLElement).closest("button")) store.seek(p.t); };
-  card.title = `${p.label}\n\n${p.t.toFixed(2)}s — click to go there`;
+  card.title = `${p.label}\n\n${fmtTime(p.t, store.fps)} — click to go there`;
   return card;
 }

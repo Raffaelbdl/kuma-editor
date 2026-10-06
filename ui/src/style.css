@@ -6,7 +6,6 @@
 @import "./fonts.css";
 @import "./chrome.css";
 
-* { box-sizing: border-box; }
 /* Dark built-in controls — select popups, checkboxes, spinners.
    **Not on :root.** A dark root makes every overlay iframe composite against an opaque
    backdrop instead of staying transparent: Chromium will not let a light-scheme document
@@ -14,7 +13,6 @@
    embedder, so the preview paints the template's white canvas over the video. Scoped to
    the controls that need it, the stage keeps compositing as it did. */
 button, input, select, textarea, option { color-scheme: dark; }
-html, body { height: 100%; margin: 0; background: var(--bg-0); color: var(--fg); font: 12px/1.4 var(--mono); }
 
 button, input, select, textarea { font: inherit; color: inherit; }
 button { background: var(--bg-0); border: 1px solid var(--line); border-radius: 2px; padding: 3px 9px; cursor: pointer; }
@@ -25,7 +23,6 @@ button.icon { padding: 5px 8px; line-height: 0; }
 button.reload.busy svg { animation: spin 0.9s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 button svg { display: block; }
-button.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); font-weight: 700; box-shadow: var(--glow); }
 input, select, textarea { background: var(--bg-0); border: 1px solid var(--line); border-radius: 2px; padding: 3px 6px; width: 100%; }
 /* A tick is its own size: full width would leave it floating in the middle of the field. */
 input[type="checkbox"] { width: auto; justify-self: start; }
@@ -34,21 +31,21 @@ input[type="checkbox"] { width: auto; }
 textarea { font-family: var(--mono); font-size: 12px; min-height: 80px; resize: vertical; }
 /* A section label: the pixel face, small and lower case, as every label in the design is. */
 h3 { margin: 14px 0 6px; font: 400 10px/1.3 var(--label); text-transform: lowercase; color: var(--fg-2); }
-.muted { color: var(--fg-2); }
-.mono { font-family: var(--mono); }
 
 /* ---- the window, in power mode ----------------------------------------------------
    Top to bottom: the top bar, the rail beside the dock (the panels round the frame), the
    status line. */
-#app { height: 100%; display: grid; grid-template-rows: 44px minmax(0, 1fr) 24px; position: relative; overflow: hidden; }
+/* The heights are `chrome.css`'s; the title bar is the desktop shell's (below). */
+body.has-titlebar { --titlebar-h: 32px; }
+#app { position: relative; overflow: hidden; }
 /* The desktop shell's windows are frameless, so the page draws the title bar and the
    grid gains a row for it. A browser never sets this class and keeps the old layout. */
-body.has-titlebar #app { grid-template-rows: 32px 44px minmax(0, 1fr) 24px; }
+body.has-titlebar #app { grid-template-rows: var(--titlebar-h) var(--topbar-h) minmax(0, 1fr) var(--status-h); }
 
 #titlebar { display: none; }
 body.has-titlebar #titlebar {
   display: grid; grid-template-columns: auto 1fr auto; align-items: center;
-  background: var(--bg-bar); border-bottom: 1px solid var(--line-2); height: 32px;
+  background: var(--bg-bar); border-bottom: 1px solid var(--line-2); height: var(--titlebar-h);
   /* The bar moves the window; every control inside it opts back out. */
   -webkit-app-region: drag; user-select: none;
 }
@@ -110,7 +107,7 @@ body.has-titlebar #titlebar {
    rest. Nothing here may be `contain`ed or transformed: den lifts the frame out of the dock
    with `position: fixed`, which either would trap. */
 #dock { display: flex; min-width: 0; min-height: 0; overflow: hidden; background: var(--bg-0); }
-#dock > * { flex: 1 1 0 !important; }
+#dock > * { flex: 1 1 0; }
 .dock-split { display: flex; min-width: 0; min-height: 0; overflow: hidden; }
 .dock-split.row { flex-direction: row; }
 .dock-split.col { flex-direction: column; }
@@ -149,7 +146,8 @@ body.has-titlebar #titlebar {
 .dock-tab.out .ptile { background: none; outline: 1px dashed var(--fg-3); color: var(--fg-3); }
 /* The agent's tile is the accent: it is the one panel about somebody else. */
 .dock-tab[data-panel="agent"].on .ptile, .panel[data-panel="agent"] .ptile { background: var(--accent); color: var(--on-accent); }
-.dock-note, .dock-tools { display: flex; align-items: center; gap: 2px; }
+.dock-note, .panel-head .pnote { color: var(--fg-3); font-size: 10.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.dock-tools, .panel-head .ptools { display: flex; align-items: center; gap: 2px; }
 .dock-head button.pbtn, .panel-head button.pbtn { background: none; border: 0; padding: 2px 4px; color: var(--fg-2); line-height: 1; font-size: 12px; }
 .dock-head button.pbtn:hover, .panel-head button.pbtn:hover { color: var(--fg); }
 .dock-head button.pbtn { color: var(--fg-3); display: none; }
@@ -184,7 +182,7 @@ body.has-titlebar #titlebar {
 .rail-key.lock .tip { top: auto; bottom: 4px; }
 /* Locked: nothing in a group's head says it can be dragged or closed. */
 #app.dock-locked .dock-head { cursor: default; }
-#app.dock-locked .dock-head button.pclose { display: none !important; }
+#app.dock-locked .dock-head button.pclose { display: none; }
 
 #center { display: grid; grid-template-rows: minmax(0, 1fr) 34px; min-width: 0; min-height: 0; background: var(--bg-stage); }
 #stages { display: grid; min-width: 0; min-height: 0; }
@@ -196,26 +194,20 @@ body.has-titlebar #titlebar {
    nothing); floating, it is a title bar you drag; in a window of its own, it is the
    window's title bar. */
 .panel { display: flex; flex-direction: column; min-width: 0; min-height: 0; height: 100%; background: var(--bg-0); }
-.panel-head { flex: none; display: flex; align-items: center; gap: 8px; padding: 0 10px; height: 34px; min-width: 0; }
-.panel-head .ptile { display: none; }
-.panel-head .ptitle { font: 400 10px var(--label); color: var(--fg-2); white-space: nowrap; }
-.panel-head .pnote { color: var(--fg-3); font-size: 10.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+/* Its head shows only when it floats or has a window: then it is a title bar. */
+.panel-head { flex: none; display: flex; align-items: center; gap: 8px; padding: 0 8px; height: 28px; min-width: 0; background: var(--bg-2); cursor: grab; user-select: none; }
+.panel-head .ptitle { font: 400 10px var(--label); color: var(--fg); white-space: nowrap; }
 .panel-head .spacer { flex: 1; }
-.panel-head .ptools { display: flex; align-items: center; gap: 2px; }
 .panel-body { flex: 1; min-height: 0; min-width: 0; position: relative; display: flex; flex-direction: column; }
 .panel-body > * { flex: 1; min-height: 0; }
 /* Docked, its group's head is its head. */
 .panel.docked > .panel-head { display: none; }
 /* Floating: over whatever is behind it, and the only thing in the editor with a shadow. */
-#floating { position: absolute; left: 0; right: 0; top: 44px; bottom: 24px; pointer-events: none; z-index: 30; }
-body.has-titlebar #floating { top: 76px; }
+#floating { position: absolute; left: 0; right: 0; top: calc(var(--titlebar-h) + var(--topbar-h)); bottom: var(--status-h); pointer-events: none; z-index: 30; }
 .panel.floating {
   position: absolute; pointer-events: auto; height: auto; overflow: hidden;
   background: var(--float-bg); border: 1px solid var(--line); box-shadow: var(--float-shadow);
 }
-.panel.floating > .panel-head, .panel.solo > .panel-head { height: 28px; padding: 0 8px; background: var(--bg-2); cursor: grab; user-select: none; }
-.panel.floating > .panel-head .ptile, .panel.solo > .panel-head .ptile { display: grid; }
-.panel.floating > .panel-head .ptitle, .panel.solo > .panel-head .ptitle { color: var(--fg); }
 .panel.floating .panel-body { background: transparent; }
 .panel.floating.dragging { opacity: 0.92; }
 /* Resizing a floating panel: a strip along each side and a square at each corner, inside
@@ -243,7 +235,7 @@ body.has-titlebar #floating { top: 76px; }
 .edge-hint.left span { left: 6px; }
 /* A panel in a window of its own fills it. */
 body.solo #app { display: block; }
-body.solo #app > :not(#floating):not(#toasts):not(#titlebar):not(#parking) { display: none; }
+body.solo #app > :not(#floating):not(#toasts):not(#titlebar) { display: none; }
 body.solo #floating { position: static; height: 100%; pointer-events: auto; }
 .panel.solo { height: 100vh; }
 .panel.solo > .panel-head { -webkit-app-region: drag; cursor: default; }
@@ -707,19 +699,16 @@ kbd { font: 10px var(--mono); border: 1px solid var(--line); border-radius: 3px;
    hidden, not unmounted, so switching is a class and nothing reloads. */
 #den { display: none; }
 #app.den { grid-template-rows: minmax(0, 1fr); }
-body.has-titlebar #app.den { grid-template-rows: 32px minmax(0, 1fr); }
+body.has-titlebar #app.den { grid-template-rows: var(--titlebar-h) minmax(0, 1fr); }
 #app.den #topbar, #app.den #rail, #app.den #statusline, #app.den #transport { display: none; }
 #app.den #main { grid-template-columns: minmax(0, 1fr); }
 /* The dock stays where it is, out of sight, and the frame is lifted out of it to fill the
    window: moving the frame instead would reload every overlay iframe in it. */
 #app.den .dock-group, #app.den .dock-grip { visibility: hidden; }
-#app.den #center { position: fixed; left: 0; right: 0; top: 0; bottom: 0; z-index: 5; grid-template-rows: minmax(0, 1fr) 90px; }
-body.has-titlebar #app.den #center { top: 32px; }
-#app.den #floating { top: 0; bottom: 90px; }
-body.has-titlebar #app.den #floating { top: 32px; }
-#app.den #toasts { bottom: 102px; }
-#app.den #den { display: block; position: absolute; inset: 0; pointer-events: none; z-index: 20; }
-body.has-titlebar #app.den #den { top: 32px; }
+#app.den #center { position: fixed; left: 0; right: 0; top: var(--titlebar-h); bottom: 0; z-index: 5; grid-template-rows: minmax(0, 1fr) var(--den-rail-h); }
+#app.den #floating { top: var(--titlebar-h); bottom: var(--den-rail-h); }
+#app.den #toasts { bottom: calc(var(--den-rail-h) + 12px); }
+#app.den #den { display: block; position: absolute; inset: var(--titlebar-h) 0 0 0; pointer-events: none; z-index: 20; }
 #den > * { pointer-events: auto; }
 #den .den-scrim { position: absolute; left: 0; right: 0; top: 0; height: 110px; pointer-events: none; background: linear-gradient(var(--scrim), transparent); }
 .den-hud { position: absolute; left: 28px; top: 22px; display: flex; align-items: center; gap: 12px; font-size: 13px; color: var(--fg); pointer-events: none; }
@@ -748,7 +737,7 @@ body.has-titlebar #app.den #den { top: 32px; }
 .den-caption .text { font: 500 21px/1.3 var(--sans); color: var(--fg); }
 /* The rail under the frame. */
 .den-rail {
-  position: absolute; left: 0; right: 0; bottom: 0; height: 90px; display: flex; align-items: center; gap: 18px; padding: 0 30px;
+  position: absolute; left: 0; right: 0; bottom: 0; height: var(--den-rail-h); display: flex; align-items: center; gap: 18px; padding: 0 30px;
   background: var(--bg-0); border-top: 1px solid var(--line-2);
 }
 .den-play { width: 34px; height: 34px; border-radius: 50%; padding: 0; display: grid; place-items: center; background: none; border: 1px solid var(--line); color: var(--fg); flex: none; }
@@ -767,7 +756,7 @@ body.has-titlebar #app.den #den { top: 32px; }
 .den-keys { display: flex; gap: 4px; flex: none; }
 .den-key { width: 30px; height: 30px; padding: 0; border-radius: 0; background: none; border: 1px solid var(--line); color: var(--fg-body); }
 .den-key.on { background: var(--fg); border-color: var(--fg); color: var(--bg-0); }
-.den-key.agent.on { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+.den-key[data-panel="agent"].on { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
 .den-pin { display: flex; align-items: center; gap: 7px; flex: none; background: none; border: 1px solid var(--sel); border-radius: 0; color: var(--sel); padding: 5px 12px; }
 .den-pin .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--sel); }
 

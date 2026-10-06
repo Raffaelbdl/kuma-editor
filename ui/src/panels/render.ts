@@ -16,13 +16,17 @@ import { isFinal, sequenceIds, type CacheUsage, type Job, type Preset } from "..
 type Tab = "render" | "queue";
 
 /** What the daemon settled when the render was queued; `path` is `output`, project-relative. */
-interface RenderParams { sequence?: string; preset?: string; output?: string; path?: string; threads?: number | null; quality?: number | null; speed?: string | null }
+export interface RenderParams { sequence?: string; preset?: string; output?: string; path?: string; threads?: number | null; quality?: number | null; speed?: string | null }
 
 /** The open dialog's tab switch: asking again switches rather than stacking a second. */
 let showing: ((tab: Tab) => void) | null = null;
 let lastPreset = "";
-/** The preset last rendered with this session, for the queue panel's "render master". */
-export const lastRenderPreset = () => lastPreset;
+/** What a render starts from — the dialog's choice, the queue panel's "render master": the
+ *  preset last rendered with this session, else the first this machine can run. */
+export function defaultPreset<P extends { id: string; unavailable?: unknown }>(ps: P[]): P | undefined {
+  const usable = ps.filter((p) => !p.unavailable);
+  return usable.find((p) => p.id === lastPreset) ?? usable[0];
+}
 /** The Advanced section as last left: open or folded, and the values last rendered with.
  *  Quality and speed are `lastPreset`'s, and only come back with it. */
 let advanced = { open: false, threads: "", quality: "", speed: "" };
@@ -131,10 +135,9 @@ export function openRenderDialog(tab: Tab = "render"): void {
   void api.presets().then((ps) => {
     presets = new Map(ps.map((p) => [p.id, p]));
     // One this machine cannot run (NVENC without a GPU) is listed greyed, saying why.
-    const usable = ps.filter((p) => !p.unavailable);
     options(preset, ps.map((p) => (p.unavailable
       ? { value: p.id, label: `${p.id} (unavailable)`, title: `${p.description}. Needs ${p.needs}: ${p.unavailable}` }
-      : { value: p.id, title: p.description })), (usable.find((p) => p.id === lastPreset) ?? usable[0])?.id);
+      : { value: p.id, title: p.description })), defaultPreset(ps)?.id);
     for (const o of preset.options) o.disabled = !!presets.get(o.value)?.unavailable;
     fit();
     if (preset.value === lastPreset) {
@@ -247,6 +250,15 @@ function overwriteNote(t: RenderTarget): string {
 
 export interface JobRow { root: HTMLElement; update: (j: Job) => void }
 
+/** A job's cancel: off while the daemon is asked, back on if it says no. */
+export function cancelButton(id: number, label: string, cls = ""): HTMLButtonElement {
+  const b = button(label, () => {
+    b.disabled = true;
+    api.cancelJob(id).catch((e) => { b.disabled = false; fail(e); });
+  }, "Stop this job; a render keeps nothing it wrote", cls);
+  return b;
+}
+
 /**
  * Jobs in `list`, newest first, one row each kept by id: updated in place, and re-placed only
  * when the set of jobs changes, so a click on a row's Cancel is never lost to a redraw. The
@@ -285,10 +297,7 @@ function jobRow(id: number): JobRow {
   const state = el("div", "job-state");
   const path = el("div", "job-path muted mono tiny");
   let file = "";
-  const cancel = button("Cancel", () => {
-    cancel.disabled = true;
-    api.cancelJob(id).catch((e) => { cancel.disabled = false; fail(e); });
-  }, "Stop this job; a render keeps nothing it wrote");
+  const cancel = cancelButton(id, "Cancel");
   const reveal = button("Show file", () => void desktop()?.reveal(file), "Open the folder it was written to");
   const root = row("job", row("job-main", title, bar, state, path), row("job-actions", cancel, reveal));
   root.dataset.id = String(id);

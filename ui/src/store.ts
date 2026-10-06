@@ -534,12 +534,12 @@ export async function startJob(label: string, start: () => Promise<{ job: number
   }
 }
 
-/** `mm:ss.ff`, computed from whole frames so the frame field never reaches `fps`. */
 /** What a bin entry is called: its name, else its id. */
 export const binName = (id?: string) => (id && store.state.project?.bin[id]?.name) || id || "?";
 /** A sequence as a list offers it, the master said so. */
 export const sequenceLabel = (id: string) => `${binName(id)}${id === store.state.project?.master ? " (master)" : ""}`;
 
+/** `mm:ss.ff`, computed from whole frames so the frame field never reaches `fps`. */
 export const fmtTime = (t: number, fps: number) => {
   const frames = Math.max(0, Math.round(t * fps));
   const whole = Math.floor(frames / fps);

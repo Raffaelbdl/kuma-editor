@@ -8,28 +8,22 @@
 
 /* No overlay iframes here, so unlike the editor the root may be dark-scheme. */
 :root { color-scheme: dark; }
-* { box-sizing: border-box; }
-html, body { height: 100%; margin: 0; background: var(--bg-0); color: var(--fg); font: 12px/1.4 var(--mono); overflow: hidden; }
+html, body { overflow: hidden; }
 
 button, input, select { font: inherit; color: inherit; }
 button { background: var(--bg-0); border: 1px solid var(--line); border-radius: 0; padding: 6px 12px; cursor: pointer; white-space: nowrap; }
 button:hover:not(:disabled) { border-color: var(--fg-2); }
 button:disabled { opacity: 0.45; cursor: default; }
-button.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); font-weight: 700; box-shadow: var(--glow); }
 button.primary:hover:not(:disabled) { border-color: var(--accent); filter: brightness(1.08); }
 button.ghost { background: none; border-color: transparent; color: var(--fg-3); }
 button.ghost:hover:not(:disabled) { color: var(--fg); border-color: var(--line); }
 input, select { background: var(--bg-0); border: 1px solid var(--line); border-radius: 0; padding: 6px 8px; width: 100%; }
 input:focus, select:focus { outline: none; border-color: var(--accent); }
 kbd { font: 10px var(--mono); border: 1px solid var(--line); padding: 0 4px; color: var(--fg-2); }
-.muted { color: var(--fg-2); }
-.mono { font-family: var(--mono); }
 .spacer { flex: 1 1 0; min-width: 8px; }
 /* A label: the pixel face, small and lower case, as every label in the editor is. */
 .label { font: 400 10px/1.3 var(--label); text-transform: lowercase; color: var(--fg-2); }
 
-/* ---- the window: top bar, the page, the status line */
-#app { height: 100%; display: grid; grid-template-rows: 44px minmax(0, 1fr) 24px; }
 
 .tagline { color: var(--fg-3); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 #actions { display: flex; gap: 8px; flex: none; }

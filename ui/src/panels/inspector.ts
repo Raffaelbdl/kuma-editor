@@ -955,7 +955,7 @@ function fontInput(cur: string, onChange: (v: string) => void): HTMLElement {
  * Add fonts by path, as media is added: the app's picker, or a typed path in a browser tab,
  * which cannot say where a file is. Ask where they go, add them, use the first one's family.
  */
-async function addFonts(use: (family: string) => void): Promise<void> {
+export async function addFonts(use: (family: string) => void = () => {}): Promise<void> {
   const app = desktop();
   const typed = el("input");
   typed.type = "text";

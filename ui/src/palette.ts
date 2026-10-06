@@ -4,6 +4,7 @@
 // is reachable some other way and missing here.
 
 import { Cmd, command, list, run } from "./commands";
+import { pinsOn } from "./agent";
 import { el } from "./dom";
 import { keysFor } from "./shortcuts";
 import { sequenceLabel, store } from "./store";
@@ -23,7 +24,7 @@ function entries(): Entry[] {
   const p = store.state.project;
   if (p) {
     for (const id of sequenceIds(p)) out.push({ label: `Open sequence: ${sequenceLabel(id)}`, run: () => void store.openSequence(id) });
-    for (const pin of store.state.pins.filter((x) => x.sequence === store.state.sequence)) out.push({ label: `Go to pin: ${pin.label.split("\n")[0]}`, run: () => store.seek(pin.t) });
+    for (const pin of pinsOn(store.state.pins, store.state.sequence)) out.push({ label: `Go to pin: ${pin.label.split("\n")[0]}`, run: () => store.seek(pin.t) });
   }
   return out;
 }

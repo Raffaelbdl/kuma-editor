@@ -49,7 +49,6 @@ pub struct Record {
     pub sample: Option<Sample>,
     /// A `check_overlay` call's verdict, `{ok, errors, warnings}`.
     pub lint: Option<Value>,
-    pub pins: Vec<String>,
     /// The frames a finished `sample_frames` call produced, as paths under
     /// `.kuma/samples/` (served by `GET /api/samples/…`): its contact sheet alone, or up
     /// to eight frames.
@@ -103,7 +102,6 @@ impl Activity {
             id: self.next,
             summary: (tool == "apply_edits").then(|| args.get("note").and_then(Value::as_str).map(str::to_string)).flatten(),
             sample: (tool == "sample_frames").then(|| sample_of(&args)).flatten(),
-            pins: args.get("pins").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).map(str::to_string).collect(),
             client: client.filter(|c| !c.trim().is_empty()).unwrap_or_else(|| "agent".into()),
             tool,
             state: State::Running,
@@ -217,7 +215,7 @@ mod tests {
         let mut a = Activity::default();
         let dir = Path::new("/s");
         let first = a.start("apply_edits".into(), Some("claude-code".into()), json!({ "note": "trim", "pins": ["main@1.000"] }), 4, 10);
-        assert_eq!((first.summary.as_deref(), first.pins.as_slice(), first.state), (Some("trim"), &["main@1.000".to_string()][..], State::Running));
+        assert_eq!((first.summary.as_deref(), first.state), (Some("trim"), State::Running));
         let ended = a.end(first.id, Err(Some("409".into())), None, 11, dir).unwrap();
         assert_eq!((ended.state, ended.error.as_deref(), ended.revision_after), (State::Failed, Some("409"), Some(4)));
         for _ in 0..RECORDS {

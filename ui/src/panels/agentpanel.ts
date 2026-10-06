@@ -26,7 +26,14 @@ export function agentPanel(): { body: HTMLElement; note: HTMLElement } {
     doing.textContent = v.last ? callLine(v.last) : "An agent on this project over MCP shows up here: what it reads, edits and looks at.";
   });
 
-  store.select((s) => [s.activity], (s) => calls.replaceChildren(...s.activity.slice(0, 5).map(callRow)));
+  // A call's record is replaced when it changes, so a row is made once per state of it:
+  // the frames it shows are not fetched again for every other call that lands.
+  const made = new WeakMap<Activity, HTMLElement>();
+  store.select((s) => [s.activity], (s) => calls.replaceChildren(...s.activity.slice(0, 5).map((a) => {
+    let row = made.get(a);
+    if (!row) made.set(a, (row = callRow(a)));
+    return row;
+  })));
   // "14s ago" has to keep counting: only those words, while the panel is on screen.
   setInterval(() => {
     if (!calls.offsetParent) return;

@@ -57,8 +57,10 @@ export function sampleSpan(a: Activity): string {
   return lo === hi ? `${f(lo)}s` : `${f(lo)}–${f(hi)}s`;
 }
 
-/** The pins of `sequence` not yet answered, in order. */
-export const openPins = (pins: Pin[], sequence: string): Pin[] => pins.filter((p) => p.sequence === sequence && p.done === null);
+/** The pins on `sequence`, in order. */
+export const pinsOn = (pins: Pin[], sequence: string): Pin[] => pins.filter((p) => p.sequence === sequence);
+/** The pins on `sequence` not yet answered, in order. */
+export const openPins = (pins: Pin[], sequence: string): Pin[] => pinsOn(pins, sequence).filter((p) => p.done === null);
 
 /** What a call is, as a phrase: what the agent is doing while it runs. */
 function phrase(a: Activity, pin: Pin | undefined): string {

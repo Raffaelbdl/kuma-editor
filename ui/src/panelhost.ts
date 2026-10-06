@@ -12,13 +12,13 @@
 // render or an agent reads.
 
 import { Cmd, command } from "./commands";
-import { button, dragPointer, el } from "./dom";
+import { button, dragPointer, el, loadLocal, loadLocalJSON, saveLocal } from "./dom";
 import { desktop } from "./desktop";
 import { defaultTree, find, type Homes, fillOf, groupOf, hasViewer, insert, panelsIn, remove, sanitize, type Group, type Node, type Split, type Target } from "./dock";
 import { showMenu, type MenuItem } from "./menu";
-import { store, toast } from "./store";
+import { store, toast, type State } from "./store";
 
-export type Mode = "power" | "den";
+export type Mode = State["mode"];
 type Home = "side" | "right" | "bottom";
 
 export interface PanelSpec {
@@ -60,14 +60,16 @@ const DOCK_KEY = "kuma.dock";
 const MODE_KEY = "kuma.mode";
 const MOVABLE_KEY = "kuma.dock.movable";
 
-interface Frame { root: HTMLElement; body: HTMLElement; spec: PanelSpec }
+/** A panel's own container, for when it floats or has a window: its head's slots kept. */
+interface Frame { root: HTMLElement; body: HTMLElement; spec: PanelSpec; tools: HTMLElement; note: HTMLElement; pop: HTMLButtonElement }
 /** A group's elements, kept across draws so nothing on screen is rebuilt. */
 interface GroupEls { root: HTMLElement; tabs: HTMLElement; note: HTMLElement; tools: HTMLElement; body: HTMLElement }
 
-const stored = (key: string): string | null => { try { return localStorage.getItem(key); } catch { return null; } };
-const parsed = (key: string): unknown => { try { return JSON.parse(stored(key) ?? "null"); } catch { return null; } };
-const read = <T>(key: string, fallback: T): T => ({ ...fallback, ...(parsed(key) as Partial<T> | null) });
-const write = (key: string, v: unknown) => { try { localStorage.setItem(key, typeof v === "string" ? v : JSON.stringify(v)); } catch { /* this session only */ } };
+const parsed = (key: string): unknown => { try { return JSON.parse(loadLocal(key) ?? "null"); } catch { return null; } };
+/** A floating panel's size before it has been given one. */
+const floatSize = (spec: PanelSpec) => ({ w: spec.size?.w ?? 300, h: spec.size?.h ?? 340 });
+/** Past the window's edge: where a drag becomes a window of its own. */
+const pastEdge = (ev: PointerEvent) => ev.clientX <= 0 || ev.clientY <= 0 || ev.clientX >= innerWidth - 1 || ev.clientY >= innerHeight - 1;
 
 /** Make `parent`'s children exactly `kids`, in order, moving only what is out of place. An
  *  element re-inserted where it already is would still be detached and attached again —
@@ -81,15 +83,15 @@ class PanelHost {
   private specs = new Map<string, PanelSpec>();
   private frames = new Map<string, Frame>();
   private floating: Record<Mode, Floating> = {
-    power: read<Floating>(KEY + "power", { open: [], geom: {} }),
-    den: read<Floating>(KEY + "den", { open: [], geom: {} }),
+    power: loadLocalJSON<Floating>(KEY + "power", { open: [], geom: {} }),
+    den: loadLocalJSON<Floating>(KEY + "den", { open: [], geom: {} }),
   };
   /** Power's dock: the stored one, read once the panels are registered (`layoutDock`). */
   private tree: Node = defaultTree({ side: [], right: [], bottom: [] });
   /** Whether power's panels can be moved: dragged to another group or place, floated, or
    *  closed. Off, the dock holds still — tabs still switch, seams still resize — so a drag
    *  that started on a tab by accident never rearranges anything. Off by default. */
-  private movable = stored(MOVABLE_KEY) === "1";
+  private movable = loadLocal(MOVABLE_KEY) === "1";
 
   get canMove(): boolean {
     return this.movable;
@@ -97,12 +99,12 @@ class PanelHost {
 
   setMovable(on: boolean): void {
     this.movable = on;
-    write(MOVABLE_KEY, on ? "1" : "0");
+    this.keep(MOVABLE_KEY, on ? "1" : "0");
     this.apply();
   }
 
   /** The group each panel was last closed out of: where its letter puts it back. */
-  private home: Record<string, string> = read<Record<string, string>>(KEY + "home", {});
+  private home: Record<string, string> = loadLocalJSON<Record<string, string>>(KEY + "home", {});
   private nodeEls = new Map<string, HTMLElement>();
   private groupEls = new Map<string, GroupEls>();
   private tabEls = new Map<string, HTMLElement>();
@@ -119,23 +121,15 @@ class PanelHost {
 
   /** The mode remembered, before anything is drawn. */
   initialMode(): Mode {
-    return stored(MODE_KEY) === "den" ? "den" : "power";
+    return loadLocal(MODE_KEY) === "den" ? "den" : "power";
   }
 
   register(spec: PanelSpec): void {
     this.specs.set(spec.id, spec);
   }
 
-  spec(id: string): PanelSpec | undefined {
-    return this.specs.get(id);
-  }
-
   get all(): PanelSpec[] {
     return [...this.specs.values()];
-  }
-
-  isOut(id: string): boolean {
-    return this.out.has(id);
   }
 
   isFloating(id: string): boolean {
@@ -143,7 +137,7 @@ class PanelHost {
   }
 
   /** In power's dock, whether or not its tab is the one showing. */
-  isDocked(id: string): boolean {
+  private isDocked(id: string): boolean {
     return panelsIn(this.tree).includes(id);
   }
 
@@ -156,9 +150,19 @@ class PanelHost {
 
   setMode(mode: Mode): void {
     if (mode === store.state.mode) return;
-    write(MODE_KEY, mode);
+    this.keep(MODE_KEY, mode);
+    // The page says which mode it is in before anything is told: what follows the mode
+    // (the frame's padding, den's viewfinder) measures a page already laid out for it.
+    this.markApp(mode);
     store.set({ mode });
     this.apply();
+  }
+
+  private markApp(mode: Mode) {
+    const app = document.getElementById("app")!;
+    app.classList.toggle("den", mode === "den");
+    app.classList.toggle("power", mode === "power");
+    app.classList.toggle("dock-locked", !this.movable);
   }
 
   /**
@@ -177,20 +181,15 @@ class PanelHost {
     this.flash(id);
   }
 
-  /** On screen, wherever it is: called back from its window, or shown. */
-  private front(id: string) {
-    if (this.out.has(id)) this.recall(id);
-    else this.show(id);
-  }
-
-  /** Make sure `id` is up, without sending it away when it already is. */
+  /** Make sure `id` is up, without sending it away when it already is — called back from a
+   *  window of its own, too: what asks for a panel wants it where it is looking. */
   show(id: string): void {
-    const spec = this.specs.get(id);
-    if (!spec || this.out.has(id)) return;
+    if (!this.specs.has(id)) return;
+    if (this.out.has(id)) { this.recall(id); return; }
     if (store.state.mode === "den") { if (!this.isFloating(id)) this.setFloating(id, true); return; }
     if (this.isFloating(id)) return;
     const g = groupOf(this.tree, id);
-    if (g) { if (g.active !== id) { g.active = id; this.saveDock(); this.apply(); } return; }
+    if (g) { if (g.active !== id) { g.active = id; this.commit(); } return; }
     this.dockHome(id);
   }
 
@@ -201,8 +200,7 @@ class PanelHost {
     if (open) l.open.push(id);
     // In power a panel is in the dock or floating, never both.
     if (open && store.state.mode === "power") this.tree = remove(this.tree, id);
-    this.saveAll();
-    this.apply();
+    this.commit();
   }
 
   /** Back into the dock: the group it was closed out of, or the place its kind lives. */
@@ -216,15 +214,13 @@ class PanelHost {
       group.tabs.push(id);
       group.active = id;
     } else if (spec.dock) {
-      const zone = spec.dock === "side" ? "left" : spec.dock === "right" ? "right" : "bottom";
-      const target: Target = spec.dock === "bottom" ? { root: "bottom" } : { node: "viewer", zone };
+      const target: Target = spec.dock === "bottom" ? { root: "bottom" } : { node: "viewer", zone: spec.dock === "side" ? "left" : "right" };
       this.tree = insert(this.tree, id, target, this.rect(spec.dock === "bottom" ? this.dockEl() : document.getElementById("center")!), spec.size);
     } else {
       this.setFloating(id, true);
       return;
     }
-    this.saveDock();
-    this.apply();
+    this.commit();
   }
 
   /** Close a docked panel: out of the dock, remembered by the group it left. */
@@ -232,8 +228,7 @@ class PanelHost {
     const g = groupOf(this.tree, id);
     if (g) this.home[id] = g.id;
     this.tree = remove(this.tree, id);
-    this.saveAll();
-    this.apply();
+    this.commit();
   }
 
   /** The dock as it starts: each panel with a home in the place it lives, in the order they
@@ -248,8 +243,7 @@ class PanelHost {
   resetDock(): void {
     this.tree = this.firstTree();
     this.floating.power.open = [];
-    this.saveAll();
-    this.apply();
+    this.commit();
   }
 
   private flash(id: string) {
@@ -260,12 +254,21 @@ class PanelHost {
     setTimeout(() => box?.classList.remove("flash"), 400);
   }
 
-  private saveDock() { write(DOCK_KEY, this.tree); }
-  private saveAll() {
-    this.saveDock();
-    write(KEY + "power", this.floating.power);
-    write(KEY + "den", this.floating.den);
-    write(KEY + "home", this.home);
+  /** Keep a piece of the layout — never from a panel's own window, whose page has no dock
+   *  and would write over the editor window's. */
+  private keep(key: string, v: unknown) {
+    if (!this.solo) saveLocal(key, typeof v === "string" ? v : JSON.stringify(v));
+  }
+  private save() {
+    this.keep(DOCK_KEY, this.tree);
+    this.keep(KEY + "power", this.floating.power);
+    this.keep(KEY + "den", this.floating.den);
+    this.keep(KEY + "home", this.home);
+  }
+  /** Keep the layout as it now is, and put it on screen. */
+  private commit() {
+    this.save();
+    this.apply();
   }
 
   private rect(e: HTMLElement): { w: number; h: number } {
@@ -281,7 +284,14 @@ class PanelHost {
   layoutDock(): void {
     if (this.solo) return;
     this.tree = sanitize(parsed(DOCK_KEY), new Set(this.specs.keys()), this.firstTree());
-    reconcile(this.dockEl(), [this.nodeEl(this.tree, new Set())]);
+    this.drawDock(new Set());
+  }
+
+  /** The tree into the dock. Its root fills the dock, whatever it was before it was root. */
+  private drawDock(away: Set<string>) {
+    const root = this.nodeEl(this.tree, away);
+    root.style.flex = "";
+    reconcile(this.dockEl(), [root]);
   }
 
   /** Put every panel where the mode says, parking the rest. Called on every change of mode,
@@ -290,10 +300,7 @@ class PanelHost {
   apply(): void {
     if (this.solo) return;
     const mode = store.state.mode;
-    const app = document.getElementById("app")!;
-    app.classList.toggle("den", mode === "den");
-    app.classList.toggle("power", mode === "power");
-    app.classList.toggle("dock-locked", !this.movable);
+    this.markApp(mode);
     const parking = document.getElementById("parking")!;
     const l = this.floating[mode];
     const floating = l.open.filter((id) => this.specs.has(id) && !this.out.has(id) && (mode === "den" || !this.isDocked(id)));
@@ -304,17 +311,26 @@ class PanelHost {
     for (const [id, f] of this.frames) {
       if (!docked.includes(id) && !floating.includes(id) && f.root.parentElement !== parking) parking.appendChild(f.root);
     }
-    reconcile(this.dockEl(), [this.nodeEl(this.tree, away)]);
+    this.drawDock(away);
     const layer = this.layer();
     for (const id of floating) {
       const f = this.frame(id);
       f.root.className = "panel floating";
       f.root.hidden = false;
       if (f.root.parentElement !== layer) layer.appendChild(f.root);
-      this.attach(f, f.root.querySelector(".ptools")!, f.root.querySelector(".pnote-slot")!);
-      this.place(f, l.geom[id] ?? this.defaultGeom(f.spec, floating.indexOf(id)));
+      this.attach(f, f.tools, f.note);
     }
+    this.reflow();
     document.dispatchEvent(new CustomEvent("kuma:panels"));
+  }
+
+  /** Floating panels into place, on their edges: after `apply`, and as the window resizes
+   *  (once a frame — the dock is flex and follows by itself). */
+  reflow(): void {
+    const l = this.floating[store.state.mode];
+    const floating = [...this.layer().querySelectorAll<HTMLElement>(":scope > .panel.floating")].map((e) => this.frames.get(e.dataset.panel!)!);
+    const layer = this.layer().getBoundingClientRect();
+    floating.forEach((f, i) => this.place(f, l.geom[f.spec.id] ?? this.defaultGeom(f.spec, i, layer), layer));
   }
 
   // ---- the dock, drawn ---------------------------------------------------------------
@@ -451,7 +467,7 @@ class PanelHost {
             if (b !== fill) b.size = clamp(b0 - d);
             for (const n of [a, b]) if (n !== fill) this.elOf(n).style.flex = `${grow} 1 ${n.size}px`;
           },
-          end: (moved) => { g!.classList.remove("on"); if (moved) this.saveDock(); },
+          end: (moved) => { g!.classList.remove("on"); if (moved) this.save(); },
         });
       });
     }
@@ -486,6 +502,31 @@ class PanelHost {
     return { target: { node: viewer ? "viewer" : hit.dataset.group!, zone }, box: half(box, zone, 0.5) };
   }
 
+  /**
+   * Follow a drag that can end in the dock or past the window's edge: where it would land is
+   * shown as it moves. `finish` clears that, and says whether the drop docked the panel or
+   * gave it a window — otherwise it is the caller's to place.
+   */
+  private dropTracker() {
+    let at: ReturnType<PanelHost["targetAt"]> = null;
+    let outside = false;
+    return {
+      move: (ev: PointerEvent) => {
+        outside = pastEdge(ev);
+        // Under the pointer, not the panel's box: that is what is asked where it lands.
+        at = this.targetAt(ev.clientX, ev.clientY);
+        this.dropHint(at);
+      },
+      finish: (id: string, moved: boolean): boolean => {
+        this.dropHint(null);
+        if (!moved) return false;
+        if (outside) { this.popOut(id); return true; }
+        if (at) { this.dock(id, at.target); return true; }
+        return false;
+      },
+    };
+  }
+
   /** Show where a drop would land. */
   private dropHint(at: { box: DOMRect } | null) {
     let hint = document.getElementById("dock-drop");
@@ -498,10 +539,10 @@ class PanelHost {
    *  window's edge for a window of its own. A press that does not move shows it. */
   private dragTab(e: PointerEvent, id: string) {
     // Locked: a press on a tab only shows it (or calls it back from its window).
-    if (!this.movable) { this.front(id); return; }
+    if (!this.movable) { this.show(id); return; }
     const spec = this.specs.get(id)!;
+    const drop = this.dropTracker();
     let ghost: HTMLElement | null = null;
-    let at: ReturnType<PanelHost["targetAt"]> = null;
     let pointer = { x: e.clientX, y: e.clientY };
     dragPointer(e, {
       axes: "xy",
@@ -513,31 +554,26 @@ class PanelHost {
           document.body.appendChild(ghost);
         }
         Object.assign(ghost.style, { left: `${ev.clientX + 12}px`, top: `${ev.clientY + 10}px` });
-        at = this.targetAt(ev.clientX, ev.clientY);
-        this.dropHint(at);
+        drop.move(ev);
       },
       end: (moved) => {
         ghost?.remove();
-        this.dropHint(null);
-        if (!moved) { this.front(id); return; }
-        const outside = pointer.x <= 0 || pointer.y <= 0 || pointer.x >= innerWidth - 1 || pointer.y >= innerHeight - 1;
-        if (outside) { this.popOut(id); return; }
-        if (at) { this.dock(id, at.target); return; }
+        if (drop.finish(id, moved)) return;
+        if (!moved) { this.show(id); return; }
         // Off the dock (over the top bar, the rail): it floats where it was let go.
         const layer = this.layer().getBoundingClientRect();
-        const w = spec.size?.w ?? 300, h = spec.size?.h ?? 340;
-        this.floating.power.geom[id] = { x: pointer.x - layer.left - 40, y: pointer.y - layer.top - 10, w, h };
+        this.floating.power.geom[id] = { x: pointer.x - layer.left - 40, y: pointer.y - layer.top - 10, ...floatSize(spec) };
         this.setFloating(id, true);
       },
     });
   }
 
   /** Put `id` at `target` in the dock, wherever it was before (a group, or floating). */
-  dock(id: string, target: Target): void {
+  private dock(id: string, target: Target): void {
     const from = groupOf(this.tree, id);
     // Onto its own group, alone in it: nowhere new to go.
     if (from && "node" in target && target.node === from.id && from.tabs.length === 1) return;
-    if (from && "node" in target && target.node === from.id && target.zone === "center") { from.active = id; this.apply(); return; }
+    if (from && "node" in target && target.node === from.id && target.zone === "center") { from.active = id; this.commit(); return; }
     const spec = this.specs.get(id)!;
     const node = "node" in target ? find(this.tree, target.node) : this.tree;
     const measured = node ? this.rect(this.elOf(node)) : this.rect(this.dockEl());
@@ -546,8 +582,7 @@ class PanelHost {
     if (!panelsIn(next).includes(id) || !hasViewer(next)) return;
     this.tree = next;
     this.floating.power.open = this.floating.power.open.filter((x) => x !== id);
-    this.saveAll();
-    this.apply();
+    this.commit();
   }
 
   /** The body, the tools and the note go in the container on screen; `show` lets a panel
@@ -562,9 +597,9 @@ class PanelHost {
     f.spec.show?.();
   }
 
-  private defaultGeom(spec: PanelSpec, i: number): Geom {
-    const layer = this.layer().getBoundingClientRect();
-    const w = spec.size?.w ?? 300, h = Math.min(spec.size?.h ?? 340, layer.height - 40);
+  private defaultGeom(spec: PanelSpec, i: number, layer: DOMRect): Geom {
+    const { w } = floatSize(spec);
+    const h = Math.min(floatSize(spec).h, layer.height - 40);
     // Down the left then the right, so two summoned panels do not land on each other.
     if (spec.dock === "bottom") return { x: 30, y: Math.max(20, layer.height - h - 20), w: Math.min(w, layer.width - 60), h };
     const right = i % 2 === 1;
@@ -572,8 +607,9 @@ class PanelHost {
     return { x: right ? layer.width - w - 28 : 28, y: 68 + Math.floor(i / 2) * 40, w, h };
   }
 
-  private place(f: Frame, g: Geom) {
-    const layer = this.layer().getBoundingClientRect();
+  /** Put a floating panel at `g` in the floating layer (`layer`, measured by the caller once
+   *  for every panel and every move rather than once each). */
+  private place(f: Frame, g: Geom, layer: DOMRect) {
     const w = Math.min(g.w, layer.width), h = Math.min(g.h, layer.height);
     let x = Math.min(Math.max(0, g.x), Math.max(0, layer.width - w));
     let y = Math.min(Math.max(0, g.y), Math.max(0, layer.height - h));
@@ -597,12 +633,12 @@ class PanelHost {
     const note = el("span", "pnote-slot");
     const tools = el("span", "ptools");
     const pop = button("⧉", () => this.popOut(id), "Open in a window of its own (or drag it past the window's edge)", "pbtn pop");
-    const close = button("×", () => this.solo ? this.leave() : this.setFloating(id, false), "Close", "pbtn pfloat-only");
+    const close = button("×", () => this.solo ? this.leave() : this.setFloating(id, false), "Close", "pbtn");
     head.append(tile, title, note, el("span", "spacer"), tools, pop, close);
     if (spec.note) spec.note.classList.add("pnote");
     const body = el("div", "panel-body");
     root.append(head, body);
-    f = { root, body, spec };
+    f = { root, body, spec, tools, note, pop };
     this.frames.set(id, f);
     this.dragging(f, head);
     this.resizers(f);
@@ -615,25 +651,19 @@ class PanelHost {
   private dragging(f: Frame, head: HTMLElement) {
     head.addEventListener("pointerdown", (e) => {
       if (e.button !== 0 || !f.root.classList.contains("floating") || (e.target as HTMLElement).closest("button, input, select")) return;
-      const layer = this.layer().getBoundingClientRect();
-      const start = f.root.getBoundingClientRect();
-      const g: Geom = { x: start.left - layer.left, y: start.top - layer.top, w: start.width, h: start.height };
-      let outside = false;
+      const { layer, g } = this.geomOf(f);
+      const x0 = g.x, y0 = g.y;
+      const drop = this.dropTracker();
       let hint: HTMLElement | null = null;
-      let at: ReturnType<PanelHost["targetAt"]> = null;
       f.root.classList.add("dragging");
       dragPointer(e, {
         axes: "xy",
         move: (dx, dy, ev) => {
-          g.x = start.left - layer.left + dx;
-          g.y = start.top - layer.top + dy;
+          g.x = x0 + dx;
+          g.y = y0 + dy;
           g.edge = undefined;
-          this.place(f, g);
-          outside = ev.clientX <= 0 || ev.clientY <= 0 || ev.clientX >= innerWidth - 1 || ev.clientY >= innerHeight - 1;
-          // Over the dock, where it would land — under the panel being dragged, so the
-          // pointer, not the panel's box, is what is asked.
-          at = this.targetAt(ev.clientX, ev.clientY);
-          this.dropHint(at);
+          this.place(f, g, layer);
+          drop.move(ev);
           const side = g.x <= 0 ? "left" : g.x + g.w >= layer.width ? "right" : null;
           if (side && !hint) {
             hint = el("div", `edge-hint ${side}`);
@@ -644,18 +674,15 @@ class PanelHost {
         },
         end: (moved) => {
           hint?.remove();
-          this.dropHint(null);
           f.root.classList.remove("dragging");
-          if (!moved) return;
-          if (outside) { this.popOut(f.spec.id); return; }
-          if (at) { this.dock(f.spec.id, at.target); return; }
+          if (drop.finish(f.spec.id, moved) || !moved) return;
           // Snapped: flush with the edge it was dropped near, and kept there.
           if (g.x < SNAP) g.edge = "left";
           else if (layer.width - (g.x + g.w) < SNAP) g.edge = "right";
           else if (layer.height - (g.y + g.h) < SNAP && f.spec.dock === "bottom") g.edge = "bottom";
           this.floating[store.state.mode].geom[f.spec.id] = g;
-          this.place(f, g);
-          this.saveAll();
+          this.place(f, g, layer);
+          this.save();
         },
       });
     });
@@ -675,11 +702,12 @@ class PanelHost {
       h.addEventListener("pointerdown", (e) => {
         if (e.button !== 0 || !f.root.classList.contains("floating")) return;
         e.stopPropagation();
-        const layer = this.layer().getBoundingClientRect();
-        const r = f.root.getBoundingClientRect();
-        const x0 = r.left - layer.left, y0 = r.top - layer.top, w0 = r.width, h0 = r.height;
+        const { layer, g } = this.geomOf(f);
+        const x0 = g.x, y0 = g.y, w0 = g.w, h0 = g.h;
         const saved = this.floating[store.state.mode].geom[f.spec.id];
-        const g: Geom = { x: x0, y: y0, w: saved?.w ?? w0, h: h0, edge: saved?.edge };
+        // A panel held against the bottom is drawn full width: its own width is the kept one.
+        g.w = saved?.w ?? w0;
+        g.edge = saved?.edge;
         // The side held against an edge is the one that lets go when it is dragged.
         if ((g.edge === "left" && dir.includes("w")) || (g.edge === "right" && dir.includes("e")) || (g.edge === "bottom" && dir.includes("s"))) g.edge = undefined;
         const clamp = (v: number, lo: number, hi: number) => Math.round(Math.max(lo, Math.min(hi, v)));
@@ -691,17 +719,25 @@ class PanelHost {
             if (dir.includes("w")) { g.w = clamp(w0 - dx, MIN_W, x0 + w0); g.x = x0 + w0 - g.w; }
             if (dir.includes("s")) g.h = clamp(h0 + dy, MIN_H, layer.height - y0);
             if (dir.includes("n")) { g.h = clamp(h0 - dy, MIN_H, y0 + h0); g.y = y0 + h0 - g.h; }
-            this.place(f, g);
+            this.place(f, g, layer);
           },
           end: (moved) => {
             f.root.classList.remove("resizing");
             if (!moved) return;
             this.floating[store.state.mode].geom[f.spec.id] = g;
-            this.saveAll();
+            this.save();
           },
         });
       });
     }
+  }
+
+  /** Where a floating panel is now, in the floating layer, and the layer: what a drag or a
+   *  resize starts from. */
+  private geomOf(f: Frame): { layer: DOMRect; g: Geom } {
+    const layer = this.layer().getBoundingClientRect();
+    const r = f.root.getBoundingClientRect();
+    return { layer, g: { x: r.left - layer.left, y: r.top - layer.top, w: r.width, h: r.height } };
   }
 
 
@@ -718,6 +754,8 @@ class PanelHost {
     if (!spec || this.out.has(id)) return;
     const shown = this.frames.get(id)?.root;
     const r = shown?.isConnected && !shown.hidden ? shown.getBoundingClientRect() : null;
+    // As big as it is here, and no smaller than a window worth having; the shell keeps it
+    // within the screen.
     const w = Math.round(Math.max(r?.width ?? 0, spec.size?.w ?? 360)), h = Math.round(Math.max(r?.height ?? 0, spec.size?.h ?? 480));
     const url = `${location.pathname}?panel=${encodeURIComponent(id)}`;
     const app = desktop();
@@ -743,7 +781,7 @@ class PanelHost {
   }
 
   /** Bring a panel back from its window, closing the window if it is still there. */
-  recall(id: string): void {
+  private recall(id: string): void {
     this.onRecall(id);
     this.windows.get(id)?.close();
     this.returned(id);
@@ -771,12 +809,11 @@ class PanelHost {
     const f = this.frame(id);
     f.root.className = "panel solo";
     // Its ⧉ means "back into the editor", which is closing this window.
-    const pop = f.root.querySelector<HTMLButtonElement>(".pop")!;
-    pop.textContent = "↙";
-    pop.title = "Put it back in the editor window";
-    pop.onclick = () => this.leave();
+    f.pop.textContent = "↙";
+    f.pop.title = "Put it back in the editor window";
+    f.pop.onclick = () => this.leave();
     this.layer().appendChild(f.root);
-    this.attach(f, f.root.querySelector(".ptools")!, f.root.querySelector(".pnote-slot")!);
+    this.attach(f, f.tools, f.note);
     document.title = `${spec.title} — kuma`;
     return true;
   }
@@ -808,6 +845,8 @@ export function panelCommands(): void {
   });
   for (const s of panels.all) command(`panel.${s.id}.window`, `Window: ${s.title}`, () => panels.popOut(s.id));
   for (const s of panels.all) command(`panel.${s.id}.float`, `Float: ${s.title}`, () => panels.setFloating(s.id, true));
-  // The window may resize under floating panels: keep them on screen and on their edges.
-  addEventListener("resize", () => panels.apply());
+  // The window may resize under floating panels: keep them on screen and on their edges,
+  // once a frame however fast the window is dragged.
+  let pending = 0;
+  addEventListener("resize", () => { if (!pending) pending = requestAnimationFrame(() => { pending = 0; panels.reflow(); }); });
 }

@@ -6,12 +6,13 @@
 // the sequence with its revisions placed where they edited and its pins, and the keys that
 // summon the panels. Everything here reads the store; none of it is the document.
 
-import { agentView, bear, setBear, watchAgent } from "../agent";
+import { agentView, bear, pinsOn, setBear, watchAgent } from "../agent";
 import { Cmd, run } from "../commands";
 import { button, dragPointer, el } from "../dom";
-import { icon } from "../icons";
 import { panels } from "../panelhost";
 import { keysFor } from "../shortcuts";
+import { panelKeys } from "./rail";
+import { playButton } from "./transport";
 import { binName, fmtTime, store } from "../store";
 import type { Activity, HistoryEntry } from "../types";
 
@@ -79,7 +80,7 @@ export function mountDen(host: HTMLElement): void {
 
   // ---- the rail
   const rail = el("div", "den-rail");
-  const play = button(icon("play"), () => run(Cmd.togglePlay), "Play/pause (Space)", "den-play");
+  const play = playButton("den-play");
   const now = el("span", "den-time");
   const end = el("span", "den-time end");
   const track = el("div", "den-track");
@@ -89,12 +90,7 @@ export function mountDen(host: HTMLElement): void {
   track.append(ticks, marks, head);
   const keys = el("div", "den-keys");
   // The panels that have a key, in the order they were registered.
-  const keyEls = panels.all.filter((spec) => spec.key).map((spec) => {
-    const b = button(spec.letter, () => panels.toggle(spec.id), `${spec.title} (${keysFor(`panel.${spec.id}`)})`, `den-key${spec.id === "agent" ? " agent" : ""}`);
-    b.dataset.panel = spec.id;
-    keys.appendChild(b);
-    return b;
-  });
+  keys.append(...panelKeys(panels.all.filter((spec) => spec.key), "den-key", (b, spec) => { b.title = `${spec.title} (${keysFor(`panel.${spec.id}`)})`; }));
   const pin = button("", () => run(Cmd.addPin), `Leave a pin at the playhead: a note on this frame for the agent (${keysFor(Cmd.addPin)})`, "den-pin");
   pin.append(el("span", "dot"), "pin");
   rail.append(play, now, track, end, keys, pin);
@@ -117,24 +113,25 @@ export function mountDen(host: HTMLElement): void {
     if (!den()) return;
     now.textContent = fmtTime(s.playhead, store.fps);
     head.style.left = x(s.playhead);
-    if (play.dataset.playing !== String(s.playing)) {
-      play.dataset.playing = String(s.playing);
-      play.replaceChildren(icon(s.playing ? "pause" : "play"));
-    }
   };
-  store.select((s) => [s.playhead, s.playing], drawHead);
+  store.select((s) => [s.playhead], drawHead);
+  let ticked = 0;
   store.select((s) => [s.project, s.sequence, s.history, s.pins, s.mode], (s) => {
     if (!den()) return;
     d = Math.max(store.duration, 1);
     end.textContent = fmtTime(d, store.fps);
     drawHead(s);
     // A tick a second, a taller one every ten — denser and it is a texture, not a scale.
-    const step = d > 600 ? 10 : d > 120 ? 5 : 1;
-    ticks.replaceChildren();
-    for (let t = 0; t <= d; t += step) {
-      const tk = el("span", (t / step) % 10 === 0 ? "big" : "");
-      tk.style.left = x(t);
-      ticks.appendChild(tk);
+    // They depend on the length alone.
+    if (d !== ticked) {
+      ticked = d;
+      const step = d > 600 ? 10 : d > 120 ? 5 : 1;
+      ticks.replaceChildren();
+      for (let t = 0; t <= d; t += step) {
+        const tk = el("span", (t / step) % 10 === 0 ? "big" : "");
+        tk.style.left = x(t);
+        ticks.appendChild(tk);
+      }
     }
     marks.replaceChildren();
     // The last revisions that edited something on this sequence, where they edited it.
@@ -155,7 +152,7 @@ export function mountDen(host: HTMLElement): void {
       m.onpointerdown = (e) => e.stopPropagation();
       marks.appendChild(m);
     });
-    for (const m of s.pins.filter((p) => p.sequence === s.sequence)) {
+    for (const m of pinsOn(s.pins, s.sequence)) {
       const p = el("div", "dr-pin");
       p.style.left = x(m.t);
       p.title = m.label;
@@ -164,9 +161,6 @@ export function mountDen(host: HTMLElement): void {
       marks.appendChild(p);
     }
   });
-  const markKeys = () => { for (const k of keyEls) k.classList.toggle("on", panels.isFloating(k.dataset.panel!)); };
-  document.addEventListener("kuma:panels", markKeys);
-  markKeys();
 }
 
 /** The agent's last look at what is on screen: a sample of the open sequence (the master

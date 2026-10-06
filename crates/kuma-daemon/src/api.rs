@@ -348,11 +348,14 @@ async fn markers(State(st): S) -> Json<MarkerList> {
 struct TickMarker {
     id: String,
     done: bool,
+    /// Who ticks it, as an edit's origin: the answer's `done_by` is its author.
+    #[serde(default = "default_origin")]
+    origin: String,
 }
 
 /// Tick a marker done by hand, or untick it.
 async fn tick_marker(State(st): S, Json(req): Json<TickMarker>) -> ApiResult {
-    if !st.tick_marker(&req.id, req.done) {
+    if !st.tick_marker(&req.id, req.done, &req.origin) {
         return Err(ApiError::not_found(format!("no marker `{}`: `GET /api/markers` lists them", req.id)));
     }
     Ok(Json(json!({ "id": req.id, "done": req.done })))

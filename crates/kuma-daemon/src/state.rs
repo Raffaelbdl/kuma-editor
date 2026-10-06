@@ -568,7 +568,9 @@ impl AppState {
 
     /// Tick a marker done by hand (the current revision, by the user), or untick it, which
     /// forgets an edit's answer too, and send the list. `false` when there is no such marker.
-    pub fn tick_marker(&self, id: &str, done: bool) -> bool {
+    /// Tick a marker done, or untick it. `origin` says who (`ui`, `cli: …`), read as an
+    /// edit's author is, so a tick from anywhere but the editor is not taken for a person's.
+    pub fn tick_marker(&self, id: &str, done: bool, origin: &str) -> bool {
         let mut answers = lock(&self.answers);
         let revision = {
             let p = read(&self.project);
@@ -578,7 +580,7 @@ impl AppState {
             p.revision
         };
         if done {
-            answers.insert(id.to_string(), crate::markers::Done { revision, by: "user".into() });
+            answers.insert(id.to_string(), crate::markers::Done { revision, by: crate::history::author(origin).into() });
         } else {
             answers.remove(id);
         }

@@ -3390,3 +3390,14 @@ because it is the part deliberately left out.
   element rather than seven. The drag and trim code reads clips and rows back out of the
   DOM by their data attributes, so a kept element has to stay the element those
   attributes describe.
+
+- **One way for a request to say who asks** — open, deliberately not yet done. The idea
+  is shared — who asked is read off an `origin`, by `history::author` — but each route
+  writes it down its own way: jobs take `Asked<T>` (`origin` and the agent's `call`, kept
+  as `asked_by`); edits (the patch, imports, media) an `origin` that defaults to `ui`;
+  undo, redo and restore an optional one, since a step is the same whoever asks; and the
+  marker tick took none until its `done_by` was found always reading `user` — it takes an
+  edit's `origin` now. Unifying them was weighed and put off: nothing reads an author
+  wrongly, and the two defaults are meant. When the next route needs to know who asks,
+  make `Asked<T>` the one way (an `origin()` with the edit's `ui` default beside the
+  optional one) rather than adding a fifth.

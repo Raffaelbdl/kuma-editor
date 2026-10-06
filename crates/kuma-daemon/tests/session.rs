@@ -415,14 +415,16 @@ async fn markers_are_listed_answered_and_ticked() {
     assert_eq!((&markers()[2]["done"], &markers()[2]["waiting"]), (&Value::Null, &json!(true)), "an untick forgets the answer too");
     post(&addr, "/api/markers/done", json!({ "id": "main@3.000", "done": true }));
     assert_eq!(markers()[1]["done_by"], "user", "any marker can be ticked");
+    post(&addr, "/api/markers/done", json!({ "id": "main@3.000", "done": true, "origin": "cli: tick" }));
+    assert_eq!(markers()[1]["done_by"], "other", "a tick says who ticked it, as an edit does");
     let (status, _) = call(&addr, "POST", "/api/markers/done", json!({ "id": "main@9.000", "done": true }));
     assert!(status.contains("404"), "no marker there: {status}");
 
     let sent = drain(&mut events);
     let types: Vec<&str> = sent.iter().map(|v| v["type"].as_str().unwrap()).collect();
-    assert_eq!(types, ["project_changed", "history", "markers", "markers", "markers", "markers"]);
+    assert_eq!(types, ["project_changed", "history", "markers", "markers", "markers", "markers", "markers"]);
     assert_eq!(sent[2]["markers"][2]["done"], r["revision"], "the answer is in the list sent");
-    assert_eq!(sent[5], json!({ "type": "markers", "markers": markers() }), "the last list sent is the list");
+    assert_eq!(sent[6], json!({ "type": "markers", "markers": markers() }), "the last list sent is the list");
 }
 
 /// The markers are sent when an edit, an undo or a redo changes one, and not for an edit

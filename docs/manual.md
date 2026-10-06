@@ -495,8 +495,8 @@ file, and gone when the daemon stops:
   with `id` `<sequence>@<t to 3 decimals>`, `index` its number in its sequence, `author`
   `user`, `agent` or `other` (read off `origin` as an edit's is; none is `user`), `done` the
   revision of the latest edit that named it in `answers` (`apply_edits`' `answers`, or the
-  patch body's) or of a tick by hand (`POST /api/markers/done {"id", "done"}`; unticking
-  clears both), `done_by` who did, and `waiting` whether it is a request still open: a
+  patch body's) or of a tick by hand (`POST /api/markers/done {"id", "done", "origin"?}`, the
+  origin an edit's, `ui` when absent; unticking clears both), `done_by` who did, and `waiting` whether it is a request still open: a
   label, an author other than the agent, and not done.
 
 Each change is broadcast on `/api/events` beside `project_changed` and `job`: `activity` and

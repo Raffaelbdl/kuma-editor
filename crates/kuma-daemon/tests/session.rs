@@ -132,7 +132,7 @@ async fn a_call_is_credited_only_with_the_revision_it_made() {
     let (state, addr, _dir) = daemon().await;
     let rev = revision(&state);
     let id = |v: Value| v["id"].as_u64().unwrap();
-    let made = post(&addr, "/api/project/patch", json!({ "patch": [{ "op": "replace", "path": "/bin/black/name", "value": "Ink" }], "origin": "claude: rename" }))["revision"].as_u64().unwrap();
+    let made = post(&addr, "/api/project/patch", json!({ "patch": [{ "op": "replace", "path": "/bin/black/name", "value": "Ink" }], "origin": "mcp: rename" }))["revision"].as_u64().unwrap();
     post(&addr, "/api/project/patch", json!({ "patch": [{ "op": "replace", "path": "/bin/black/name", "value": "Coal" }], "origin": "ui" }));
     assert_eq!(revision(&state), rev + 2);
 
@@ -159,10 +159,11 @@ fn finished(addr: &str, job: u64) -> (Value, Value) {
     }
 }
 
-/// A job a tool call asked for (`call` in its request) is that call's activity: recorded
-/// running when the job is created, with the job's params, and finished when the job ends,
-/// however it ends. A job nobody's call asked for has none, and clearing finished jobs
-/// leaves the activity alone.
+/// A job the agent asked for (`origin: "mcp: …"` and `call` in its request) is that call's
+/// activity: recorded running when the job is created, with the job's params, and finished
+/// when the job ends, however it ends. Every job says who asked; one the editor, the command
+/// line or an old client asked for has no activity, and clearing finished jobs leaves the
+/// activity alone.
 #[tokio::test(flavor = "multi_thread")]
 async fn a_job_an_agent_asked_for_is_its_activity() {
     let (state, addr, _dir) = daemon().await;
@@ -170,38 +171,48 @@ async fn a_job_an_agent_asked_for_is_its_activity() {
     let rev = revision(&state);
 
     // Fails at once: a colour has no audio.
-    let failing = post(&addr, "/api/transcribe", json!({ "bin": "black", "call": { "tool": "transcribe", "client": "claude-code" } }))["job"].as_u64().unwrap();
+    let failing = post(&addr, "/api/transcribe", json!({ "bin": "black", "origin": "mcp: transcribe", "call": { "tool": "transcribe", "client": "claude-code" } }))["job"].as_u64().unwrap();
     let v = serde_json::to_value(events.recv().await.unwrap()).unwrap();
     assert_eq!((v["type"].as_str(), v["id"].as_u64()), (Some("job"), Some(failing)), "{v}");
     let v = serde_json::to_value(events.recv().await.unwrap()).unwrap();
     assert_eq!((v["type"].as_str(), v["tool"].as_str(), v["job"].as_u64(), v["state"].as_str()), (Some("activity"), Some("transcribe"), Some(failing), Some("running")), "{v}");
     let (r, j) = finished(&addr, failing);
-    assert_eq!(j["asked_by"], json!({ "tool": "transcribe", "client": "claude-code" }));
+    assert_eq!(j["asked_by"], json!({ "author": "agent", "origin": "mcp: transcribe", "tool": "transcribe", "client": "claude-code" }));
     assert_eq!((r["state"].as_str(), r["client"].as_str(), &r["args"]), (Some("failed"), Some("claude-code"), &json!({ "bin": "black", "clip": null })));
     assert_eq!((r["error"].as_str(), r["revision_before"].as_u64(), r["revision_after"].as_u64()), (j["message"].as_str(), Some(rev), Some(rev)));
 
     let pruned = post(&addr, "/api/cache/prune", json!({ "all": false, "call": { "tool": "prune_cache", "client": null } }))["job"].as_u64().unwrap();
     let (r, j) = finished(&addr, pruned);
     assert_eq!((r["state"].as_str(), r["client"].as_str(), j["state"].as_str()), (Some("done"), Some("agent"), Some("done")));
+    assert_eq!((j["asked_by"]["author"].as_str(), j["asked_by"]["origin"].as_str()), (Some("agent"), Some("agent: prune_cache")), "a call alone is the agent's");
     assert!(r["ended_at"].as_u64().unwrap() >= r["started_at"].as_u64().unwrap());
 
     // Done or failed (there may be no melt here), but what it looked at is known from the start.
     let rect = json!({ "x": 0, "y": 0, "w": 160, "h": 120 });
-    let sampled = post(&addr, "/api/sample/job", json!({ "t0": 1, "t1": 3, "count": 2, "rect": rect, "call": { "tool": "sample_frames", "client": "claude-code" } }))["job"].as_u64().unwrap();
+    let sampled = post(&addr, "/api/sample/job", json!({ "t0": 1, "t1": 3, "count": 2, "rect": rect, "origin": "mcp: sample_frames", "call": { "tool": "sample_frames", "client": "claude-code" } }))["job"].as_u64().unwrap();
     let (r, j) = finished(&addr, sampled);
     assert_eq!(r["sample"], json!({ "sequence": "main", "overlay": null, "times": [1.0, 3.0], "rect": rect }));
     assert_eq!(r["state"], j["state"]);
     assert_eq!(r["frames"].as_array().unwrap().is_empty(), j["state"] != "done", "{r}");
 
-    let quiet = post(&addr, "/api/cache/prune", json!({ "all": false }))["job"].as_u64().unwrap();
-    let start = std::time::Instant::now();
-    while !matches!(get(&addr, &format!("/api/jobs/{quiet}"))["state"].as_str(), Some("done" | "failed")) {
-        assert!(start.elapsed() < std::time::Duration::from_secs(60));
-        std::thread::sleep(std::time::Duration::from_millis(20));
-    }
-    assert_eq!(get(&addr, &format!("/api/jobs/{quiet}"))["asked_by"], Value::Null);
+    // Stamped as the editor's, the command line's, or not at all (an old client).
+    let settled = |body: Value| {
+        let id = post(&addr, "/api/cache/prune", body)["job"].as_u64().unwrap();
+        let start = std::time::Instant::now();
+        while !matches!(get(&addr, &format!("/api/jobs/{id}"))["state"].as_str(), Some("done" | "failed")) {
+            assert!(start.elapsed() < std::time::Duration::from_secs(60));
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        (id, get(&addr, &format!("/api/jobs/{id}"))["asked_by"].clone())
+    };
+    let (by_ui, asked) = settled(json!({ "all": false, "origin": "ui: prune" }));
+    assert_eq!(asked, json!({ "author": "user", "origin": "ui: prune", "tool": null, "client": null }));
+    let (by_cli, asked) = settled(json!({ "all": false, "origin": "cli: cache prune" }));
+    assert_eq!((asked["author"].as_str(), asked["origin"].as_str()), (Some("other"), Some("cli: cache prune")));
+    let (quiet, asked) = settled(json!({ "all": false }));
+    assert_eq!(asked, Value::Null);
     let all = get(&addr, "/api/activity")["activity"].as_array().unwrap().clone();
-    assert!(all.iter().all(|r| r["job"] != quiet), "the editor's own job is not the agent's");
+    assert!(all.iter().all(|r| ![by_ui, by_cli, quiet].contains(&r["job"].as_u64().unwrap_or_default())), "only the agent's jobs are its activity: {all:?}");
 
     post(&addr, "/api/jobs/clear", Value::Null);
     assert!(state.jobs.get(failing).is_none());
@@ -214,7 +225,7 @@ async fn a_job_an_agent_asked_for_is_its_activity() {
 async fn a_cancelled_job_finishes_its_activity() {
     use std::sync::atomic::Ordering;
     let (state, addr, _dir) = daemon().await;
-    let call = || Some(kuma_daemon::activity::Call { tool: "render".into(), client: "claude-code".into() });
+    let call = || kuma_daemon::jobs::AskedBy::new(Some("mcp: render".into()), Some(kuma_daemon::activity::Call { tool: "render".into(), client: "claude-code".into() }));
     // A stand-in render: holds the lane until cancelled.
     let lane = |state: &Arc<AppState>| {
         let s2 = state.clone();
@@ -253,7 +264,7 @@ async fn a_cancelled_job_finishes_its_activity() {
 #[tokio::test(flavor = "multi_thread")]
 async fn a_job_that_panics_ends_its_activity() {
     let (state, addr, _dir) = daemon().await;
-    let call = Some(kuma_daemon::activity::Call { tool: "bake_overlay".into(), client: "claude-code".into() });
+    let call = kuma_daemon::jobs::AskedBy::new(Some("mcp: bake_overlay".into()), Some(kuma_daemon::activity::Call { tool: "bake_overlay".into(), client: "claude-code".into() }));
     let id = kuma_daemon::jobs::spawn_with(state.clone(), "bake", Value::Null, call, |_| panic!("a bug"));
     let (r, j) = finished(&addr, id);
     assert_eq!((r["state"].as_str(), j["state"].as_str(), r["error"].as_str()), (Some("failed"), Some("failed"), Some("the job panicked")));
@@ -267,12 +278,12 @@ async fn the_history_names_edits_steps_and_refusals() {
     let mut events = state.events.subscribe();
     let rev = revision(&state);
     let patch = json!([{ "op": "replace", "path": "/bin/main/source/tracks/0/clips/1/start", "value": 2.5 }]);
-    let edited = post(&addr, "/api/project/patch", json!({ "patch": patch, "base_revision": rev, "origin": "claude: Moved + trimmed the umbrella" }));
+    let edited = post(&addr, "/api/project/patch", json!({ "patch": patch, "base_revision": rev, "origin": "mcp: Moved + trimmed the umbrella" }));
     assert_eq!(edited["revision"], rev + 1);
 
     post(&addr, "/api/project/undo", json!({ "origin": "ui" }));
     post(&addr, "/api/project/redo", Value::Null);
-    let (status, _) = call(&addr, "POST", "/api/project/patch", json!({ "patch": patch, "base_revision": rev, "origin": "claude: again" }));
+    let (status, _) = call(&addr, "POST", "/api/project/patch", json!({ "patch": patch, "base_revision": rev, "origin": "mcp: again" }));
     assert!(status.contains("409"), "{status}");
 
     let h = get(&addr, "/api/history");
@@ -361,7 +372,7 @@ async fn undo_walks_back_through_many_edits() {
 async fn the_lists_read_as_they_always_did() {
     let (state, addr, _dir) = daemon().await;
     post(&addr, "/api/activity", json!({ "phase": "call", "tool": "apply_edits", "client": "claude-code", "args": { "note": "rename", "pins": ["main@8.600"] }, "ok": true, "revision": 1 }));
-    post(&addr, "/api/project/patch", json!({ "patch": [{ "op": "replace", "path": "/bin/black/name", "value": "Ink" }], "origin": "claude: rename", "pins": ["main@8.600"] }));
+    post(&addr, "/api/project/patch", json!({ "patch": [{ "op": "replace", "path": "/bin/black/name", "value": "Ink" }], "origin": "mcp: rename", "pins": ["main@8.600"] }));
     post(&addr, "/api/project/undo", json!({ "origin": "ui" }));
     let (status, _) = call(&addr, "POST", "/api/project/patch", json!({ "patch": [{ "op": "remove", "path": "/bin/nowhere" }] }));
     assert!(status.contains("422") || status.contains("409") || status.contains("400"), "{status}");
@@ -391,7 +402,7 @@ async fn pins_are_listed_answered_and_ticked() {
     assert_eq!((&all[1]["label"], &all[1]["done"], &all[1]["t"]), (&json!("this HUD corner fights with the subtitles"), &Value::Null, &json!(8.6)));
 
     let mut events = state.events.subscribe();
-    let r = post(&addr, "/api/project/patch", json!({ "patch": [{ "op": "replace", "path": "/bin/black/name", "value": "Ink" }], "origin": "claude: quieter HUD", "pins": ["main@8.600"] }));
+    let r = post(&addr, "/api/project/patch", json!({ "patch": [{ "op": "replace", "path": "/bin/black/name", "value": "Ink" }], "origin": "mcp: quieter HUD", "pins": ["main@8.600"] }));
     let hud = &pins()[1];
     assert_eq!((hud["done"].as_u64(), hud["done_by"].as_str()), (r["revision"].as_u64(), Some("agent")));
     assert_eq!(get(&addr, "/api/history?limit=1")["entries"][0]["pins"], json!(["main@8.600"]));

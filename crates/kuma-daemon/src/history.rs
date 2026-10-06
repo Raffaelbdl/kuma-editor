@@ -57,7 +57,7 @@ pub struct Entry {
     /// The revision it made; `None` for a refusal, which made none.
     pub revision: Option<u64>,
     pub kind: Kind,
-    /// As the edit was labelled (`claude: …`, `ui`), or `undo:<label>` for a step.
+    /// As the edit was labelled (`mcp: …`, `ui`), or `undo:<label>` for a step.
     pub origin: String,
     /// `agent`, `user` or `other` ([`author`]).
     pub author: String,
@@ -138,12 +138,14 @@ impl History {
     }
 }
 
-/// Who an origin speaks for. The editor labels its edits `ui…`, the MCP server `claude: …`.
+/// Who an origin speaks for — an edit's, or a job's. The editor labels its own `ui…`,
+/// `kuma mcp` its `mcp: …`; anything else, the command line's `cli: …` among them, is
+/// `other`.
 pub fn author(origin: &str) -> &'static str {
     let head = origin.split([':', ' ']).next().unwrap_or_default();
     match head {
         "ui" => "user",
-        "claude" | "mcp" | "agent" => "agent",
+        "mcp" | "agent" => "agent",
         _ => "other",
     }
 }
@@ -156,7 +158,7 @@ pub fn summary(origin: &str) -> String {
         _ => origin,
     };
     match rest.trim() {
-        "" | "ui" | "claude" | "mcp" | "agent" => "edit".into(),
+        "" | "ui" | "mcp" | "agent" => "edit".into(),
         s => s.to_string(),
     }
 }
@@ -413,7 +415,10 @@ mod tests {
     fn origins_say_who_and_what() {
         assert_eq!((author("ui"), summary("ui")), ("user", "edit".to_string()));
         assert_eq!((author("ui: trim"), summary("ui: trim")), ("user", "trim".to_string()));
-        assert_eq!((author("claude: Moved + trimmed"), summary("claude: Moved + trimmed")), ("agent", "Moved + trimmed".to_string()));
+        assert_eq!((author("mcp: Moved + trimmed"), summary("mcp: Moved + trimmed")), ("agent", "Moved + trimmed".to_string()));
+        assert_eq!((author("mcp"), summary("mcp")), ("agent", "edit".to_string()));
+        assert_eq!((author("cli: render"), summary("cli: render")), ("other", "render".to_string()));
+        assert_eq!(author("claude: an older kuma mcp"), "other");
         assert_eq!((author("test"), summary("test")), ("other", "test".to_string()));
         assert_eq!(refusal(&EditError::RevisionMismatch { current: 55, base: 53 }), "stale base r53 (current r55)");
     }

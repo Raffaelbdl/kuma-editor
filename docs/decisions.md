@@ -2993,9 +2993,22 @@ marks old running records failed (a long render would be called failed while it 
 and a heartbeat from `kuma mcp` (it would still lie about a job whose call was abandoned).
 An old `kuma mcp` speaking start/end is refused (422) and only loses its feed entries.
 
+**The stamp is every job's; the record is the agent's.** A job's request says who asked the
+way an edit does — an `origin`, `ui: …` from the editor, `cli: …` from the command line,
+`mcp: <tool>` from `kuma mcp` (which also adds its `call`) — and the job keeps it as
+`asked_by: {author, origin, tool, client}`, the author read off the origin by the same
+`history::author` an edit's is, so the queue can say whose render it is whoever asked. The
+activity feed follows only a job whose author is `agent`: whether a record opens is decided
+by who asked, not by whether a `call` came along, so an agent's origin without a call is
+still followed (under the job's kind) and the editor's job never is. A request with neither
+is `asked_by: null`, as an old client's always was. `kuma mcp` stamps `mcp`, not `claude`:
+the origin names the surface that sent it, as `ui` and `cli` do, and the client behind it
+is `call.client`; `claude` was dropped pre-release, so an older `kuma mcp`'s edits read as
+`other`.
+
 **History is the daemon's undo stack with authors** — adopted. Every revision the daemon
 makes, and every patch it refuses, is an entry recorded where it happens (under the edit
-lock), with its author from the origin (`ui` is you, `claude` the agent; an undo's is whoever
+lock), with its author from the origin (`ui` is you, `mcp` the agent; an undo's is whoever
 asked, which the undo endpoint now takes), the clips and entries it touched and the fields it
 changed. Fields in the inspector are no longer meant to be coloured when they change: the
 inspector ends with that thing's history, which says what changed, when, and who. **⟲

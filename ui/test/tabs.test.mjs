@@ -121,7 +121,7 @@ describe("the open sequence", { skip: why ? `skipping: ${why}` : false }, () => 
     await page.until(`${dialog}.querySelector(".render-pane input").placeholder === "renders/tabs-youtube-1080p.mp4"`);
 
     await page.eval(`${go}.click()`);
-    assert.deepEqual(await page.until(`window.__rendered`), { preset: "youtube-1080p", sequence: "main" }, "the master, named: the person picked it");
+    assert.deepEqual(await page.until(`window.__rendered`), { preset: "youtube-1080p", sequence: "main", origin: "ui: render" }, "the master, named: the person picked it");
     // Asking for a render shows the queue it joined.
     await page.until(`${dialog}.querySelector(".queue-pane").hidden === false`);
 
@@ -130,7 +130,7 @@ describe("the open sequence", { skip: why ? `skipping: ${why}` : false }, () => 
     await page.eval(pick("intro"));
     await page.until(`${dialog}.querySelector(".render-pane input").placeholder === "renders/tabs-intro-youtube-1080p.mp4"`);
     await page.eval(`window.__rendered = null; ${go}.click()`);
-    assert.deepEqual(await page.until(`window.__rendered`), { preset: "youtube-1080p", sequence: "intro" });
+    assert.deepEqual(await page.until(`window.__rendered`), { preset: "youtube-1080p", sequence: "intro", origin: "ui: render" });
 
     // Put the page back as it was found: these cases share one browser, in order.
     await page.eval(`${dialog}.querySelector(".queue-pane .modal-actions button:last-child").click()`);

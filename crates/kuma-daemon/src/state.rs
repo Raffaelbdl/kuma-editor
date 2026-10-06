@@ -544,7 +544,7 @@ impl AppState {
 
     /// Make the document what it was at `revision`, as one new edit: validated, undoable,
     /// and at a new revision number, so no client mistakes it for the old one — the stance
-    /// undo takes. `origin` says who asked (`ui`, `claude`).
+    /// undo takes. `origin` says who asked (`ui`, `mcp`).
     pub fn restore(&self, revision: u64, origin: Option<&str>) -> Result<(u64, Vec<Issue>), RestoreError> {
         // Copied out (a shared handle) and parsed after the history is let go of.
         let snap = lock(&self.history).snapshot(revision).ok_or(RestoreError::Unknown(revision))?;
@@ -582,7 +582,7 @@ impl AppState {
 
     /// Undo/redo swap whole snapshots; the revision keeps increasing so clients never
     /// confuse an undone state with an older one. `Ok(None)` means nothing to undo/redo.
-    /// `by` is the origin of the request (`ui`, `claude`), which the history names as the
+    /// `by` is the origin of the request (`ui`, `mcp`), which the history names as the
     /// step's author; the step itself is the same either way.
     pub fn undo(&self, by: Option<&str>) -> anyhow::Result<Option<u64>> {
         self.swap(false, by)

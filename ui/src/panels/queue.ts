@@ -5,6 +5,7 @@
 //
 // The rows are the dialog's list (`jobList`), drawn smaller.
 
+import { who } from "../agent";
 import { api } from "../api";
 import { desktop } from "../desktop";
 import { button, el, plural, reconcile } from "../dom";
@@ -76,10 +77,12 @@ function jobRow(id: number): JobRow {
       state.title = j.message;
       // Moved only when it changes: a press on cancel must outlast a progress event.
       reconcile(action, !isFinal(j) && j.cancellable ? [cancel] : j.state === "done" && file && desktop() ? [open] : []);
-      // Who asked: the agent's call by name, as the agent panel lists it.
-      const asked = j.asked_by ? ` · asked by ${j.asked_by.client} (${j.asked_by.tool})` : "";
+      // Who asked, as the history says who edited: you, the agent (its client and tool), or
+      // the CLI or another client by its origin.
+      const a = j.asked_by;
+      const asked = !a ? "" : ` · asked by ${a.author === "agent" ? `${who("agent")}${a.client ? ` (${a.client}${a.tool ? ` · ${a.tool}` : ""})` : ""}` : a.author === "user" ? who("user") : a.origin}`;
       root.title = `#${j.id} · ${j.kind}${asked}${j.state === "queued" ? ` · ${plural(1, "job")} ahead or more` : ""}`;
-      root.classList.toggle("agent", !!j.asked_by);
+      root.classList.toggle("agent", a?.author === "agent");
     },
   };
 }

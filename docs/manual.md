@@ -442,16 +442,23 @@ agent through three kinds of session state the daemon keeps in memory — never 
 file, and gone when the daemon stops:
 
 - **Activity.** The daemon keeps the agent's recent tool calls, and owns each record's life.
-  A call that starts a job (`render`, `sample_frames`, `transcribe`, `bake_overlay`,
-  `measure_audio`, `measure_media`, `prune_cache`) is stamped in the job's request:
-  `kuma mcp` adds `"call": {"tool", "client"}` (the MCP client's name; null reads as
-  `agent`), the job keeps it as `asked_by` (`null` on the editor's own jobs, in
-  `GET /api/jobs` too), and the daemon records the call `running` the moment the job is
-  created — its `args` the job's `params`, its `job` the job's id — and finishes it wherever
-  the job becomes final: `done`, `failed` (with the job's message as `error`) or `cancelled`,
-  whether by `cancel_job`, the editor's queue, or a cancel while it was still queued. So
-  a call the client gives up on leaves its job, and the record, running until the job ends,
-  which is the truth. Every other call is reported once, after it has answered, to
+  Every job says who asked for it, the way an edit does: a job's request (`/api/render`,
+  `/api/bake`, `/api/sample/job`, `/api/transcribe`, `/api/audio/measure`,
+  `/api/media/measure`, `/api/cache/prune`, `/api/blueprints/thumbs`) may carry an
+  `origin` — the editor sends `ui: render`, `ui: transcribe`, `ui: prune`, `ui: thumbs`; the
+  command line `cli: <command>`; `kuma mcp` `mcp: <tool>` — and `kuma mcp` adds
+  `"call": {"tool", "client"}` (the MCP client's name; null reads as `agent`). The job keeps
+  them as `asked_by`, `{"author", "origin", "tool", "client"}`, its author read off the
+  origin as an edit's is (`user`, `agent` or `other`; a call without an origin is the
+  agent's, `agent: <tool>`), `tool` and `client` null unless a call asked; and `null` when
+  the request said neither (an old client), in `GET /api/jobs` too; a transcription's edit
+  carries the job's origin. Only a job whose author is `agent` is a call in this feed: the
+  daemon records it `running` the moment the job is created, as `call`'s tool (else the
+  job's kind) and client (else `agent`) — its `args` the job's `params`, its `job` the
+  job's id — and finishes it wherever the job becomes final: `done`, `failed` (with the
+  job's message as `error`) or `cancelled`, whether by `cancel_job`, the editor's queue,
+  or a cancel while it was still queued. So a call the client gives up on leaves its job,
+  and the record, running until the job ends, which is the truth. Every other call is reported once, after it has answered, to
   `POST /api/activity` (`{"phase":"call","tool","client","args","ok","error","result","revision","started_at"}`),
   and kept already finished; a cancelled one is never reported. Its arguments are trimmed (a
   patch is its op count) and its result reduced to a lint verdict or a sample's frame paths;
@@ -466,7 +473,8 @@ file, and gone when the daemon stops:
   the person did meanwhile), a sample's times and `rect`, and its `frames`, served by
   `GET /api/samples/<file>` from `.kuma/samples/`.
 - **History.** One entry per revision the daemon makes — edits, undos, redos, restores — and
-  per patch it refuses, with its author (`agent`, `user` or `other`, from the origin; an
+  per patch it refuses, with its author (`agent`, `user` or `other`, from the origin: `ui…`
+  is the person, `mcp…` the agent, anything else — `cli: …` among them — other; an
   undo's is whoever asked, `{"origin": …}` in its body), the clips and entries it touched and
   up to eight fields it changed: `GET /api/history?limit=N`, the last 500, newest first.
   `POST /api/history/restore {"revision": n}` makes the document what it was at any of the
@@ -516,8 +524,8 @@ kuma canonical plan.json                   # a project document (any version; `-
 
 When a daemon serves the project (`--bind`, `127.0.0.1:7455` by default), `render`, `bake`,
 `sample`, `measure-audio`, `measure-media` and `transcribe` run as its jobs: they show in the
-editor's job queue (the **Queue** button), wait their turn with its renders, and print the
-same result; Ctrl-C cancels the job. Without one, they run in the `kuma` process itself.
+editor's job queue (the **Queue** button), stamped `cli: <command>`, wait their turn with
+its renders, and print the same result; Ctrl-C cancels the job. Without one, they run in the `kuma` process itself.
 
 ## The project file
 

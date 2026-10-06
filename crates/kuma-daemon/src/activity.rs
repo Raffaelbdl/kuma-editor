@@ -3,8 +3,9 @@
 //! The editor sees an agent's edits as patches land, but not the calls between them — the
 //! frames it sampled, the overlay it checked, the render that is running now. The daemon
 //! keeps the last few calls in memory and broadcasts them, and owns every record's life:
-//! a call that starts a job (`kuma mcp` stamps the request with `call`) is recorded when
-//! the job is created and finished when the job is ([`Activity::from_job`],
+//! a call that starts a job (`kuma mcp` stamps the request with `origin: "mcp: <tool>"`
+//! and `call`, and only a job the agent asked for is followed here) is recorded when the
+//! job is created and finished when the job is ([`Activity::from_job`],
 //! [`Activity::job_ended`], both in `jobs::spawn_inner`), and any other call is reported
 //! once, after it has ended ([`Report`]). So nothing waits on a report and no record waits
 //! on one: a client that cancels, dies or loses a report cannot leave a call running.
@@ -36,7 +37,7 @@ pub enum State {
 }
 
 /// The tool call that asked for a job, as `kuma mcp` stamps a job's request (`call`) and
-/// the job keeps it (`asked_by`).
+/// the job keeps it (`asked_by`'s `tool` and `client`).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Call {
     pub tool: String,

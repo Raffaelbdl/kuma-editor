@@ -319,11 +319,13 @@ async fn running_daemon(cli: &Cli) -> Option<String> {
 }
 
 /// Run a job on the daemon serving this project, when one does, so it shows in the editor's
-/// queue and waits its turn there: progress on stderr, Ctrl-C cancels it. Its result, or
-/// `None` when no daemon serves the project and the caller runs the job itself.
-async fn on_daemon(cli: &Cli, path: &str, body: serde_json::Value) -> anyhow::Result<Option<serde_json::Value>> {
+/// queue and waits its turn there, stamped `cli: <command>`: progress on stderr, Ctrl-C
+/// cancels it. Its result, or `None` when no daemon serves the project and the caller runs
+/// the job itself.
+async fn on_daemon(cli: &Cli, path: &str, command: &str, mut body: serde_json::Value) -> anyhow::Result<Option<serde_json::Value>> {
     let Some(url) = running_daemon(cli).await else { return Ok(None) };
     let c = kuma_mcp::client::Client::new(&url);
+    body["origin"] = serde_json::json!(format!("cli: {command}"));
     let id = c.post(path, &body).await?["job"].as_u64().ok_or_else(|| anyhow::anyhow!("the daemon at {url} started no job"))?;
     eprintln!("job {id} on the daemon at {url}");
     let mut said = String::new();
@@ -384,7 +386,7 @@ async fn main() -> anyhow::Result<()> {
         Cmd::Doctor => doctor(&cli).await?,
         Cmd::Render { preset, output, sequence } => {
             let req = kuma_daemon::jobs::RenderRequest { preset: preset.clone(), output: output.as_deref().map(absolute).transpose()?, sequence: sequence.clone(), ..Default::default() };
-            let out = match on_daemon(&cli, "/api/render", serde_json::to_value(&req)?).await? {
+            let out = match on_daemon(&cli, "/api/render", "render", serde_json::to_value(&req)?).await? {
                 Some(out) => out,
                 None => {
                     let state = open(&cli)?;
@@ -395,7 +397,7 @@ async fn main() -> anyhow::Result<()> {
         }
         Cmd::Bake { clips } => {
             let only = (!clips.is_empty()).then(|| clips.clone());
-            if let Some(out) = on_daemon(&cli, "/api/bake", serde_json::json!({ "clips": only })).await? {
+            if let Some(out) = on_daemon(&cli, "/api/bake", "bake", serde_json::json!({ "clips": only })).await? {
                 for b in out["bakes"].as_array().into_iter().flatten() {
                     println!("{}\t{}", b["clip"].as_str().unwrap_or(""), b["resource"].as_str().unwrap_or(""));
                 }
@@ -445,7 +447,7 @@ async fn main() -> anyhow::Result<()> {
                 overlays: (!*no_overlays).into(),
                 ..Default::default()
             };
-            let out = match on_daemon(&cli, "/api/sample/job", serde_json::to_value(&req)?).await? {
+            let out = match on_daemon(&cli, "/api/sample/job", "sample", serde_json::to_value(&req)?).await? {
                 Some(out) => out,
                 None => {
                     let state = open(&cli)?;
@@ -458,7 +460,7 @@ async fn main() -> anyhow::Result<()> {
         }
         Cmd::MeasureAudio { sequence, range, mute, solo } => {
             let req = kuma_daemon::jobs::MeasureRequest { sequence: sequence.clone(), range: range.as_deref().map(|r| (r[0], r[1])), sections: None, mute: mute.clone(), solo: solo.clone() };
-            let out = match on_daemon(&cli, "/api/audio/measure", serde_json::to_value(&req)?).await? {
+            let out = match on_daemon(&cli, "/api/audio/measure", "measure-audio", serde_json::to_value(&req)?).await? {
                 Some(out) => out,
                 None => {
                     let state = open(&cli)?;
@@ -477,7 +479,7 @@ async fn main() -> anyhow::Result<()> {
                 silence_db: *silence_db,
                 silence_min: *silence_min,
             };
-            let out = match on_daemon(&cli, "/api/media/measure", serde_json::to_value(&req)?).await? {
+            let out = match on_daemon(&cli, "/api/media/measure", "measure-media", serde_json::to_value(&req)?).await? {
                 Some(out) => out,
                 None => {
                     let state = open(&cli)?;
@@ -493,7 +495,7 @@ async fn main() -> anyhow::Result<()> {
                 (None, Some(c)) => c.get("/api/cache").await?,
                 (None, None) => serde_json::to_value(kuma_daemon::cache::usage(&*open(&cli)?)?)?,
                 (Some(CacheCmd::Prune { all }), Some(c)) => {
-                    let v = c.post("/api/cache/prune", &serde_json::json!({ "all": all })).await?;
+                    let v = c.post("/api/cache/prune", &serde_json::json!({ "all": all, "origin": "cli: cache prune" })).await?;
                     c.wait_job(v["job"].as_u64().unwrap_or_default(), std::time::Duration::from_secs(24 * 3600)).await?["result"].take()
                 }
                 (Some(CacheCmd::Prune { all }), None) => {
@@ -685,12 +687,12 @@ async fn main() -> anyhow::Result<()> {
         }
         Cmd::Transcribe { bin, clip, id, replace, language, max_chars, model, split, no_snap } => {
             let options = kuma_overlay::TranscribeOptions { language: language.clone(), max_chars: Some(*max_chars), model: model.clone(), snap: no_snap.then_some(false), ..Default::default() };
-            let body = serde_json::json!({ "bin": bin, "clip": clip, "id": id, "replace": replace, "split": split, "language": options.language, "max_chars": options.max_chars, "model": options.model, "snap": options.snap, "origin": "cli: transcribe" });
-            let out = match on_daemon(&cli, "/api/transcribe", body).await? {
+            let body = serde_json::json!({ "bin": bin, "clip": clip, "id": id, "replace": replace, "split": split, "language": options.language, "max_chars": options.max_chars, "model": options.model, "snap": options.snap });
+            let out = match on_daemon(&cli, "/api/transcribe", "transcribe", body).await? {
                 Some(out) => out,
                 None => {
                     let state = open(&cli)?;
-                    let req = kuma_daemon::jobs::TranscribeRequest { bin: bin.clone(), clip: clip.clone(), id: id.clone(), replace: *replace, split: *split, options, origin: "cli".into() };
+                    let req = kuma_daemon::jobs::TranscribeRequest { bin: bin.clone(), clip: clip.clone(), id: id.clone(), replace: *replace, split: *split, options, origin: "cli: transcribe".into() };
                     tokio::task::spawn_blocking(move || kuma_daemon::jobs::transcribe(&state, &req, &|p, m| eprintln!("[{p:3}%] {m}"))).await??
                 }
             };

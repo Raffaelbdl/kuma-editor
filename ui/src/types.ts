@@ -288,8 +288,10 @@ export interface Job {
   cancellable?: boolean;
   /** What it was asked to do, settled when it started — a render's `{sequence, preset, output}`. */
   params?: unknown;
-  /** The agent's call that asked for it; null for the editor's own jobs. */
-  asked_by?: { tool: string; client: string } | null;
+  /** Who asked for it, as an edit's history says who made it: the author its origin speaks
+   *  for (`ui…` you, `mcp…` the agent, the CLI and the rest other), and for the agent the
+   *  tool and client. Null from a client that did not say. */
+  asked_by?: { author: "user" | "agent" | "other"; origin: string; tool: string | null; client: string | null } | null;
 }
 
 /** One part of the project's `.kuma/` cache: entries (a bake is one) and their bytes. */

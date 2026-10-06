@@ -111,11 +111,13 @@ impl KumaServer {
         Ok(ok_json(&self.client.post(path, body).await.map_err(err)?))
     }
 
-    /// Start a background job, stamped with the call asking for it (`call`): the daemon
-    /// records that call in its activity for as long as the job runs, so this call is not
-    /// reported again when it answers.
+    /// Start a background job, stamped as the agent's (`origin: "mcp: <tool>"`) with the
+    /// call asking for it (`call`): the daemon records that call in its activity for as long
+    /// as the job runs, so this call is not reported again when it answers. A transcript's
+    /// edit takes the same origin.
     async fn start_job(&self, path: &str, mut body: Value, ctx: &RequestContext<RoleServer>) -> Result<u64, McpError> {
         let asking = ctx.extensions.get::<Asking>();
+        body["origin"] = json!(asking.map_or_else(|| "mcp".to_string(), |a| format!("mcp: {}", a.tool)));
         if let Some(a) = asking {
             body["call"] = json!({ "tool": a.tool, "client": a.client });
         }
@@ -159,9 +161,9 @@ impl KumaServer {
     }
 
     /// Undo/redo: the daemon answers `{"revision": null}` when there is nothing to do. Asked
-    /// as `claude`, so the history says the agent took the step.
+    /// as `mcp`, so the history says the agent took the step.
     async fn step_history(&self, path: &str) -> Result<CallToolResult, McpError> {
-        let v = self.client.post(path, &json!({ "origin": "claude" })).await.map_err(err)?;
+        let v = self.client.post(path, &json!({ "origin": "mcp" })).await.map_err(err)?;
         if v["revision"].is_null() {
             return Err(McpError::invalid_request(format!("nothing to {}", path.rsplit('/').next().unwrap_or("undo")), None));
         }
@@ -223,7 +225,7 @@ async fn report(peer: &Peer<RoleServer>, n: ProgressNotificationParam) {
 }
 
 /// Every job without its result, which for a sample or a measurement is most of it; with
-/// the tool call that asked for it (`asked_by`), null for the editor's own.
+/// who asked for it (`asked_by`: author, origin, and the tool call when the agent did).
 fn job_summaries(all: &[Value]) -> Value {
     let summary = |j: &Value| json!({ "id": j["id"], "kind": j["kind"], "state": j["state"], "percent": j["percent"], "message": j["message"], "params": j["params"], "asked_by": j["asked_by"] });
     Value::Array(all.iter().map(summary).collect())
@@ -664,7 +666,7 @@ impl KumaServer {
 
     #[tool(description = "Apply a JSON Patch to the project: `patch` inline, or `patch_path`, a file in the project holding it (for a patch a script wrote, of any size). Atomic: rejected entirely if the result is invalid or the base_revision is stale. Returns the new revision, the number of operations applied and any warnings.")]
     async fn apply_edits(&self, Parameters(p): Parameters<ApplyEdits>) -> Result<CallToolResult, McpError> {
-        let origin = format!("claude: {}", p.note.unwrap_or_else(|| "edit".into()));
+        let origin = format!("mcp: {}", p.note.unwrap_or_else(|| "edit".into()));
         let body = json!({ "patch": p.patch, "patch_path": p.patch_path, "base_revision": p.base_revision, "origin": origin, "pins": p.pins.unwrap_or_default() });
         self.post("/api/project/patch", &body).await
     }
@@ -705,7 +707,7 @@ impl KumaServer {
     #[tool(description = "Copy a blueprint into the project's `overlays/` and add it to the bin. Returns the bin id; the copy is the project's to edit.")]
     async fn add_blueprint(&self, Parameters(p): Parameters<AddBlueprint>) -> Result<CallToolResult, McpError> {
         let copied = self.client.post(&format!("/api/blueprints/{}/copy", p.blueprint), &json!({ "folder": p.folder })).await.map_err(err)?;
-        let body = json!({ "path": copied["overlay"], "id": p.id, "name": p.name, "vars": p.vars.unwrap_or_default(), "origin": format!("claude: add {}", p.blueprint) });
+        let body = json!({ "path": copied["overlay"], "id": p.id, "name": p.name, "vars": p.vars.unwrap_or_default(), "origin": format!("mcp: add {}", p.blueprint) });
         self.post("/api/overlays/import", &body).await
     }
 
@@ -741,13 +743,13 @@ impl KumaServer {
 
     #[tool(description = "Probe media and add it to the project bin, as one undoable edit: a file (`path`), a list (`paths`), or a folder, which adds the media files directly in it (with `recursive`, its subfolders' too) and returns the rest as `skipped`, with why. A file a folder holds that is already in the bin is skipped, so adding a folder again adds what is new. Ids are minted from the file names, never colliding; `id` names the entry when adding one file. A named file that cannot be added (missing, unreadable, an SVG) refuses the whole call. One overlay folder of the project is imported instead. Returns `ids` (and `id` when there is one) to reference from clips.")]
     async fn add_media(&self, Parameters(p): Parameters<AddMedia>) -> Result<CallToolResult, McpError> {
-        let body = json!({ "path": p.path, "paths": p.paths.unwrap_or_default(), "recursive": p.recursive.unwrap_or(false), "id": p.id, "parent": p.parent, "base_revision": p.base_revision, "origin": "claude: add media" });
+        let body = json!({ "path": p.path, "paths": p.paths.unwrap_or_default(), "recursive": p.recursive.unwrap_or(false), "id": p.id, "parent": p.parent, "base_revision": p.base_revision, "origin": "mcp: add media" });
         self.post("/api/bin", &body).await
     }
 
     #[tool(description = "Probe media entries' files again (`bins`, or every media file entry) after a file was replaced on disk, and write what changed as one undoable edit: `meta` (duration, size, fps, audio, alpha) and `kind` if the file is now another kind. Returns `changed` (per entry, each field `from`/`to`), `unchanged` and `failed` (a file ffprobe cannot read). Nothing changed, nothing written. A kind change that breaks a placement (an `in` on what is now a still) is refused whole, with the validator's issues.")]
     async fn reprobe_media(&self, Parameters(p): Parameters<ReprobeMedia>) -> Result<CallToolResult, McpError> {
-        self.post("/api/bin/reprobe", &json!({ "bins": p.bins, "base_revision": p.base_revision, "origin": "claude: reprobe media" })).await
+        self.post("/api/bin/reprobe", &json!({ "bins": p.bins, "base_revision": p.base_revision, "origin": "mcp: reprobe media" })).await
     }
 
     #[tool(description = "List bin entries the video does not use: `unplaced` (no clip anywhere places them) and `unreached` (placed only in sequences the master never reaches, with `placed_in`). Folders, the master and entries something is listed under (`parent`) are never listed, so removing every listed entry (with `apply_edits`) leaves the bin valid. Reads only.")]
@@ -759,7 +761,7 @@ impl KumaServer {
     async fn transcribe(&self, Parameters(p): Parameters<Transcribe>, ctx: RequestContext<RoleServer>) -> Result<CallToolResult, McpError> {
         let body = json!({
             "bin": p.bin, "clip": p.clip, "id": p.id, "replace": p.replace.unwrap_or(false), "language": p.language, "max_chars": p.max_chars,
-            "model": p.model, "split": p.split, "snap": p.snap, "silence_db": p.silence_db, "silence_min": p.silence_min, "origin": "claude: transcribe",
+            "model": p.model, "split": p.split, "snap": p.snap, "silence_db": p.silence_db, "silence_min": p.silence_min,
         });
         self.job("/api/transcribe", body, Duration::from_secs(p.wait_seconds.unwrap_or(600)), &ctx).await
     }
@@ -777,13 +779,13 @@ impl KumaServer {
 
     #[tool(description = "Add an overlay folder to the bin, optionally with vars; one outside the project is copied into `overlays/` first. Returns the bin id. Import one folder twice, with other vars, for a second wording.")]
     async fn import_overlay(&self, Parameters(p): Parameters<ImportOverlay>) -> Result<CallToolResult, McpError> {
-        let body = json!({ "path": p.path, "id": p.id, "name": p.name, "vars": p.vars.unwrap_or_default(), "base_revision": p.base_revision, "origin": "claude: import overlay" });
+        let body = json!({ "path": p.path, "id": p.id, "name": p.name, "vars": p.vars.unwrap_or_default(), "base_revision": p.base_revision, "origin": "mcp: import overlay" });
         self.post("/api/overlays/import", &body).await
     }
 
     #[tool(description = "Give an overlay entry its own copy of the folder it shares, so editing it changes that entry alone. Returns the new folder.")]
     async fn make_overlay_unique(&self, Parameters(p): Parameters<BinArg>) -> Result<CallToolResult, McpError> {
-        self.post("/api/overlays/unique", &json!({ "bin": p.bin, "origin": "claude: make overlay unique" })).await
+        self.post("/api/overlays/unique", &json!({ "bin": p.bin, "origin": "mcp: make overlay unique" })).await
     }
 
     #[tool(description = "Save an overlay entry into the user's library as a blueprint, its vars as the defaults. Only when the user asks. Refuses to replace one unless `force`.")]
@@ -878,7 +880,7 @@ impl KumaServer {
         self.job("/api/cache/prune", json!({ "all": p.all }), Duration::from_secs(3600), &ctx).await
     }
 
-    #[tool(description = "Status of a background job (render, bake, sample, measure, transcribe): state (queued, running, done, failed, cancelled), percent, message, result. With `wait_seconds`, waits up to that long for it to finish and returns it either way: the way to keep waiting on a long job in bounded calls. Without `id`, lists the jobs the daemon remembers, to find one whose call was moved to the background.")]
+    #[tool(description = "Status of a background job (render, bake, sample, measure, transcribe): state (queued, running, done, failed, cancelled), percent, message, result. With `wait_seconds`, waits up to that long for it to finish and returns it either way: the way to keep waiting on a long job in bounded calls. Without `id`, lists the jobs the daemon remembers and who asked for each (`asked_by.author`: `agent` is you, `user` the person in the editor), to find one whose call was moved to the background.")]
     async fn job_status(&self, Parameters(p): Parameters<JobStatus>, ctx: RequestContext<RoleServer>) -> Result<CallToolResult, McpError> {
         let Some(id) = p.id else {
             let all = self.client.get("/api/jobs").await.map_err(err)?;
@@ -1032,13 +1034,16 @@ mod tests {
     }
 
 
-    /// A listed job says which call asked for it, and leaves its result out.
+    /// A listed job says who asked for it, and leaves its result out.
     #[test]
     fn a_job_summary_says_who_asked() {
-        let jobs = json!([{ "id": 2, "kind": "render", "state": "running", "result": { "big": true }, "asked_by": { "tool": "render", "client": "claude-code" } }, { "id": 3, "kind": "bake" }]);
+        let agent = json!({ "author": "agent", "origin": "mcp: render", "tool": "render", "client": "claude-code" });
+        let user = json!({ "author": "user", "origin": "ui: render", "tool": null, "client": null });
+        let jobs = json!([{ "id": 2, "kind": "render", "state": "running", "result": { "big": true }, "asked_by": agent }, { "id": 3, "kind": "render", "asked_by": user }, { "id": 4, "kind": "bake" }]);
         let listed = job_summaries(jobs.as_array().unwrap());
-        assert_eq!((&listed[0]["asked_by"]["tool"], listed[0].get("result")), (&json!("render"), None));
-        assert_eq!(listed[1]["asked_by"], Value::Null);
+        assert_eq!((&listed[0]["asked_by"], listed[0].get("result")), (&agent, None));
+        assert_eq!(listed[1]["asked_by"], user);
+        assert_eq!(listed[2]["asked_by"], Value::Null);
     }
 
     /// A job that has not finished says how to keep waiting; one that has, does not.

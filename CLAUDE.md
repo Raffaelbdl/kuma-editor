@@ -180,8 +180,9 @@ Chrome headless shell if hyperframes should not download one.
   so ⌘K, the rail, den's keys and the shell's menus all reach a panel the same way.
 - **What the agent did is the daemon's, never a client's model**: tool calls reach the UI as
   `/api/activity` — a call that starts a job is that job's record, opened and closed by the
-  daemon with the job; any other call the MCP server reports once it has ended, and a report
-  may never slow or fail a tool —
+  daemon with the job; every job says who asked (`asked_by`, read off its request's `origin`
+  as an edit's author is), and only an agent's opens a record; any other call the MCP server
+  reports once it has ended, and a report may never slow or fail a tool —
   steps and refused patches as `/api/history`, pins as `/api/pins`. All session state: none
   of it is in the project file, and a pin's done-ness never edits its marker.
 - Do not add a dependency on `mlt-sys`, `ffmpeg-next` or `wgpu` without a reason written

@@ -62,7 +62,7 @@ export const api = {
   presets: () => json<Preset[]>("/api/presets"),
   effectPresets: () => json<EffectPreset[]>("/api/presets/effects"),
   /** Render previews of the given blueprints and overlay entries. */
-  thumbs: (which: { blueprints?: string[]; bins?: string[] }) => json<{ job: number }>("/api/blueprints/thumbs", { method: "POST", body: JSON.stringify(which) }),
+  thumbs: (which: { blueprints?: string[]; bins?: string[] }) => json<{ job: number }>("/api/blueprints/thumbs", { method: "POST", body: JSON.stringify({ ...which, origin: "ui: thumbs" }) }),
   /** What the timeline draws on a media entry's clips, made on first asking: its waveform,
    *  and the index of its filmstrip (`/api/bin/{id}/strip.jpg`). Looking, not an edit. */
   peaks: (bin: string) => json<{ rate: number; peaks: number[] }>(`/api/bin/${encodeURIComponent(bin)}/peaks.json`),
@@ -95,7 +95,7 @@ export const api = {
    *  daemon's own default, so the two agree without the client having to know which is
    *  the master. `output` is project-relative; the daemon names one when it is left out. */
   render: (preset: string, sequence?: string, output?: string, options: RenderOptions = {}) =>
-    json<{ job: number }>("/api/render", { method: "POST", body: JSON.stringify({ preset, sequence, output, ...options }) }),
+    json<{ job: number }>("/api/render", { method: "POST", body: JSON.stringify({ preset, sequence, output, ...options, origin: "ui: render" }) }),
   /** Where a render would write, whether a file is there already, and which unfinished
    *  renders will write the same path. Reads only. */
   renderTarget: (preset: string, sequence: string, output?: string) => {
@@ -111,7 +111,7 @@ export const api = {
   cancelJob: (id: number) => json<Job>(`/api/jobs/${id}/cancel`, { method: "POST", body: "{}" }),
   cache: () => json<CacheUsage>("/api/cache"),
   /** A job: delete what `.kuma/` holds that the project no longer uses. */
-  pruneCache: () => json<{ job: number }>("/api/cache/prune", { method: "POST", body: "{}" }),
+  pruneCache: () => json<{ job: number }>("/api/cache/prune", { method: "POST", body: JSON.stringify({ origin: "ui: prune" }) }),
   /** Compile the open sequence for the engine; `force` hands it over even unchanged. Says
    *  what it did: which halves the engine took, and the nested overlays it baked or not. */
   previewReload: (opts: { scale?: number; force?: boolean } = {}) =>

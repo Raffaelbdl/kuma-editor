@@ -166,6 +166,10 @@ class Store {
       this.set({ sequences: withId(this.state.sequences, id), tab: SEQUENCE_TAB });
       return;
     }
+    // Stop first: the preview is about to show another timeline, and the transport will
+    // drive that one. Playback carrying on through the round trip is playback nobody can
+    // reach.
+    if (this.state.playing) this.set({ playing: false });
     try {
       const { current } = await api.openSequence(id);
       // The daemon has the last word on what is open (it falls back to the master for a

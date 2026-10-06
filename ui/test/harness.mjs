@@ -112,6 +112,12 @@ export async function driver(url) {
   await send("Page.navigate", { url });
 
   return {
+    /** Run `source` in every document this page loads from now on, before its own scripts —
+     *  for standing something in for what this machine lacks (the preview engine). Reload
+     *  the page to have it in the one already loaded. */
+    onNewDocument(source) {
+      return send("Page.addScriptToEvaluateOnNewDocument", { source });
+    },
     async eval(expression) {
       const r = await send("Runtime.evaluate", { expression, awaitPromise: true, returnByValue: true });
       const failed = r.result?.exceptionDetails;

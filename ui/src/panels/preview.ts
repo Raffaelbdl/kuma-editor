@@ -70,6 +70,14 @@ export class Preview {
     // A monitor nobody is looking at does not play: leaving the tab stops the engine
     // rather than leaving it streaming frames into a hidden canvas.
     store.select((s) => [s.tab], (s) => { if (s.tab !== SEQUENCE_TAB && s.playing) this.togglePlay(); });
+    // The store's "not playing" is the engine's too, whoever said it: opening another
+    // sequence, the engine reaching the end, another window. Only `togglePlay` used to
+    // pause the engine, so a sequence opened while one played went on playing — under
+    // controls that no longer reached it.
+    store.select((s) => [s.playing], (s) => { if (!s.playing && this.streaming) this.pause(); });
+    // A sequence that changes under a playing preview stops it, however it changed (a
+    // deleted sequence falling back to the master, another window opening one).
+    store.select((s) => [s.sequence], () => { if (store.state.playing) store.set({ playing: false }); });
     // The engine socket lives here, so the transport actions do too. Anything that wants
     // them — the strip under the stage, a key, the application menu — asks by id.
     command(Cmd.togglePlay, "Play/Pause", () => this.togglePlay());
@@ -112,6 +120,7 @@ export class Preview {
     };
     ws.onclose = () => {
       this.wsOk = false;
+      this.streaming = false;
       this.resetSeeks();
       this.badge.textContent = "snapshot (no engine)";
       if (store.state.playing) store.set({ playing: false });
@@ -230,9 +239,13 @@ export class Preview {
     // Playing streams frames unprompted; nothing is answering a seek any more.
     this.resetSeeks();
     this.send("play");
+    this.streaming = true;
     return true;
   }
+  /** The engine was told to play and has not been told to stop. */
+  private streaming = false;
   pause() {
+    this.streaming = false;
     this.send("pause");
     this.resetSeeks();
     // The next scrub back to this position must fetch a frame again.

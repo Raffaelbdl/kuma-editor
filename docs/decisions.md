@@ -3293,8 +3293,47 @@ because it is the part deliberately left out.
   JSON on the library search path, already are.
 - **Auto-key needs a home a person finds** — open. It was a red button in the transport
   strip and was taken out with Split and Marker: a record toggle beside play reads as a
-  recorder, and most people never want it. For now it is `R`, listed in the shortcuts,
+  recorder, and most people never want it. For now it is `Shift+R` (`R` is the render
+  queue's letter), listed in the shortcuts,
   with the inspector's red edge and a toast saying it is on. What it should become is not
   decided: a toggle in the inspector's keyframe row (where it acts), a per-effect record
   state, or Blender's model — keying is explicit (`I`) and auto-key a preference. Whichever
   it is has to keep the property that the whole page says when it is recording.
+- **Live overlay iframes only near the playhead** — open, measured, the largest cost left
+  in the editor. The preview keeps one `<iframe>` per overlay clip on the open sequence for
+  as long as it is open (`preview.ts`, `syncOverlays`), and one off the playhead is hidden
+  by `visibility`, so the browser still styles, lays out and composites it — and its GSAP
+  ticker still asks for frames. On a generated project of 480 clips, 120 of them overlays,
+  in headless Chromium: playback cost ≈ 830 ms of main thread a second with ≈ 1,770 style
+  recalcs, against ≈ 575 ms and ≈ 80 recalcs with the off-playhead iframes taken out of
+  rendering (−31%); startup to idle 5.5 s against 0.7 s for a ten-overlay project, and
+  ≈ 86 MB of heap against 8. Each window-resize step and each agent event costs about
+  four times what it would.
+
+  The direction: mount a *window* of iframes — the clips under the playhead and the next
+  few seconds' worth — loaded ahead so an overlay is `ready` before its clip starts, and
+  park or drop the rest, keyed by `contentKey` as views are today. Two constraints come
+  with it. A wrapper hidden by `display: none` gives its iframe a 0×0 viewport and an
+  overlay that measures itself on load reads zeros, so an iframe mounts at full size,
+  hidden by `visibility`, and is only taken *out* when far away. And a seek to somewhere
+  new mounts on demand and seeks on `load`, which is a frame or two late the first time —
+  the price of not keeping everything warm, and the reason for the look-ahead. Nothing
+  changes in what is shown: the live DOM is still the open sequence's own overlays only.
+
+- **The timeline rebuilt on every edit** — open, measured. `Timeline.render` clears the
+  panel and builds every track, clip, trim handle, strip tile and waveform canvas again
+  whenever the project changes, and an edit replaces the whole project object. On the
+  same 480-clip project an edit creates ≈ 5,000 elements: about 100 ms of script and
+  165 ms of style recalc, of which repainting 276 waveform canvases (≈ 1.3 Mpx, one
+  `fillRect` per pixel column in `clipmedia.ts`) is a third and 1,560 strip-tile `div`s
+  most of the rest. Out of sight it no longer runs at all (`panels.lazily`); on screen,
+  in power, it is most of an edit's 400 ms.
+
+  The direction: key clip elements by id (transitions by track and the clip pair) and
+  keep an element whose clip did not change — compared on what draws it (times, `in`,
+  speed, entry, label, effects, group, mute) plus the zoom and the row's height — moving
+  and resizing it in place and ordering with `reconcile`; and cache painted waveforms and
+  strips by entry, media, `in`, speed, length, zoom and height, a strip drawn as one
+  element rather than seven. The drag and trim code reads clips and rows back out of the
+  DOM by their data attributes, so a kept element has to stay the element those
+  attributes describe.

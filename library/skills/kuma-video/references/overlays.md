@@ -99,7 +99,10 @@ A wipe, a shutter, a page turn drawn by an overlay over a cut:
   `font-family: var(--var-font), var(--var-jp, serif), serif`.
 - "private gsap.timeline not registered": register the one timeline via `timeline()`.
 - "invalid inline script": regex literals in inline scripts trip the parser; use
-  `new RegExp("…", "y")`.
+  `new RegExp("…", "y")`, or put the code in a file beside `index.html` (`engine.js`).
+  A linked script is checked like an inline one, so it can register the timeline and
+  read the vars with nothing inline. A library goes in `_vendor/` (the overlay's own
+  will do), which is not held to the rules about clocks and vars.
 
 ## Looking at one
 

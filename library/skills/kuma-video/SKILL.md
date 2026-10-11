@@ -99,9 +99,9 @@ difference: `references/storyboard-as-code.md`. In short:
   edges). The daemon marks the ones your edits add as yours (`author: "agent"`, never
   `waiting`), so they are not read back to you as feedback; never answer your own.
 - **While building**, sample the part you are working on, or an overlay entry on its own,
-  over a short range. Sampling the master bakes every changed overlay it shows:
-  `sample_frames` with `times` bakes only what those frames show, and `tile` returns them
-  as one contact sheet.
+  over a short range. `sample_frames` bakes only the changed overlays its frames show,
+  nested sequences included, and `tile` returns them as one contact sheet; `cancel_job`
+  stops a sample or a bake that turns out larger than you meant.
 - **Before the final render**: `validate_project` (no font warnings), the diff at 0 ops if
   you work as code, `measure_audio` (loudness overall and per part, true peak, the loudest
   moments, silences), `sample_frames` with `times` at every cut ±0.3 s and `tile`, and

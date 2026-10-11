@@ -891,7 +891,7 @@ impl KumaServer {
         Ok(ok_json(&resumable(j)))
     }
 
-    #[tool(description = "Cancel a render job, whether it is queued or encoding, or an audio or media measurement. melt is stopped, the partial file is removed, and the job ends in state `cancelled`. Refused for a job that has finished or cannot be stopped.")]
+    #[tool(description = "Cancel a render job, whether it is queued or encoding, an audio or media measurement, or a bake or a sample still baking. melt is stopped and the partial file removed; a bake's renderers are stopped and what they had not finished is dropped (finished bakes stay cached). The job ends in state `cancelled`. Refused for a job that has finished or cannot be stopped.")]
     async fn cancel_job(&self, Parameters(p): Parameters<JobArg>) -> Result<CallToolResult, McpError> {
         self.post(&format!("/api/jobs/{}/cancel", p.id), &json!({})).await
     }

@@ -149,8 +149,14 @@ pub fn render(job: &RenderJob, cancel: &AtomicBool, mut on_progress: impl FnMut(
 
 /// Run `cmd`, handing each non-empty stderr line to `on_line`, and return its exit code.
 /// Public for the other long subprocesses a job can stop: ffmpeg metering a long file.
-pub fn run_cancellable(mut cmd: Command, cancel: &AtomicBool, mut on_line: impl FnMut(&str)) -> Result<Option<i32>, MeltError> {
-    cmd.stdout(Stdio::null()).stderr(Stdio::piped());
+pub fn run_cancellable(cmd: Command, cancel: &AtomicBool, on_line: impl FnMut(&str)) -> Result<Option<i32>, MeltError> {
+    run_cancellable_into(cmd, Stdio::null(), cancel, on_line)
+}
+
+/// [`run_cancellable`], its stdout going to `stdout` rather than nowhere: a bake keeps what
+/// the renderer printed for the error it may have to report.
+pub fn run_cancellable_into(mut cmd: Command, stdout: Stdio, cancel: &AtomicBool, mut on_line: impl FnMut(&str)) -> Result<Option<i32>, MeltError> {
+    cmd.stdout(stdout).stderr(Stdio::piped());
     let mut child = cmd.spawn()?;
     let pid = child.id();
     let stderr = child.stderr.take().expect("piped stderr");

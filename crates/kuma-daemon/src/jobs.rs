@@ -626,29 +626,56 @@ impl From<OverlayScope> for bool {
 }
 
 /// Overlay clips in the sequences `root` reaches; `nested_only` drops `root`'s own, and
-/// `within` keeps only those drawn at one of its times, in frames as the sample renders them
-/// — on `root` alone, where clip times are the times asked for. A nested sequence's clips are in its own time, and one
-/// sequence can be placed more than once, so there is no single window to test them
-/// against.
+/// `within` keeps only those drawn at one of its times, in frames as the sample renders
+/// them. The times are followed through every placement: a nested sequence is asked for
+/// the frames of its own that the sampled ones show, so a frame of a master that places a
+/// hundred scenes bakes the overlays of the scene it shows and not the other ninety-nine.
 ///
 /// Reachability matters: a bin full of unplaced sequences must cost neither a bake on
 /// every preview reload nor a browser run on every render. A *hidden* track does not:
 /// the compiler still emits its clips (hiding is per track, on the tractor), so skipping
 /// their bakes would make a render fail with "overlay clip has no bake".
 fn overlay_clips(project: &Project, root: &str, nested_only: bool, within: Option<&[f64]>) -> Vec<String> {
-    project
-        .compile_order(root)
-        .unwrap_or_default()
+    let order = project.compile_order(root).unwrap_or_default();
+    let fps = project.fps;
+    // The frames of each sequence's own time that are shown; `None` is all of them.
+    let mut shown: HashMap<&str, Option<Vec<i64>>> = HashMap::from([(root, within.map(|times| times.iter().map(|&t| fps.frame(t)).collect()))]);
+    // Outermost first, so a sequence's frames are settled before it hands them on: every
+    // sequence placing another comes after it in `compile_order`.
+    for id in order.iter().rev() {
+        let (Some(s), Some(mine)) = (project.seq(id), shown.get(id.as_str()).cloned()) else { continue };
+        for track in &s.tracks {
+            for c in track.clips.iter().filter(|c| project.item(c).is_some_and(kuma_core::BinItem::is_sequence)) {
+                let inner = mine.as_ref().map(|frames| {
+                    // A dissolve shows a placement past its own edges, by no more than the
+                    // transition's length; a freeze shows one frame, whichever is asked for.
+                    let pad = track.transitions.iter().filter(|x| x.from == c.id || x.to == c.id).map(|x| fps.length(x.duration)).max().unwrap_or(0);
+                    let held = c.effects.iter().find_map(|e| match e {
+                        kuma_core::Effect::Freeze { t } => Some(project.held_frame(c, *t, (pad, pad)).0),
+                        _ => None,
+                    });
+                    let f = fps.clip_frames(c.start, c.end);
+                    frames.iter().filter(|t| (f.in_ - pad..=f.out + pad).contains(t)).map(|t| held.unwrap_or(c.source_span(fps).0 + t - f.in_)).collect::<Vec<_>>()
+                });
+                // A sequence placed twice shows what either placement shows.
+                let all = shown.entry(c.bin.as_str()).or_insert_with(|| Some(Vec::new()));
+                *all = all.take().zip(inner).map(|(mut a, b)| {
+                    a.extend(b);
+                    a
+                });
+            }
+        }
+    }
+    order
         .iter()
         .filter(|id| !(nested_only && id.as_str() == root))
-        .filter_map(|id| Some((id.as_str() == root, project.seq(id)?)))
-        .flat_map(|(is_root, s)| s.clips().map(move |c| (is_root, c)))
-        .filter(|(is_root, c)| match within {
-            Some(times) if *is_root => {
-                let f = project.fps.clip_frames(c.start, c.end);
-                times.iter().any(|&t| (f.in_..=f.out).contains(&project.fps.frame(t)))
-            }
-            _ => true,
+        .filter_map(|id| Some((shown.get(id.as_str())?, project.seq(id)?)))
+        .flat_map(|(mine, s)| s.clips().map(move |c| (mine, c)))
+        .filter(|(mine, c)| {
+            mine.as_ref().is_none_or(|frames| {
+                let f = fps.clip_frames(c.start, c.end);
+                frames.iter().any(|t| (f.in_..=f.out).contains(t))
+            })
         })
         .filter(|(_, c)| project.item(c).is_some_and(kuma_core::BinItem::is_overlay))
         .map(|(_, c)| c.id.clone())
@@ -672,7 +699,7 @@ pub fn bake_for(
         OverlayScope::Nested => true,
         OverlayScope::All => false,
     };
-    let (out, errs) = bake_clips(state, project, &overlay_clips(project, root, nested_only, within), progress, cancel, &|r, key| state.baker.bake_keyed(r, key).map(Some));
+    let (out, errs) = bake_clips(state, project, &overlay_clips(project, root, nested_only, within), progress, cancel, &|r, key| state.baker.bake_keyed(r, key, cancel).map(Some));
     if !nested_only {
         return strict((out, errs));
     }
@@ -684,19 +711,19 @@ pub fn bake_for(
 /// preview's background bake, which must not fail for one broken overlay.
 pub fn bake_ids(state: &AppState, project: &Project, ids: &[String], progress: &dyn Fn(u8, &str)) -> (Bakes, Vec<anyhow::Error>) {
     let _cache = read(&state.cache_users);
-    bake_clips(state, project, ids, progress, None, &|r, key| state.baker.bake_keyed(r, key).map(Some))
+    bake_clips(state, project, ids, progress, None, &|r, key| state.baker.bake_keyed(r, key, None).map(Some))
 }
 
 /// Bake the named overlay clips, or every one in the project when none are named. This is
 /// the explicit `bake` command, where "all" means the whole bin rather than what some
 /// timeline reaches — warming the cache for an entry you have not placed yet is the point.
-pub fn bake_all(state: &AppState, project: &Project, only: Option<&[String]>, progress: &dyn Fn(u8, &str)) -> anyhow::Result<Bakes> {
+pub fn bake_all(state: &AppState, project: &Project, only: Option<&[String]>, progress: &dyn Fn(u8, &str), cancel: Option<&AtomicBool>) -> anyhow::Result<Bakes> {
     let _cache = read(&state.cache_users);
     let ids: Vec<String> = every_overlay_clip(project)
         .map(|c| c.id.clone())
         .filter(|id| only.is_none_or(|o| o.contains(id)))
         .collect();
-    strict(bake_clips(state, project, &ids, progress, None, &|r, key| state.baker.bake_keyed(r, key).map(Some)))
+    strict(bake_clips(state, project, &ids, progress, cancel, &|r, key| state.baker.bake_keyed(r, key, cancel).map(Some)))
 }
 
 /// The bakes the cache already holds for every overlay `root` shows, nested ones included,
@@ -1415,7 +1442,7 @@ pub struct Sample {
 /// Render exact frames of the composite through MLT, optionally cropped. Frames are
 /// cached per revision, frame and bake set; every cached file is written atomically so
 /// two concurrent samples of the same frame never read a half-written PNG.
-pub fn sample_frames(state: &AppState, req: &SampleRequest, progress: &dyn Fn(u8, &str)) -> anyhow::Result<Vec<Sample>> {
+pub fn sample_frames(state: &AppState, req: &SampleRequest, progress: &dyn Fn(u8, &str), cancel: Option<&AtomicBool>) -> anyhow::Result<Vec<Sample>> {
     let _cache = read(&state.cache_users);
     let doc = read(&state.project).clone();
     // Sampling an entry is sampling a timeline that holds nothing else. Everything below
@@ -1450,7 +1477,7 @@ pub fn sample_frames(state: &AppState, req: &SampleRequest, progress: &dyn Fn(u8
     };
     // Only the overlays this sample can actually show: one frame must not pay for a bake
     // of every overlay on the timeline, nor fail because one somewhere else is broken.
-    let bakes = bake_for(state, &project, &sequence, scope, Some(&times), &|p, m| progress(p / 2, m), None)?;
+    let bakes = bake_for(state, &project, &sequence, scope, Some(&times), &|p, m| progress(p / 2, m), cancel)?;
     let out_dir = state.config.samples_dir();
     std::fs::create_dir_all(&out_dir)?;
     let mut opts = compile_options(state);
@@ -1527,8 +1554,8 @@ fn publish(dir: &Path, target: &Path, f: &dyn Fn(&Path) -> anyhow::Result<()>) -
 }
 
 /// What `/api/sample` answers: the frames, and with `tile` the sheet of them.
-pub fn sample(state: &AppState, req: &SampleRequest, progress: &dyn Fn(u8, &str)) -> anyhow::Result<serde_json::Value> {
-    let samples = sample_frames(state, req, progress)?;
+pub fn sample(state: &AppState, req: &SampleRequest, progress: &dyn Fn(u8, &str), cancel: Option<&AtomicBool>) -> anyhow::Result<serde_json::Value> {
+    let samples = sample_frames(state, req, progress, cancel)?;
     let sheet = if req.tile { Some(contact_sheet(state, &samples, req.columns)?) } else { None };
     Ok(serde_json::json!({ "samples": samples, "sheet": sheet }))
 }
@@ -1761,6 +1788,14 @@ mod tests {
         json!({ "id": id, "kind": "overlay", "hidden": hidden, "clips": clips })
     }
 
+    /// A sequence of two overlay clips, two seconds each.
+    fn head_and_tail() -> serde_json::Value {
+        seq(json!([overlay_track("io1", false, json!([
+            { "id": "o_head", "start": 0, "end": 2, "bin": "tag" },
+            { "id": "o_tail", "start": 2, "end": 4, "bin": "tag" }
+        ]))]))
+    }
+
     fn clip(id: &str, bin: &str) -> serde_json::Value {
         json!({ "id": id, "start": 0, "end": 4, "bin": bin })
     }
@@ -1798,32 +1833,66 @@ mod tests {
         assert_eq!(overlay_clips(&p, "main", false, None), vec!["o_nested", "o_hidden", "o_own"]);
     }
 
-    /// Sampling one frame must not bake every overlay on the timeline. The window applies
-    /// to the sequence being sampled, whose clip times are the times asked for; a nested
-    /// sequence's are its own, and it may be placed more than once, so those are kept.
+    /// Sampling one frame must not bake every overlay on the timeline, on the sequence
+    /// sampled or in the ones it nests: the sampled frames are followed through each
+    /// placement into the nested sequence's own time.
     #[test]
-    fn a_time_window_narrows_the_root_but_not_what_it_nests() {
+    fn a_time_window_narrows_the_root_and_what_it_nests() {
         let p: Project = serde_json::from_value(json!({
             "bin": {
                 "tag": { "source": { "overlay": "overlays/location-tag" } },
-                "inner": seq(json!([overlay_track("io1", false, json!([clip("o_nested", "tag")]))])),
+                "inner": head_and_tail(),
                 "main": seq(json!([
                     overlay_track("mo1", false, json!([
                         { "id": "o_early", "start": 0, "end": 2, "bin": "tag" },
                         { "id": "o_late", "start": 50, "end": 52, "bin": "tag" }
                     ])),
-                    json!({ "id": "v1", "clips": [ clip("s1", "inner") ] })
+                    json!({ "id": "v1", "clips": [
+                        { "id": "s1", "start": 0, "end": 4, "bin": "inner" },
+                        { "id": "s2", "start": 20, "end": 22, "bin": "inner", "in": 2 }
+                    ] })
                 ]))
             }
         }))
         .unwrap();
-        assert_eq!(overlay_clips(&p, "main", false, Some(&[0.0, 1.0])), vec!["o_nested", "o_early"]);
-        assert_eq!(overlay_clips(&p, "main", false, Some(&[50.5, 51.0])), vec!["o_nested", "o_late"]);
+        assert_eq!(overlay_clips(&p, "main", false, Some(&[0.0, 1.0])), vec!["o_head", "o_early"]);
+        assert_eq!(overlay_clips(&p, "main", false, Some(&[3.0])), vec!["o_tail"]);
+        // The second placement starts two seconds in: its first frame is the tail's.
+        assert_eq!(overlay_clips(&p, "main", false, Some(&[20.0])), vec!["o_tail"]);
         // Each frame bakes what it shows, not everything between the first and the last.
-        assert_eq!(overlay_clips(&p, "main", false, Some(&[1.0, 51.0])), vec!["o_nested", "o_early", "o_late"]);
-        assert_eq!(overlay_clips(&p, "main", false, Some(&[10.0, 20.0])), vec!["o_nested"]);
+        assert_eq!(overlay_clips(&p, "main", false, Some(&[1.0, 51.0])), vec!["o_head", "o_early", "o_late"]);
+        // Where the nested sequence is not on screen, nothing of it is baked.
+        assert!(overlay_clips(&p, "main", false, Some(&[10.0, 30.0])).is_empty());
         // In frames: 49.99 s is frame 1500 at 30 fps, the first of a clip starting at 50 s.
-        assert_eq!(overlay_clips(&p, "main", false, Some(&[49.99])), vec!["o_nested", "o_late"]);
+        assert_eq!(overlay_clips(&p, "main", false, Some(&[49.99])), vec!["o_late"]);
+        // No window, no narrowing: a render wants every one.
+        assert_eq!(overlay_clips(&p, "main", false, None), vec!["o_head", "o_tail", "o_early", "o_late"]);
+    }
+
+    /// A placement can show other frames of a sequence than its own span: a dissolve reads
+    /// past its edge, and a freeze holds one frame whichever is sampled.
+    #[test]
+    fn a_dissolve_or_a_freeze_keeps_what_the_placement_may_show() {
+        let project = |clip: serde_json::Value, transitions: serde_json::Value| -> Project {
+            serde_json::from_value(json!({
+                "bin": {
+                    "tag": { "source": { "overlay": "overlays/location-tag" } },
+                    "black": { "source": { "color": "#000000" } },
+                    "inner": head_and_tail(),
+                    "main": seq(json!([{ "id": "v1", "transitions": transitions, "clips": [ { "id": "b1", "start": 0, "end": 10, "bin": "black" }, clip ] }]))
+                }
+            }))
+            .unwrap()
+        };
+        let placed = json!({ "id": "s1", "start": 10, "end": 12, "bin": "inner", "in": 2 });
+        let plain = project(placed.clone(), json!([]));
+        assert!(overlay_clips(&plain, "main", false, Some(&[9.9])).is_empty());
+        // Half a second before the cut the dissolve already shows the incoming sequence,
+        // from before its `in`.
+        let dissolved = project(placed, json!([{ "from": "b1", "to": "s1", "duration": 1.0 }]));
+        assert_eq!(overlay_clips(&dissolved, "main", false, Some(&[9.9])), vec!["o_head"]);
+        let frozen = project(json!({ "id": "s1", "start": 10, "end": 12, "bin": "inner", "effects": [{ "type": "freeze", "t": 3.0 }] }), json!([]));
+        assert_eq!(overlay_clips(&frozen, "main", false, Some(&[10.5])), vec!["o_tail"]);
     }
 
     /// One frame comes back at 960 px and several at 480 each, the size a sheet's are,

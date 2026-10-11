@@ -90,3 +90,28 @@ fn a_cancelled_bake_starts_nothing() {
     assert_eq!(err.to_string(), "cancelled");
     assert!(!log.exists(), "no renderer ran");
 }
+
+/// A cancel reaches the renderers already running: they are killed rather than left to
+/// finish a bake nobody wants, and nothing half-made reaches the cache.
+#[test]
+fn a_cancel_stops_the_bakes_that_are_running() {
+    let (state, log, _dir) = fixture(2);
+    let project = state.project.read().unwrap().clone();
+    let cancel = AtomicBool::new(false);
+    let started = std::time::Instant::now();
+    let outcome = std::thread::scope(|s| {
+        s.spawn(|| {
+            while !log.exists() {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            cancel.store(true, std::sync::atomic::Ordering::SeqCst);
+        });
+        jobs::bake_for(&state, &project, "main", OverlayScope::All, None, &|_, _| {}, Some(&cancel))
+    });
+    assert!(outcome.is_err(), "a cancelled bake is not a bake");
+    assert!(started.elapsed() < std::time::Duration::from_millis(900), "the renderer was waited for: {:?}", started.elapsed());
+    let lines = std::fs::read_to_string(&log).unwrap();
+    assert!(lines.contains("start") && !lines.contains("end"), "a renderer ran to its end: {lines}");
+    let (cached, missing) = jobs::cached_bakes(&state, &project, "main");
+    assert!(cached.is_empty() && missing.len() == 3, "nothing reached the cache: {cached:?}");
+}

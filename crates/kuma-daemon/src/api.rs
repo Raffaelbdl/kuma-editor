@@ -890,9 +890,11 @@ struct BakeReq {
 async fn bake(State(st): S, Json(asked): Json<Asked<BakeReq>>) -> Json<Value> {
     let (by, req) = asked.split();
     let s2 = st.clone();
-    let id = jobs::spawn_with(st, "bake", json!({ "clips": req.clips }), by, move |progress| {
+    let id = jobs::spawn_cancellable(st, "bake", json!({ "clips": req.clips }), by, move |progress, cancel| {
+        // A cancellable job reads `queued` until it reports; this one never waits a turn.
+        progress(0, "starting");
         let project = read(&s2.project).clone();
-        let bakes = jobs::bake_all(&s2, &project, req.clips.as_deref(), progress)?;
+        let bakes = jobs::bake_all(&s2, &project, req.clips.as_deref(), progress, Some(cancel))?;
         Ok(json!({ "bakes": bakes.iter().map(|(k, b)| json!({ "clip": k, "resource": b.resource, "still": b.is_still })).collect::<Vec<_>>() }))
     });
     Json(json!({ "job": id }))
@@ -900,7 +902,7 @@ async fn bake(State(st): S, Json(asked): Json<Asked<BakeReq>>) -> Json<Value> {
 
 /// Synchronous: sampling is what the agent waits on.
 async fn sample(State(st): S, Json(req): Json<SampleRequest>) -> ApiResult {
-    Ok(Json(blocking(move || jobs::sample(&st, &req, &|_, _| {})).await??))
+    Ok(Json(blocking(move || jobs::sample(&st, &req, &|_, _| {}, None)).await??))
 }
 
 /// The same sample as a job, for a caller that must not block on the bakes it needs:
@@ -912,7 +914,10 @@ async fn sample_job(State(st): S, Json(asked): Json<Asked<SampleRequest>>) -> Js
     // moments and region, which the agent's activity shows.
     let sequence = req.overlay.is_none().then(|| req.sequence.clone().unwrap_or_else(|| read(&st.project).master.clone()));
     let params = json!({ "sequence": sequence, "overlay": req.overlay, "times": req.times, "t0": req.t0, "t1": req.t1, "rect": req.rect });
-    let id = jobs::spawn_with(st, "sample", params, by, move |progress| jobs::sample(&s2, &req, progress));
+    let id = jobs::spawn_cancellable(st, "sample", params, by, move |progress, cancel| {
+        progress(0, "starting");
+        jobs::sample(&s2, &req, progress, Some(cancel))
+    });
     Json(json!({ "job": id }))
 }
 
@@ -965,7 +970,7 @@ async fn snapshot(State(st): S, Query(q): Query<SnapshotQuery>) -> Result<Respon
     // Same overlay scope as the engine preview this stands in for: nested sequences baked
     // in, the open sequence's own left to the live DOM the UI draws on top.
     let req = SampleRequest { t0: q.t, width: q.width, overlays: jobs::OverlayScope::Nested, sequence: Some(st.current_sequence()), ..Default::default() };
-    let samples = blocking(move || jobs::sample_frames(&st, &req, &|_, _| {})).await??;
+    let samples = blocking(move || jobs::sample_frames(&st, &req, &|_, _| {}, None)).await??;
     let bytes = std::fs::read(&samples[0].path).map_err(|e| anyhow::anyhow!(e))?;
     Ok(([(header::CONTENT_TYPE, "image/png"), (header::CACHE_CONTROL, "no-store")], bytes).into_response())
 }

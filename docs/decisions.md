@@ -3070,6 +3070,41 @@ Still open here: the render queue cannot say a render was "asked by kuma" (a job
 record who asked for it); the agent panel's thumbnails are the sample's own PNGs, so a pruned
 cache leaves them blank; a marker that is dragged starts over unanswered (its id is where it is).
 
+## Field report: a fifty-two-minute generated course
+
+A 52-minute narrated course (98 scenes, a sequence each, one master) built entirely by an
+agent as code. It used no blueprint: one overlay folder held a data-driven engine
+(`engine.js`, ~1200 lines) and each scene was one overlay clip for its whole length, its
+content a JSON spec in one var. Its pain points were read against the code; three were
+kuma's and are fixed here, the rest is listed as open.
+
+- **A sample bakes what its frames show, in nested sequences too.** `overlay_clips` narrowed
+  the sampled sequence to the times asked for and kept every overlay of the sequences it
+  nests, on the grounds that a nested sequence has its own time and may be placed twice.
+  With a sequence per scene, twelve frames of the master queued a bake of the whole video.
+  The sampled frames are now followed through each placement (`in` + offset, per placement,
+  a sequence placed twice showing what either shows). Two cases keep more than the span: a
+  dissolve reads past the placement's edge (padded by the transition's whole length, so the
+  compiler's half-and-half rule is not repeated here), and a `freeze` holds the one frame
+  `Project::held_frame` names. Safe because a sample compiles with
+  `UnbakedPolicy::Skip`.
+- **`sample` and `bake` jobs can be cancelled**, and a cancel kills the renderers already
+  running (`Baker::bake_keyed` takes the flag and runs hyperframes through melt's
+  `run_cancellable`) rather than only starting no more. Before, the one way out was `pkill`,
+  after which the job started its next bake.
+- **The lint reads the scripts an overlay links to.** It read inline `<script>` bodies
+  only, so an engine in a file needed an inline stub to "register" the timeline and
+  "read" its vars, and a `Date.now()` in that file went unseen. `_vendor/` stays exempt
+  (it counts toward a var being used, never toward a fault), so a library that calls
+  `Date.now` to no effect goes there, in the overlay's own `_vendor/` if nowhere else.
+
+Not done, from the same report: a bake that comes out fully transparent says nothing
+(hyperframes exits 0 when the page throws); the `bake` job's result lists every clip's
+resource, thousands of tokens on a whole project; `onFrame` registers one tween over the
+whole clip, which defeats hyperframes' static dedup, and wants a sibling that takes the
+spans where something changes (`_vendor/` is append-only); and every as-code project
+rewrites the project diff, which could ship with the skill.
+
 ## Still open
 
 Nested sequences are done and the editor is an application now, so this list is the whole

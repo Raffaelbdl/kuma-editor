@@ -406,7 +406,7 @@ async fn main() -> anyhow::Result<()> {
             let state = open(&cli)?;
             let bakes = tokio::task::spawn_blocking(move || {
                 let project = state.project.read().unwrap().clone();
-                kuma_daemon::jobs::bake_all(&state, &project, only.as_deref(), &|p, m| eprintln!("[{p:3}%] {m}"))
+                kuma_daemon::jobs::bake_all(&state, &project, only.as_deref(), &|p, m| eprintln!("[{p:3}%] {m}"), None)
             })
             .await??;
             for (k, b) in bakes {
@@ -451,7 +451,7 @@ async fn main() -> anyhow::Result<()> {
                 Some(out) => out,
                 None => {
                     let state = open(&cli)?;
-                    tokio::task::spawn_blocking(move || kuma_daemon::jobs::sample(&state, &req, &|_, _| {})).await??
+                    tokio::task::spawn_blocking(move || kuma_daemon::jobs::sample(&state, &req, &|_, _| {}, None)).await??
                 }
             };
             // The list of frames, as it always printed; with a sheet, the sheet beside it.

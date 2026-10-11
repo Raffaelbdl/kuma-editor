@@ -2,7 +2,8 @@
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, PoisonError};
 
 use kuma_core::manifest::OverlayManifest;
@@ -89,6 +90,8 @@ pub enum BakeError {
     NoFrames(PathBuf),
     #[error("renderer produced {got} frames but {want} were needed — the composition's duration did not take effect")]
     ShortRender { want: i64, got: i64 },
+    #[error("cancelled")]
+    Cancelled,
     #[error("unsupported speed {0}: effective fps must stay within 1..240")]
     Speed(f64),
     #[error("io: {0}")]
@@ -306,12 +309,13 @@ impl Baker {
     /// into place at the end, so concurrent bakes of the same key never see each other's
     /// partial output and a crash leaves no half-written cache entry.
     pub fn bake(&self, req: &BakeRequest) -> Result<BakeResult, BakeError> {
-        self.bake_keyed(req, None)
+        self.bake_keyed(req, None, None)
     }
 
     /// [`bake`](Self::bake), given `req`'s [`key`](Self::key) when the caller has it, so
-    /// the folder is not hashed again.
-    pub fn bake_keyed(&self, req: &BakeRequest, key: Option<&str>) -> Result<BakeResult, BakeError> {
+    /// the folder is not hashed again. Setting `cancel` stops the renderer: the scratch
+    /// folder goes, and nothing reaches the cache.
+    pub fn bake_keyed(&self, req: &BakeRequest, key: Option<&str>, cancel: Option<&AtomicBool>) -> Result<BakeResult, BakeError> {
         let problems = req.manifest.check_vars(req.vars);
         if !problems.is_empty() {
             return Err(BakeError::Vars(problems));
@@ -330,10 +334,14 @@ impl Baker {
             return Ok(r);
         }
         let _slot = self.slot();
+        // The wait for a slot can be most of a cancelled job's life.
+        if cancel.is_some_and(|c| c.load(Ordering::SeqCst)) {
+            return Err(BakeError::Cancelled);
+        }
         let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
         let work = WorkDir(self.cache_dir.join(format!("{key}.tmp-{}-{nanos:x}", std::process::id())));
         std::fs::create_dir_all(&work.0)?;
-        let result = self.bake_into(req, &work.0, &dir)?;
+        let result = self.bake_into(req, &work.0, &dir, cancel)?;
         // The marker goes in before the rename, so what lands under `dir` is complete.
         std::fs::write(work.0.join("done.json"), serde_json::to_vec_pretty(&result).unwrap())?;
         if std::fs::rename(&work.0, &dir).is_err() {
@@ -413,7 +421,7 @@ impl Baker {
     }
 
     /// Render into `work`; the result describes paths under `dir`, where `work` ends up.
-    fn bake_into(&self, req: &BakeRequest, work: &Path, dir: &Path) -> Result<BakeResult, BakeError> {
+    fn bake_into(&self, req: &BakeRequest, work: &Path, dir: &Path, cancel: Option<&AtomicBool>) -> Result<BakeResult, BakeError> {
         // 1. Stage the overlay with kuma's injection script.
         let staged = self.stage(req, &work.join("src"))?;
         let (src, is_still, speed) = (staged.dir, staged.is_still, staged.speed);
@@ -435,10 +443,19 @@ impl Baker {
         if let Some(b) = &self.browser {
             cmd.env("HYPERFRAMES_BROWSER_PATH", b);
         }
-        let out = cmd.output().map_err(|e| BakeError::NoRenderer(format!("{}: {e}", self.hyperframes.display())))?;
-        if !out.status.success() {
-            let mut msg = String::from_utf8_lossy(&out.stderr).into_owned();
-            msg.push_str(&String::from_utf8_lossy(&out.stdout));
+        // stderr is read as it comes; stdout waits in a file for the error it may be part of.
+        let printed = work.join("renderer.out");
+        cmd.stdin(Stdio::null());
+        let (mut msg, never) = (String::new(), AtomicBool::new(false));
+        let on_line = |l: &str| msg.extend([l, "\n"]);
+        let code = kuma_mlt::melt::run_cancellable_into(cmd, std::fs::File::create(&printed)?.into(), cancel.unwrap_or(&never), on_line).map_err(|e| match e {
+            kuma_mlt::MeltError::Cancelled => BakeError::Cancelled,
+            e => BakeError::NoRenderer(format!("{}: {e}", self.hyperframes.display())),
+        })?;
+        let said = std::fs::read(&printed).unwrap_or_default();
+        std::fs::remove_file(&printed)?;
+        if code != Some(0) {
+            msg.push_str(&String::from_utf8_lossy(&said));
             let tail: String = msg.chars().rev().take(4000).collect::<Vec<_>>().into_iter().rev().collect();
             return Err(BakeError::Render(tail));
         }

@@ -470,10 +470,10 @@ fn without_injection(html: &str) -> String {
 
 /// True when the scripts register a timeline the renderer can find: on
 /// `window.__timelines` themselves, or through `kumaTemplate`'s `timeline()` — directly, or
-/// by way of `onFrame` or `kumaCanvas`, which call it. `gsap.timeline(…)` alone registers nothing.
+/// by way of `onFrame`, `onFrames` or `kumaCanvas`, which call it. `gsap.timeline(…)` alone registers nothing.
 fn registers_timeline(scripts: &str) -> bool {
     let own = scripts.replace("gsap.timeline(", "");
-    own.contains("__timelines") || (own.contains("kumaTemplate(") && ["timeline(", "onFrame(", "kumaCanvas("].iter().any(|c| own.contains(c)))
+    own.contains("__timelines") || (own.contains("kumaTemplate(") && ["timeline(", "onFrame(", "onFrames(", "kumaCanvas("].iter().any(|c| own.contains(c)))
 }
 
 /// True when the scripts read the clip's real length: `duration` as a value from

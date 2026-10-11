@@ -379,3 +379,39 @@ fn a_clip_between_frames_bakes_the_frames_it_is_placed_on() {
     assert_eq!(key(Fps::new(6, 1), 0.9, 5), "f993315fad001400b9bc2043");
     assert_eq!(key(Fps::new(30000, 1001), 3.0, 90), "22b41cddcd6034dabd7377f7");
 }
+
+/// `onFrames` is `onFrame` told where the picture changes: the frames it bakes are the ones
+/// `onFrame` bakes, in the spans and between them. What it is for, the renderer reusing the
+/// frames between spans, is the renderer's to decide and shows only in how long a bake takes.
+#[test]
+fn on_frames_bakes_what_on_frame_does() {
+    let root = repo_root();
+    let tmp = tempfile::tempdir().unwrap();
+    let baker = Baker::discover(&root, root.join("library/blueprints/_vendor"), tmp.path().join("cache"));
+    if baker.available().is_err() || (baker.browser.is_none() && std::env::var_os("KUMA_ALLOW_BROWSER_DOWNLOAD").is_none()) {
+        eprintln!("hyperframes or a browser is unavailable; skipping");
+        return;
+    }
+    // A box that holds, slides from 0.5 s to 1 s, holds, and slides back from 1.5 s to 1.75 s.
+    let bake = |name: &str, driver: &str| {
+        let dir = tmp.path().join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("overlay.json"), r#"{ "name": "Slide", "vars": {} }"#).unwrap();
+        let page = r#"<!doctype html><html><head><script src="_vendor/gsap.min.js"></script><script src="_vendor/kuma.js"></script>
+          <style>html, body { margin: 0; background: transparent; } #box { position: absolute; top: 40px; width: 40px; height: 40px; background: #e33; }</style></head><body>
+          <div id="root" data-composition-id="main" data-start="0" data-duration="2" data-width="320" data-height="180" data-fixed-timing><div id="box"></div></div>
+          <script>const tpl = kumaTemplate({}), box = document.getElementById("box"), part = (t, a, b) => Math.min(1, Math.max(0, (t - a) / (b - a)));
+          const draw = (t) => { box.style.left = 20 + 200 * part(t, 0.5, 1) - 100 * part(t, 1.5, 1.75) + "px"; };
+          DRIVER</script></body></html>"#;
+        std::fs::write(dir.join("index.html"), page.replace("DRIVER", driver)).unwrap();
+        let (manifest, vars) = (OverlayManifest::load(&dir).unwrap(), Map::new());
+        let req = BakeRequest { overlay_dir: &dir, manifest: &manifest, vars: &vars, fps: Fps::new(12, 1), width: 320, height: 180, duration: 2.0, frames: 24, speed: 1.0 };
+        let r = baker.bake(&req).expect("bake");
+        (1..=r.frames).map(|n| rgba(&r.dir.join(format!("frames/frame_{n:06}.png")), None)).collect::<Vec<_>>()
+    };
+    let (every, spans) = (bake("every", "tpl.onFrame(draw);"), bake("spans", "tpl.onFrames([[0.5, 1], [1.5, 1.75]], draw);"));
+    for (i, (a, b)) in every.iter().zip(&spans).enumerate() {
+        assert!(a == b, "frame {} differs", i + 1);
+    }
+    assert!(every[0] != every[12] && every[12] != every[23], "the box moved, and came part of the way back");
+}

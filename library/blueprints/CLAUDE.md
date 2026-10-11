@@ -29,7 +29,8 @@ shadows it for every overlay beside it, and `check_overlay` warns (`vendor_shado
 it differs from the shipped one. The library's `_vendor/` is not copied into projects.
 
 - `_vendor/kuma.js` — `kumaTemplate(defaults)` applies the vars, returns `{ vars, width,
-  height, duration, text(id, value), timeline(), onFrame(fn) }` and works standalone.
+  height, duration, text(id, value), timeline(), onFrame(fn), onFrames(spans, fn) }` and
+  works standalone.
 - `_vendor/kuma.css` — the transparent reset and the `--u` unit (`1vh × --var-size`).
 - `_vendor/kuma-motion.js` — entrances and exits by name, for an overlay whose motion is a
   var: `kumaMotion.enter(tl, el, vars.enter, { at, duration, text })` returns when it
@@ -111,7 +112,13 @@ overlays/<name>`) does, optionally with `vars`, once it checks clean.
    - GSAP: one paused timeline, `const tl = timeline()` from `kumaTemplate` (it registers
      `window.__timelines["main"]`). Per-frame JS that GSAP does not tween (a canvas, a
      computed path) runs from `onFrame(t => …)`, never from `onUpdate`, which `tl.seek(t)`
-     suppresses.
+     suppresses. When the picture it draws holds still for stretches (a diagram that builds
+     step by step), say where it changes instead: `onFrames([[1, 1.5], [4, 4.3]], t => …)`
+     runs it over those spans only, and the bake reuses the frames between them rather
+     than capturing each (`onFrame` makes every frame of the clip a new one). Between two
+     spans the function must draw one picture whatever `t` it gets; a span left out costs
+     nothing worse than the reuse, since the renderer checks before it reuses. A `<canvas>`
+     on the page rules the reuse out altogether.
    - **No GSAP timeline at all** (static overlays, pure CSS animation): put `data-no-timeline`
      on the composition root, or the renderer waits 45 s for a timeline and fails the bake.
    - CSS `@keyframes`/transitions and WAAPI are fine — the renderer scrubs them.

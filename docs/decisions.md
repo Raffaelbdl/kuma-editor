@@ -3113,10 +3113,21 @@ kuma's and are fixed here, the rest is listed as open.
 - **The `bake` job answers `baked` (a count) and `warnings`**, no longer every clip's
   resource path: on a whole project that was some seven thousand tokens nobody read.
 
-Not done, from the same report: `onFrame` registers one tween over the
-whole clip, which defeats hyperframes' static dedup, and wants a sibling that takes the
-spans where something changes (`_vendor/` is append-only); and every as-code project
-rewrites the project diff, which could ship with the skill.
+- **`onFrames(spans, fn)` beside `onFrame`.** hyperframes reuses a frame only outside
+  every tween's interval, and `onFrame` is one tween over the whole clip, so an overlay
+  driven by it never had a frame reused; the report rebuilt that by hand, registering a
+  tween per run of changing frames. `onFrames` is that as a helper: a tween per span, the
+  function called once for `t = 0`. Measured on 0.8.37, a 3 s clip that moves in two
+  spans: 58 of 90 frames reused, output byte-identical to `onFrame`'s. The spans are a
+  promise the renderer checks (it screenshots a sample of each run and gives the reuse up
+  on a mismatch), so a wrong span costs time, never a wrong frame. A `<canvas>` on the
+  page makes hyperframes rule reuse out, so `kumaCanvas` takes no spans. Two things to
+  know: GSAP reads a tween's start from the target's getter whatever `fromTo` is told, so
+  each span has a clock of its own; and adding to `kuma.js` changes every bake key, as
+  any `_vendor/` change does, so each project re-bakes once, to the same pixels.
+
+Not done, from the same report: every as-code project rewrites the project diff, which
+could ship with the skill.
 
 ## Still open
 

@@ -50,6 +50,12 @@ contract does not say, or what bit anyway.
 - To show an animation frozen at a moment (the same overlay at t = 0.04 / 0.15 / 1.0 side
   by side), give it an `at` var and compute the pose directly (`gsap.parseEase`). A second
   private timeline fails the lint.
+- An overlay whose script draws each frame itself (`onFrame`) bakes every frame of its
+  clip, held ones included. If it holds still for stretches, drive it with
+  `onFrames(spans, fn)` and name the spans where it changes: the bake reuses the frames
+  between them (half the frames of a typical explainer scene, in the field). Keep continuous
+  motion (a bar that grows all scene long, a pulsing ring, a blinking caret) out of the
+  holds, or there are none.
 - Draw on canvas through `kumaCanvas` with seeded Rough.js (`g.rough(key)`), never an
   unseeded `rough.canvas`.
 - Few easings for a whole video (an out-cubic, an in-out-cubic and one soft overshoot is

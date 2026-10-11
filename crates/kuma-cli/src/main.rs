@@ -404,7 +404,7 @@ async fn main() -> anyhow::Result<()> {
                 return Ok(());
             }
             let state = open(&cli)?;
-            let bakes = tokio::task::spawn_blocking(move || {
+            let (bakes, warnings) = tokio::task::spawn_blocking(move || {
                 let project = state.project.read().unwrap().clone();
                 kuma_daemon::jobs::bake_all(&state, &project, only.as_deref(), &|p, m| eprintln!("[{p:3}%] {m}"), None)
             })
@@ -412,6 +412,7 @@ async fn main() -> anyhow::Result<()> {
             for (k, b) in bakes {
                 println!("{k}\t{}", b.resource.display());
             }
+            warnings.iter().for_each(|w| eprintln!("kuma: {}", w.message));
         }
         Cmd::Sample { t0, t1, count, rect, width, sequence, overlay, duration, backdrop, frame, times, tile, columns, no_overlays } => {
             let rect = rect
@@ -515,7 +516,7 @@ async fn main() -> anyhow::Result<()> {
             // Overlays as the render would have them: every bake the cache holds, and with
             // `--bake` the rest, so the graph printed is the one that would render.
             opts.bakes = if *bake {
-                jobs::bake_for(&state, &project, root, OverlayScope::All, None, &|_, m| eprintln!("kuma: {m}"), None)?
+                jobs::bake_for(&state, &project, root, OverlayScope::All, None, &|_, m| eprintln!("kuma: {m}"), None)?.0
             } else {
                 let (bakes, missing) = jobs::cached_bakes(&state, &project, root);
                 if !missing.is_empty() {

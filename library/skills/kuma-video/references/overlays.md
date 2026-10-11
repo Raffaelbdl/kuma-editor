@@ -106,5 +106,11 @@ A wipe, a shutter, a page turn drawn by an overlay over a cut:
 
 ## Looking at one
 
+- **A frame with nothing on it**: read the `warnings` of the sample, bake or render. A
+  script that throws does not fail a bake: the warning quotes the error. "baked fully
+  transparent" with no error means the page drew nothing for the whole clip. One cause met in the field (the page worked in a browser and baked blank): a top-level
+  `const` of an inline `<script>` was not visible to a file loaded after it when baked;
+  values handed over on `window` were.
+
 - `sample_frames` with `overlay` renders the entry on its own, before any clip places it.
 - Sample over **white and black** backdrops if it can sit over footage.

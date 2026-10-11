@@ -58,6 +58,13 @@ pub struct BakeResult {
     pub frames: i64,
     pub is_still: bool,
     pub cached: bool,
+    /// Every frame is fully transparent: the overlay drew nothing.
+    #[serde(default)]
+    pub blank: bool,
+    /// What scripts on the page threw. The renderer prints these and exits 0 all the same,
+    /// with whatever the page had drawn by then: often nothing.
+    #[serde(default)]
+    pub page_errors: Vec<String>,
 }
 
 impl BakeResult {
@@ -454,6 +461,8 @@ impl Baker {
         })?;
         let said = std::fs::read(&printed).unwrap_or_default();
         std::fs::remove_file(&printed)?;
+        let mut page_errors: Vec<String> = msg.lines().filter_map(|l| Some(l.split_once(PAGE_ERROR)?.1.trim().to_string())).collect();
+        page_errors.dedup();
         if code != Some(0) {
             msg.push_str(&String::from_utf8_lossy(&said));
             let tail: String = msg.chars().rev().take(4000).collect::<Vec<_>>().into_iter().rev().collect();
@@ -494,6 +503,8 @@ impl Baker {
             frames: want,
             is_still,
             cached: false,
+            blank: drew_nothing(&frames_dir, want),
+            page_errors,
         })
     }
 
@@ -585,6 +596,22 @@ fn first_frame_rgba(frames: &Path) -> Result<(), String> {
     crate::media::ffmpeg(&args).map_err(|e| format!("could not add an alpha channel to the first frame: {e}"))?;
     tmp.persist(&first).map_err(|e| e.to_string())?;
     Ok(())
+}
+
+/// How hyperframes marks, on stderr, an error a script on the page threw.
+const PAGE_ERROR: &str = "[Browser:PAGEERROR]";
+
+/// Whether all `n` frames are fully transparent. The first is decoded; the rest are the
+/// same picture only if they are the same bytes, so a bake that draws anything costs one
+/// decode and a read or two.
+fn drew_nothing(frames: &Path, n: i64) -> bool {
+    let first = frames.join(frame_name(1));
+    let alpha = Command::new("ffmpeg").args(["-v", "error", "-i"]).arg(&first).args(["-vf", "alphaextract", "-f", "rawvideo", "-pix_fmt", "gray", "-"]).output();
+    if !alpha.is_ok_and(|out| out.status.success() && !out.stdout.is_empty() && out.stdout.iter().all(|&a| a == 0)) {
+        return false;
+    }
+    let Ok(bytes) = std::fs::read(&first) else { return false };
+    (2..=n).all(|i| std::fs::read(frames.join(frame_name(i))).is_ok_and(|b| b == bytes))
 }
 
 /// A PNG whose header says it carries no alpha channel (colour type other than 6, RGBA).
@@ -773,6 +800,29 @@ fn find_playwright_headless_shell() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A bake of nothing but transparent frames is blank; one frame with a pixel in it,
+    /// anywhere in the clip, and it is not.
+    #[test]
+    fn a_bake_that_drew_nothing_is_blank() {
+        let tmp = tempfile::tempdir().unwrap();
+        let frames = tmp.path().join("frames");
+        std::fs::create_dir_all(&frames).unwrap();
+        let png = |color: &str, n: i64| {
+            let args = ["-f", "lavfi", "-i", &format!("color={color}:s=16x16,format=rgba"), "-frames:v", "1"].map(String::from).into_iter();
+            crate::media::ffmpeg(&args.chain([frames.join(frame_name(n)).to_string_lossy().into_owned()]).collect::<Vec<_>>()).is_ok()
+        };
+        if !crate::media::ffprobe_available() {
+            eprintln!("ffmpeg unavailable; skipping");
+            return;
+        }
+        assert!((1..=3).all(|n| png("black@0", n)));
+        assert!(drew_nothing(&frames, 3));
+        assert!(png("red@0.5", 3));
+        assert!(!drew_nothing(&frames, 3), "the last frame draws");
+        assert!(png("red@0.5", 1));
+        assert!(!drew_nothing(&frames, 3), "the first frame draws");
+    }
 
     #[test]
     fn a_copied_folder_leaves_its_generated_previews_behind() {

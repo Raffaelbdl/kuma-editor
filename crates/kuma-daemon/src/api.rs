@@ -894,8 +894,9 @@ async fn bake(State(st): S, Json(asked): Json<Asked<BakeReq>>) -> Json<Value> {
         // A cancellable job reads `queued` until it reports; this one never waits a turn.
         progress(0, "starting");
         let project = read(&s2.project).clone();
-        let bakes = jobs::bake_all(&s2, &project, req.clips.as_deref(), progress, Some(cancel))?;
-        Ok(json!({ "bakes": bakes.iter().map(|(k, b)| json!({ "clip": k, "resource": b.resource, "still": b.is_still })).collect::<Vec<_>>() }))
+        let (bakes, warnings) = jobs::bake_all(&s2, &project, req.clips.as_deref(), progress, Some(cancel))?;
+        // How many, not which: a whole project's list is thousands of tokens nobody reads.
+        Ok(json!({ "baked": bakes.len(), "warnings": warnings }))
     });
     Json(json!({ "job": id }))
 }

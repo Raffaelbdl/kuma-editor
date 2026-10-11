@@ -35,14 +35,14 @@ fn fixture(concurrency: usize) -> (AppState, std::path::PathBuf, tempfile::TempD
     std::fs::create_dir_all(&probe).unwrap();
     std::fs::write(probe.join("overlay.json"), r#"{ "name": "Probe", "vars": { "label": { "type": "string", "default": "" } } }"#).unwrap();
     std::fs::write(probe.join("index.html"), "<html><body data-composition-id=\"root\"></body></html>").unwrap();
-    // `render <src> --format png-sequence -o <dir> …`: slow enough for runs to overlap, then
-    // six empty frames in `$6`.
+    // `render <src> --format png-sequence -o <dir> …`: a script on the page throws, which the
+    // real one prints and survives; slow enough for runs to overlap, then six empty frames in `$6`.
     let log = dir.path().join("runs");
     let fake = dir.path().join("hyperframes");
     std::fs::write(
         &fake,
         format!(
-            "#!/bin/sh\necho \"start $2\" >> '{0}'\nsleep 1\nmkdir -p \"$6\"\nfor i in 1 2 3 4 5 6; do : > \"$6/f$i.png\"; done\necho \"end $2\" >> '{0}'\n",
+            "#!/bin/sh\necho \"start $2\" >> '{0}'\necho '[Browser:PAGEERROR] boom' >&2\nsleep 1\nmkdir -p \"$6\"\nfor i in 1 2 3 4 5 6; do : > \"$6/f$i.png\"; done\necho \"end $2\" >> '{0}'\n",
             log.display()
         ),
     )
@@ -67,11 +67,14 @@ fn clips_bake_side_by_side_and_a_shared_key_bakes_once() {
     let (state, log, _dir) = fixture(2);
     let project = state.project.read().unwrap().clone();
     let said = Mutex::new(Vec::new());
-    let bakes = jobs::bake_for(&state, &project, "main", OverlayScope::All, None, &|_, m| said.lock().unwrap().push(m.to_string()), None).expect("bake");
+    let (bakes, warnings) = jobs::bake_for(&state, &project, "main", OverlayScope::All, None, &|_, m| said.lock().unwrap().push(m.to_string()), None).expect("bake");
 
     assert_eq!(bakes.len(), 3, "every clip has its bake: {bakes:?}");
     assert_eq!(bakes["c1"].resource, bakes["c2"].resource, "one key, one bake");
     assert_ne!(bakes["c1"].resource, bakes["c3"].resource);
+    // What the page threw is said once per bake, on the entry, naming the clips it is under.
+    let said_of: Vec<(&str, &str)> = warnings.iter().map(|w| (w.path.as_str(), w.message.as_str())).collect();
+    assert_eq!(said_of, [("/bin/a", "overlay clip `c1`, `c2` a script on the page threw while it baked: boom"), ("/bin/b", "overlay clip `c3` a script on the page threw while it baked: boom")]);
     let lines: Vec<String> = std::fs::read_to_string(&log).unwrap().lines().map(String::from).collect();
     assert_eq!(lines.len(), 4, "two renders, not three: {lines:?}");
     // With two workers, `c2` sharing `c1`'s key must not hold the second one: `c3` starts

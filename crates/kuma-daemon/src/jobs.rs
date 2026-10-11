@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use kuma_core::manifest::Region;
-use kuma_core::{BinSource, Project};
+use kuma_core::{BinSource, Issue, Project, Severity};
 use kuma_mlt::{compile, CompileOptions, OverlayBake, RenderJob, UnbakedPolicy};
 use kuma_overlay::{BakeRequest, TranscribeOptions};
 use serde::{Deserialize, Serialize};
@@ -693,31 +693,32 @@ pub fn bake_for(
     within: Option<&[f64]>,
     progress: &dyn Fn(u8, &str),
     cancel: Option<&AtomicBool>,
-) -> anyhow::Result<Bakes> {
+) -> anyhow::Result<(Bakes, Vec<Issue>)> {
     let nested_only = match scope {
-        OverlayScope::None => return Ok(Bakes::new()),
+        OverlayScope::None => return Ok(Default::default()),
         OverlayScope::Nested => true,
         OverlayScope::All => false,
     };
-    let (out, errs) = bake_clips(state, project, &overlay_clips(project, root, nested_only, within), progress, cancel, &|r, key| state.baker.bake_keyed(r, key, cancel).map(Some));
+    let (out, errs, warnings) = bake_clips(state, project, &overlay_clips(project, root, nested_only, within), progress, cancel, &|r, key| state.baker.bake_keyed(r, key, cancel).map(Some));
     if !nested_only {
-        return strict((out, errs));
+        return strict((out, errs, warnings));
     }
     errs.iter().for_each(|e| tracing::warn!("preview: {e:#}"));
-    Ok(out)
+    Ok((out, warnings))
 }
 
 /// Bake these overlay clips, best effort: what baked, and why the rest did not. The
 /// preview's background bake, which must not fail for one broken overlay.
 pub fn bake_ids(state: &AppState, project: &Project, ids: &[String], progress: &dyn Fn(u8, &str)) -> (Bakes, Vec<anyhow::Error>) {
     let _cache = read(&state.cache_users);
-    bake_clips(state, project, ids, progress, None, &|r, key| state.baker.bake_keyed(r, key, None).map(Some))
+    let (out, errs, _) = bake_clips(state, project, ids, progress, None, &|r, key| state.baker.bake_keyed(r, key, None).map(Some));
+    (out, errs)
 }
 
 /// Bake the named overlay clips, or every one in the project when none are named. This is
 /// the explicit `bake` command, where "all" means the whole bin rather than what some
 /// timeline reaches — warming the cache for an entry you have not placed yet is the point.
-pub fn bake_all(state: &AppState, project: &Project, only: Option<&[String]>, progress: &dyn Fn(u8, &str), cancel: Option<&AtomicBool>) -> anyhow::Result<Bakes> {
+pub fn bake_all(state: &AppState, project: &Project, only: Option<&[String]>, progress: &dyn Fn(u8, &str), cancel: Option<&AtomicBool>) -> anyhow::Result<(Bakes, Vec<Issue>)> {
     let _cache = read(&state.cache_users);
     let ids: Vec<String> = every_overlay_clip(project)
         .map(|c| c.id.clone())
@@ -740,7 +741,7 @@ pub fn cached_nested(state: &AppState, project: &Project, root: &str) -> (Bakes,
 }
 
 fn cached(state: &AppState, project: &Project, ids: Vec<String>) -> (Bakes, Vec<String>) {
-    let (out, _) = bake_clips(state, project, &ids, &|_, _| {}, None, &|r, key| state.baker.cached_keyed(r, key));
+    let (out, ..) = bake_clips(state, project, &ids, &|_, _| {}, None, &|r, key| state.baker.cached_keyed(r, key));
     let missing = ids.into_iter().filter(|id| !out.contains_key(id)).collect();
     (out, missing)
 }
@@ -751,15 +752,17 @@ pub(crate) fn every_overlay_clip(project: &Project) -> impl Iterator<Item = &kum
 }
 
 /// A bake that must not lose an overlay: the first failure becomes the result.
-fn strict((out, errs): (Bakes, Vec<anyhow::Error>)) -> anyhow::Result<Bakes> {
-    errs.into_iter().next().map_or(Ok(out), Err)
+fn strict((out, errs, warnings): (Bakes, Vec<anyhow::Error>, Vec<Issue>)) -> anyhow::Result<(Bakes, Vec<Issue>)> {
+    errs.into_iter().next().map_or(Ok((out, warnings)), Err)
 }
 
 /// How `bake_clips` gets a clip's bake: `Baker::bake_keyed`, or `Baker::cached_keyed` to
 /// render none, given the key when it could be worked out. Called from several threads.
 type Fetch<'a> = &'a (dyn Fn(&BakeRequest, Option<&str>) -> Result<Option<kuma_overlay::BakeResult>, kuma_overlay::BakeError> + Sync);
 
-/// Bake the named overlay clips (cached), returning what succeeded and what did not.
+/// Bake the named overlay clips (cached), returning what succeeded, what did not, and a
+/// warning for each bake a script threw in or that drew nothing: the renderer exits 0 on
+/// both, and an entry with nothing to show is legal, so neither is a failure.
 /// Whether a failure is fatal is the caller's to decide — the loop does not care. A set
 /// `cancel` stops it starting another bake, which the cache makes free to pick up again.
 /// `fetch` bakes a clip or only looks it up; `None` from it leaves the clip out, no error.
@@ -767,7 +770,7 @@ type Fetch<'a> = &'a (dyn Fn(&BakeRequest, Option<&str>) -> Result<Option<kuma_o
 /// Clips bake on up to `Baker::concurrency` threads, longest first. Clips that come to one
 /// key are fetched once, rather than parking a thread on `Baker::claim` for the length of a
 /// bake. Progress comes from this thread alone, and errors in `ids` order.
-fn bake_clips(state: &AppState, project: &Project, ids: &[String], progress: &dyn Fn(u8, &str), cancel: Option<&AtomicBool>, fetch: Fetch) -> (Bakes, Vec<anyhow::Error>) {
+fn bake_clips(state: &AppState, project: &Project, ids: &[String], progress: &dyn Fn(u8, &str), cancel: Option<&AtomicBool>, fetch: Fetch) -> (Bakes, Vec<anyhow::Error>, Vec<Issue>) {
     let cancelled = || cancel.is_some_and(|c| c.load(Ordering::SeqCst));
     // Clips of one entry, and entries of one folder, share a manifest and a digest: read each once.
     let mut folders: HashMap<&str, Result<(crate::overlays::Resolved, Option<String>), String>> = HashMap::new();
@@ -817,7 +820,7 @@ fn bake_clips(state: &AppState, project: &Project, ids: &[String], progress: &dy
     let frames = |t: &Task| if t.req.manifest.is_static { 0.0 } else { t.req.duration };
     tasks.sort_by(|a, b| frames(b).total_cmp(&frames(a)));
 
-    let mut out = Bakes::new();
+    let (mut out, mut warnings) = (Bakes::new(), Vec::new());
     let next = AtomicUsize::new(0);
     std::thread::scope(|s| {
         // Each worker says when it starts a task (`None`) and when it has its result.
@@ -844,7 +847,20 @@ fn bake_clips(state: &AppState, project: &Project, ids: &[String], progress: &dy
                 done += 1;
             }
             match fetched {
-                Some(Ok(Some(r))) => out.extend(task.clips.iter().map(|(_, id)| (id.to_string(), r.overlay_bake()))),
+                Some(Ok(Some(r))) => {
+                    let why = match (r.page_errors.first(), r.blank) {
+                        (Some(e), true) => Some(format!("baked fully transparent, a script on the page having thrown: {e}")),
+                        (Some(e), false) => Some(format!("a script on the page threw while it baked: {e}")),
+                        (None, true) => Some("baked fully transparent: nothing is drawn for its whole length".to_string()),
+                        (None, false) => None,
+                    };
+                    let entry = project.find_clip(task.clips[0].1).map(|(_, _, c)| bin_pointer(&c.bin, ""));
+                    if let (Some(why), Some(path)) = (why, entry) {
+                        let ids: Vec<&str> = task.clips.iter().map(|&(_, id)| id).collect();
+                        warnings.push(Issue { severity: Severity::Warning, path, message: format!("overlay clip `{}` {why}", ids.join("`, `")) });
+                    }
+                    out.extend(task.clips.iter().map(|(_, id)| (id.to_string(), r.overlay_bake())));
+                }
                 Some(Err(e)) => errs.extend(task.clips.iter().map(|&(i, id)| (i, anyhow::anyhow!("bake `{id}`: {e}")))),
                 _ => {}
             }
@@ -859,7 +875,9 @@ fn bake_clips(state: &AppState, project: &Project, ids: &[String], progress: &dy
     if next.into_inner() < tasks.len() {
         errs.push(anyhow::anyhow!("cancelled"));
     }
-    (out, errs)
+    // Bakes finish in any order; a report must not.
+    warnings.sort_by(|a, b| (&a.path, &a.message).cmp(&(&b.path, &b.message)));
+    (out, errs, warnings)
 }
 
 /// What an overlay clip bakes as — the one definition, since the prune keys it too.
@@ -999,7 +1017,8 @@ fn render_now(state: &AppState, req: &RenderRequest, progress: &dyn Fn(u8, &str)
     let (sequence, preset, output) = render_target(state, req)?;
     let project = read(&state.project).clone();
     let mut opts = compile_options(state);
-    opts.bakes = bake_for(state, &project, &sequence, OverlayScope::All, None, &|p, m| progress(p / 2, m), Some(cancel))?;
+    let baked;
+    (opts.bakes, baked) = bake_for(state, &project, &sequence, OverlayScope::All, None, &|p, m| progress(p / 2, m), Some(cancel))?;
     opts.unbaked = UnbakedPolicy::Error;
     opts.sequence = Some(sequence.clone());
     let mlt = compile_project(state, &project, &opts, "render")?;
@@ -1018,7 +1037,8 @@ fn render_now(state: &AppState, req: &RenderRequest, progress: &dyn Fn(u8, &str)
         return Err(e.into());
     }
     // What the render drew in fallback fonts: it rendered, and it is not what was picked.
-    let warnings = crate::fonts::check(state, &project, &overlay_entries(&project, &sequence));
+    let mut warnings = crate::fonts::check(state, &project, &overlay_entries(&project, &sequence));
+    warnings.extend(baked);
     Ok(serde_json::json!({ "output": output, "mlt": mlt, "preset": preset.id, "sequence": sequence, "warnings": warnings }))
 }
 
@@ -1443,6 +1463,11 @@ pub struct Sample {
 /// cached per revision, frame and bake set; every cached file is written atomically so
 /// two concurrent samples of the same frame never read a half-written PNG.
 pub fn sample_frames(state: &AppState, req: &SampleRequest, progress: &dyn Fn(u8, &str), cancel: Option<&AtomicBool>) -> anyhow::Result<Vec<Sample>> {
+    Ok(sample_frames_warned(state, req, progress, cancel)?.0)
+}
+
+/// [`sample_frames`], with the warnings of the bakes the frames show.
+fn sample_frames_warned(state: &AppState, req: &SampleRequest, progress: &dyn Fn(u8, &str), cancel: Option<&AtomicBool>) -> anyhow::Result<(Vec<Sample>, Vec<Issue>)> {
     let _cache = read(&state.cache_users);
     let doc = read(&state.project).clone();
     // Sampling an entry is sampling a timeline that holds nothing else. Everything below
@@ -1477,7 +1502,7 @@ pub fn sample_frames(state: &AppState, req: &SampleRequest, progress: &dyn Fn(u8
     };
     // Only the overlays this sample can actually show: one frame must not pay for a bake
     // of every overlay on the timeline, nor fail because one somewhere else is broken.
-    let bakes = bake_for(state, &project, &sequence, scope, Some(&times), &|p, m| progress(p / 2, m), cancel)?;
+    let (bakes, warnings) = bake_for(state, &project, &sequence, scope, Some(&times), &|p, m| progress(p / 2, m), cancel)?;
     let out_dir = state.config.samples_dir();
     std::fs::create_dir_all(&out_dir)?;
     let mut opts = compile_options(state);
@@ -1538,7 +1563,7 @@ pub fn sample_frames(state: &AppState, req: &SampleRequest, progress: &dyn Fn(u8
         }
     });
     let paths: HashMap<i64, PathBuf> = rendered.into_iter().map(|(f, p)| Ok((f, p?))).collect::<anyhow::Result<_>>()?;
-    Ok(times.iter().map(|&t| (t, project.fps.frame(t))).map(|(t, frame)| Sample { t, frame, path: paths[&frame].clone() }).collect())
+    Ok((times.iter().map(|&t| (t, project.fps.frame(t))).map(|(t, frame)| Sample { t, frame, path: paths[&frame].clone() }).collect(), warnings))
 }
 
 /// Produce `target` in `dir` through `f(tmp)` and publish it with a rename, unless it is
@@ -1555,9 +1580,9 @@ fn publish(dir: &Path, target: &Path, f: &dyn Fn(&Path) -> anyhow::Result<()>) -
 
 /// What `/api/sample` answers: the frames, and with `tile` the sheet of them.
 pub fn sample(state: &AppState, req: &SampleRequest, progress: &dyn Fn(u8, &str), cancel: Option<&AtomicBool>) -> anyhow::Result<serde_json::Value> {
-    let samples = sample_frames(state, req, progress, cancel)?;
+    let (samples, warnings) = sample_frames_warned(state, req, progress, cancel)?;
     let sheet = if req.tile { Some(contact_sheet(state, &samples, req.columns)?) } else { None };
-    Ok(serde_json::json!({ "samples": samples, "sheet": sheet }))
+    Ok(serde_json::json!({ "samples": samples, "sheet": sheet, "warnings": warnings }))
 }
 
 /// A sample's frames tiled into one image, left to right then down, each captioned with its

@@ -3098,9 +3098,22 @@ kuma's and are fixed here, the rest is listed as open.
   (it counts toward a var being used, never toward a fault), so a library that calls
   `Date.now` to no effect goes there, in the overlay's own `_vendor/` if nowhere else.
 
-Not done, from the same report: a bake that comes out fully transparent says nothing
-(hyperframes exits 0 when the page throws); the `bake` job's result lists every clip's
-resource, thousands of tokens on a whole project; `onFrame` registers one tween over the
+- **A bake says what its page threw, and when it drew nothing.** hyperframes exits 0
+  when a script on the page throws, and the frames come out transparent: the report's
+  first day went on that. It does print the error (`[Browser:PAGEERROR] …` on stderr,
+  `--quiet` or not; measured on 0.8.37 with a page that throws after registering its
+  timeline: exit 0, every frame written), and kuma was reading that stream and dropping
+  it. A bake now keeps those lines (`page_errors`) and whether every frame is transparent
+  (`blank`: the first frame decoded once by ffmpeg, the rest compared to it as bytes) in
+  its `done.json`. `bake_clips` turns them into one warning per bake, on the entry, naming
+  its clips, and a render, a sample and a bake carry them as `warnings`. Warnings, not
+  failures: an entry with nothing to show is legal, and failing on a page error would
+  break finished videos over a harmless one. Bakes cached before this carry neither; the
+  key did not change, so nothing re-bakes.
+- **The `bake` job answers `baked` (a count) and `warnings`**, no longer every clip's
+  resource path: on a whole project that was some seven thousand tokens nobody read.
+
+Not done, from the same report: `onFrame` registers one tween over the
 whole clip, which defeats hyperframes' static dedup, and wants a sibling that takes the
 spans where something changes (`_vendor/` is append-only); and every as-code project
 rewrites the project diff, which could ship with the skill.

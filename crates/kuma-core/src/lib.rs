@@ -15,7 +15,7 @@ pub mod time;
 pub mod upgrade;
 pub mod validate;
 
-pub use edit::{apply_patch, EditError};
+pub use edit::{apply_patch, diff, EditError};
 pub use model::*;
 pub use manifest::{OverlayManifest, VarSpec, VarType};
 pub use upgrade::{canonical, parse_project, project_text};

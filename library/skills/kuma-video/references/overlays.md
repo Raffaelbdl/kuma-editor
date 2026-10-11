@@ -42,6 +42,49 @@ contract does not say, or what bit anyway.
 - One entry can be placed many times: a recurring bubble appeared in five chapters from one
   entry, and fixing its text fixed all five.
 
+## What a bake costs
+
+- **Every frame is a screenshot.** An empty 1080p frame costs about 45 ms to capture and
+  encode: bake an empty overlay once to learn the floor on your machine, and compare. Each
+  bake also starts a browser (2 to 3 s), so twice as many overlays over the same seconds
+  is that much more: captions as a separate overlay per scene doubled the bakes of a
+  98-scene video.
+- **Shadows, blur and full-frame gradients are painted in software, on every frame**, and
+  their soft alpha does not compress. Removing `box-shadow` and `text-shadow` and moving a
+  vignette to a still took an 8 s scene from 57 s to 24 s, and its frames from 156 MB to
+  19 MB. A vignette, a texture or a frame is an image clip (or a `static` overlay) that
+  MLT composites, not something each overlay redraws.
+- **Held frames are reused, moving ones are not.** Tweens tell the renderer where the
+  picture changes; an overlay driven by `onFrame` changes everywhere (use `onFrames`,
+  under Motion).
+- **An overlay re-bakes when anything it reads changes**: its vars, its folder, `_vendor/`,
+  its fonts, its clip's length. Give it only what its own scene knows. A progress bar over
+  the whole video re-baked all 98 scenes whenever one was added; over the chapter, one.
+
+## One engine for a whole video
+
+A generated video can be one overlay folder holding an engine (nodes, arrows, code windows,
+tables) and one entry per scene whose vars are that scene's data. It makes layout and
+timing edits data edits, and auto-fit possible: measure the finished layout in the page and
+scale it into the safe area, which removes most per-scene coordinates. Its costs:
+
+- **Every scene shares the folder, so one engine edit re-bakes the whole video.** Batch
+  engine changes; try one on a single scene (`sample_frames` with `overlay`) first.
+- **A scene is one clip, so one word changed re-bakes the scene.** Captions inside the
+  scene overlay save a browser start per scene and cost that.
+- **Text kuma cannot see is text it cannot check.** `validate_project`'s font and glyph
+  warnings, `reading_audit.py` and the inspector read `string`, `text` and `cues` vars. A
+  scene packed into one base64 or JSON blob hides all of it. Keep what is read on screen
+  in such vars (captions as a `cues` var), and the geometry in the blob if it must be one.
+- **Escape in one place.** An engine that escapes HTML and a storyboard that writes
+  `<span>` print the markup on screen. Give text a small markup of its own
+  (`{warn:text}`, `` `code` ``) that the engine alone turns into elements.
+- The engine can be a file beside `index.html` (`engine.js`), checked like inline code.
+  Hand values between scripts on `window`, and draw with `onFrames` where scenes hold.
+- Hand-placed elements collide when a text gets longer: the layout bugs of that video were
+  a title over a grid, a note over a row, code lines cut at the window's edge. Sample
+  every scene at full width after any change to sizes.
+
 ## Motion
 
 - Arrivals: ~0.3 s, `expo.out` for rises and slides, `back.out(2.6)` from scale 0.8 for
@@ -50,6 +93,12 @@ contract does not say, or what bit anyway.
 - To show an animation frozen at a moment (the same overlay at t = 0.04 / 0.15 / 1.0 side
   by side), give it an `at` var and compute the pose directly (`gsap.parseEase`). A second
   private timeline fails the lint.
+- An overlay whose script draws each frame itself (`onFrame`) bakes every frame of its
+  clip, held ones included. If it holds still for stretches, drive it with
+  `onFrames(spans, fn)` and name the spans where it changes: the bake reuses the frames
+  between them (half the frames of a typical explainer scene, in the field). Keep continuous
+  motion (a bar that grows all scene long, a pulsing ring, a blinking caret) out of the
+  holds, or there are none.
 - Draw on canvas through `kumaCanvas` with seeded Rough.js (`g.rough(key)`), never an
   unseeded `rough.canvas`.
 - Few easings for a whole video (an out-cubic, an in-out-cubic and one soft overshoot is
@@ -99,9 +148,18 @@ A wipe, a shutter, a page turn drawn by an overlay over a cut:
   `font-family: var(--var-font), var(--var-jp, serif), serif`.
 - "private gsap.timeline not registered": register the one timeline via `timeline()`.
 - "invalid inline script": regex literals in inline scripts trip the parser; use
-  `new RegExp("…", "y")`.
+  `new RegExp("…", "y")`, or put the code in a file beside `index.html` (`engine.js`).
+  A linked script is checked like an inline one, so it can register the timeline and
+  read the vars with nothing inline. A library goes in `_vendor/` (the overlay's own
+  will do), which is not held to the rules about clocks and vars.
 
 ## Looking at one
+
+- **A frame with nothing on it**: read the `warnings` of the sample, bake or render. A
+  script that throws does not fail a bake: the warning quotes the error. "baked fully
+  transparent" with no error means the page drew nothing for the whole clip. One cause met in the field (the page worked in a browser and baked blank): a top-level
+  `const` of an inline `<script>` was not visible to a file loaded after it when baked;
+  values handed over on `window` were.
 
 - `sample_frames` with `overlay` renders the entry on its own, before any clip places it.
 - Sample over **white and black** backdrops if it can sit over footage.

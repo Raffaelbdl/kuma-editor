@@ -90,10 +90,61 @@ fn checked(project: Project, ctx: &ValidationContext) -> Result<EditOutcome, Edi
     Ok(EditOutcome { project, warnings: issues })
 }
 
+/// The JSON Patch that makes `live` the project `wanted` describes: what a script that
+/// builds a whole project sends, instead of working out the difference itself. Both are
+/// compared as kuma stores them, so a field the script left at its default, or wrote as
+/// kuma would not, is no difference. Two things a script does not know are `live`'s to
+/// keep: the revision, and the probed `meta` of an entry the script gives none for. With
+/// `keep`, bin entries `wanted` does not have stay too (someone else's, or not yet placed);
+/// without it they are removed. Apply the patch at `live`'s revision; made again
+/// afterwards, it is empty.
+pub fn diff(live: &Project, wanted: &str, keep: bool) -> serde_json::Result<json_patch::Patch> {
+    let mut wanted = crate::parse_project(wanted)?;
+    wanted.revision = live.revision;
+    for (id, theirs) in &live.bin {
+        match wanted.bin.get_mut(id) {
+            Some(mine) if mine.meta.is_none() => mine.meta = theirs.meta.clone(),
+            None if keep => drop(wanted.bin.insert(id.clone(), theirs.clone())),
+            _ => {}
+        }
+    }
+    Ok(json_patch::diff(&serde_json::to_value(live)?, &serde_json::to_value(&wanted)?))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// A script's document, written its own way, against the stored one: only what really
+    /// differs is sent, and sending it leaves nothing to send.
+    #[test]
+    fn a_diff_sends_what_differs_and_then_nothing() {
+        let live: Project = serde_json::from_value(json!({
+            "revision": 7,
+            "bin": {
+                "a": { "source": { "path": "a.mp4" }, "meta": { "duration": 9.5, "has_audio": true } },
+                "theirs": { "source": { "color": "#ffffff" } },
+                "main": { "source": { "tracks": [{ "id": "v1", "clips": [{ "id": "c1", "start": 0, "end": 2, "bin": "a" }] }] } }
+            }
+        }))
+        .unwrap();
+        // No revision, no meta, defaults spelled out or left out as the script pleases.
+        let wanted = |end: f64| json!({ "bin": {
+            "a": { "source": { "path": "a.mp4" } },
+            "main": { "source": { "tracks": [{ "id": "v1", "muted": false, "clips": [{ "id": "c1", "start": 0.0, "end": end, "bin": "a", "speed": 1 }] }] } }
+        } }).to_string();
+        assert_eq!(diff(&live, &wanted(2.0), true).unwrap().0, [], "the same project, said differently");
+
+        let ops = |keep| serde_json::to_value(diff(&live, &wanted(3.0), keep).unwrap()).unwrap();
+        let retime = json!({ "op": "replace", "path": "/bin/main/source/tracks/0/clips/0/end", "value": 3.0 });
+        assert_eq!(ops(true), json!([retime]));
+        assert_eq!(ops(false), json!([retime, { "op": "remove", "path": "/bin/theirs" }]), "an entry the script does not make goes, unless kept");
+
+        let after = apply_patch(&live, Some(7), &diff(&live, &wanted(3.0), false).unwrap().0, &ValidationContext::default()).unwrap().project;
+        assert_eq!(after.bin["a"].meta, live.bin["a"].meta, "what was probed is kept");
+        assert_eq!(diff(&after, &wanted(3.0), false).unwrap().0, [], "applied, there is nothing left to send");
+    }
 
     #[test]
     fn patch_bumps_revision_and_validates() {

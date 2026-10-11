@@ -152,6 +152,17 @@ enum Cmd {
         #[arg(default_value = "-")]
         file: PathBuf,
     },
+    /// Print the JSON Patch that makes the project the one a document describes: for a
+    /// script that builds the whole project. Apply it with `apply_edits` (`patch_path`)
+    /// at the revision printed on stderr; run again afterwards, it prints `[]`.
+    Diff {
+        /// The project the script built; `-` (the default) is stdin.
+        #[arg(default_value = "-")]
+        file: PathBuf,
+        /// Leave bin entries the document does not have, rather than remove them.
+        #[arg(long)]
+        keep: bool,
+    },
     /// Check the installation: repo, tools, engine, library, daemon, MCP config.
     Doctor,
     /// Scaffold a contract-abiding overlay folder in the project's `overlays/`. It is not
@@ -404,14 +415,15 @@ async fn main() -> anyhow::Result<()> {
                 return Ok(());
             }
             let state = open(&cli)?;
-            let bakes = tokio::task::spawn_blocking(move || {
+            let (bakes, warnings) = tokio::task::spawn_blocking(move || {
                 let project = state.project.read().unwrap().clone();
-                kuma_daemon::jobs::bake_all(&state, &project, only.as_deref(), &|p, m| eprintln!("[{p:3}%] {m}"))
+                kuma_daemon::jobs::bake_all(&state, &project, only.as_deref(), &|p, m| eprintln!("[{p:3}%] {m}"), None)
             })
             .await??;
             for (k, b) in bakes {
                 println!("{k}\t{}", b.resource.display());
             }
+            warnings.iter().for_each(|w| eprintln!("kuma: {}", w.message));
         }
         Cmd::Sample { t0, t1, count, rect, width, sequence, overlay, duration, backdrop, frame, times, tile, columns, no_overlays } => {
             let rect = rect
@@ -451,7 +463,7 @@ async fn main() -> anyhow::Result<()> {
                 Some(out) => out,
                 None => {
                     let state = open(&cli)?;
-                    tokio::task::spawn_blocking(move || kuma_daemon::jobs::sample(&state, &req, &|_, _| {})).await??
+                    tokio::task::spawn_blocking(move || kuma_daemon::jobs::sample(&state, &req, &|_, _| {}, None)).await??
                 }
             };
             // The list of frames, as it always printed; with a sheet, the sheet beside it.
@@ -515,7 +527,7 @@ async fn main() -> anyhow::Result<()> {
             // Overlays as the render would have them: every bake the cache holds, and with
             // `--bake` the rest, so the graph printed is the one that would render.
             opts.bakes = if *bake {
-                jobs::bake_for(&state, &project, root, OverlayScope::All, None, &|_, m| eprintln!("kuma: {m}"), None)?
+                jobs::bake_for(&state, &project, root, OverlayScope::All, None, &|_, m| eprintln!("kuma: {m}"), None)?.0
             } else {
                 let (bakes, missing) = jobs::cached_bakes(&state, &project, root);
                 if !missing.is_empty() {
@@ -538,6 +550,20 @@ async fn main() -> anyhow::Result<()> {
             // A document, not the project: no repository, no daemon, nothing loaded.
             let text = if file.as_os_str() == "-" { std::io::read_to_string(std::io::stdin())? } else { std::fs::read_to_string(file)? };
             println!("{}", kuma_core::canonical(&text).map_err(|e| anyhow::anyhow!("{}: {e}", file.display()))?);
+        }
+        Cmd::Diff { file, keep } => {
+            // The file the daemon saves on every edit: no daemon needed, none disturbed.
+            let live = kuma_core::parse_project(&std::fs::read_to_string(&cli.project)?)?;
+            let text = if file.as_os_str() == "-" { std::io::read_to_string(std::io::stdin())? } else { std::fs::read_to_string(file)? };
+            let patch = kuma_core::diff(&live, &text, *keep).map_err(|e| anyhow::anyhow!("{}: {e}", file.display()))?;
+            let ops = serde_json::to_value(&patch)?;
+            println!("{}", serde_json::to_string_pretty(&ops)?);
+            let entry = |op: &serde_json::Value| op["path"].as_str()?.strip_prefix("/bin/").filter(|id| op["op"] == "remove" && !id.contains('/')).map(String::from);
+            let removed: Vec<String> = ops.as_array().into_iter().flatten().filter_map(entry).collect();
+            eprintln!("kuma: {} ops against revision {}", patch.0.len(), live.revision);
+            if !removed.is_empty() {
+                eprintln!("kuma: removes {} bin entries the document does not have ({}); `--keep` leaves them", removed.len(), removed.join(", "));
+            }
         }
         Cmd::NewOverlay { id, name, description, blueprint } => {
             let state = open(&cli)?;

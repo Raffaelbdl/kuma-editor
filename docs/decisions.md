@@ -3070,6 +3070,73 @@ Still open here: the render queue cannot say a render was "asked by kuma" (a job
 record who asked for it); the agent panel's thumbnails are the sample's own PNGs, so a pruned
 cache leaves them blank; a marker that is dragged starts over unanswered (its id is where it is).
 
+## Field report: a fifty-two-minute generated course
+
+A 52-minute narrated course (98 scenes, a sequence each, one master) built entirely by an
+agent as code. It used no blueprint: one overlay folder held a data-driven engine
+(`engine.js`, ~1200 lines) and each scene was one overlay clip for its whole length, its
+content a JSON spec in one var. Its pain points were read against the code; three were
+kuma's and are fixed here, the rest is listed as open.
+
+- **A sample bakes what its frames show, in nested sequences too.** `overlay_clips` narrowed
+  the sampled sequence to the times asked for and kept every overlay of the sequences it
+  nests, on the grounds that a nested sequence has its own time and may be placed twice.
+  With a sequence per scene, twelve frames of the master queued a bake of the whole video.
+  The sampled frames are now followed through each placement (`in` + offset, per placement,
+  a sequence placed twice showing what either shows). Two cases keep more than the span: a
+  dissolve reads past the placement's edge (padded by the transition's whole length, so the
+  compiler's half-and-half rule is not repeated here), and a `freeze` holds the one frame
+  `Project::held_frame` names. Safe because a sample compiles with
+  `UnbakedPolicy::Skip`.
+- **`sample` and `bake` jobs can be cancelled**, and a cancel kills the renderers already
+  running (`Baker::bake_keyed` takes the flag and runs hyperframes through melt's
+  `run_cancellable`) rather than only starting no more. Before, the one way out was `pkill`,
+  after which the job started its next bake.
+- **The lint reads the scripts an overlay links to.** It read inline `<script>` bodies
+  only, so an engine in a file needed an inline stub to "register" the timeline and
+  "read" its vars, and a `Date.now()` in that file went unseen. `_vendor/` stays exempt
+  (it counts toward a var being used, never toward a fault), so a library that calls
+  `Date.now` to no effect goes there, in the overlay's own `_vendor/` if nowhere else.
+
+- **A bake says what its page threw, and when it drew nothing.** hyperframes exits 0
+  when a script on the page throws, and the frames come out transparent: the report's
+  first day went on that. It does print the error (`[Browser:PAGEERROR] …` on stderr,
+  `--quiet` or not; measured on 0.8.37 with a page that throws after registering its
+  timeline: exit 0, every frame written), and kuma was reading that stream and dropping
+  it. A bake now keeps those lines (`page_errors`) and whether every frame is transparent
+  (`blank`: the first frame decoded once by ffmpeg, the rest compared to it as bytes) in
+  its `done.json`. `bake_clips` turns them into one warning per bake, on the entry, naming
+  its clips, and a render, a sample and a bake carry them as `warnings`. Warnings, not
+  failures: an entry with nothing to show is legal, and failing on a page error would
+  break finished videos over a harmless one. Bakes cached before this carry neither; the
+  key did not change, so nothing re-bakes.
+- **The `bake` job answers `baked` (a count) and `warnings`**, no longer every clip's
+  resource path: on a whole project that was some seven thousand tokens nobody read.
+
+- **`onFrames(spans, fn)` beside `onFrame`.** hyperframes reuses a frame only outside
+  every tween's interval, and `onFrame` is one tween over the whole clip, so an overlay
+  driven by it never had a frame reused; the report rebuilt that by hand, registering a
+  tween per run of changing frames. `onFrames` is that as a helper: a tween per span, the
+  function called once for `t = 0`. Measured on 0.8.37, a 3 s clip that moves in two
+  spans: 58 of 90 frames reused, output byte-identical to `onFrame`'s. The spans are a
+  promise the renderer checks (it screenshots a sample of each run and gives the reuse up
+  on a mismatch), so a wrong span costs time, never a wrong frame. A `<canvas>` on the
+  page makes hyperframes rule reuse out, so `kumaCanvas` takes no spans. Two things to
+  know: GSAP reads a tween's start from the target's getter whatever `fromTo` is told, so
+  each span has a clock of its own; and adding to `kuma.js` changes every bake key, as
+  any `_vendor/` change does, so each project re-bakes once, to the same pixels.
+
+- **`kuma diff`.** Every video built as code wrote the same script: its project against
+  the stored one, as a patch. This one compared subsets, because it did not know the
+  stored form, and still met phantom differences. The diff is now kuma's
+  (`kuma_core::diff`, `kuma diff <file>`): both sides in the stored form, `json_patch::diff`
+  between them, the live `revision` and any `meta` the script does not give kept, entries
+  the script lacks removed unless `--keep`. Tried on that project: 0 ops against itself,
+  and three for three changes made to a copy written without its defaults and metas. A
+  CLI command and not an MCP tool, since what calls it is a build script; it reads the
+  file the daemon saves on every edit. Array changes are sent index by index, so a clip
+  inserted mid-track rewrites those after it: larger than it need be, never wrong.
+
 ## Still open
 
 Nested sequences are done and the editor is an application now, so this list is the whole

@@ -834,7 +834,8 @@ impl KumaServer {
         let samples = j["result"]["samples"].as_array().cloned().unwrap_or_default();
         let listing: Vec<Value> = samples.iter().map(|s| json!({ "t": s["t"], "frame": s["frame"], "path": s["path"] })).collect();
         let sheet = j["result"]["sheet"].as_str();
-        content.push(ContentBlock::text(serde_json::to_string_pretty(&json!({ "samples": listing, "sheet": sheet })).unwrap()));
+        // `warnings`: an overlay that baked blank is why a frame is empty, and nothing else says so.
+        content.push(ContentBlock::text(serde_json::to_string_pretty(&json!({ "samples": listing, "sheet": sheet, "warnings": j["result"]["warnings"] })).unwrap()));
         // The PNGs live on the daemon's disk; say so when this process cannot see them.
         let mut image = |label: String, path: &str| match std::fs::read(path) {
             Ok(bytes) => {
@@ -854,7 +855,7 @@ impl KumaServer {
         Ok(CallToolResult::success(content))
     }
 
-    #[tool(description = "Bake overlay clips to alpha frame sequences now (normally done automatically at render). Cached by content; returns the bake resources.")]
+    #[tool(description = "Bake overlay clips to alpha frame sequences now (normally done automatically at render): the named `clips`, or every overlay clip in the project. Cached by content. Returns how many are baked (`baked`) and `warnings`: a clip on whose page a script threw (with the error), or that baked fully transparent. `cancel_job` stops it.")]
     async fn bake_overlay(&self, Parameters(p): Parameters<BakeOverlay>, ctx: RequestContext<RoleServer>) -> Result<CallToolResult, McpError> {
         self.job("/api/bake", json!({ "clips": p.clips }), Duration::from_secs(p.wait_seconds.unwrap_or(1800)), &ctx).await
     }
@@ -891,7 +892,7 @@ impl KumaServer {
         Ok(ok_json(&resumable(j)))
     }
 
-    #[tool(description = "Cancel a render job, whether it is queued or encoding, or an audio or media measurement. melt is stopped, the partial file is removed, and the job ends in state `cancelled`. Refused for a job that has finished or cannot be stopped.")]
+    #[tool(description = "Cancel a render job, whether it is queued or encoding, an audio or media measurement, or a bake or a sample still baking. melt is stopped and the partial file removed; a bake's renderers are stopped and what they had not finished is dropped (finished bakes stay cached). The job ends in state `cancelled`. Refused for a job that has finished or cannot be stopped.")]
     async fn cancel_job(&self, Parameters(p): Parameters<JobArg>) -> Result<CallToolResult, McpError> {
         self.post(&format!("/api/jobs/{}/cancel", p.id), &json!({})).await
     }

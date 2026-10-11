@@ -62,6 +62,29 @@ both.
   ±3.5 dB so the performance keeps its shape.
 - Then put the music under it: `audio.md`.
 
+## A generated voice
+
+A synthesised narration (an offline TTS model, say) has no recording to cut: the script
+makes the sound, so timing comes from the sound it made.
+
+- **A beat is a sentence or two, and one audio file.** A scene is its beats in order with
+  a gap between them and a tail; its length is their sum. Visuals attach to a beat's start
+  (`beat.t0`), so changing a sentence means synthesising it again and rebuilding, and
+  nothing is retimed by hand. Word-level alignment was not needed.
+- **Captions** split a beat's text across its length by character count.
+- **Normalise every beat to one loudness** (RMS) before placing it: 98 scenes then sat
+  within ±0.4 LU of each other after mastering, with no per-scene trim.
+- **You cannot hear it.** Acronyms, product names and numbers are where a voice goes wrong.
+  Keep a respelling table applied only at synthesis ("nginx" → "engine x"), so captions
+  keep the real spelling, and write numbers that matter as words ("twenty twenty-five").
+- **Key the audio cache on everything that changes the sound**: the text, the voice, the
+  speed and the respelling table. Keyed on the text alone, a fixed pronunciation plays the
+  old file.
+- **Pace**: about 150 to 165 words a minute, gaps included, suits technical content; 180
+  reads as rushed.
+- Hand over the list of words you respelled or doubt, and the longest scenes, as things for
+  a person to listen to: nothing measures a mispronunciation.
+
 ## Checking a narrated cut
 
 - Listen-free checks first: `measure_audio` per chapter, the silences you did not mean, and

@@ -46,6 +46,19 @@
         // A tweened getter/setter is written on every render; `fromTo` draws t = 0 at once.
         api.timeline().fromTo(clock, { at: 0 }, { at: length, duration: length, ease: "none" }, 0);
       },
+      /** `onFrame` for a picture that changes only now and then: `fn(t)` runs through each of
+       *  `spans` (`[[from, to], …]` in clip seconds, in order) and nowhere else, so the
+       *  renderer can reuse the frames between them rather than capture every one, which
+       *  `onFrame`'s single tween over the whole clip rules out. Between two spans `fn` must
+       *  draw one picture whatever `t` it is given: it is called with either edge. */
+      onFrames(spans, fn) {
+        for (const [from, to] of spans) {
+          // GSAP asks the getter where a tween starts, whatever `fromTo` was told.
+          const clock = { at: (v) => (v === undefined ? from : fn(v)) };
+          api.timeline().fromTo(clock, { at: from }, { at: to, duration: to - from, ease: "none", immediateRender: false }, from);
+        }
+        fn(0);
+      },
     };
     return api;
   };

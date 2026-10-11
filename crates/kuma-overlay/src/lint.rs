@@ -350,7 +350,7 @@ fn not_kumas(code: &str) -> bool {
 /// kuma's own contract, read off the staged document.
 fn contract_findings(html: &str, manifest: &OverlayManifest, dir: &Path) -> Vec<Finding> {
     let mut out = Vec::new();
-    let scripts = script_text(html);
+    let mut scripts = script_text(html);
     // The staged document carries kuma's own injection: `window.kuma = …` and a
     // `:root { --var-<name>: … }` for every var in the manifest. The var rules read the
     // overlay's markup, not that — or every declared var would look read. Its own
@@ -364,6 +364,22 @@ fn contract_findings(html: &str, manifest: &OverlayManifest, dir: &Path) -> Vec<
     for href in linked_stylesheets(html) {
         if let Ok(css) = std::fs::read_to_string(dir.join(&href)) {
             if href.starts_with("_vendor/") { vendor.push_str(&css) } else { own.push_str(&css) }
+        }
+    }
+    // A script the overlay links to is as much its own as one written inline: an engine in
+    // `engine.js` registers the timeline, reads the vars and may not read a clock either.
+    // `_vendor/` is not, as above — which is where a library goes, the overlay's own
+    // `_vendor/` included: one may call `Date.now` to no effect.
+    for src in local_refs(html).into_iter().filter(|h| h.ends_with(".js")) {
+        if let Ok(js) = std::fs::read_to_string(dir.join(&src)) {
+            if src.starts_with("_vendor/") {
+                vendor.push_str(&js);
+            } else {
+                let js = strip_comments(&js);
+                own.push_str(&js);
+                scripts.push_str(&js);
+                scripts.push('\n');
+            }
         }
     }
 
@@ -454,10 +470,10 @@ fn without_injection(html: &str) -> String {
 
 /// True when the scripts register a timeline the renderer can find: on
 /// `window.__timelines` themselves, or through `kumaTemplate`'s `timeline()` — directly, or
-/// by way of `onFrame` or `kumaCanvas`, which call it. `gsap.timeline(…)` alone registers nothing.
+/// by way of `onFrame`, `onFrames` or `kumaCanvas`, which call it. `gsap.timeline(…)` alone registers nothing.
 fn registers_timeline(scripts: &str) -> bool {
     let own = scripts.replace("gsap.timeline(", "");
-    own.contains("__timelines") || (own.contains("kumaTemplate(") && ["timeline(", "onFrame(", "kumaCanvas("].iter().any(|c| own.contains(c)))
+    own.contains("__timelines") || (own.contains("kumaTemplate(") && ["timeline(", "onFrame(", "onFrames(", "kumaCanvas("].iter().any(|c| own.contains(c)))
 }
 
 /// True when the scripts read the clip's real length: `duration` as a value from
@@ -793,6 +809,28 @@ mod tests {
 
         let missing = r#"<div data-composition-id="main" data-no-timeline></div><img src="logo.png">"#;
         assert!(codes(missing, &manifest(&[])).contains(&"missing_asset".to_string()));
+    }
+
+    /// An overlay whose engine is a file beside it is read like one written inline: the
+    /// engine registers the timeline and reads the vars, with no stub in the page to say
+    /// so, and a clock read in it is found. A library in `_vendor/` is not the overlay's code.
+    #[test]
+    fn a_linked_script_is_read_like_an_inline_one() {
+        let html = r##"<script src="_vendor/kuma.js"></script><script src="_vendor/lib.js"></script>
+          <div data-composition-id="main" data-fixed-timing></div><script src="engine.js"></script>"##;
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("_vendor")).unwrap();
+        std::fs::write(dir.path().join("_vendor/kuma.js"), "").unwrap();
+        std::fs::write(dir.path().join("_vendor/lib.js"), "var t=Date.now();vars.internal").unwrap();
+        let codes = |engine: &str| -> Vec<String> {
+            std::fs::write(dir.path().join("engine.js"), engine).unwrap();
+            contract_findings(html, &manifest(&["spec"]), dir.path()).into_iter().map(|f| f.code).collect()
+        };
+        let engine = "const tpl = kumaTemplate({ spec: '' }); const words = tpl.vars.spec.split(/\\s+/); tpl.timeline();";
+        assert_eq!(codes(&format!("{engine} // Date.now() would be wrong here")), Vec::<String>::new(), "a comment is not a call");
+        assert_eq!(codes(&format!("{engine} const seed = Math.random();")), ["wall_clock"]);
+        assert_eq!(codes("kumaTemplate({}).timeline();"), ["unused_var"]);
+        assert_eq!(codes("const tpl = kumaTemplate({}); tpl.vars.spec;"), ["no_timeline"]);
     }
 
     /// `gsap.timeline()` on its own registers nothing; the 45-second bake timeout is exactly

@@ -56,7 +56,7 @@ fn req(overlay: Option<&str>, sequence: Option<&str>) -> SampleRequest {
 fn sampling_an_overlay_entry_leaves_the_document_alone() {
     let (state, _dir) = fixture();
     let before = serde_json::to_string(&*state.project.read().unwrap()).unwrap();
-    let _ = sample_frames(&state, &req(Some("tag"), None), &|_, _| {});
+    let _ = sample_frames(&state, &req(Some("tag"), None), &|_, _| {}, None);
     let after = serde_json::to_string(&*state.project.read().unwrap()).unwrap();
     assert_eq!(before, after, "sampling an entry changed the project");
 }
@@ -65,7 +65,7 @@ fn sampling_an_overlay_entry_leaves_the_document_alone() {
 #[test]
 fn an_entry_sample_refuses_what_it_cannot_mean() {
     let (state, _dir) = fixture();
-    let why = |r: &SampleRequest| format!("{:#}", sample_frames(&state, r, &|_, _| {}).expect_err("should have been refused"));
+    let why = |r: &SampleRequest| format!("{:#}", sample_frames(&state, r, &|_, _| {}, None).expect_err("should have been refused"));
 
     assert!(why(&req(Some("nope"), None)).contains("no bin entry"), "{}", why(&req(Some("nope"), None)));
     // A colour is a bin entry and is not an overlay; so is a sequence.
@@ -80,7 +80,7 @@ fn an_entry_sample_refuses_what_it_cannot_mean() {
 #[test]
 fn a_valid_entry_sample_reaches_the_renderer() {
     let (state, _dir) = fixture();
-    match sample_frames(&state, &req(Some("tag"), None), &|_, _| {}) {
+    match sample_frames(&state, &req(Some("tag"), None), &|_, _| {}, None) {
         Ok(samples) => assert_eq!(samples.len(), 1, "one time asked for, one frame back"),
         // hyperframes, a browser or melt is missing — the ask was still understood, and
         // the failure names the renderer rather than the request.
@@ -161,7 +161,7 @@ fn frames_at_chosen_times_tile_into_one_sheet() {
     }
     let (state, _dir) = fixture();
     let req = SampleRequest { times: Some(vec![1.5, 0.5, 1.0]), tile: true, ..Default::default() };
-    let out = kuma_daemon::jobs::sample(&state, &req, &|_, _| {}).expect("sample");
+    let out = kuma_daemon::jobs::sample(&state, &req, &|_, _| {}, None).expect("sample");
     let samples = out["samples"].as_array().unwrap();
     assert_eq!(samples.iter().map(|s| s["frame"].as_i64().unwrap()).collect::<Vec<_>>(), [45, 15, 30], "in the order asked: {out}");
     let sheet = std::path::PathBuf::from(out["sheet"].as_str().expect("a sheet"));
@@ -175,9 +175,9 @@ fn frames_at_chosen_times_tile_into_one_sheet() {
     assert!(!navy(pixel(&sheet, 720, 660)), "the cell after the last frame is empty");
 
     // Without `tile`, the frames alone; and nonsense is refused before anything renders.
-    let plain = kuma_daemon::jobs::sample(&state, &SampleRequest { times: Some(vec![0.5]), ..Default::default() }, &|_, _| {}).unwrap();
+    let plain = kuma_daemon::jobs::sample(&state, &SampleRequest { times: Some(vec![0.5]), ..Default::default() }, &|_, _| {}, None).unwrap();
     assert!(plain["sheet"].is_null() && plain["samples"].as_array().unwrap().len() == 1);
     for times in [vec![], vec![-1.0], vec![0.1; 33]] {
-        assert!(sample_frames(&state, &SampleRequest { times: Some(times.clone()), ..Default::default() }, &|_, _| {}).is_err(), "{times:?}");
+        assert!(sample_frames(&state, &SampleRequest { times: Some(times.clone()), ..Default::default() }, &|_, _| {}, None).is_err(), "{times:?}");
     }
 }

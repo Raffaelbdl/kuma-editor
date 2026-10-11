@@ -419,7 +419,8 @@ script's patch of any size is one exact edit. `add_media` takes a list of paths 
 (its media files, by extension; `recursive` for subfolders) as one edit and says what it
 skipped; `reprobe_media` reads replaced files again and writes only what changed;
 `unused_entries` lists entries no clip places, and those placed only where the master never
-reaches. A script that diffs its own document against
+reaches. A script that builds the whole project gets its patch
+from `kuma diff plan.json`; one that diffs its own document against
 the stored one puts its own in kuma's form first — `kuma canonical plan.json`, or
 `POST /api/project/canonical` to the daemon, which answers the text the file would hold —
 since kuma leaves out every field at its default (a keyframe's `ease: "linear"`). `measure_audio` meters a sequence's sound (EBU
@@ -534,6 +535,7 @@ kuma new-overlay my-tag                    # a contract-abiding skeleton in the 
 kuma import-overlay overlays/my-tag        # add that folder to the bin (--id)
 kuma lint                                  # every blueprint and every folder the bin uses (exit 1 on errors); `kuma lint overlays/my-tag` or `kuma lint location-tag` for one
 kuma validate | thumbs | library | doctor  # validate also names text the entries' fonts will not draw
+kuma diff plan.json > patches/diff.json    # the JSON Patch that makes the project the one a script wrote (`--keep`: leave entries it lacks); ops and revision on stderr
 kuma canonical plan.json                   # a project document (any version; `-` for stdin) in the form kuma stores it, to diff against
 ```
 

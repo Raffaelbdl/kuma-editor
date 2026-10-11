@@ -3126,8 +3126,16 @@ kuma's and are fixed here, the rest is listed as open.
   each span has a clock of its own; and adding to `kuma.js` changes every bake key, as
   any `_vendor/` change does, so each project re-bakes once, to the same pixels.
 
-Not done, from the same report: every as-code project rewrites the project diff, which
-could ship with the skill.
+- **`kuma diff`.** Every video built as code wrote the same script: its project against
+  the stored one, as a patch. This one compared subsets, because it did not know the
+  stored form, and still met phantom differences. The diff is now kuma's
+  (`kuma_core::diff`, `kuma diff <file>`): both sides in the stored form, `json_patch::diff`
+  between them, the live `revision` and any `meta` the script does not give kept, entries
+  the script lacks removed unless `--keep`. Tried on that project: 0 ops against itself,
+  and three for three changes made to a copy written without its defaults and metas. A
+  CLI command and not an MCP tool, since what calls it is a build script; it reads the
+  file the daemon saves on every edit. Array changes are sent index by index, so a clip
+  inserted mid-track rewrites those after it: larger than it need be, never wrong.
 
 ## Still open
 

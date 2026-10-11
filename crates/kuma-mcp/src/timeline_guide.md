@@ -7,9 +7,11 @@ sequence's video tracks (a video track after an overlay track is refused). Somet
 draw under, a still or a thumbnail, it draws itself, from a picture in its own folder. Edit with `apply_edits` (RFC 6902 JSON Patch) and pass the `base_revision`
 you read, so you never overwrite a human edit made meanwhile. Every edit is validated atomically and
 undoable; label your edits with `note`. A patch a script wrote goes in a file in the project, and
-`apply_edits` with `patch_path` applies it in one call, whatever its size. kuma stores a document
-without its default-valued fields (a key's `ease: "linear"`), so a script diffing its own plan
-against `get_project` canonicalises it first: `kuma canonical plan.json`, or `POST /api/project/canonical`.
+`apply_edits` with `patch_path` applies it in one call, whatever its size. A script that builds the
+whole project does not diff it itself: `kuma -p <project> diff plan.json` prints the patch between the
+stored project and the script's, compared as kuma stores them (it leaves out every field at its
+default, a key's `ease: "linear"`), and the revision to send it at; `kuma canonical plan.json`
+prints that form.
 
 Everything placeable lives in `bin`, keyed by a short id: media files (`{"source": {"path": …}}`),
 configured overlays (`{"source": {"overlay": "overlays/<name>", "vars": {…}}}`), colours, and *sequences*

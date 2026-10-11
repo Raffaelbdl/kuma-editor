@@ -7,9 +7,8 @@ built of many overlays; a footage edit of a few dozen cuts is often simpler by h
 
 ```
 assets/dsl.py         Chapter, bands, one helper per overlay component, build(), patch()
-assets/storyboard.py  the video, scene by scene: texts, positions, times
-assets/diff.py        storyboard vs live project → the smallest JSON Patch
-assets/patches/       generated: one patch per chapter + the master
+assets/storyboard.py  the video, scene by scene: texts, positions, times; writes build/project.json
+patches/diff.json     generated: `kuma diff build/project.json`, the patch to apply
 ```
 
 ## The DSL
@@ -27,7 +26,8 @@ assets/patches/       generated: one patch per chapter + the master
 - `build()` sorts clips by start, puts each in the first free lane of its band, and names
   tracks `<cid>_<kind><band>_<lane>`. The stacking then follows the band, whatever order the
   storyboard wrote things in.
-- `patch()` emits a folder for the chapter's parts, its entries and the sequence entry.
+- The script writes the whole project it means (every entry, every sequence) to a file.
+  It does not read the live one and does not work out patches: `kuma diff` does.
 - A `sound(name, t)` helper that also knows each effect's length and default gain keeps the
   effects mix in one table.
 
@@ -38,8 +38,8 @@ assets/patches/       generated: one patch per chapter + the master
 - **Entry ids** from a per-chapter counter shift when you insert an element. Give anything
   added later an explicit id (`eid="ten_secret"`), or the diff turns one insertion into
   hundreds of add/remove pairs and every overlay re-bakes.
-- The diff ignores clip ids and labels when it compares tracks, so a renumbering alone never
-  produces an edit.
+- The diff compares ids like anything else: a renumbering is an edit of every clip after
+  it, which is one more reason ids come from content.
 
 ### Retiming: cuts, not edits
 
@@ -65,24 +65,31 @@ Re-run the storyboard after applying, so the counts include themselves.
 
 ## The diff
 
-- **Normalise** before comparing: put the script's document through `kuma canonical`
-  (or `POST /api/project/canonical`), which writes it exactly as kuma stores it, without
-  the fields at their defaults (a key's `ease: "linear"`), so the two compare equal. Ignore
-  `revision`.
-- Entries: compare `name` and `vars`; emit `replace …/source/vars` for a change and `add`
-  for a new entry. Remove only entries of this chapter's own folder that nothing wants any
-  more.
-- Tracks: if the list of track ids differs, replace the sequence's `tracks` whole;
-  otherwise replace only the tracks whose clips differ, ignoring clip ids and labels.
-- Emit adds first (new clips may name them), then replaces, then removes. Print the
-  project revision to stderr: it is the `base_revision` to send.
+`kuma -p project.kuma.json diff build/project.json > patches/diff.json` prints the JSON
+Patch that makes the stored project the one the script wrote, and on stderr the number of
+operations and the revision it read: the `base_revision` to send. Do not write a diff of
+your own; the traps are all in this one already.
+
+- Both documents are compared **as kuma stores them**, so a field at its default that the
+  script left out or spelled out (`"speed": 1`, a key's `ease: "linear"`) is no difference.
+  `kuma canonical` prints that form, to read what the script's document comes to.
+- **`meta` and `revision` are kuma's**: an entry the script gives no `meta` for keeps the
+  probed one. Add media with `add_media` once; the script then only names the entry.
+- **Entries the script does not write are removed**, and stderr names them. `--keep` leaves
+  them: use it while a person, or another script, also adds entries.
+- A var written at its manifest default is a difference once (vars are stored as given),
+  and none after it is applied.
+- Times are compared exactly. Round what the script computes (`round(t, 6)`), keep a clip
+  inside its source (`in + (end − start) × speed ≤` the duration, floored to a frame for an
+  effect cut to its length), and a music bed inside the sequence, or `validate_project`
+  warns on every build.
 
 ## Applying through MCP
 
-- Write the patch into the project (`patches/diff.json`) and apply it with `apply_edits`
-  and `patch_path`: the daemon reads the file, so the whole patch lands in one atomic,
-  undoable edit, exactly as the diff wrote it. Pass the `base_revision` the diff printed.
-  The answer's `ops` says how many operations were applied.
+- Apply `patches/diff.json` with `apply_edits` and `patch_path`: the daemon reads the
+  file, so the whole patch lands in one atomic, undoable edit, exactly as the diff wrote
+  it. Pass the `base_revision` the diff printed. The answer's `ops` says how many
+  operations were applied.
 - For a small change, send targeted ops (`…/clips/<j>/volume`) inline rather than a whole
   track.
 - Then **re-run the diff: it must print 0 ops**, and `validate_project` must be clean.
@@ -92,10 +99,8 @@ Re-run the storyboard after applying, so the counts include themselves.
   exception. Before applying, diff the live project against the last one you wrote; fold
   each of their changes into the script (a moved clip, a retimed title, a gain), then build
   and apply. Never regenerate over them.
-- **Stale entries**: the patch removes what this script's folders hold that it no longer
-  makes. Work that out from the live project, not from a state file the script keeps: a
-  build that was never applied leaves the state file believing in entries that never
-  existed, and hides the ones that do. `unused_entries` lists what no clip places, and what
-  is placed only where the master never reaches.
+- **Stale entries**: without `--keep` the diff removes what the script no longer makes;
+  with it, `unused_entries` lists what no clip places, and what is placed only where the
+  master never reaches.
 - Before a sweeping change (a new time model, a shared helper), copy `assets/` and
   `overlays/` to scratch, so you can compare or roll back.

@@ -58,9 +58,9 @@ Most videos mix these. The shape below holds for all of them.
 Keep the video in a script that builds the project, generate the patch, and send only the
 difference: `references/storyboard-as-code.md`. In short:
 
-- A diff compares the script's project with the live one and writes the smallest JSON Patch
-  to a file in the project. Apply it with `apply_edits` and `patch_path`: one call, exact,
-  whatever its size, with the `base_revision` the diff read.
+- The script writes the whole project it means; `kuma diff` compares that with the live
+  one and prints the JSON Patch between them. Apply it with `apply_edits` and
+  `patch_path`: one call, exact, whatever its size, with the `base_revision` the diff read.
 - **Run the diff again afterwards: it must print 0 ops.** That proves nothing was left out,
   and that nobody else's edit is being overwritten.
 - Clip ids from content (`<entry>_<start ms>`); pin the ids of entries you insert later.

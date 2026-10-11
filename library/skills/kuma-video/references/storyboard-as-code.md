@@ -11,6 +11,15 @@ assets/storyboard.py  the video, scene by scene: texts, positions, times; writes
 patches/diff.json     generated: `kuma diff build/project.json`, the patch to apply
 ```
 
+## Before the first scene
+
+- **A length budget**, per chapter and whole, checked as the script is written. It is the
+  cheapest thing to change and the dearest to change late.
+- **Content apart from mechanism**: the script of the video (texts, beats, what appears
+  when) in files a person can read and edit, the helpers and the build beside them.
+- Generated media goes to **new file names** (a music bed named with its length), never
+  over a file a render may be reading.
+
 ## The DSL
 
 - `Chapter(cid)` holds `entries` (bin id → entry) and `clips` (kind, band, clip, forced lane).

@@ -8,8 +8,9 @@ description: Make or edit a video in kuma-editor through its MCP — screen reco
 The MCP's `timeline_guide` and `overlay_guide` are the contract. This skill is the craft
 around them: how to organise a video, and the traps that each cost a render to find. The
 largest project it was learned on is a 9½-minute motion-graphics explainer (~400 overlay
-entries, ~600 clips), so its examples lean that way, and a 13-minute narrated essay (~470
-clips over 55 sequences: voice-over, to-camera takes, stills and footage, music beds); the
+entries, ~600 clips), so its examples lean that way, a 13-minute narrated essay (~470
+clips over 55 sequences: voice-over, to-camera takes, stills and footage, music beds) and
+a 52-minute generated course (98 scenes, a synthesised voice, one engine overlay); the
 rules hold for any video. `kuma
 init` and `kuma mcp-config` install it into the project and refresh it, so keep project
 notes elsewhere.
@@ -34,6 +35,7 @@ notes elsewhere.
 | Short (9:16) | reframed footage, large captions | `footage.md` (portrait) |
 | Explainer, motion graphics | many small overlays, little or generated footage | `overlays.md`, `storyboard-as-code.md` |
 | Essay, documentary, narrated tutorial | a voice-over or to-camera takes, stills, footage, music | `narration.md`, `footage.md`, `audio.md` |
+| Generated course or explainer, no footage | a synthesised voice, overlays built from data | `narration.md` (a generated voice), `overlays.md` (cost, one engine), `storyboard-as-code.md` |
 
 Most videos mix these. The shape below holds for all of them.
 
@@ -51,7 +53,12 @@ Most videos mix these. The shape below holds for all of them.
   cheaper than an overlay.
 - **One overlay, one job**: a title, the box behind it and an arrow are three entries and
   three clips. Start from a blueprint (`add_blueprint`, then set vars); write a component
-  only for what none does, and configure it many times.
+  only for what none does, and configure it many times. One engine drawing every scene
+  from data is the other way to build a generated video; it has costs of its own, in
+  `references/overlays.md`. Choose knowing them.
+- **A length, before a script.** Every minute is narration to write, frames to bake and
+  review, and attention to hold. A course meant for 3-minute chapters came out at 4 to 5,
+  and at 52 minutes whole.
 
 ## Work as code past ~50 clips
 
@@ -76,6 +83,9 @@ difference: `references/storyboard-as-code.md`. In short:
 | "keyframe beyond clip end" after a trim | keyframes timed to the old length | compute keyframe times from the clip's actual length |
 | A correction costs minutes of baking | one long overlay bakes as one clip | compose short overlays; `transcribe` already cuts a transcript into entries of about a minute |
 | A tweak costs 20 minutes | a `_vendor/` or font change re-bakes every overlay | decide motion and type early, batch such changes, review with the `draft` preset |
+| Frames with nothing on them, no error | a script on the overlay's page threw; a bake still succeeds | read the `warnings` of the sample, bake or render: they quote the error |
+| Adding a scene re-bakes every earlier one | an overlay reads something about the whole video (a progress bar over its full length) | give an overlay only what its own scene knows: progress within the chapter |
+| Baking runs at a few frames a second | shadows, blur or a full-frame gradient painted on every frame | → `references/overlays.md`, what a bake costs |
 | Kanji look Chinese, or odd | the machine's CJK fallback font under `lang="en"` (Noto CJK **SC** on Linux) | the entry's `lang` var (or `lang="ja"` on the page), a Japanese font var; `validate_project` names the characters → `references/japanese-type.md` |
 | `<!--` drawn as an arrow | programming ligatures in a mono font | `font-feature-settings: "liga" 0, "calt" 0` on code |
 | Inserting one entry renamed every later one | counter-based entry ids | pin ids of new entries; content-based clip ids |
@@ -98,6 +108,9 @@ difference: `references/storyboard-as-code.md`. In short:
 - **Your own notes are markers too**: a moment to review, a TODO, a zone (two markers, its
   edges). The daemon marks the ones your edits add as yours (`author: "agent"`, never
   `waiting`), so they are not read back to you as feedback; never answer your own.
+- **Judge a frame at full width.** A contact sheet shrinks each frame to a few hundred
+  pixels, where everything looks small and sparse; and sample a scene near its end (about
+  80% in), since at 10% the layout is half built and looks empty.
 - **While building**, sample the part you are working on, or an overlay entry on its own,
   over a short range. `sample_frames` bakes only the changed overlays its frames show,
   nested sequences included, and `tile` returns them as one contact sheet; `cancel_job`

@@ -84,5 +84,8 @@ against nothing.
   it is a hit (a drum, a stamp, a chime) landing on the music's own peak, or a shout. Keep
   effects under about -5 dBTP (a click raised 1.6× reached -0.7) and trim the few hottest
   effects' gains, not the music.
+- **The same effect repeated quickly stacks**: five thumps 0.18 s apart peaked 3 dB under
+  full scale, each one quiet. When events come closer than about 0.45 s, sound one in two
+  or three.
 - A clip's own sound (footage with its room or its music) is ducked with `volume` keyframes
   and brought up for the one moment that matters.

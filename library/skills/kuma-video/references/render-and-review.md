@@ -21,6 +21,14 @@
   finishes). Keep waiting with `job_status`, its `id` and a `wait_seconds` of about 100;
   `job_status` without an id lists the jobs.
 
+- **At length**, on a 12-core laptop with an NVIDIA GPU, 52 minutes of 1080p30: a
+  whole-project bake 10 to 15 minutes, `measure_audio` about 6, `youtube-nvenc` about 17
+  (some 90 frames a second). Render a short `range` first to learn your own figures.
+- **Waiting on a long job**: one `job_status` with `wait_seconds` at a time, or a
+  background shell command that ends when the job does. Never a tight polling loop.
+  `cancel_job` stops a render, a bake or a sample; killing the renderer by hand does not,
+  the job starts its next bake.
+
 ## Versions and environment
 
 - The MCP server is a separate process from the daemon. After kuma is rebuilt, every tool

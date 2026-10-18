@@ -122,7 +122,7 @@ class Store {
   }
 
   async init() {
-    const [project, blueprints, libraries, manifests, seq] = await Promise.all([api.project(), api.blueprints(), api.libraries(), api.overlays(), api.sequence()]);
+    const [project, { blueprints, libraries }, manifests, seq] = await Promise.all([api.project(), api.libraries(), api.overlays(), api.sequence()]);
     this.set({ project, blueprints, libraries, manifests, sequence: seq.current, sequences: [seq.current] });
     void this.reloadFonts();
     subscribeEvents((e) => this.onEvent(e), (connected) => {

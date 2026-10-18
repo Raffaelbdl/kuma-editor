@@ -8,7 +8,7 @@
 use std::io::Write as _;
 use std::sync::Arc;
 
-use kuma_daemon::{serve, AppState, Config};
+use kuma_daemon::{serve, AppState, Config, Libraries};
 
 const PROJECT: &str = r##"{
   "version": 7, "name": "t", "master": "main",
@@ -58,7 +58,7 @@ async fn daemon() -> (Arc<AppState>, String, tempfile::TempDir) {
     let config = Config {
         project_file,
         repo_root: dir.path().join("repo"),
-        library_dirs: vec![dir.path().join("library")],
+        libraries: Libraries::new(dir.path().join("library")),
         bind: "127.0.0.1:0".parse().unwrap(),
     };
     let (state, addr) = serve(config).await.unwrap();

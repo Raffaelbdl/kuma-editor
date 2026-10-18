@@ -41,6 +41,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/schema", get(schema))
         .route("/api/blueprints", get(blueprints).post(reload_blueprints))
         .route("/api/libraries", get(libraries).post(add_library))
+        .route("/api/libraries/rescan", post(rescan_libraries))
         .route("/api/libraries/remove", post(remove_library))
         .route("/api/blueprints/thumbs", post(thumbs))
         .route("/api/blueprints/{id}/copy", post(copy_blueprint))
@@ -419,8 +420,22 @@ async fn reload_blueprints(State(st): S) -> Json<Value> {
     Json(json!(st.blueprint_infos()))
 }
 
+/// The libraries and their blueprints, from one read: each blueprint names its library.
+fn libraries_answer(st: &AppState) -> Value {
+    json!({ "libraries": st.library_infos(), "blueprints": st.blueprint_infos() })
+}
+
 async fn libraries(State(st): S) -> Json<Value> {
-    Json(json!(st.library_infos()))
+    Json(libraries_answer(&st))
+}
+
+/// Read the libraries again — the list of added ones included — and answer as `libraries`.
+async fn rescan_libraries(State(st): S) -> ApiResult {
+    Ok(Json(blocking(move || {
+        st.reload_blueprints();
+        libraries_answer(&st)
+    })
+    .await?))
 }
 
 /// A library folder, by path: added to the user library's list, or taken off it.
@@ -434,9 +449,12 @@ struct LibraryPath {
 /// takes a blueprint's folder when it uses one, as from any library.
 async fn add_library(State(st): S, Json(req): Json<LibraryPath>) -> ApiResult {
     let out = blocking(move || -> anyhow::Result<Value> {
-        let (path, added) = crate::state::add_library(&st.config.library_dirs[0], &crate::jobs::resolve_path(&st, &req.path))?;
+        let (path, added) = crate::state::add_library(&st.config.libraries.user, &crate::jobs::resolve_path(&st, &req.path))?;
         st.reload_blueprints();
-        Ok(json!({ "path": path, "added": added, "libraries": st.library_infos(), "blueprints": st.blueprint_infos() }))
+        let mut out = libraries_answer(&st);
+        out["path"] = json!(path);
+        out["added"] = json!(added);
+        Ok(out)
     })
     .await?
     .map_err(bad_request_err)?;
@@ -447,10 +465,9 @@ async fn add_library(State(st): S, Json(req): Json<LibraryPath>) -> ApiResult {
 /// project already copied from it.
 async fn remove_library(State(st): S, Json(req): Json<LibraryPath>) -> ApiResult {
     let out = blocking(move || -> anyhow::Result<Value> {
-        let removed = crate::state::remove_library(&st.config.library_dirs[0], &req.path)?;
-        anyhow::ensure!(removed, "{} is not an added library: the user library, the starter set and KUMA_LIBRARY's are not taken off here", req.path.display());
+        crate::state::remove_library(&st.config.libraries.user, &req.path)?;
         st.reload_blueprints();
-        Ok(json!({ "libraries": st.library_infos(), "blueprints": st.blueprint_infos() }))
+        Ok(libraries_answer(&st))
     })
     .await?
     .map_err(bad_request_err)?;

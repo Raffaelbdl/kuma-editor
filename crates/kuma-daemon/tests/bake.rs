@@ -6,7 +6,7 @@ use std::sync::atomic::AtomicBool;
 use std::sync::Mutex;
 
 use kuma_daemon::jobs::{self, OverlayScope};
-use kuma_daemon::{AppState, Config};
+use kuma_daemon::{AppState, Config, Libraries};
 
 /// `c1` and `c2` place one entry at one length, so one key; `c3` places another.
 const PROJECT: &str = r##"{
@@ -52,7 +52,7 @@ fn fixture(concurrency: usize) -> (AppState, std::path::PathBuf, tempfile::TempD
     let config = Config {
         project_file,
         repo_root: std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."),
-        library_dirs: vec![dir.path().join("library")],
+        libraries: Libraries::new(dir.path().join("library")),
         bind: "127.0.0.1:0".parse().unwrap(),
     };
     let mut state = AppState::load(config).unwrap();

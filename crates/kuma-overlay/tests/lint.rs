@@ -35,7 +35,7 @@ fn baker(tmp: &tempfile::TempDir) -> (Baker, PathBuf) {
     let vendor = vec![root.join("library/blueprints/_vendor")];
     // The starter fonts, as `kuma library` installs them: the titles name them.
     let fonts = vec![(root.join("library/fonts"), kuma_overlay::Origin::Library)];
-    (Baker::discover(&root, vendor, tmp.path().join("cache")).with_fonts(fonts), root)
+    (Baker::discover(&root, tmp.path().join("cache")).with_library(vendor, fonts), root)
 }
 
 #[test]

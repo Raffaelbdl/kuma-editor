@@ -2,7 +2,7 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
 use clap::{Parser, Subcommand};
-use kuma_daemon::{default_library_dirs, locate_repo_root, Config, RepoRoot};
+use kuma_daemon::{locate_repo_root, user_library, Config, Libraries, RepoRoot};
 
 mod skill;
 
@@ -365,7 +365,7 @@ fn repo_root_found(cli: &Cli) -> anyhow::Result<RepoRoot> {
 
 fn config(cli: &Cli) -> anyhow::Result<Config> {
     let repo_root = repo_root(cli)?;
-    Ok(Config { project_file: absolute(&cli.project)?, library_dirs: kuma_daemon::library_dirs(&repo_root), repo_root, bind: cli.bind })
+    Ok(Config { project_file: absolute(&cli.project)?, libraries: Libraries::from_env(&repo_root), repo_root, bind: cli.bind })
 }
 
 /// Load the project state for one-shot commands (no server).
@@ -461,30 +461,30 @@ async fn main() -> anyhow::Result<()> {
         Cmd::Export { what } => {
             use kuma_daemon::export::{self, ChaptersRequest, Output, SubtitlesRequest};
             let to = |output: &Option<PathBuf>, write: bool| anyhow::Ok(Output { output: output.as_deref().map(absolute).transpose()?, write });
-            let (path, body) = match what {
+            // The daemon serving this project holds the latest document; else it is read here.
+            let daemon = running_daemon(&cli).await.map(|url| kuma_mcp::client::Client::new(&url));
+            let out = match what {
                 ExportCmd::Srt { sequence, output, write, entries, words_per_line } => {
                     let req = SubtitlesRequest { sequence: sequence.clone(), entries: (!entries.is_empty()).then(|| entries.clone()), words_per_line: *words_per_line, to: to(output, *write)? };
-                    ("/api/export/subtitles", serde_json::to_value(req)?)
+                    match &daemon {
+                        Some(c) => c.post("/api/export/subtitles", &serde_json::to_value(&req)?).await?,
+                        None => export::subtitles(&*open(&cli)?, &req)?,
+                    }
                 }
-                ExportCmd::Chapters { sequence, output, write } => ("/api/export/chapters", serde_json::to_value(ChaptersRequest { sequence: sequence.clone(), to: to(output, *write)? })?),
-            };
-            // The daemon serving this project holds the latest document; else it is read here.
-            let out = match running_daemon(&cli).await {
-                Some(url) => kuma_mcp::client::Client::new(&url).post(path, &body).await?,
-                None => {
-                    let state = open(&cli)?;
-                    match what {
-                        ExportCmd::Srt { .. } => export::subtitles(&state, &serde_json::from_value(body)?)?,
-                        ExportCmd::Chapters { .. } => export::chapters(&state, &serde_json::from_value(body)?)?,
+                ExportCmd::Chapters { sequence, output, write } => {
+                    let req = ChaptersRequest { sequence: sequence.clone(), to: to(output, *write)? };
+                    match &daemon {
+                        Some(c) => c.post("/api/export/chapters", &serde_json::to_value(&req)?).await?,
+                        None => export::chapters(&*open(&cli)?, &req)?,
                     }
                 }
             };
             for w in out["warnings"].as_array().into_iter().flatten() {
                 eprintln!("warning: {}", w.as_str().unwrap_or_default());
             }
-            match out["output"].as_str() {
+            match out["path"].as_str() {
                 Some(file) => eprintln!("wrote {file}"),
-                None => print!("{}", out["srt"].as_str().or(out["text"].as_str()).unwrap_or_default()),
+                None => print!("{}", out["text"].as_str().unwrap_or_default()),
             }
         }
         Cmd::Bake { clips } => {
@@ -739,18 +739,18 @@ async fn main() -> anyhow::Result<()> {
             println!("The agent reads `design-system/DESIGN.md`; overlays copy the `:root` block from `tokens.css`.");
         }
         Cmd::Library { action: Some(action), .. } => {
-            let user = default_library_dirs().remove(0);
+            let user = user_library();
             match action {
                 LibraryCmd::Add { path } => {
                     let (dir, added) = kuma_daemon::add_library(&user, &absolute(path)?)?;
                     println!("{} {}", if added { "added" } else { "already added:" }, dir.display());
                 }
                 LibraryCmd::Remove { path } => {
-                    anyhow::ensure!(kuma_daemon::remove_library(&user, &absolute(path)?)?, "{} is not an added library (`kuma library list`)", path.display());
+                    kuma_daemon::remove_library(&user, &absolute(path)?)?;
                     println!("removed {}", path.display());
                 }
                 LibraryCmd::List => {
-                    for (dir, source) in config(&cli)?.library_sources() {
+                    for (dir, source) in config(&cli)?.libraries.sources() {
                         let missing = if dir.is_dir() { "" } else { "  (missing)" };
                         println!("{:<8} {}{missing}", format!("{source:?}").to_lowercase(), dir.display());
                     }
@@ -765,7 +765,7 @@ async fn main() -> anyhow::Result<()> {
         }
         Cmd::Library { force, action: None } => {
             let src = repo_root(&cli)?.join("library");
-            let dst = default_library_dirs().remove(0);
+            let dst = user_library();
             let n = install_library(&src, &dst, *force)?;
             println!("installed {n} entries into {}", dst.display());
         }
@@ -855,7 +855,7 @@ async fn main() -> anyhow::Result<()> {
             std::fs::create_dir_all(path.parent().unwrap())?;
             std::fs::write(&path, kuma_core::project_text(&p)?)?;
             println!("created {}", path.display());
-            let library = default_library_dirs().remove(0);
+            let library = user_library();
             if !library.join("blueprints").is_dir() {
                 println!("note: no blueprints at {} — run `kuma library` to install the starter set", library.display());
             }
@@ -896,9 +896,9 @@ async fn doctor(cli: &Cli) -> anyhow::Result<()> {
     println!("engine        {}", ok(cfg.repo_root.join("engine/build/kuma-preview").is_file(), "engine/build/kuma-preview", "cmake -S engine -B engine/build && cmake --build engine/build -j"));
     println!("melt          {}", ok(kuma_mlt::melt::melt_available(), "ok", "apt install melt"));
     println!("ffprobe       {}", ok(kuma_overlay::media::ffprobe_available(), "ok", "apt install ffmpeg"));
-    let baker = kuma_overlay::Baker::discover(&cfg.repo_root, Vec::new(), cfg.bakes_dir());
+    let baker = kuma_overlay::Baker::discover(&cfg.repo_root, cfg.bakes_dir());
     println!("hyperframes   {}", baker.available().map(|v| format!("{v} ({})", baker.hyperframes.display())).unwrap_or_else(|e| format!("MISSING — npm install at the repo root ({e})")));
-    let stt = kuma_overlay::Transcriber::discover(&cfg.repo_root, default_library_dirs().remove(0).join("models"));
+    let stt = kuma_overlay::Transcriber::discover(&cfg.repo_root, user_library().join("models"));
     println!("whisper       {}", stt.available().map(|m| format!("{} with {}", stt.cli.display(), m.display())).unwrap_or_else(|e| format!("MISSING — {e}")));
     println!("whisper models {}", if stt.models().is_empty() { format!("none in {}", stt.model_dir.display()) } else { stt.models().join(", ") });
     println!("browser       {}", baker.browser.as_ref().map(|p| p.display().to_string()).unwrap_or("not set — hyperframes will download Chrome headless shell on first bake".into()));

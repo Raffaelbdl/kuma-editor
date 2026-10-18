@@ -241,15 +241,14 @@ pub fn sfnt_ext(data: &[u8]) -> &'static str {
 
 /// What a font file says about itself, or `None` when it is not one kuma can read. A web
 /// font is read as the font it wraps.
-pub fn read_face(path: &Path) -> Option<(String, Face)> {
+pub fn read_face(path: &Path) -> Option<Face> {
     let data = std::fs::read(path).ok()?;
     let info = match unwrap_web_font(&data) {
         Some(sfnt) => parse_face(&sfnt.ok()?)?,
         None => parse_face(&data)?,
     };
     let digest = hex::encode(Sha256::digest(&data));
-    let face = Face { path: path.to_path_buf(), weight: info.weight, italic: info.italic, digest, scripts: info.scripts, aliases: info.aliases, family: info.family.clone(), coverage: info.coverage };
-    Some((info.family, face))
+    Some(Face { path: path.to_path_buf(), weight: info.weight, italic: info.italic, digest, scripts: info.scripts, aliases: info.aliases, family: info.family, coverage: info.coverage })
 }
 
 /// What a font's bytes say about it.
@@ -384,7 +383,7 @@ fn font_files(dir: &Path, exts: &[&str]) -> Vec<PathBuf> {
 }
 
 /// A parsed file, valid while its mtime and size hold; `None` when it is not a font.
-type Cached = ((SystemTime, u64), Option<(String, Face)>);
+type Cached = ((SystemTime, u64), Option<Face>);
 
 /// Folders of fonts, lowest precedence first, each with where it is.
 #[derive(Debug, Default, Clone)]
@@ -408,7 +407,7 @@ impl FontLibrary {
     /// A font file anywhere, web fonts included (what an overlay's own `@font-face` rules
     /// point at), from its stamp and the cache or, when it changed, read afresh. `None`
     /// when it is not a font kuma can read. The lock is never held while reading a file.
-    pub fn face(&self, path: &Path) -> Option<(String, Face)> {
+    pub fn face(&self, path: &Path) -> Option<Face> {
         let meta = std::fs::metadata(path).ok()?;
         let stamp = (meta.modified().unwrap_or(SystemTime::UNIX_EPOCH), meta.len());
         let lock = || self.cache.lock().unwrap_or_else(|e| e.into_inner());
@@ -438,8 +437,8 @@ impl FontLibrary {
         let mut out = BTreeMap::new();
         for (dir, origin) in &self.dirs {
             let mut found: BTreeMap<String, Vec<Face>> = BTreeMap::new();
-            for (family, face) in font_files(dir, EXTENSIONS).iter().filter_map(|p| self.face(p)) {
-                found.entry(family).or_default().push(face);
+            for face in font_files(dir, EXTENSIONS).iter().filter_map(|p| self.face(p)) {
+                found.entry(face.family.clone()).or_default().push(face);
             }
             let joins: BTreeMap<String, String> = found
                 .iter()
@@ -467,6 +466,12 @@ impl FontLibrary {
             }
         }
         out
+    }
+
+    /// The family the face at `path` is found under, which is not always the one it reads as
+    /// (`families`).
+    pub fn family_of(&self, path: &Path) -> Option<String> {
+        self.families().into_values().find(|f| f.faces.iter().any(|x| x.path == path)).map(|f| f.name)
     }
 
     /// Collections left in a font folder as they are: not read, since a face has to be its
@@ -721,8 +726,8 @@ mod tests {
             let sfnt = unwrap_web_font(&std::fs::read(fixtures.join(file)).unwrap()).expect("a web font").unwrap();
             assert_eq!(sfnt_ext(&sfnt), "ttf");
             assert_eq!(parse_face(&sfnt), Some(original.clone()), "{file}");
-            let (family, face) = read_face(&fixtures.join(file)).unwrap();
-            assert_eq!((family.as_str(), face.coverage), ("Bebas Neue", original.coverage.clone()), "{file} is read as what it wraps");
+            let face = read_face(&fixtures.join(file)).unwrap();
+            assert_eq!((face.family.as_str(), face.coverage), ("Bebas Neue", original.coverage.clone()), "{file} is read as what it wraps");
         }
         assert!(unwrap_web_font(&std::fs::read(repo_fonts().join("Anton/Anton-Regular.ttf")).unwrap()).is_none(), "a font that is not a web font");
         assert!(unwrap_web_font(b"wOF2 and then nothing").unwrap().is_err(), "a damaged one is refused, not read past");

@@ -317,24 +317,14 @@ is offered when the media has one transcript, and the job refuses `replace` with
 the text published beside a video, of the sequence picked (the master unless you pick
 another): **Export subtitles (.srt)** writes `renders/<name>.srt` to upload as captions, and
 **Copy chapters** copies the timestamps for the description (and shows them, selected, where
-the browser will not let a page write the clipboard). The daemon computes both from the
-document alone, so what is open in the editor changes nothing (`POST /api/export/subtitles`,
-`POST /api/export/chapters`; the `export_subtitles` and `export_chapters` tools; `kuma export
-srt|chapters`). The SRT is what the picture would show, when it would show it, in the
-sequence's seconds: every line the `subtitles` overlays draw — grouped by their own
-`words_per_line`, held across short pauses, cut at the clip's ends, as the blueprint draws
-them — mapped through every clip that places them, nested sequences, `in` points and speed
-included. A sequence placed twice shows its subtitles twice; a cue across a cut is split
-between the two sides, and one in a part cut out is gone. A **hidden** subtitles track still
-counts: hide it to keep the words off the picture and in the captions. `words_per_line` on
-the export (`--words-per-line`) groups more words per caption than the picture does, which
-reads better as YouTube captions; the warnings name a subtitles entry nothing in the
-sequence places and two entries showing at once. Chapters are the sequence's clips that place
-another sequence, the ones `measure_audio` measures, titled by the clip's label or else the
-placed entry's name, one `M:SS Title` line each (`H:MM:SS` past an hour, rounded down to the
-second so a chapter link lands on its cut). They are written whatever YouTube makes of them,
-with a warning where it would not read them as chapters: the first not at `0:00`, fewer than
-three, or one under ten seconds. Markers are never chapters — they are comments on the cut.
+the browser will not let a page write the clipboard). Agents and scripts use the
+`export_subtitles` and `export_chapters` tools or `kuma export srt|chapters`. The SRT is what
+the picture shows, when it shows it, in the sequence's seconds, through every cut and nesting;
+a **hidden** subtitles track still counts, so hide one to keep the words off the picture and
+in the captions, and `words_per_line` makes captions longer than the burned-in lines.
+Chapters are the sequence's clips that place another sequence, one `M:SS Title` line each.
+Both answer with warnings where YouTube would not read them as you meant; the rules, and why,
+are in `docs/decisions.md` (*SRT and chapters for YouTube*).
 
 **Den and power.** The editor has two modes over one set of panels; the backquote key, the
 top bar's toggle or the status line's first cell switches between them, keeping the playhead
@@ -713,12 +703,9 @@ read, and `check_overlay` says so where the family is missing.
 Each family reports the writing systems it sets (`scripts`: latin, han, kana, hangul, …): text
 in any other is drawn by whatever fonts the baking machine has. Which forms kanji take, and
 which font a missing character falls back to, follow the page's `lang`: an overlay that
-declares a `lang` var (the `title`, `title-subtitle`, `section-title`, `lower-third`,
-`location-tag` and `subtitles` blueprints do) gets the entry's value written onto `<html lang>`
-in the bake, the check and the preview alike, so one folder serves entries in several languages.
-Those blueprints but `subtitles` take their family from a `font` var too; `section-title`,
-`lower-third` and `location-tag` default to Roboto, which is what hyperframes drew for the
-`"Segoe UI"` they used to name.
+declares a `lang` var (most starter blueprints do; `list_blueprints` says which) gets the
+entry's value written onto `<html lang>` in the bake, the check and the preview alike, so one
+folder serves entries in several languages.
 
 Effect presets are `<library>/presets/*.json` (Ken Burns, zoom to region, vignette,
 picture-in-picture, dim) and expand to ordinary effects; `$expr` values may use the

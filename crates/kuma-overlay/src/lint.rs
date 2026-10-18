@@ -152,11 +152,11 @@ impl Baker {
     /// of the project's own under a name of its own is what that folder is for.
     pub fn vendor_findings(&self, overlay_dir: &Path, html: &str) -> Vec<Finding> {
         let mut out = Vec::new();
+        let libraries = self.vendor_dirs();
         for href in local_refs(html).into_iter().collect::<std::collections::BTreeSet<_>>() {
             let Some(rel) = href.strip_prefix("_vendor/") else { continue };
             let Some(used) = self.vendor_file(overlay_dir, rel) else { continue };
             // What the libraries alone would give, which a library's own blueprint uses.
-            let libraries = self.vendor_dirs();
             let Some(shipped) = libraries.iter().map(|d| d.join(rel)).find(|p| p.is_file()) else { continue };
             if libraries.iter().any(|d| used.starts_with(d)) || std::fs::read(&used).ok() == std::fs::read(&shipped).ok() {
                 continue;
@@ -186,11 +186,12 @@ impl Baker {
             sheets.push((base, css));
         }
         let mut out = Vec::new();
+        let fonts = self.font_library();
         for (base, css) in &sheets {
             for (family, src) in font_face_rules(css) {
                 let rel = src.and_then(|s| relative_path(base, &s))?;
-                let (read_as, face) = self.font_library().face(&file(&rel)?)?;
-                out.push((family.unwrap_or(read_as), face));
+                let face = fonts.face(&file(&rel)?)?;
+                out.push((family.unwrap_or_else(|| face.family.clone()), face));
             }
         }
         Some(out)
@@ -215,7 +216,12 @@ impl Baker {
         let fonts = self.fonts(manifest, vars);
         // A collection in a font folder is not read; saying so is the difference between
         // "not installed" and "installed the wrong way".
-        let (collections, web) = if fonts.missing.is_empty() { Default::default() } else { { let fonts = self.font_library(); (fonts.collections(), fonts.web_fonts()) } };
+        let (collections, web) = if fonts.missing.is_empty() {
+            Default::default()
+        } else {
+            let library = self.font_library();
+            (library.collections(), library.web_fonts())
+        };
         for (k, family) in &fonts.missing {
             let mut fix = String::from("add the font file to the project's `fonts/` (or a library's), or pick one that is installed");
             if let Some(c) = collections.first() {
@@ -284,10 +290,11 @@ impl Baker {
         // Where each var's text lands is read off the overlay's own scripts, once, and only
         // when there is CJK text to place. A var whose text is not found landing anywhere is
         // on the page.
-        let mut scripts = None;
+        let scripts = std::cell::OnceCell::new();
+        let page = std::cell::OnceCell::new();
         let off_cjk = text.iter().filter_map(|(var, s)| Some((var, wanted(s)?))).find_map(|(var, want)| {
-            let scripts = scripts.get_or_insert_with(|| own_scripts(html, dir));
-            let mut lands = landing::landings(html, scripts, vars, var);
+            let page = page.get_or_init(|| landing::Page::read(html, scripts.get_or_init(|| own_scripts(html, dir)), vars));
+            let mut lands = page.landings(var);
             if lands.is_empty() {
                 lands.push(landing::Landing { lang: landing::Lang::Page, at: None });
             }
@@ -368,9 +375,7 @@ fn is_han(c: char) -> bool {
 /// The `lang` of the document's `<html>`, if it has one.
 fn page_lang(html: &str) -> Option<String> {
     let tag = crate::inject::tags(html).find(|t| t.name.eq_ignore_ascii_case("html"))?;
-    let (a, b) = crate::inject::attr_value_span(tag.text, "lang")?;
-    // A bare value runs to the end of the tag.
-    Some(tag.text[a..b].trim_end_matches(['>', '/']).trim().to_string()).filter(|v| !v.is_empty())
+    crate::inject::attr(tag.text, "lang").filter(|v| !v.is_empty()).map(str::to_string)
 }
 
 /// The overlay's own scripts: inline, and the local files it links that are not `_vendor/`'s,
@@ -397,7 +402,7 @@ fn not_kumas(code: &str) -> bool {
 /// kuma's own contract, read off the staged document.
 fn contract_findings(html: &str, manifest: &OverlayManifest, dir: &Path) -> Vec<Finding> {
     let mut out = Vec::new();
-    let mut scripts = script_text(html);
+    let scripts = own_scripts(html, dir);
     // The staged document carries kuma's own injection: `window.kuma = …` and a
     // `:root { --var-<name>: … }` for every var in the manifest. The var rules read the
     // overlay's markup, not that — or every declared var would look read. Its own
@@ -419,14 +424,7 @@ fn contract_findings(html: &str, manifest: &OverlayManifest, dir: &Path) -> Vec<
     // `_vendor/` included: one may call `Date.now` to no effect.
     for src in local_refs(html).into_iter().filter(|h| h.ends_with(".js")) {
         if let Ok(js) = std::fs::read_to_string(dir.join(&src)) {
-            if src.starts_with("_vendor/") {
-                vendor.push_str(&js);
-            } else {
-                let js = strip_comments(&js);
-                own.push_str(&js);
-                scripts.push_str(&js);
-                scripts.push('\n');
-            }
+            if src.starts_with("_vendor/") { vendor.push_str(&js) } else { own.push_str(&strip_comments(&js)) }
         }
     }
 
@@ -956,7 +954,7 @@ mod tests {
     fn with_fonts() -> (Baker, OverlayManifest) {
         let tmp = std::env::temp_dir();
         let fonts = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../library/fonts");
-        let baker = Baker::discover(&tmp, vec![tmp.join("no-vendor")], tmp.join("no-cache")).with_fonts(vec![(fonts, crate::fonts::Origin::Library)]);
+        let baker = Baker::discover(&tmp, tmp.join("no-cache")).with_library(vec![tmp.join("no-vendor")], vec![(fonts, crate::fonts::Origin::Library)]);
         let manifest = serde_json::from_value(serde_json::json!({ "vars": {
             "font": { "type": "font", "default": "Inter" },
             "label": { "type": "text", "default": "" },
@@ -1159,7 +1157,7 @@ mod tests {
         std::fs::create_dir_all(&beside).unwrap();
         std::fs::write(beside.join("house.css"), "mine").unwrap();
         std::fs::write(beside.join("kuma.js"), "shipped").unwrap();
-        let baker = Baker::discover(tmp.path(), vec![library], tmp.path().join("cache"));
+        let baker = Baker::discover(tmp.path(), tmp.path().join("cache")).with_library(vec![library], Vec::new());
         let html = r#"<link rel="stylesheet" href="_vendor/house.css"><script src="_vendor/kuma.js"></script><script src="_vendor/kuma.js"></script>"#;
         assert!(baker.vendor_findings(&overlay, html).is_empty());
         std::fs::write(beside.join("kuma.js"), "an older one").unwrap();

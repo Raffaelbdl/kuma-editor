@@ -2009,11 +2009,11 @@ is what YouTube sees, the last one to the end of the sequence.
 
 **Synchronous, and the text unless a file is asked for** — adopted. It reads the document and
 takes milliseconds, so it is a plain request rather than a job in the queue. The answer
-carries the text (`srt`, `text`); with `write` or `output` the file is written atomically —
+carries the `text`; with `write` or `output` the file is written atomically —
 by default `renders/<name>[-<sequence>].srt` and `…-chapters.txt`, beside the renders and
-named as they are — and the answer gives its `path` instead, so an agent writing a long
-transcript to disk does not get it all back in its context. The editor asks once without
-writing first, so an empty SRT is never left in `renders/`. Copying the chapters uses the
+named as they are (`jobs::output_stem`) — and the answer gives its `path` instead, so an agent
+writing a long transcript to disk does not get it all back in its context. An SRT with no
+cues is never written, whoever asks: the answer says why there is none. Copying the chapters uses the
 clipboard where the browser allows it and shows the text selected either way, since
 neither a non-secure origin nor a page without focus may write the clipboard.
 

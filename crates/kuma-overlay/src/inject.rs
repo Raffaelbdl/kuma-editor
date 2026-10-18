@@ -236,7 +236,7 @@ pub fn stamp_root(html: &str, duration: f64, width: u32, height: u32) -> String 
         pos = t.end;
         let text = t.text;
         let is_close = text.starts_with("</");
-        let is_void = text.ends_with("/>") || t.name.starts_with('!') || matches!(t.name.to_ascii_lowercase().as_str(), "br" | "img" | "input" | "meta" | "link" | "hr" | "source");
+        let is_void = t.name.starts_with('!') || is_void(t.name, text);
         let mut stamped = text.to_string();
         if nested > 0 {
             if is_close {
@@ -289,6 +289,21 @@ pub fn fmt_secs(v: f64) -> String {
 fn attr_num(tag: &str, name: &str) -> Option<f64> {
     let (vs, ve) = attr_value_span(tag, name)?;
     tag[vs..ve].trim().parse().ok()
+}
+
+/// An attribute's value in an opening tag; a bare one runs to the end of the tag.
+pub(crate) fn attr<'t>(tag: &'t str, name: &str) -> Option<&'t str> {
+    let (a, b) = attr_value_span(tag, name)?;
+    Some(tag[a..b].trim_end_matches(['>', '/']).trim())
+}
+
+/// An element that has no closing tag, so it holds nothing.
+pub(crate) fn is_void(name: &str, text: &str) -> bool {
+    text.ends_with("/>")
+        || matches!(
+            name.to_ascii_lowercase().as_str(),
+            "area" | "base" | "br" | "col" | "embed" | "hr" | "img" | "input" | "link" | "meta" | "param" | "source" | "track" | "wbr"
+        )
 }
 
 /// Byte span of the value of attribute `name` inside an opening tag (quoted or bare). A

@@ -10,7 +10,7 @@ use std::io::{Read as _, Write as _};
 use std::path::Path;
 use std::sync::Arc;
 
-use kuma_daemon::{serve, AppState, Config};
+use kuma_daemon::{serve, AppState, Config, Libraries};
 use serde_json::{json, Value};
 
 const PROJECT: &str = r##"{
@@ -45,7 +45,7 @@ async fn daemon() -> (Arc<AppState>, String, tempfile::TempDir) {
     for f in ["overlay.json", "index.html"] {
         std::fs::copy(shipped.join(f), folder.join(f)).unwrap();
     }
-    let config = Config { project_file, repo_root: dir.path().join("repo"), library_dirs: vec![dir.path().join("library")], bind: "127.0.0.1:0".parse().unwrap() };
+    let config = Config { project_file, repo_root: dir.path().join("repo"), libraries: Libraries::new(dir.path().join("library")), bind: "127.0.0.1:0".parse().unwrap() };
     let (state, addr) = serve(config).await.unwrap();
     (state, addr.to_string(), dir)
 }
@@ -80,7 +80,7 @@ async fn subtitles_come_out_in_master_seconds_whatever_is_open() {
     // Two words a line, as the entry says; held to the next across the short pause. The
     // talk's 12..20 is cut from the first placement, and its 12..18 is placed again at 24.
     assert_eq!(
-        v["srt"],
+        v["text"],
         "1\n00:00:00,500 --> 00:00:01,500\nHello and\n\n2\n00:00:01,500 --> 00:00:02,000\nwelcome.\n\n3\n00:00:26,000 --> 00:00:27,000\nLater.\n\n"
     );
     assert_eq!((v["cues"].as_u64(), v["entries"].clone()), (Some(3), json!(["subs"])));
@@ -88,12 +88,12 @@ async fn subtitles_come_out_in_master_seconds_whatever_is_open() {
 
     // Named, a sequence is in its own seconds; and longer captions are asked for.
     let v = ok(&addr, "/api/export/subtitles", json!({ "sequence": "talk", "words_per_line": 8 }));
-    assert_eq!(v["srt"], "1\n00:00:00,500 --> 00:00:02,000\nHello and welcome.\n\n2\n00:00:14,000 --> 00:00:15,000\nLater.\n\n");
+    assert_eq!(v["text"], "1\n00:00:00,500 --> 00:00:02,000\nHello and welcome.\n\n2\n00:00:14,000 --> 00:00:15,000\nLater.\n\n");
 
     // Written, beside the renders, and the answer says where rather than repeating it.
     let v = ok(&addr, "/api/export/subtitles", json!({ "write": true }));
     assert_eq!(v["path"], "renders/t.srt");
-    assert!(v.get("srt").is_none(), "{v}");
+    assert!(v.get("text").is_none(), "{v}");
     assert!(std::fs::read_to_string(dir.path().join("renders/t.srt")).unwrap().starts_with("1\n00:00:00,500 --> "));
 
     let (status, v) = post(&addr, "/api/export/subtitles", json!({ "sequence": "nope" }));

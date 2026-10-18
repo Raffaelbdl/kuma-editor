@@ -153,7 +153,8 @@ struct Slots {
 
 impl Baker {
     /// Locate hyperframes and a browser, preferring the repo's own `node_modules`.
-    pub fn discover(repo_root: &Path, vendor_dirs: Vec<PathBuf>, cache_dir: PathBuf) -> Self {
+    /// No library yet: `set_library` (or `with_library`) says what the libraries give.
+    pub fn discover(repo_root: &Path, cache_dir: PathBuf) -> Self {
         let hyperframes = std::env::var_os("KUMA_HYPERFRAMES")
             .map(PathBuf::from)
             .filter(|p| p.is_file())
@@ -171,7 +172,7 @@ impl Baker {
             hyperframes,
             browser,
             version: None,
-            library: Arc::new(RwLock::new(Library { vendor_dirs, fonts: FontLibrary::default() })),
+            library: Arc::default(),
             concurrency: kuma_mlt::melt::threads_from_env("KUMA_BAKE_JOBS"),
             inflight: Arc::default(),
             slots: Arc::default(),
@@ -219,9 +220,9 @@ impl Baker {
         self.vendor_layers(overlay_dir).into_iter().map(|d| d.join(rel)).find(|p| p.is_file())
     }
 
-    /// Resolve `font` vars against these folders (lowest precedence first, each labelled).
-    pub fn with_fonts(self, dirs: Vec<(PathBuf, Origin)>) -> Self {
-        self.library_mut().fonts = FontLibrary::new(dirs);
+    /// `set_library`, for a baker being built.
+    pub fn with_library(self, vendor_dirs: Vec<PathBuf>, font_dirs: Vec<(PathBuf, Origin)>) -> Self {
+        self.set_library(vendor_dirs, font_dirs);
         self
     }
 
@@ -229,7 +230,7 @@ impl Baker {
     /// folders (lowest first) from now on, for this baker and every clone of it. Parsed
     /// fonts stay cached.
     pub fn set_library(&self, vendor_dirs: Vec<PathBuf>, font_dirs: Vec<(PathBuf, Origin)>) {
-        let mut library = self.library_mut();
+        let mut library = self.library.write().unwrap_or_else(PoisonError::into_inner);
         library.fonts = library.fonts.with_dirs(font_dirs);
         library.vendor_dirs = vendor_dirs;
     }
@@ -242,10 +243,6 @@ impl Baker {
     /// What `font` vars resolve against, as the libraries stand now.
     pub fn font_library(&self) -> FontLibrary {
         self.library.read().unwrap_or_else(PoisonError::into_inner).fonts.clone()
-    }
-
-    fn library_mut(&self) -> std::sync::RwLockWriteGuard<'_, Library> {
-        self.library.write().unwrap_or_else(PoisonError::into_inner)
     }
 
     /// What an overlay's `font` vars come to with these (resolved) vars. A family that is
@@ -886,7 +883,7 @@ mod tests {
         std::fs::create_dir_all(&overlay).unwrap();
         std::fs::write(overlay.join("overlay.json"), "{}").unwrap();
         std::fs::write(overlay.join("index.html"), r#"<html><body><div data-composition-id="main" data-no-timeline></div></body></html>"#).unwrap();
-        let mut baker = Baker::discover(tmp.path(), vec![library], tmp.path().join("cache"));
+        let mut baker = Baker::discover(tmp.path(), tmp.path().join("cache")).with_library(vec![library], Vec::new());
         (baker.version, baker.browser) = (None, None);
         (tmp, baker, overlay)
     }

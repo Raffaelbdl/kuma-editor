@@ -179,10 +179,9 @@ export function openRenderDialog(tab: Tab = "render"): void {
   const exportSrt = button("Export subtitles (.srt)", async () => {
     try {
       chaptersText.hidden = showExportedFile.hidden = true;
-      // Asked first without writing, so an empty SRT is never left beside the renders.
-      const seen = await api.exportSubtitles(sequence.value);
-      if (!seen.cues) return said("No subtitles to export.", seen.warnings);
+      // The daemon writes no empty SRT: it says why there is none instead.
       const r = await api.exportSubtitles(sequence.value, { write: true });
+      if (!r.cues) return said("No subtitles to export.", r.warnings);
       exportedFile = r.path ?? "";
       showExportedFile.hidden = !desktop();
       said(`${plural(r.cues, "caption")} written to ${r.path}`, r.warnings);

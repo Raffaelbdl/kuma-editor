@@ -188,16 +188,16 @@ export class Library {
     // A folder per library, in the order they are read. One whose blueprints were all
     // shadowed, or that has none, is shown only if it was added here, so it can be taken off.
     const byLibrary = new Map<string, BlueprintInfo[]>();
-    for (const b of blueprints) byLibrary.set(b.library, [...(byLibrary.get(b.library) ?? []), b]);
+    for (const b of blueprints) {
+      const own = byLibrary.get(b.library);
+      if (own) own.push(b);
+      else byLibrary.set(b.library, [b]);
+    }
     for (const lib of store.state.libraries) {
       const own = byLibrary.get(lib.path) ?? [];
-      byLibrary.delete(lib.path);
       if (!own.length && (q || lib.source !== "added")) continue;
       this.libraryGroup(lib, own, !!q);
     }
-    // A blueprint from a library the list has not caught up with, or from a daemon that
-    // does not say (`library` absent).
-    for (const [path = "", own] of byLibrary) this.libraryGroup({ path, name: path.split("/").pop() || "Library", source: "env", blueprints: own.length, missing: false }, own, !!q);
   }
 
   /** One library's folder: a row that folds it, then its blueprints. Name, kind and the two

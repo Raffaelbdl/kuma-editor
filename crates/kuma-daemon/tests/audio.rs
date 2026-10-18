@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use kuma_daemon::jobs::{measure_audio, measure_media, MeasureRequest};
 use serde_json::json;
-use kuma_daemon::{AppState, Config};
+use kuma_daemon::{AppState, Config, Libraries};
 
 /// Two chapters of the same tone, the second 6 dB down (`volume` 0.5), with two seconds of
 /// nothing between them. The first opens on a fade that rounds to one frame, which used to
@@ -39,7 +39,7 @@ fn fixture() -> (Arc<AppState>, tempfile::TempDir) {
     let config = Config {
         project_file,
         repo_root: std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."),
-        library_dirs: vec![dir.path().join("library")],
+        libraries: Libraries::new(dir.path().join("library")),
         bind: "127.0.0.1:0".parse().unwrap(),
     };
     (Arc::new(AppState::load(config).unwrap()), dir)
@@ -189,7 +189,7 @@ fn a_track_is_heard_alone_wherever_it_is_nested() {
     let project_file = dir.path().join("t.kuma.json");
     std::fs::write(&project_file, NESTED).unwrap();
     let repo_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let config = Config { project_file, repo_root, library_dirs: vec![dir.path().join("library")], bind: "127.0.0.1:0".parse().unwrap() };
+    let config = Config { project_file, repo_root, libraries: Libraries::new(dir.path().join("library")), bind: "127.0.0.1:0".parse().unwrap() };
     let state = Arc::new(AppState::load(config).unwrap());
     let before = serde_json::to_value(&*state.project.read().unwrap()).unwrap();
 

@@ -3,7 +3,7 @@
 // revision-checked patch with its rule checked once — and no panel has to import another
 // to place a clip.
 
-import { api } from "./api";
+import { api, type Libraries } from "./api";
 import { button, checkbox, el, loadLocal, plural, row, saveLocal, selectInput } from "./dom";
 import { askForm, askText } from "./modal";
 import { desktop } from "./desktop";
@@ -291,14 +291,15 @@ export async function makeOverlayUnique(id: string) {
   }
 }
 
-/** Save an overlay entry as a blueprint (its vars as defaults), asking for the id and
- *  before replacing one. */
-/** Read the libraries again: their blueprints, the libraries themselves, and the fonts they
- *  bring. What the panel's rescan does, and what follows anything that changed them. */
-export async function rescanLibraries() {
-  const [blueprints, libraries] = await Promise.all([api.reloadBlueprints(), api.libraries()]);
+/** The libraries as the daemon now reads them: their blueprints, and the fonts they bring. */
+function applyLibraries({ blueprints, libraries }: Libraries) {
   store.set({ blueprints, libraries });
   void store.reloadFonts();
+}
+
+/** Read the libraries again: the panel's rescan, and what follows anything that changed them. */
+export async function rescanLibraries() {
+  applyLibraries(await api.rescanLibraries());
 }
 
 /**
@@ -313,11 +314,10 @@ export async function addLibrary() {
   if (!path) return;
   try {
     const r = await api.addLibrary(path);
-    store.set({ blueprints: r.blueprints, libraries: r.libraries });
-    void store.reloadFonts();
-    const lib = r.libraries.find((l) => l.path === r.path);
-    const n = lib?.blueprints ?? 0;
-    toast(r.added ? `Added ${lib?.name ?? r.path}: ${plural(n, "blueprint")}, for every project` : `${lib?.name ?? r.path} is already read`, "ok", 5000);
+    applyLibraries(r);
+    const name = r.libraries.find((l) => l.path === r.path)?.name ?? r.path;
+    const n = r.blueprints.filter((b) => b.library === r.path).length;
+    toast(r.added ? `Added ${name}: ${plural(n, "blueprint")}, for every project` : `${name} is already read`, "ok", 5000);
   } catch (e) {
     toast((e as Error).message, "err", 8000);
   }
@@ -328,14 +328,14 @@ export async function removeLibrary(path: string, name: string) {
   const ok = await askForm({ title: `Stop reading ${name}?`, note: `Its blueprints leave this panel in every project. Nothing is deleted: the folder stays where it is (${path}), and overlays a project copied from it keep working, unless they use its _vendor/ helpers or fonts.`, rows: [], ok: "Stop reading" });
   if (!ok) return;
   try {
-    const r = await api.removeLibrary(path);
-    store.set({ blueprints: r.blueprints, libraries: r.libraries });
-    void store.reloadFonts();
+    applyLibraries(await api.removeLibrary(path));
   } catch (e) {
     toast((e as Error).message, "err", 8000);
   }
 }
 
+/** Save an overlay entry as a blueprint (its vars as defaults), asking for the id and
+ *  before replacing one. */
 export async function saveAsBlueprint(id: string) {
   const item = store.state.project?.bin[id];
   if (!item || !isOverlaySource(item.source)) return;

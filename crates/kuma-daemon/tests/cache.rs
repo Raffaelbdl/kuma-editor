@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use kuma_daemon::cache::{live_bakes, prune, usage};
-use kuma_daemon::{AppState, Config};
+use kuma_daemon::{AppState, Config, Libraries};
 use kuma_overlay::BakeRequest;
 
 /// One overlay placed at two lengths: on the master, and in a sequence nothing places.
@@ -39,7 +39,7 @@ fn fixture() -> (Arc<AppState>, tempfile::TempDir) {
     let config = Config {
         project_file,
         repo_root: std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."),
-        library_dirs: vec![dir.path().join("library")],
+        libraries: Libraries::new(dir.path().join("library")),
         bind: "127.0.0.1:0".parse().unwrap(),
     };
     (Arc::new(AppState::load(config).unwrap()), dir)

@@ -21,11 +21,14 @@ export interface RenderTarget { output: string; path: string; exists: boolean; p
  *  absent. The daemon refuses what the preset does not offer. */
 export interface RenderOptions { threads?: number; quality?: number; speed?: string }
 
-/** An export of text published beside a render: the text when nothing was written, else
- *  where it went (`path` project-relative, `output` absolute); and what to know about it. */
-interface Exported { sequence: string; warnings: string[]; path?: string; output?: string }
-export interface SubtitlesExport extends Exported { srt?: string; cues: number; entries: string[] }
-export interface ChaptersExport extends Exported { text?: string; chapters: { start: number; at: string; title: string; clip?: string }[] }
+/** An export of text published beside a render: the `text` when nothing was written, else
+ *  the `path` it went to (project-relative when inside the project); and what to know about it. */
+interface Exported { sequence: string; warnings: string[]; text?: string; path?: string }
+export interface SubtitlesExport extends Exported { cues: number; entries: string[] }
+export interface ChaptersExport extends Exported { chapters: { start: number; at: string; title: string; clip?: string }[] }
+
+/** What every library route answers. */
+export interface Libraries { libraries: LibraryInfo[]; blueprints: BlueprintInfo[] }
 
 export const api = {
   project: () => json<Project>("/api/project"),
@@ -46,22 +49,20 @@ export const api = {
   sequence: () => json<SequenceState>("/api/sequence"),
   openSequence: (sequence: string) =>
     json<{ current: string }>("/api/sequence", { method: "POST", body: JSON.stringify({ sequence }) }),
-  blueprints: () => json<BlueprintInfo[]>("/api/blueprints"),
   fonts: () => json<FontFamily[]>("/api/fonts"),
   /** Copy a font file (relative to the project, or absolute) into the project's `fonts/`,
    *  or the user library's when `shared`. */
   addFont: (path: string, shared: boolean) =>
     json<{ family: string; origin: string; path: string }>("/api/fonts", { method: "POST", body: JSON.stringify({ path, shared }) }),
-  /** Rescan the libraries for blueprints. */
-  reloadBlueprints: () => json<BlueprintInfo[]>("/api/blueprints", { method: "POST", body: "{}" }),
   /** None from a daemon older than the route: its blueprints are then shown unfoldered. */
-  libraries: () => json<LibraryInfo[]>("/api/libraries").catch(() => [] as LibraryInfo[]),
+  /** The libraries read and their blueprints, from one read. */
+  libraries: () => json<Libraries>("/api/libraries"),
+  /** Read the libraries again, the list of added ones included. */
+  rescanLibraries: () => json<Libraries>("/api/libraries/rescan", { method: "POST", body: "{}" }),
   /** Read a library folder in every project on this machine. Nothing is copied. */
-  addLibrary: (path: string) =>
-    json<{ path: string; added: boolean; libraries: LibraryInfo[]; blueprints: BlueprintInfo[] }>("/api/libraries", { method: "POST", body: JSON.stringify({ path }) }),
+  addLibrary: (path: string) => json<Libraries & { path: string; added: boolean }>("/api/libraries", { method: "POST", body: JSON.stringify({ path }) }),
   /** Stop reading an added library; its folder is left alone. */
-  removeLibrary: (path: string) =>
-    json<{ libraries: LibraryInfo[]; blueprints: BlueprintInfo[] }>("/api/libraries/remove", { method: "POST", body: JSON.stringify({ path }) }),
+  removeLibrary: (path: string) => json<Libraries>("/api/libraries/remove", { method: "POST", body: JSON.stringify({ path }) }),
   /** Copy a blueprint into `overlays/`; not an edit. Returns the folder. */
   copyBlueprint: (id: string, folder?: string) =>
     json<{ overlay: string }>(`/api/blueprints/${encodeURIComponent(id)}/copy`, { method: "POST", body: JSON.stringify({ folder }) }),

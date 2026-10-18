@@ -909,13 +909,28 @@ pub fn compile_project(state: &AppState, project: &Project, opts: &CompileOption
 /// `compile_project` because the preview compiles first and only writes when the result
 /// differs from what the engine already holds.
 pub fn write_compiled(state: &AppState, xml: &str, name: &str) -> anyhow::Result<PathBuf> {
-    let dir = state.config.cache_dir();
-    std::fs::create_dir_all(&dir)?;
-    let path = dir.join(format!("{name}.mlt"));
-    let tmp = tempfile::Builder::new().prefix(name).suffix(".mlt.tmp").tempfile_in(&dir)?;
-    std::fs::write(tmp.path(), xml)?;
-    tmp.persist(&path)?;
+    let path = state.config.cache_dir().join(format!("{name}.mlt"));
+    write_atomic(&path, xml.as_bytes())?;
     Ok(path)
+}
+
+/// Write `bytes` to `path`, whole or not at all: into a `.tmp-…` scratch file beside it
+/// (`is_in_flight`), then renamed, so a reader never sees half a file.
+pub fn write_atomic(path: &Path, bytes: &[u8]) -> anyhow::Result<()> {
+    let dir = path.parent().unwrap_or(Path::new("."));
+    std::fs::create_dir_all(dir)?;
+    let tmp = tempfile::Builder::new().prefix(".tmp-").tempfile_in(dir)?;
+    std::fs::write(tmp.path(), bytes)?;
+    tmp.persist(path).map_err(|e| anyhow::anyhow!("cannot write {}: {e}", path.display()))?;
+    Ok(())
+}
+
+/// What a render or an export of `sequence` is named after when no output is asked for:
+/// `renders/<project>`, then `-<sequence>` unless it is the master. Each adds its suffix.
+pub fn output_stem(project: &Project, sequence: &str) -> String {
+    let name = if project.name.is_empty() { "kuma" } else { project.name.as_str() };
+    let part = if sequence == project.master { String::new() } else { format!("-{sequence}") };
+    format!("renders/{name}{part}")
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -963,11 +978,7 @@ pub fn render_target(state: &AppState, req: &RenderRequest) -> anyhow::Result<(S
     kuma_mlt::presets::available(preset).map_err(|why| anyhow::anyhow!("preset `{}` cannot run on this machine: {why}", preset.id))?;
     preset.check(&req.tuning()).map_err(|e| anyhow::anyhow!(e))?;
     let sequence = project.sequence_or_master(req.sequence.as_deref()).map_err(|e| anyhow::anyhow!(e))?.clone();
-    let output = req.output.clone().unwrap_or_else(|| {
-        let name = if project.name.is_empty() { "kuma" } else { project.name.as_str() };
-        let part = if sequence == project.master { String::new() } else { format!("-{sequence}") };
-        PathBuf::from("renders").join(format!("{name}{part}-{}.{}", preset.id, preset.extension))
-    });
+    let output = req.output.clone().unwrap_or_else(|| PathBuf::from(format!("{}-{}.{}", output_stem(&project, &sequence), preset.id, preset.extension)));
     let output = if output.is_absolute() { output } else { state.config.project_root().join(output) };
     Ok((sequence, preset, output))
 }

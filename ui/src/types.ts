@@ -200,7 +200,7 @@ export interface FontFamily {
 export interface BlueprintInfo { id: string; library: string; manifest: OverlayManifest }
 /** A library the daemon reads (`GET /api/libraries`), lowest precedence first: the user's
  *  own, the starter set standing in for it, those added to it, then `KUMA_LIBRARY`'s. */
-export interface LibraryInfo { path: string; name: string; source: "user" | "starter" | "added" | "env"; blueprints: number; missing: boolean }
+export interface LibraryInfo { path: string; name: string; source: "user" | "starter" | "added" | "env"; missing: boolean }
 /** An overlay folder the bin uses: its manifest, or why it will not load. */
 export interface OverlayInfo { manifest?: OverlayManifest; error?: string }
 

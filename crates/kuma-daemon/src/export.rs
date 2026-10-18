@@ -15,7 +15,7 @@
 //! chapters: they are a person's comments on the cut, and would publish review notes.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use kuma_core::{BinSource, Clip, OverlayManifest, Project, VarType};
 use serde::{Deserialize, Serialize};
@@ -123,10 +123,11 @@ impl Captions {
         }
         // A line stays up until the next one starts when the pause between them is short,
         // so the text never blinks between words; and nothing is drawn outside the clip.
-        let starts: Vec<f64> = lines.iter().map(|l| l.start).skip(1).collect();
-        for (l, next) in lines.iter_mut().zip(starts.iter().map(Some).chain([None])) {
+        for i in 0..lines.len() {
+            let next = lines.get(i + 1).map(|n| n.start);
+            let l = &mut lines[i];
             let end = match next {
-                Some(&n) if hold && n - l.end < LINE_GAP => n,
+                Some(n) if hold && n - l.end < LINE_GAP => n,
                 _ => l.end,
             };
             l.start = l.start.max(0.0);
@@ -138,12 +139,11 @@ impl Captions {
 }
 
 /// One line of subtitles, in whatever time it is given in.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Line {
     pub start: f64,
     pub end: f64,
     pub text: String,
-    #[serde(skip)]
     words: usize,
 }
 
@@ -217,8 +217,8 @@ fn walk<'p>(p: &'p Project, seq: &'p str, map: (f64, f64), window: (f64, f64), h
                 // `end − t / |speed|`; an overlay has no `in`.
                 Some((_, item)) if item.is_overlay() => {
                     let s = c.speed;
-                    let (scale, shift) = if s > 0.0 { (a / s, a * c.start + b) } else { (a / s, a * c.end + b) };
-                    out.push(Placement { clip: c, scale, shift, from, to, duration: c.duration() * s.abs(), hidden });
+                    let shift = a * if s > 0.0 { c.start } else { c.end } + b;
+                    out.push(Placement { clip: c, scale: a / s, shift, from, to, duration: c.duration() * s.abs(), hidden });
                 }
                 _ => {}
             }
@@ -346,38 +346,19 @@ pub fn youtube_chapters(sections: &[Section], duration: f64) -> (String, Vec<Cha
     (text, chapters, warnings)
 }
 
-/// Where an export with no `output` is written: beside the renders, named as they are.
-fn default_output(project: &Project, sequence: &str, suffix: &str) -> PathBuf {
-    let name = if project.name.is_empty() { "kuma" } else { project.name.as_str() };
-    let part = if sequence == project.master { String::new() } else { format!("-{sequence}") };
-    PathBuf::from("renders").join(format!("{name}{part}{suffix}"))
-}
-
-/// Write `text` where `to` says, if it says to: the absolute path written, or `None` when
-/// the text is the answer. Replaced whole, so a reader never sees half a file.
-fn write_out(state: &AppState, to: &Output, default: PathBuf, text: &str) -> anyhow::Result<Option<PathBuf>> {
+/// The answer for an export: the `text` when it is not to be written, else written — at
+/// `output`, or beside the renders and named as they are (`suffix`) — and its `path`
+/// (relative to the project when inside it). Replaced whole, so a reader never sees half a file.
+fn answer(state: &AppState, mut out: Value, to: &Output, project: &Project, sequence: &str, suffix: &str, text: String) -> anyhow::Result<Value> {
     if !to.write && to.output.is_none() {
-        return Ok(None);
+        out["text"] = json!(text);
+        return Ok(out);
     }
+    let default = PathBuf::from(format!("{}{suffix}", crate::jobs::output_stem(project, sequence)));
     let path = crate::jobs::resolve_path(state, to.output.as_deref().unwrap_or(&default));
-    let dir = path.parent().unwrap_or(Path::new("."));
-    std::fs::create_dir_all(dir)?;
-    let tmp = tempfile::Builder::new().prefix(".tmp-export-").tempfile_in(dir)?;
-    std::fs::write(tmp.path(), text)?;
-    tmp.persist(&path).map_err(|e| anyhow::anyhow!("cannot write {}: {e}", path.display()))?;
-    Ok(Some(path))
-}
-
-/// The answer for an export: the text when nothing was written, else where it went.
-fn answer(state: &AppState, mut out: Value, key: &str, text: String, written: Option<PathBuf>) -> Value {
-    match written {
-        Some(path) => {
-            out["path"] = json!(crate::jobs::project_relative(state, &path));
-            out["output"] = json!(path);
-        }
-        None => out[key] = json!(text),
-    }
-    out
+    crate::jobs::write_atomic(&path, text.as_bytes())?;
+    out["path"] = json!(crate::jobs::project_relative(state, &path));
+    Ok(out)
 }
 
 /// Export `req.sequence`'s subtitles (the master's by default) as SRT: returned, or
@@ -433,9 +414,13 @@ pub fn subtitles(state: &AppState, req: &SubtitlesRequest) -> anyhow::Result<Val
     if cues == 0 && warnings.is_empty() {
         warnings.push(format!("`{sequence}` shows no subtitles: transcribe a clip, or place a subtitles entry on it"));
     }
-    let written = write_out(state, &req.to, default_output(&project, &sequence, ".srt"), &text)?;
-    let out = json!({ "sequence": sequence, "cues": cues, "entries": reached, "warnings": warnings });
-    Ok(answer(state, out, "srt", text, written))
+    let mut out = json!({ "sequence": sequence, "cues": cues, "entries": reached, "warnings": warnings });
+    // An empty SRT is never worth a file: the answer says why there is none instead.
+    if cues == 0 {
+        out["text"] = json!(text);
+        return Ok(out);
+    }
+    answer(state, out, &req.to, &project, &sequence, ".srt", text)
 }
 
 /// Two entries' subtitles on screen at once — two languages, or a transcript placed twice —
@@ -469,9 +454,8 @@ pub fn chapters(state: &AppState, req: &ChaptersRequest) -> anyhow::Result<Value
     if chapters.is_empty() {
         warnings.push(format!("`{sequence}` places no sequence, so it has no chapters: put each part of the video in a sequence of its own and place those on it"));
     }
-    let written = write_out(state, &req.to, default_output(&project, &sequence, "-chapters.txt"), &text)?;
     let out = json!({ "sequence": sequence, "chapters": chapters, "warnings": warnings });
-    Ok(answer(state, out, "text", text, written))
+    answer(state, out, &req.to, &project, &sequence, "-chapters.txt", text)
 }
 
 #[cfg(test)]

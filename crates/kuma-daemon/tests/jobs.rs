@@ -6,7 +6,7 @@ use std::sync::{mpsc, Arc};
 use std::time::{Duration, Instant};
 
 use kuma_daemon::jobs::{self, CancelError, Job, JobState, RenderRequest};
-use kuma_daemon::{AppState, Config};
+use kuma_daemon::{AppState, Config, Libraries};
 
 const PROJECT: &str = r##"{
   "version": 1, "name": "t", "master": "main",
@@ -28,7 +28,7 @@ fn fixture() -> (Arc<AppState>, tempfile::TempDir) {
     let config = Config {
         project_file,
         repo_root: std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."),
-        library_dirs: vec![dir.path().join("library")],
+        libraries: Libraries::new(dir.path().join("library")),
         bind: "127.0.0.1:0".parse().unwrap(),
     };
     (Arc::new(AppState::load(config).unwrap()), dir)

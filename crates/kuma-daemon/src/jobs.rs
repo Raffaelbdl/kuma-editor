@@ -632,9 +632,9 @@ impl From<OverlayScope> for bool {
 /// hundred scenes bakes the overlays of the scene it shows and not the other ninety-nine.
 ///
 /// Reachability matters: a bin full of unplaced sequences must cost neither a bake on
-/// every preview reload nor a browser run on every render. A *hidden* track does not:
-/// the compiler still emits its clips (hiding is per track, on the tractor), so skipping
-/// their bakes would make a render fail with "overlay clip has no bake".
+/// every preview reload nor a browser run on every render. So does what a track gives: a
+/// hidden overlay track is left out of the graph, by the same rule the compiler applies
+/// (`Project::track_streams`), so its clips need no bake.
 fn overlay_clips(project: &Project, root: &str, nested_only: bool, within: Option<&[f64]>) -> Vec<String> {
     let order = project.compile_order(root).unwrap_or_default();
     let fps = project.fps;
@@ -670,7 +670,13 @@ fn overlay_clips(project: &Project, root: &str, nested_only: bool, within: Optio
         .iter()
         .filter(|id| !(nested_only && id.as_str() == root))
         .filter_map(|id| Some((shown.get(id.as_str())?, project.seq(id)?)))
-        .flat_map(|(mine, s)| s.clips().map(move |c| (mine, c)))
+        .flat_map(|(mine, s)| {
+            let compiled = |t: &&kuma_core::Track| {
+                let (picture, sound) = project.track_streams(t, kuma_core::Streams::Both);
+                picture || sound
+            };
+            s.tracks.iter().filter(compiled).flat_map(move |t| t.clips.iter().map(move |c| (mine, c)))
+        })
         .filter(|(mine, c)| {
             mine.as_ref().is_none_or(|frames| {
                 let f = fps.clip_frames(c.start, c.end);
@@ -1840,8 +1846,8 @@ mod tests {
     /// The preview bakes the overlays it cannot drive and nothing else. Its own are live
     /// DOM (baking them too would draw every overlay twice), and a sequence sitting
     /// unplaced in the bin must cost neither a bake on every reload nor a browser run on
-    /// every render, just for being there. A hidden track's overlays *are* baked: the
-    /// compiler still emits them, so skipping those made renders fail.
+    /// every render, just for being there; nor must a hidden overlay track, which the
+    /// compiler leaves out (`Project::track_streams`, the one rule both follow).
     #[test]
     fn a_preview_bakes_the_overlays_it_nests_and_no_others() {
         let p: Project = serde_json::from_value(json!({
@@ -1859,15 +1865,13 @@ mod tests {
             }
         }))
         .unwrap();
-        // A hidden track is still compiled — hiding happens per track on the tractor — so
-        // its overlays still need bakes, or a render fails with "overlay clip has no bake".
-        assert_eq!(overlay_clips(&p, "main", true, None), vec!["o_nested", "o_hidden"]);
+        assert_eq!(overlay_clips(&p, "main", true, None), vec!["o_nested"]);
         // Open the inner sequence and the same overlays become live DOM instead.
         assert!(overlay_clips(&p, "inner", true, None).is_empty());
         // A render of the master wants its own overlay as well — but still nothing from
         // the sequence nobody placed, which would be a headless browser run for nothing.
         // Innermost first, the order `compile_order` walks in.
-        assert_eq!(overlay_clips(&p, "main", false, None), vec!["o_nested", "o_hidden", "o_own"]);
+        assert_eq!(overlay_clips(&p, "main", false, None), vec!["o_nested", "o_own"]);
     }
 
     /// Sampling one frame must not bake every overlay on the timeline, on the sequence

@@ -170,7 +170,9 @@ or no hyperframes installed at all, costs that one overlay in the preview and ne
 preview itself, which was free before. And the baked set is narrowed to the sequences the
 open one actually reaches, so a bin full of unplaced sequences does not buy a bake on every
 reload. Narrowing it by *visibility* as well was tried and was a mistake — see "What broke"
-above: the compiler emits a hidden track's clips, so skipping their bakes broke renders.
+above: the compiler then emitted a hidden track's clips, so skipping their bakes broke
+renders. Both now follow one rule (*A track that gives nothing is left out*, under MLT
+compiler).
 
 The UI's engine key had to follow: overlay bin entries and overlay tracks used to be
 stripped from it wholesale, on the grounds that no overlay could change the engine's
@@ -576,6 +578,17 @@ Putting the clip's source in-point on the producer element clamps its playtime, 
 trimmed clip played its first frame and froze for the rest of its length. This was the
 showstopper of the review. The cut belongs to `<entry in out>` alone.
 *Lands in `crates/kuma-mlt/src/compile.rs`: `emit_clip_producer`.*
+
+**A track that gives nothing is left out of the graph** — adopted. A hidden track's picture
+and a muted track's sound were hidden on the tractor (`hide="both"`), its clips still
+compiled, so a hidden subtitles track — how captions reach the SRT without being burned in
+— baked every frame of a long video for a picture nobody sees. Now a track contributes its
+picture unless hidden and its sound unless muted (`Project::track_streams`), and one that
+gives neither is not compiled, as the half graphs already did. A hidden track with sound
+keeps its sound (`hide="video"`). The daemon's bake set reads the same function, so the
+compiler and the daemon cannot disagree again (see "What broke" under *Nested sequences*).
+Not done: a sequence placed only on a left-out track is still compiled, and its overlays
+baked — a cost, not a failure.
 
 **The golden MLT file is the regression oracle** — adopted.
 `tests/fixtures/reference.mlt` is regenerated with `UPDATE_GOLDEN=1` and the diff is read

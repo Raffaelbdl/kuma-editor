@@ -355,12 +355,11 @@ fn compile_track(ctx: &Ctx, track: &Track, total: i64, w: &mut XmlWriter) -> Res
     let fps = ctx.fps;
     let tid = &track.id;
     let streams = ctx.opts.streams;
-    // What this track contributes to the graph being compiled. A half graph leaves out a
-    // track with nothing for it (every overlay track, in the sound's); the full graph keeps
-    // it, hidden. For a sequence clip the audio question costs a walk of what it nests.
-    let has_video = track.kind != TrackKind::Audio && !track.hidden && streams.video();
-    let has_audio = streams.audio() && ctx.project.track_has_audio(track);
-    if streams != Streams::Both && !has_video && !has_audio {
+    // What this track contributes to the graph being compiled; one that gives nothing (a
+    // hidden overlay track, every overlay track in the sound's half) is left out. For a
+    // sequence clip the audio question costs a walk of what it nests.
+    let (has_video, has_audio) = ctx.project.track_streams(track, streams);
+    if !has_video && !has_audio {
         return Ok(None);
     }
 
@@ -514,8 +513,7 @@ fn compile_track(ctx: &Ctx, track: &Track, total: i64, w: &mut XmlWriter) -> Res
     };
 
     let hide = match (has_video, has_audio) {
-        (false, false) => Some("both"),
-        (false, true) => Some("video"),
+        (false, _) => Some("video"),
         (true, false) => Some("audio"),
         (true, true) => None,
     };

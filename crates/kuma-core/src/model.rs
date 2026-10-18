@@ -266,6 +266,14 @@ impl Project {
         !track.muted && track.clips.iter().any(|c| self.clip_has_audio(c))
     }
 
+    /// What `track` gives a graph of `streams`: its picture (not when hidden) and its sound
+    /// (not when muted). A track that gives neither is left out of the graph — so a hidden
+    /// overlay track is neither composited nor baked — and the bake set follows this, so the
+    /// compiler and the daemon cannot disagree on which overlays need a bake.
+    pub fn track_streams(&self, track: &Track, streams: Streams) -> (bool, bool) {
+        (track.kind != TrackKind::Audio && !track.hidden && streams.video(), streams.audio() && self.track_has_audio(track))
+    }
+
     /// Whether a sequence carries any audible sound, following nested sequences. Cycle-safe.
     pub fn seq_has_audio(&self, id: &str) -> bool {
         fn walk<'a>(p: &'a Project, id: &'a str, seen: &mut HashSet<&'a str>) -> bool {

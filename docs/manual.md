@@ -128,6 +128,23 @@ kuma library                                 # copies library/{blueprints,preset
 kuma thumbs                                  # a still and a moving preview (animated WebP, alpha) per blueprint
 ```
 
+A library of your own — a series' house blueprints, kept wherever you keep the series — is
+**added**, not copied: the folder button in the Blueprints panel, or
+
+```
+kuma library add /path/to/my-library         # a folder holding blueprints/, presets/, fonts/, design-systems/ (any of them)
+kuma library list                            # every library read, lowest precedence first, and where each comes from
+kuma library remove /path/to/my-library      # stop reading it; nothing is deleted
+```
+
+The list is `libraries.json` in the user library, so every project and every daemon on the
+machine reads it (a running one on its next rescan, the ↻ in the panel; the panel's own add
+is read at once). Added libraries come after the user library (or the starter set standing
+in for it) and before `KUMA_LIBRARY`'s. Each library's `blueprints/_vendor/` adds its files
+to every other's, name by name, so a library ships only its own helpers and never a copy of
+kuma's. The Blueprints panel shows a folder per library; right-click one to copy its path or
+stop reading it. Using one of its blueprints copies it into the project as from any library.
+
 A project is a directory with `<name>.kuma.json` and your media:
 
 ```

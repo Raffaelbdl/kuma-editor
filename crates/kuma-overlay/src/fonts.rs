@@ -366,6 +366,11 @@ impl FontLibrary {
         FontLibrary { dirs, cache: Arc::default() }
     }
 
+    /// These folders instead, keeping what has been parsed.
+    pub fn with_dirs(&self, dirs: Vec<(PathBuf, Origin)>) -> Self {
+        FontLibrary { dirs, cache: self.cache.clone() }
+    }
+
     /// A font file anywhere, web fonts included (what an overlay's own `@font-face` rules
     /// point at), from its stamp and the cache or, when it changed, read afresh. `None`
     /// when it is not a font kuma can read. The lock is never held while reading a file.

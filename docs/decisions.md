@@ -645,8 +645,25 @@ overlay whose layers are the ones it had keeps its key, and adding a library wit
 `_vendor/` re-bakes every overlay once, since any of them could reach the new files.
 `vendor_shadowed` compares a project copy with the first library that has the name.
 
-**Named vaults** — deferred. A shared set of blueprints for a series of videos, e.g.
-`<library>/vaults/<name>/`, chosen per project. `KUMA_LIBRARY` is a crude version today.
+**Libraries are added, for the user, not imported into a project** — adopted. A channel's
+house blueprints live beside its videos (an external drive, a folder of its own with its
+`_vendor/`, presets, fonts and design system), and the only way to read them was
+`KUMA_LIBRARY`, set in every shell, app launch and `.mcp.json`, which also stopped the
+starter set standing in. Now `kuma library add <dir>` or the Blueprints panel's folder button
+lists the folder in `libraries.json` in the user library, and every daemon reads it after
+the user library and before `KUMA_LIBRARY`'s; the panel shows one folder per library.
+Rejected: **importing a library into a project**, copying every blueprint in — the project
+would carry dozens of overlays it never uses, and blueprints are already copied one by one
+when used, which is what keeps a finished video from being re-styled. Rejected: **a
+per-project list in the document** — an absolute path to someone's drive in a file meant to
+be portable, and a format change for what is a machine setting. The list lives in the user
+library rather than `$XDG_CONFIG_HOME` so a test (or a second user library) that names its
+own library dir reads none of the real ones. Changing it is not an edit and is not undone;
+a daemon re-reads it at every rescan, and the baker's `_vendor/` layers and fonts follow
+(`Baker::set_library`), so a library added from the panel is live at once.
+
+**Named vaults** — partly superseded by added libraries, above. What is left: choosing a
+set per project rather than for the whole machine.
 
 **Blueprints and presets live outside the codebase** — adopted. kuma reads
 `$XDG_DATA_HOME/kuma`, then every `KUMA_LIBRARY` directory, later winning; presets also

@@ -20,8 +20,10 @@ pub struct Config {
     pub project_file: PathBuf,
     /// Repository root: `node_modules/hyperframes`, `ui/dist`, `engine/build`.
     pub repo_root: PathBuf,
-    /// Asset libraries (each holds `blueprints/` and `presets/`), lowest precedence first.
-    /// The project's own `presets/` is searched last; its `overlays/` is never a library.
+    /// Asset libraries (each holds `blueprints/` and `presets/`), lowest precedence first:
+    /// the user library, the starter set standing in for it, then `KUMA_LIBRARY`'s. The
+    /// libraries added to the user library join them (`Config::libraries`). The project's
+    /// own `presets/` is searched last; its `overlays/` is never a library.
     pub library_dirs: Vec<PathBuf>,
     pub bind: SocketAddr,
 }
@@ -51,9 +53,40 @@ impl Config {
     pub fn thumb_owner(file_name: &str) -> &str {
         file_name.split('.').next().unwrap_or_default()
     }
+    /// Every library read, lowest precedence first: the user library and the starter set
+    /// standing in for it, the libraries added to the user library (`added_libraries`),
+    /// then `KUMA_LIBRARY`'s. Read afresh each time, so a library added by another daemon
+    /// or by `kuma library add` is here on the next rescan.
+    pub fn libraries(&self) -> Vec<PathBuf> {
+        let mut dirs = self.library_dirs.clone();
+        let Some(user) = dirs.first().cloned() else { return dirs };
+        let starter = self.repo_root.join("library");
+        let at = 1 + usize::from(dirs.get(1) == Some(&starter));
+        let added: Vec<PathBuf> = added_libraries(&user).into_iter().filter(|d| !dirs.contains(d)).collect();
+        dirs.splice(at.min(dirs.len())..at.min(dirs.len()), added);
+        dirs
+    }
+    /// `libraries`, each with where it comes from.
+    pub fn library_sources(&self) -> Vec<(PathBuf, LibrarySource)> {
+        let user = &self.library_dirs[0];
+        let added = added_libraries(user);
+        let starter = self.repo_root.join("library");
+        self.libraries()
+            .into_iter()
+            .map(|path| {
+                let source = match () {
+                    _ if &path == user => LibrarySource::User,
+                    _ if added.contains(&path) => LibrarySource::Added,
+                    _ if path == starter => LibrarySource::Starter,
+                    _ => LibrarySource::Env,
+                };
+                (path, source)
+            })
+            .collect()
+    }
     /// Every library's `blueprints/`, lowest precedence first. Never a project's.
     pub fn blueprint_dirs(&self) -> Vec<PathBuf> {
-        self.library_dirs.iter().map(|d| d.join("blueprints")).collect()
+        self.libraries().iter().map(|d| d.join("blueprints")).collect()
     }
     /// Every library's shared `_vendor/`, highest precedence first, each consulted file by
     /// file (`Baker::vendor_layers`): one library's helpers never hide another's. Project
@@ -70,7 +103,7 @@ impl Config {
     /// opened.
     pub fn font_dirs(&self) -> Vec<(PathBuf, kuma_overlay::Origin)> {
         use kuma_overlay::Origin;
-        self.library_dirs.iter().map(|d| (d.join("fonts"), Origin::Library)).chain([(self.project_font_dir(), Origin::Project)]).collect()
+        self.libraries().iter().map(|d| (d.join("fonts"), Origin::Library)).chain([(self.project_font_dir(), Origin::Project)]).collect()
     }
     /// The project's own fonts.
     pub fn project_font_dir(&self) -> PathBuf {
@@ -86,13 +119,13 @@ impl Config {
     }
     /// Every library's `presets/` plus the project's own, lowest precedence first.
     pub fn all_preset_dirs(&self) -> Vec<PathBuf> {
-        self.library_dirs.iter().map(|d| d.join("presets")).chain([self.project_root().join("presets")]).collect()
+        self.libraries().iter().map(|d| d.join("presets")).chain([self.project_root().join("presets")]).collect()
     }
     /// Where installed design systems are looked for. Unlike blueprints and presets these
     /// are not read at runtime: one is **copied into the project** and the agent reads it
     /// there, so the project is the destination rather than the last search path entry.
     pub fn design_system_dirs(&self) -> Vec<PathBuf> {
-        self.library_dirs.iter().map(|d| d.join("design-systems")).collect()
+        self.libraries().iter().map(|d| d.join("design-systems")).collect()
     }
     /// The design system this project carries, if it has been given one.
     pub fn project_design_system(&self) -> Option<PathBuf> {
@@ -171,15 +204,131 @@ pub fn library_dirs(repo_root: &Path) -> Vec<PathBuf> {
     with_starter_set(default_library_dirs(), std::env::var_os("KUMA_LIBRARY").is_some(), repo_root)
 }
 
-/// `dirs` (the user library first), and the checkout's `library/` after them when nothing
-/// else was asked for and the user library has no blueprints.
+/// `dirs` (the user library first), and the checkout's `library/` right after the user
+/// library, which it stands in for, when nothing else was asked for and the user library
+/// has no blueprints. Libraries added to the user library do not count: they are someone's
+/// own blueprints beside kuma's, which still need kuma's titles and runtime.
 fn with_starter_set(mut dirs: Vec<PathBuf>, asked: bool, repo_root: &Path) -> Vec<PathBuf> {
     let installed = std::fs::read_dir(dirs[0].join("blueprints")).is_ok_and(|mut d| d.next().is_some());
     let shipped = repo_root.join("library");
     if !asked && !installed && shipped.join("blueprints").is_dir() {
-        dirs.push(shipped);
+        dirs.insert(1, shipped);
     }
     dirs
+}
+
+/// Where the user library lists the libraries added to it: `libraries.json`,
+/// `{ "libraries": ["/abs/path", …] }`, lowest precedence first. It lives in the user library
+/// so every daemon on the machine reads the same list, whoever started it.
+pub fn added_libraries_file(user: &Path) -> PathBuf {
+    user.join("libraries.json")
+}
+
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct AddedLibraries {
+    libraries: Vec<PathBuf>,
+}
+
+/// The libraries added to the user library `user`, as listed; none when there is no list,
+/// and none, with a warning, when it does not parse.
+pub fn added_libraries(user: &Path) -> Vec<PathBuf> {
+    let file = added_libraries_file(user);
+    let Ok(text) = std::fs::read_to_string(&file) else { return Vec::new() };
+    match serde_json::from_str::<AddedLibraries>(&text) {
+        Ok(l) => l.libraries,
+        Err(e) => {
+            tracing::warn!("{} is not a library list, so no added library is read: {e}", file.display());
+            Vec::new()
+        }
+    }
+}
+
+fn write_added_libraries(user: &Path, libraries: Vec<PathBuf>) -> anyhow::Result<()> {
+    let file = added_libraries_file(user);
+    std::fs::create_dir_all(user)?;
+    let tmp = file.with_extension("json.tmp");
+    std::fs::write(&tmp, serde_json::to_string_pretty(&AddedLibraries { libraries })? + "\n")?;
+    std::fs::rename(&tmp, &file)?;
+    Ok(())
+}
+
+/// What a library holds, by folder: anything else is not one.
+pub const LIBRARY_KINDS: [&str; 4] = ["blueprints", "presets", "fonts", "design-systems"];
+
+/// Add `dir` to the libraries the user library `user` lists, last, so it wins over the ones
+/// added before it. Its `blueprints/` folder names the library too. Answers with the folder
+/// as it is listed (absolute), and whether it was new.
+pub fn add_library(user: &Path, dir: &Path) -> anyhow::Result<(PathBuf, bool)> {
+    let mut dir = dir.canonicalize().map_err(|e| anyhow::anyhow!("cannot open {}: {e}", dir.display()))?;
+    anyhow::ensure!(dir.is_dir(), "{} is not a folder", dir.display());
+    if dir.file_name().is_some_and(|n| n == "blueprints") && !LIBRARY_KINDS.iter().any(|k| dir.join(k).is_dir()) {
+        dir.pop();
+    }
+    anyhow::ensure!(
+        LIBRARY_KINDS.iter().any(|k| dir.join(k).is_dir()),
+        "{} is not a kuma library: it has none of {}/",
+        dir.display(),
+        LIBRARY_KINDS.join("/, ")
+    );
+    anyhow::ensure!(user.canonicalize().ok().as_ref() != Some(&dir), "{} is your own library, which is always read", dir.display());
+    let mut listed = added_libraries(user);
+    if listed.contains(&dir) {
+        return Ok((dir, false));
+    }
+    listed.push(dir.clone());
+    write_added_libraries(user, listed)?;
+    Ok((dir, true))
+}
+
+/// Take `dir` off the list. Nothing in it is touched, and nothing a project copied from it.
+pub fn remove_library(user: &Path, dir: &Path) -> anyhow::Result<bool> {
+    let mut listed = added_libraries(user);
+    let before = listed.len();
+    let canonical = dir.canonicalize().ok();
+    listed.retain(|d| d != dir && Some(d) != canonical.as_ref());
+    if listed.len() == before {
+        return Ok(false);
+    }
+    write_added_libraries(user, listed)?;
+    Ok(true)
+}
+
+/// Where a library on the search path comes from, which says whether it can be taken off.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LibrarySource {
+    /// The user library (`~/.local/share/kuma`), where saved blueprints and shared fonts go.
+    User,
+    /// The checkout's starter set, read while the user library has no blueprints.
+    Starter,
+    /// Added to the user library's list (`kuma library add`, the Blueprints panel).
+    Added,
+    /// Named by `KUMA_LIBRARY`.
+    Env,
+}
+
+impl LibrarySource {
+    /// What a library is called where it is listed: its folder's name, or what it is.
+    pub fn name(self, path: &Path) -> String {
+        match self {
+            LibrarySource::User => "My library".into(),
+            LibrarySource::Starter => "Starter set".into(),
+            _ => path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| path.display().to_string()),
+        }
+    }
+}
+
+/// A library as the Blueprints panel lists it.
+#[derive(Debug, Serialize)]
+pub struct LibraryInfo {
+    pub path: PathBuf,
+    /// Its folder's name, or what it is for the user library and the starter set.
+    pub name: String,
+    pub source: LibrarySource,
+    /// Blueprints that come from it: one another library shadows by name is not counted.
+    pub blueprints: usize,
+    /// Listed, but not there (a drive not mounted): read as empty until it is.
+    pub missing: bool,
 }
 
 /// Events pushed to WebSocket subscribers.
@@ -286,7 +435,14 @@ impl Edited {
 #[derive(Debug, Serialize)]
 pub struct BlueprintInfo {
     pub id: String,
+    /// The library it comes from (`LibraryInfo::path`).
+    pub library: PathBuf,
     pub manifest: OverlayManifest,
+}
+
+/// The library a blueprint folder (`<library>/blueprints/<id>`) belongs to.
+fn library_of(blueprint: &Path) -> PathBuf {
+    blueprint.parent().and_then(Path::parent).map(Path::to_path_buf).unwrap_or_default()
 }
 
 /// Locks guard data that is only ever swapped whole, so a panic while holding one leaves
@@ -347,6 +503,8 @@ impl AppState {
 
     /// Later libraries win on an id clash.
     pub fn reload_blueprints(&self) {
+        // The libraries may have changed since the last scan: the baker follows them.
+        self.baker.set_library(self.config.vendor_dirs(), self.config.font_dirs());
         let mut all = BTreeMap::new();
         let mut errors = Vec::new();
         for dir in self.config.blueprint_dirs() {
@@ -373,7 +531,20 @@ impl AppState {
         read(&self.blueprints)
             .loaded
             .iter()
-            .map(|(id, (_, m))| BlueprintInfo { id: id.clone(), manifest: m.clone() })
+            .map(|(id, (dir, m))| BlueprintInfo { id: id.clone(), library: library_of(dir), manifest: m.clone() })
+            .collect()
+    }
+
+    /// The libraries read, highest precedence last, with how many blueprints each gives.
+    pub fn library_infos(&self) -> Vec<LibraryInfo> {
+        let loaded = read(&self.blueprints);
+        self.config
+            .library_sources()
+            .into_iter()
+            .map(|(path, source)| {
+                let blueprints = loaded.loaded.values().filter(|(dir, _)| library_of(dir) == path).count();
+                LibraryInfo { missing: !path.is_dir(), name: source.name(&path), path, source, blueprints }
+            })
             .collect()
     }
 
@@ -697,6 +868,34 @@ mod tests {
         std::fs::create_dir_all(user.join("blueprints/mine")).unwrap();
         assert_eq!(dirs(&repo, false), alone, "the user's own library");
         assert_eq!(dirs(&tmp.path().join("elsewhere"), false), alone, "no checkout, nothing to fall back on");
+    }
+
+    /// An added library sits after the user library and the starter set standing in for
+    /// it, before `KUMA_LIBRARY`'s; a folder with nothing of a library's in it is refused.
+    #[test]
+    fn added_libraries_come_after_the_user_library() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (user, repo, env) = (tmp.path().join("user"), tmp.path().to_path_buf(), tmp.path().join("env"));
+        let house = tmp.path().join("house");
+        std::fs::create_dir_all(house.join("presets")).unwrap();
+        std::fs::create_dir_all(tmp.path().join("empty")).unwrap();
+        assert!(add_library(&user, &tmp.path().join("empty")).is_err());
+        assert!(add_library(&user, &tmp.path().join("nowhere")).is_err());
+        let (dir, added) = add_library(&user, &house).unwrap();
+        assert!(added && dir == house.canonicalize().unwrap());
+        assert!(!add_library(&user, &house).unwrap().1, "once");
+
+        let starter = repo.join("library");
+        let cfg = |dirs: Vec<PathBuf>| Config { library_dirs: dirs, ..config(&repo, vec![]) };
+        assert_eq!(cfg(vec![user.clone(), starter.clone(), env.clone()]).libraries(), [user.clone(), starter.clone(), dir.clone(), env.clone()]);
+        assert_eq!(cfg(vec![user.clone(), env.clone()]).libraries(), [user.clone(), dir.clone(), env.clone()]);
+        let sources: Vec<_> = cfg(vec![user.clone(), starter, env]).library_sources().into_iter().map(|(_, s)| s).collect();
+        assert_eq!(sources, [LibrarySource::User, LibrarySource::Starter, LibrarySource::Added, LibrarySource::Env]);
+
+        assert!(remove_library(&user, &house).unwrap());
+        assert!(!remove_library(&user, &house).unwrap());
+        assert_eq!(cfg(vec![user.clone()]).libraries(), [user]);
+        assert!(house.join("presets").is_dir());
     }
 
     #[test]

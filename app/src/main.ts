@@ -546,6 +546,12 @@ function wireIpc() {
     return r.canceled ? [] : r.filePaths;
   });
 
+  ipcMain.handle("folder:pick", async (e, title: string) => {
+    const { win } = editorOf(e);
+    const r = await dialog.showOpenDialog(win, { title: title || "Choose a folder", properties: ["openDirectory"] });
+    return r.canceled ? null : r.filePaths[0] ?? null;
+  });
+
   ipcMain.handle("media:pick", async (e) => {
     const { win, daemon: d } = editorOf(e);
     const r = await dialog.showOpenDialog(win, {

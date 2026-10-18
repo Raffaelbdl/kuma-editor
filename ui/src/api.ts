@@ -1,4 +1,4 @@
-import type { Activity, BlueprintInfo, HistoryEntry, MarkerInfo, CacheUsage, DaemonEvent, EffectPreset, FontFamily, Issue, Job, LintReport, OverlayInfo, PatchOp, Preset, Project, SequenceState } from "./types";
+import type { Activity, BlueprintInfo, LibraryInfo, HistoryEntry, MarkerInfo, CacheUsage, DaemonEvent, EffectPreset, FontFamily, Issue, Job, LintReport, OverlayInfo, PatchOp, Preset, Project, SequenceState } from "./types";
 
 async function json<T>(url: string, init?: RequestInit): Promise<T> {
   const r = await fetch(url, { headers: { "content-type": "application/json" }, ...init });
@@ -48,6 +48,14 @@ export const api = {
     json<{ family: string; origin: string; path: string }>("/api/fonts", { method: "POST", body: JSON.stringify({ path, shared }) }),
   /** Rescan the libraries for blueprints. */
   reloadBlueprints: () => json<BlueprintInfo[]>("/api/blueprints", { method: "POST", body: "{}" }),
+  /** None from a daemon older than the route: its blueprints are then shown unfoldered. */
+  libraries: () => json<LibraryInfo[]>("/api/libraries").catch(() => [] as LibraryInfo[]),
+  /** Read a library folder in every project on this machine. Nothing is copied. */
+  addLibrary: (path: string) =>
+    json<{ path: string; added: boolean; libraries: LibraryInfo[]; blueprints: BlueprintInfo[] }>("/api/libraries", { method: "POST", body: JSON.stringify({ path }) }),
+  /** Stop reading an added library; its folder is left alone. */
+  removeLibrary: (path: string) =>
+    json<{ libraries: LibraryInfo[]; blueprints: BlueprintInfo[] }>("/api/libraries/remove", { method: "POST", body: JSON.stringify({ path }) }),
   /** Copy a blueprint into `overlays/`; not an edit. Returns the folder. */
   copyBlueprint: (id: string, folder?: string) =>
     json<{ overlay: string }>(`/api/blueprints/${encodeURIComponent(id)}/copy`, { method: "POST", body: JSON.stringify({ folder }) }),

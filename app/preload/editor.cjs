@@ -26,6 +26,8 @@ contextBridge.exposeInMainWorld("kumaApp", {
   pickMedia: () => ipcRenderer.invoke("media:pick"),
   /** Native file picker for .ttf/.otf; absolute paths. */
   pickFonts: () => ipcRenderer.invoke("fonts:pick"),
+  /** Native folder picker; an absolute path, or null when cancelled. */
+  pickFolder: (title) => ipcRenderer.invoke("folder:pick", String(title ?? "")),
   /** Where a dropped file is on disk (`File.path` went in Electron 32). */
   pathForFile: (file) => webUtils.getPathForFile(file),
   /** Open a folder inside the project in the desktop file manager. */

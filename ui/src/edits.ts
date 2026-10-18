@@ -6,6 +6,7 @@
 import { api } from "./api";
 import { button, checkbox, el, loadLocal, plural, row, saveLocal, selectInput } from "./dom";
 import { askForm, askText } from "./modal";
+import { desktop } from "./desktop";
 import { startJob, store, toast } from "./store";
 import type { ClipboardEntry, Found } from "./store";
 import type { MenuItem } from "./menu";
@@ -242,7 +243,7 @@ export function previewImg(base: string): HTMLImageElement {
 export async function promptNewOverlay(blueprint?: string, parent: string | null = null) {
   const blueprints = store.state.blueprints;
   if (!blueprints.length) {
-    toast("No blueprints found. Run `kuma library`, or point KUMA_LIBRARY at a folder of them.", "err", 8000);
+    toast("No blueprints found. Run `kuma library`, or add a library of them from the Blueprints panel.", "err", 8000);
     return;
   }
   const pick = selectInput(blueprints.map((t) => ({ value: t.id, label: blueprintName(t.id), title: t.manifest.description })), blueprint ?? blueprints[0].id, () => {
@@ -292,6 +293,49 @@ export async function makeOverlayUnique(id: string) {
 
 /** Save an overlay entry as a blueprint (its vars as defaults), asking for the id and
  *  before replacing one. */
+/** Read the libraries again: their blueprints, the libraries themselves, and the fonts they
+ *  bring. What the panel's rescan does, and what follows anything that changed them. */
+export async function rescanLibraries() {
+  const [blueprints, libraries] = await Promise.all([api.reloadBlueprints(), api.libraries()]);
+  store.set({ blueprints, libraries });
+  void store.reloadFonts();
+}
+
+/**
+ * Read a library folder in every project on this machine: the desktop's folder picker, or a
+ * typed path in a browser tab. Nothing is copied; a blueprint is when a project uses it.
+ */
+export async function addLibrary() {
+  const app = desktop();
+  const path = app?.pickFolder
+    ? await app.pickFolder("Add a library of blueprints").catch((e) => { toast(`Cannot open the folder picker: ${(e as Error).message}`, "err"); return null; })
+    : await askText({ title: "Add a library", label: "Folder", placeholder: "/path/to/library (holding blueprints/, presets/, fonts/…)", ok: "Add" });
+  if (!path) return;
+  try {
+    const r = await api.addLibrary(path);
+    store.set({ blueprints: r.blueprints, libraries: r.libraries });
+    void store.reloadFonts();
+    const lib = r.libraries.find((l) => l.path === r.path);
+    const n = lib?.blueprints ?? 0;
+    toast(r.added ? `Added ${lib?.name ?? r.path}: ${plural(n, "blueprint")}, for every project` : `${lib?.name ?? r.path} is already read`, "ok", 5000);
+  } catch (e) {
+    toast((e as Error).message, "err", 8000);
+  }
+}
+
+/** Stop reading an added library. Its folder, and what projects copied from it, stay. */
+export async function removeLibrary(path: string, name: string) {
+  const ok = await askForm({ title: `Stop reading ${name}?`, note: `Its blueprints leave this panel in every project. Nothing is deleted: the folder stays where it is (${path}), and overlays a project copied from it keep working, unless they use its _vendor/ helpers or fonts.`, rows: [], ok: "Stop reading" });
+  if (!ok) return;
+  try {
+    const r = await api.removeLibrary(path);
+    store.set({ blueprints: r.blueprints, libraries: r.libraries });
+    void store.reloadFonts();
+  } catch (e) {
+    toast((e as Error).message, "err", 8000);
+  }
+}
+
 export async function saveAsBlueprint(id: string) {
   const item = store.state.project?.bin[id];
   if (!item || !isOverlaySource(item.source)) return;
@@ -304,7 +348,7 @@ export async function saveAsBlueprint(id: string) {
   if (exists && !(await askForm({ title: "Replace blueprint?", note: `A blueprint “${bp}” is already in your library. Replace it with this overlay? Projects that copied it keep their copies.`, rows: [], ok: "Replace" }))) return;
   try {
     await api.saveBlueprint(id, bp, exists);
-    store.set({ blueprints: await api.reloadBlueprints() });
+    await rescanLibraries();
     toast(`Saved ${folder} as blueprint “${bp}”`, "ok");
   } catch (e) {
     toast((e as Error).message, "err");

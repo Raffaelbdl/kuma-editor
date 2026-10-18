@@ -40,6 +40,8 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/sequence", get(get_sequence).post(open_sequence))
         .route("/api/schema", get(schema))
         .route("/api/blueprints", get(blueprints).post(reload_blueprints))
+        .route("/api/libraries", get(libraries).post(add_library))
+        .route("/api/libraries/remove", post(remove_library))
         .route("/api/blueprints/thumbs", post(thumbs))
         .route("/api/blueprints/{id}/copy", post(copy_blueprint))
         .route("/api/blueprints/{id}/lint", get(lint_blueprint))
@@ -415,6 +417,44 @@ async fn reload_blueprints(State(st): S) -> Json<Value> {
     Json(json!(st.blueprint_infos()))
 }
 
+async fn libraries(State(st): S) -> Json<Value> {
+    Json(json!(st.library_infos()))
+}
+
+/// A library folder, by path: added to the user library's list, or taken off it.
+#[derive(Deserialize)]
+struct LibraryPath {
+    path: PathBuf,
+}
+
+/// Add a library for every project on this machine, and rescan: its blueprints join the
+/// Blueprints panel, its `_vendor/` and fonts every overlay. Nothing is copied: a project
+/// takes a blueprint's folder when it uses one, as from any library.
+async fn add_library(State(st): S, Json(req): Json<LibraryPath>) -> ApiResult {
+    let out = blocking(move || -> anyhow::Result<Value> {
+        let (path, added) = crate::state::add_library(&st.config.library_dirs[0], &crate::jobs::resolve_path(&st, &req.path))?;
+        st.reload_blueprints();
+        Ok(json!({ "path": path, "added": added, "libraries": st.library_infos(), "blueprints": st.blueprint_infos() }))
+    })
+    .await?
+    .map_err(bad_request_err)?;
+    Ok(Json(out))
+}
+
+/// Stop reading an added library. Its folder is left as it is, and so is every overlay a
+/// project already copied from it.
+async fn remove_library(State(st): S, Json(req): Json<LibraryPath>) -> ApiResult {
+    let out = blocking(move || -> anyhow::Result<Value> {
+        let removed = crate::state::remove_library(&st.config.library_dirs[0], &req.path)?;
+        anyhow::ensure!(removed, "{} is not an added library: the user library, the starter set and KUMA_LIBRARY's are not taken off here", req.path.display());
+        st.reload_blueprints();
+        Ok(json!({ "libraries": st.library_infos(), "blueprints": st.blueprint_infos() }))
+    })
+    .await?
+    .map_err(bad_request_err)?;
+    Ok(Json(out))
+}
+
 fn bad_request_err(e: anyhow::Error) -> ApiError {
     ApiError::bad_request(format!("{e:#}"))
 }
@@ -542,7 +582,7 @@ async fn save_blueprint(State(st): S, Json(req): Json<SaveBlueprint>) -> ApiResu
 
 /// Every family a `font` var can name, with where it comes from and the faces it has.
 async fn fonts(State(st): S) -> ApiResult {
-    let families = blocking(move || st.baker.fonts.families()).await?;
+    let families = blocking(move || st.baker.font_library().families()).await?;
     Ok(Json(json!(families.into_values().collect::<Vec<_>>())))
 }
 
@@ -569,12 +609,12 @@ const FONT_ROUTE: &str = "/fonts/";
 /// `@font-face` for every family, for the editor's own page: the picker shows each name
 /// in its face.
 async fn fonts_css(State(st): S) -> Result<Response, ApiError> {
-    let css: String = blocking(move || st.baker.fonts.families().values().map(|f| f.css(FONT_ROUTE)).collect()).await?;
+    let css: String = blocking(move || st.baker.font_library().families().values().map(|f| f.css(FONT_ROUTE)).collect()).await?;
     Ok(([(header::CONTENT_TYPE, "text/css")], css).into_response())
 }
 
 async fn font_file(State(st): S, Path((slug, file)): Path<(String, String)>) -> Result<Response, ApiError> {
-    let path = blocking(move || st.baker.fonts.file(&slug, &file)).await?;
+    let path = blocking(move || st.baker.font_library().file(&slug, &file)).await?;
     file_response(&path.ok_or(ApiError::not_found("no such font"))?)
 }
 
@@ -1262,7 +1302,7 @@ fn serve_overlay_file(st: &AppState, dir: &std::path::Path, rest: &str) -> Resul
 async fn vendor(State(st): S, Path(rest): Path<String>) -> Result<Response, ApiError> {
     let runtime = st.config.repo_root.join("node_modules/hyperframes/dist");
     std::iter::once(&runtime)
-        .chain(&st.baker.vendor_dirs)
+        .chain(&st.baker.vendor_dirs())
         .filter_map(|b| safe_join(b, &rest))
         .find(|c| c.is_file())
         .map(|c| file_response(&c))

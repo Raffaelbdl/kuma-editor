@@ -20,7 +20,7 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-pub use state::{add_missing, copy_tree, default_library_dirs, library_dirs, AppState, Config};
+pub use state::{add_library, add_missing, copy_tree, default_library_dirs, library_dirs, remove_library, AppState, Config, LibrarySource};
 
 /// Start serving. Resolves when the listener is bound; the server runs in the background.
 pub async fn serve(config: Config) -> anyhow::Result<(Arc<AppState>, SocketAddr)> {

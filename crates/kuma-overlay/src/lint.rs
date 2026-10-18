@@ -154,8 +154,9 @@ impl Baker {
             let Some(rel) = href.strip_prefix("_vendor/") else { continue };
             let Some(used) = self.vendor_file(overlay_dir, rel) else { continue };
             // What the libraries alone would give, which a library's own blueprint uses.
-            let Some(shipped) = self.vendor_dirs.iter().map(|d| d.join(rel)).find(|p| p.is_file()) else { continue };
-            if self.vendor_dirs.iter().any(|d| used.starts_with(d)) || std::fs::read(&used).ok() == std::fs::read(&shipped).ok() {
+            let libraries = self.vendor_dirs();
+            let Some(shipped) = libraries.iter().map(|d| d.join(rel)).find(|p| p.is_file()) else { continue };
+            if libraries.iter().any(|d| used.starts_with(d)) || std::fs::read(&used).ok() == std::fs::read(&shipped).ok() {
                 continue;
             }
             out.push(Finding::warn(
@@ -186,7 +187,7 @@ impl Baker {
         for (base, css) in &sheets {
             for (family, src) in font_face_rules(css) {
                 let rel = src.and_then(|s| relative_path(base, &s))?;
-                let (read_as, face) = self.fonts.face(&file(&rel)?)?;
+                let (read_as, face) = self.font_library().face(&file(&rel)?)?;
                 out.push((family.unwrap_or(read_as), face));
             }
         }
@@ -212,7 +213,7 @@ impl Baker {
         let fonts = self.fonts(manifest, vars);
         // A collection in a font folder is not read; saying so is the difference between
         // "not installed" and "installed the wrong way".
-        let (collections, web) = if fonts.missing.is_empty() { Default::default() } else { (self.fonts.collections(), self.fonts.web_fonts()) };
+        let (collections, web) = if fonts.missing.is_empty() { Default::default() } else { { let fonts = self.font_library(); (fonts.collections(), fonts.web_fonts()) } };
         for (k, family) in &fonts.missing {
             let mut fix = String::from("add the font file to the project's `fonts/` (or a library's), or pick one that is installed");
             if let Some(c) = collections.first() {

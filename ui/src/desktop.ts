@@ -19,6 +19,8 @@ export interface DesktopBridge {
   pickMedia(): Promise<string[]>;
   /** Font files to add, absolute paths. */
   pickFonts(): Promise<string[]>;
+  /** One folder, absolute, or null when cancelled. Absent in an older shell. */
+  pickFolder?(title: string): Promise<string | null>;
   /** Where a dropped file is on disk, or "". */
   pathForFile(file: File): string;
   reveal(relativePath?: string): Promise<string>;

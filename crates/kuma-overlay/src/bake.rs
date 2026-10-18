@@ -4,7 +4,7 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Condvar, Mutex, PoisonError};
+use std::sync::{Arc, Condvar, Mutex, PoisonError, RwLock};
 
 use kuma_core::manifest::OverlayManifest;
 
@@ -117,12 +117,10 @@ pub struct Baker {
     pub browser: Option<PathBuf>,
     /// Installed hyperframes version (part of the cache key); `None` if it cannot run.
     pub version: Option<String>,
-    /// Every library's shared `_vendor/`, highest precedence first: what an overlay's
-    /// `_vendor/<file>` falls through to when neither its own folder nor the one beside it
-    /// has that file.
-    pub vendor_dirs: Vec<PathBuf>,
-    /// What `font` vars resolve against. Empty unless the caller sets it.
-    pub fonts: FontLibrary,
+    /// What the libraries give every overlay: their `_vendor/` folders and their fonts.
+    /// Shared by clones and replaced whole when the libraries change (`set_library`), so a
+    /// library added while the daemon runs reaches every bake from then on.
+    library: Arc<RwLock<Library>>,
     /// How many renders may run at once, across every caller of this baker and its clones
     /// (`KUMA_BAKE_JOBS`). Each is its own one-worker hyperframes process: separate processes
     /// were measured byte-identical to a serial bake, where one with several workers was not.
@@ -133,6 +131,16 @@ pub struct Baker {
     inflight: Arc<(Mutex<HashSet<String>>, Condvar)>,
     /// The renders running and the queue for more, first come first served.
     slots: Arc<(Mutex<Slots>, Condvar)>,
+}
+
+#[derive(Debug, Default)]
+struct Library {
+    /// Every library's shared `_vendor/`, highest precedence first: what an overlay's
+    /// `_vendor/<file>` falls through to when neither its own folder nor the one beside it
+    /// has that file.
+    vendor_dirs: Vec<PathBuf>,
+    /// What `font` vars resolve against. Empty unless the caller sets it.
+    fonts: FontLibrary,
 }
 
 #[derive(Debug, Default)]
@@ -163,8 +171,7 @@ impl Baker {
             hyperframes,
             browser,
             version: None,
-            vendor_dirs,
-            fonts: FontLibrary::default(),
+            library: Arc::new(RwLock::new(Library { vendor_dirs, fonts: FontLibrary::default() })),
             concurrency: kuma_mlt::melt::threads_from_env("KUMA_BAKE_JOBS"),
             inflight: Arc::default(),
             slots: Arc::default(),
@@ -187,7 +194,7 @@ impl Baker {
         [Some(overlay_dir.join("_vendor")), sibling]
             .into_iter()
             .flatten()
-            .chain(self.vendor_dirs.iter().cloned())
+            .chain(self.vendor_dirs())
             .filter(|dir| dir.is_dir() && seen.insert(dir.canonicalize().unwrap_or_else(|_| dir.clone())))
             .collect()
     }
@@ -213,9 +220,32 @@ impl Baker {
     }
 
     /// Resolve `font` vars against these folders (lowest precedence first, each labelled).
-    pub fn with_fonts(mut self, dirs: Vec<(PathBuf, Origin)>) -> Self {
-        self.fonts = FontLibrary::new(dirs);
+    pub fn with_fonts(self, dirs: Vec<(PathBuf, Origin)>) -> Self {
+        self.library_mut().fonts = FontLibrary::new(dirs);
         self
+    }
+
+    /// The libraries changed: these `_vendor/` folders (highest precedence first) and font
+    /// folders (lowest first) from now on, for this baker and every clone of it. Parsed
+    /// fonts stay cached.
+    pub fn set_library(&self, vendor_dirs: Vec<PathBuf>, font_dirs: Vec<(PathBuf, Origin)>) {
+        let mut library = self.library_mut();
+        library.fonts = library.fonts.with_dirs(font_dirs);
+        library.vendor_dirs = vendor_dirs;
+    }
+
+    /// Every library's `_vendor/`, highest precedence first.
+    pub fn vendor_dirs(&self) -> Vec<PathBuf> {
+        self.library.read().unwrap_or_else(PoisonError::into_inner).vendor_dirs.clone()
+    }
+
+    /// What `font` vars resolve against, as the libraries stand now.
+    pub fn font_library(&self) -> FontLibrary {
+        self.library.read().unwrap_or_else(PoisonError::into_inner).fonts.clone()
+    }
+
+    fn library_mut(&self) -> std::sync::RwLockWriteGuard<'_, Library> {
+        self.library.write().unwrap_or_else(PoisonError::into_inner)
     }
 
     /// What an overlay's `font` vars come to with these (resolved) vars. A family that is
@@ -232,7 +262,7 @@ impl Baker {
         if wanted.is_empty() {
             return Resolved::default();
         }
-        self.fonts.resolve(wanted)
+        self.font_library().resolve(wanted)
     }
 
     pub fn available(&self) -> Result<String, BakeError> {
@@ -904,12 +934,12 @@ mod tests {
     /// library's whole folder used to win, so a library without `kuma.js` broke every overlay.
     #[test]
     fn every_librarys_vendor_is_a_layer() {
-        let (tmp, mut baker, overlay) = vendor_fixture();
+        let (tmp, baker, overlay) = vendor_fixture();
         let house = tmp.path().join("house/blueprints/_vendor");
         std::fs::create_dir_all(&house).unwrap();
         std::fs::write(house.join("house.js"), "house helpers").unwrap();
         std::fs::write(house.join("gsap.min.js"), "house gsap").unwrap();
-        baker.vendor_dirs.insert(0, house.clone());
+        baker.set_library(vec![house.clone(), tmp.path().join("library/_vendor")], Vec::new());
         for (file, holds) in [("kuma.js", "library kuma"), ("house.js", "house helpers"), ("gsap.min.js", "house gsap")] {
             assert_eq!(std::fs::read_to_string(baker.vendor_file(&overlay, file).unwrap()).unwrap(), holds, "{file}");
         }

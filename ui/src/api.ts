@@ -21,6 +21,12 @@ export interface RenderTarget { output: string; path: string; exists: boolean; p
  *  absent. The daemon refuses what the preset does not offer. */
 export interface RenderOptions { threads?: number; quality?: number; speed?: string }
 
+/** An export of text published beside a render: the text when nothing was written, else
+ *  where it went (`path` project-relative, `output` absolute); and what to know about it. */
+interface Exported { sequence: string; warnings: string[]; path?: string; output?: string }
+export interface SubtitlesExport extends Exported { srt?: string; cues: number; entries: string[] }
+export interface ChaptersExport extends Exported { text?: string; chapters: { start: number; at: string; title: string; clip?: string }[] }
+
 export const api = {
   project: () => json<Project>("/api/project"),
   patch: (patch: PatchOp[], base_revision: number, origin = "ui") =>
@@ -111,6 +117,14 @@ export const api = {
     if (output) q.set("output", output);
     return json<RenderTarget>(`/api/render/target?${q}`);
   },
+  /** `sequence`'s subtitles as SRT, in its own seconds: the daemon maps every cue through
+   *  the clips placing it. With `write`, saved beside the renders. Reads only the document. */
+  exportSubtitles: (sequence: string, opts: { write?: boolean; words_per_line?: number } = {}) =>
+    json<SubtitlesExport>("/api/export/subtitles", { method: "POST", body: JSON.stringify({ sequence, ...opts }) }),
+  /** `sequence`'s chapters as YouTube description timestamps, and why YouTube might not
+   *  read them as chapters. Reads only. */
+  exportChapters: (sequence: string) =>
+    json<ChaptersExport>("/api/export/chapters", { method: "POST", body: JSON.stringify({ sequence }) }),
   /** The jobs the daemon still remembers, oldest first. */
   jobs: (kind?: string) => json<{ jobs: Job[] }>(`/api/jobs${kind ? `?kind=${encodeURIComponent(kind)}` : ""}`),
   /** Forget every finished job, for every window. Running and queued ones stay. */

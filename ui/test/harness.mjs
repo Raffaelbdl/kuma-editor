@@ -127,13 +127,20 @@ export async function driver(url) {
       return r.result?.result?.value;
     },
     /** Poll `expression` until it is truthy, so a test waits on the page rather than on a
-     *  guessed delay — an edit here is a round trip to the daemon and back. */
+     *  guessed delay — an edit here is a round trip to the daemon and back. A throw is "not
+     *  yet" too: after a reload the page is rebuilt under the poll, and what it waits for is
+     *  briefly not there. The last one is reported if time runs out. */
     async until(expression, ms = 15_000) {
       const end = Date.now() + ms;
       for (;;) {
-        const v = await this.eval(expression);
+        let v, threw;
+        try {
+          v = await this.eval(expression);
+        } catch (e) {
+          threw = e;
+        }
         if (v) return v;
-        if (Date.now() > end) throw new Error(`timed out waiting for: ${expression}`);
+        if (Date.now() > end) throw new Error(`timed out waiting for: ${expression}${threw ? `\nlast: ${threw.message}` : ""}`);
         await new Promise((r) => setTimeout(r, 150));
       }
     },

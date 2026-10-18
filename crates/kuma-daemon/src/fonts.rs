@@ -53,11 +53,19 @@ pub fn add_font(state: &AppState, path: &Path, shared: bool) -> anyhow::Result<V
     };
     anyhow::ensure!(!faces.is_empty(), "`{file}` is a collection with no faces kuma can read");
     let root = if shared { state.config.user_font_dir() } else { state.config.project_font_dir() };
-    let mut added = Vec::new();
+    let mut placed = Vec::new();
     for (bytes, name) in faces {
         let info = parse_face(&bytes).ok_or_else(|| anyhow::anyhow!("`{name}` is not a font kuma can read"))?;
         let target = place(&root, &info.family, &name, &bytes)?;
-        added.push(json!({ "family": info.family, "path": target, "scripts": info.scripts }));
+        placed.push((info, target));
+    }
+    // The family each face is found under, which is not always the one it reads as: a
+    // legacy per-weight name joins a family the folder already has (`FontLibrary::families`).
+    let families = state.baker.font_library().families();
+    let mut added = Vec::new();
+    for (info, target) in placed {
+        let family = families.values().find(|f| f.faces.iter().any(|x| x.path == target)).map_or(info.family, |f| f.name.clone());
+        added.push(json!({ "family": family, "path": target, "scripts": info.scripts }));
     }
     let origin = if shared { kuma_overlay::Origin::Library } else { kuma_overlay::Origin::Project };
     Ok(json!({ "family": added[0]["family"], "origin": origin, "path": added[0]["path"], "faces": added }))

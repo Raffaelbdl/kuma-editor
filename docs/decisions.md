@@ -744,6 +744,29 @@ OFL, Apache, and the Ubuntu Font Licence), 9.4 MB. Rejected:
 Adding a font is a file, not an edit, like an overlay folder: it is copied into the
 project's `fonts/` or, for every project, the user library's.
 
+**A file that also names a family its folder has joins that family** — adopted. A family is
+the typographic family (name id 16) or else the legacy one (id 1), Windows English first as
+FreeType picks, and the other names of that id — localized ones, and the Macintosh Roman
+records, which `ttf-parser` leaves as bytes and kuma now decodes — are aliases. Google's
+`MPLUSRounded1c-Bold.ttf` has no id 16, a Windows family of "Rounded Mplus 1c Bold" and a
+Macintosh one of "Rounded Mplus 1c", so it read as a family of its own and "Rounded Mplus
+1c" had 500 and 800 but no 700 (the browser synthesised it). Now a face whose aliases
+include another family in the same folder is that family's face under a legacy per-weight
+name, and joins it, at the weight OS/2 gives — which is what fontconfig, and so Chrome's
+`local()`, does by putting the file under both names. The face still answers to its own name
+(`Face::family`): `css` declares it under that name alone, so a var written "Rounded Mplus
+1c Bold" draws exactly what it drew, and the picker no longer lists it; `add_font` answers
+with the family the face is found under. Limits, so distinct
+families stay distinct: only the names of the id the family was read from count (a file
+whose id 16 is "Inter Display" never joins "Inter", whatever its id 1 says), only within
+one folder (a later folder still replaces a family whole, the names it took in included),
+and only into a family that does not itself join another (two files naming each other are
+left alone). Bake keys move only for families that gain a face this way; the starter set
+and the 228 families under `/usr/share/fonts` of the machine this was written on write
+byte-identical CSS. Rejected: stripping weight words from a family name ("Bold",
+"ExtraBold", …), a guess about language the file does not make; and taking the Macintosh
+family as the family, which would rename fonts whose Macintosh records are the legacy ones.
+
 **Fonts are added by path** — adopted, as media and overlays are. `POST /api/fonts
 { path, shared }` (the **+** by a font picker, MCP `add_font`): the desktop app's picker
 gives the path, a browser tab types it, and the daemon reads and copies the file. A first

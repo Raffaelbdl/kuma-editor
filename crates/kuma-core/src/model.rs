@@ -48,6 +48,13 @@ pub struct Project {
     /// sequence is reached by being placed on it, directly or through another sequence.
     #[serde(default = "default_master")]
     pub master: BinId,
+    /// The asset libraries this project uses besides the user's own: folders of blueprints,
+    /// presets, fonts and design systems, each relative to the project (`../house-style`)
+    /// or absolute, lowest precedence first. What one gives is read from it, never copied
+    /// in, except a blueprint, which is copied when used; so another project neither sees
+    /// these nor is touched by adding or removing one.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub libraries: Vec<String>,
 }
 
 fn default_version() -> u32 {
@@ -78,11 +85,33 @@ impl Default for Project {
             sample_rate: 48000,
             bin: BTreeMap::new(),
             master: default_master(),
+            libraries: Vec::new(),
         }
     }
 }
 
 impl Project {
+    /// The folders `libraries` names, relative ones resolved against `root`, the project's,
+    /// and `..` taken out (`/v/one/../house` is `/v/house`), so each has one spelling.
+    pub fn library_dirs(&self, root: &std::path::Path) -> Vec<std::path::PathBuf> {
+        use std::path::Component;
+        let resolve = |l: &String| {
+            let mut out = std::path::PathBuf::new();
+            for c in root.join(l).components() {
+                match c {
+                    Component::ParentDir => {
+                        out.pop();
+                    }
+                    Component::CurDir => {}
+                    c => out.push(c),
+                }
+            }
+            out
+        };
+        self.libraries.iter().map(resolve).collect()
+    }
+
+
     /// A fresh project with the three default tracks (video, overlays, audio). Used by
     /// `kuma init` and by the daemon when the project file does not exist yet.
     pub fn new_default(name: impl Into<String>, width: u32, height: u32, fps: Fps) -> Self {
@@ -235,6 +264,14 @@ impl Project {
     /// Whether a track sounds: unmuted, with a clip that does.
     pub fn track_has_audio(&self, track: &Track) -> bool {
         !track.muted && track.clips.iter().any(|c| self.clip_has_audio(c))
+    }
+
+    /// What `track` gives a graph of `streams`: its picture (not when hidden) and its sound
+    /// (not when muted). A track that gives neither is left out of the graph — so a hidden
+    /// overlay track is neither composited nor baked — and the bake set follows this, so the
+    /// compiler and the daemon cannot disagree on which overlays need a bake.
+    pub fn track_streams(&self, track: &Track, streams: Streams) -> (bool, bool) {
+        (track.kind != TrackKind::Audio && !track.hidden && streams.video(), streams.audio() && self.track_has_audio(track))
     }
 
     /// Whether a sequence carries any audible sound, following nested sequences. Cycle-safe.

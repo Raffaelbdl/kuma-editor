@@ -53,22 +53,29 @@ pub fn add_font(state: &AppState, path: &Path, shared: bool) -> anyhow::Result<V
     };
     anyhow::ensure!(!faces.is_empty(), "`{file}` is a collection with no faces kuma can read");
     let root = if shared { state.config.user_font_dir() } else { state.config.project_font_dir() };
-    let mut added = Vec::new();
+    let mut placed = Vec::new();
     for (bytes, name) in faces {
         let info = parse_face(&bytes).ok_or_else(|| anyhow::anyhow!("`{name}` is not a font kuma can read"))?;
         let target = place(&root, &info.family, &name, &bytes)?;
-        added.push(json!({ "family": info.family, "path": target, "scripts": info.scripts }));
+        placed.push((info, target));
     }
+    // The family each face is found under: a legacy per-weight name joins one the folder has.
+    let families = state.baker.font_library().families();
+    let family_of = |path: &Path| families.values().find(|f| f.faces.iter().any(|x| x.path == path)).map(|f| f.name.clone());
+    let added: Vec<Value> = placed
+        .into_iter()
+        .map(|(info, target)| json!({ "family": family_of(&target).unwrap_or(info.family), "path": target, "scripts": info.scripts }))
+        .collect();
     let origin = if shared { kuma_overlay::Origin::Library } else { kuma_overlay::Origin::Project };
     Ok(json!({ "family": added[0]["family"], "origin": origin, "path": added[0]["path"], "faces": added }))
 }
 
 /// What the overlay entries `ids` will not be drawn in (`Baker::font_findings`), as project
 /// warnings pointing at the var: a family that is not installed, characters none of the
-/// entry's fonts can set, CJK text on a page in another language. All of it is legal and
-/// renders in the baking machine's fallbacks, which is why a render says so rather than
-/// falling back quietly, and `validate_project` checks the whole bin. An entry whose folder
-/// does not load is validation's to report, not this.
+/// entry's fonts can set, CJK text landing in an element (or a page) in another language.
+/// All of it is legal and renders in the baking machine's fallbacks, which is why a render
+/// says so rather than falling back quietly, and `validate_project` checks the whole bin.
+/// An entry whose folder does not load is validation's to report, not this.
 pub fn check(state: &AppState, project: &kuma_core::Project, ids: &[&str]) -> Vec<kuma_core::Issue> {
     use kuma_core::{BinSource, Issue, Severity};
     let mut folders: std::collections::HashMap<&str, Option<(crate::overlays::Resolved, String, kuma_overlay::lint::BundledFaces)>> = Default::default();

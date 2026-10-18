@@ -45,11 +45,13 @@ fn reference_project_matches_golden_and_the_dtd() {
     }
 }
 
-/// Hiding is per track, applied on the tractor, so a hidden track's clips are still
-/// compiled and a hidden overlay still needs its bake. The daemon picks the bake set, and
-/// skipping hidden tracks there made every render of such a project fail.
+/// A track that gives the graph nothing is left out: a hidden overlay track is neither
+/// composited nor baked, so it compiles with no bake even when every overlay must have one.
+/// A hidden track with sound keeps its sound (`hide="video"`), and so does what it plays.
+/// The daemon's bake set follows the same rule (`Project::track_streams`): it once skipped
+/// hidden tracks the compiler still emitted, and every render of such a project failed.
 #[test]
-fn a_hidden_track_still_needs_its_overlays_baked() {
+fn a_hidden_track_gives_only_its_sound() {
     let p: Project = serde_json::from_value(serde_json::json!({
         "fps": 30,
         "bin": {
@@ -62,9 +64,18 @@ fn a_hidden_track_still_needs_its_overlays_baked() {
     .unwrap();
     let mut opts = CompileOptions::new("/proj");
     opts.unbaked = UnbakedPolicy::Error;
-    assert!(matches!(compile(&p, &opts), Err(CompileError::Unbaked(id)) if id == "oh"));
-    opts.bakes.insert("oh".into(), bake("/proj/.kuma/bakes/x/frame_%06d.png", false));
-    assert!(compile(&p, &opts).unwrap().contains(r#"<producer id="clip_oh""#));
+    let xml = compile(&p, &opts).expect("no bake is needed for an overlay nothing shows");
+    assert!(!xml.contains("clip_oh"), "{xml}");
+
+    // The reference's `mus` track plays `screen`'s sound: hidden, it is still heard.
+    let mut p = reference_project();
+    let Some(kuma_core::BinSource::Sequence(main)) = p.bin.get_mut("main").map(|i| &mut i.source) else { panic!("no master") };
+    for t in &mut main.tracks {
+        t.hidden = t.id == "mus" || t.id == "o1";
+    }
+    let xml = compile(&p, &CompileOptions::new("/proj")).unwrap();
+    assert!(xml.contains(r#"hide="video""#) && !xml.contains(r#"hide="both""#), "{xml}");
+    assert!(!xml.contains("clip_o_c1"), "the hidden overlay track is gone");
 }
 
 #[test]

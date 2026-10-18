@@ -1,5 +1,5 @@
 import { api, subscribeEvents } from "./api";
-import type { Activity, BlueprintInfo, Clip, HistoryEntry, MarkerInfo, DaemonEvent, FontFamily, Job, Marker, OverlayInfo, PatchOp, Project, Track, TrackKind, Transition } from "./types";
+import type { Activity, BlueprintInfo, LibraryInfo, Clip, HistoryEntry, MarkerInfo, DaemonEvent, FontFamily, Job, Marker, OverlayInfo, PatchOp, Project, Track, TrackKind, Transition } from "./types";
 import { allClips, clipPathOf, fpsValue, freeId, isOverlaySource, nearest, seqDuration, seqPath, sequenceIds, sequenceOf } from "./types";
 
 /** A clip found in the project: where it is, as the record every edit of it starts from. */
@@ -33,6 +33,8 @@ export interface State {
   project: Project | null;
   /** Reusable overlays in the user's library, to copy into the project. */
   blueprints: BlueprintInfo[];
+  /** The libraries they come from, lowest precedence first. */
+  libraries: LibraryInfo[];
   /** The manifest of every overlay folder the bin uses, by folder. */
   manifests: Record<string, OverlayInfo>;
   /** Font families `font` vars can name. */
@@ -85,7 +87,7 @@ export interface State {
 type Listener = (s: State) => void;
 
 class Store {
-  state: State = { project: null, blueprints: [], manifests: {}, fonts: [], previewStamp: 0, sequence: "", selection: null, track: null, clipboard: null, autoKey: false, reloading: false, playhead: 0, playing: false, zoom: 60, tab: SEQUENCE_TAB, sequences: [], overlays: [], connected: false, jobs: {}, mode: "power", activity: [], history: [], markerList: [] };
+  state: State = { project: null, blueprints: [], libraries: [], manifests: {}, fonts: [], previewStamp: 0, sequence: "", selection: null, track: null, clipboard: null, autoKey: false, reloading: false, playhead: 0, playing: false, zoom: 60, tab: SEQUENCE_TAB, sequences: [], overlays: [], connected: false, jobs: {}, mode: "power", activity: [], history: [], markerList: [] };
   private listeners = new Set<Listener>();
   private refreshing: Promise<void> | null = null;
   private refreshAgain = false;
@@ -120,8 +122,8 @@ class Store {
   }
 
   async init() {
-    const [project, blueprints, manifests, seq] = await Promise.all([api.project(), api.blueprints(), api.overlays(), api.sequence()]);
-    this.set({ project, blueprints, manifests, sequence: seq.current, sequences: [seq.current] });
+    const [project, { blueprints, libraries }, manifests, seq] = await Promise.all([api.project(), api.libraries(), api.overlays(), api.sequence()]);
+    this.set({ project, blueprints, libraries, manifests, sequence: seq.current, sequences: [seq.current] });
     void this.reloadFonts();
     subscribeEvents((e) => this.onEvent(e), (connected) => {
       this.set({ connected });
@@ -197,6 +199,10 @@ class Store {
       this.set({ history: [h, ...this.state.history].slice(0, 500) });
     } else if (e.type === "markers") {
       this.set({ markerList: e.markers });
+    } else if (e.type === "libraries") {
+      // The blueprints, `_vendor/` and fonts the project reads: the fonts are fetched again.
+      this.set({ libraries: e.libraries, blueprints: e.blueprints });
+      void this.reloadFonts();
     } else if (e.type === "jobs_cleared") {
       const jobs = { ...this.state.jobs };
       for (const id of e.ids) delete jobs[id];

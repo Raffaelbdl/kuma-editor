@@ -2,8 +2,8 @@
 //
 // **Bin** (`b`) is what this project can place on a track: media files, configured overlays,
 // colours, sequences and folders, one row each, as a tree by `parent`. **Blueprints** (`p`)
-// is where you shop — reusable overlays in the user's library; adding one copies it into
-// this project.
+// is where you shop — reusable overlays in the user's libraries, a folder for each library;
+// adding one copies it into this project.
 //
 // They were tabs in this panel; they are two panels now, each its own instance of this
 // class, so they can sit side by side in the dock (`panelhost.ts`). They still answer
@@ -15,10 +15,10 @@ import { desktop, dropMedia, pickAndAddMedia } from "../desktop";
 import { button, dragPayload, el, isFileDrag, row, setDragPayload } from "../dom";
 import { icon, type IconName } from "../icons";
 import { store, toast } from "../store";
-import { blueprintActions, moveBinItem, newItems, promptNewFolder } from "../edits";
+import { addLibrary, blueprintActions, moveBinItem, newItems, promptNewFolder, removeLibrary, rescanLibraries } from "../edits";
 import { menuBelow, showMenu, type MenuItem } from "../menu";
 import { panels } from "../panelhost";
-import type { BinItem, Project } from "../types";
+import type { BinItem, BlueprintInfo, LibraryInfo, Project } from "../types";
 import { childrenMap, isFileSource, isFolderSource, isOverlaySource, isSequenceSource, itemKind, parentOf } from "../types";
 
 export class Library {
@@ -28,7 +28,7 @@ export class Library {
   /** Which list this is: the bin, or the blueprints. Each is a panel of its own. */
   constructor(private host: HTMLElement, private readonly list: "bin" | "blueprints" = "bin") {
     // Each list follows what it draws: the bin the document, the blueprints the library.
-    store.select((s) => (list === "bin" ? [s.project, s.sequence, s.tab] : [s.blueprints]), () => this.render());
+    store.select((s) => (list === "bin" ? [s.project, s.sequence, s.tab] : [s.blueprints, s.libraries]), () => this.render());
     // Selection moves a class; it does not rebuild the panel.
     store.select((s) => [s.selection], () => this.markSelected());
     // Files dropped on the window go to the bin; one instance takes them, not both.
@@ -103,6 +103,8 @@ export class Library {
 
   /** Which entries are folded. View state, so it lives here rather than in the store. */
   private collapsed = new Set<string>();
+  /** Which libraries are folded in the Blueprints panel, by path. */
+  private foldedLibraries = new Set<string>();
 
   /** The list, which scrolls under the tabs and the toolbar. Kept across a rebuild with
    *  where it was scrolled to, or every agent edit would throw you back to the top. */
@@ -173,15 +175,54 @@ export class Library {
   }
 
   private renderBlueprints(tools: HTMLElement) {
-    tools.appendChild(tool("refresh", "Rescan the blueprint libraries", async () => { store.set({ blueprints: await api.reloadBlueprints() }); }));
+    tools.append(
+      tool("folder-plus", "Use a library in this project — a folder of blueprints, presets and fonts; other projects do not see it", () => void addLibrary()),
+      tool("refresh", "Rescan the libraries", () => void rescanLibraries()),
+    );
 
     const q = this.filter.value.trim().toLowerCase();
     const blueprints = store.state.blueprints.filter((b) => !q || (b.manifest.name || b.id).toLowerCase().includes(q));
-    if (!blueprints.length) {
-      this.body.appendChild(el("p", "muted", "No blueprints found. Run `kuma library` to install the starter set, point KUMA_LIBRARY at a folder of them, or save an overlay from the bin as one."));
-      return;
+    if (!store.state.blueprints.length) {
+      this.body.appendChild(el("p", "muted", "No blueprints found. Run `kuma library` to install the starter set, use a library of them in this project with the folder button above, or save an overlay from the bin as one."));
     }
-    // Name, kind and the two ways in; clicking shows the details in the inspector.
+    // A folder per library, in the order they are read. One whose blueprints were all
+    // shadowed, or that has none, is shown only if the project names it, so it can be taken off.
+    const byLibrary = new Map<string, BlueprintInfo[]>();
+    for (const b of blueprints) {
+      const own = byLibrary.get(b.library);
+      if (own) own.push(b);
+      else byLibrary.set(b.library, [b]);
+    }
+    for (const lib of store.state.libraries) {
+      const own = byLibrary.get(lib.path) ?? [];
+      if (!own.length && (q || lib.source !== "project")) continue;
+      this.libraryGroup(lib, own, !!q);
+    }
+  }
+
+  /** One library's folder: a row that folds it, then its blueprints. Name, kind and the two
+   *  ways in; clicking a card shows the details in the inspector. */
+  private libraryGroup(lib: LibraryInfo, blueprints: BlueprintInfo[], filtering: boolean) {
+    const folded = !filtering && this.foldedLibraries.has(lib.path);
+    const toggle = () => { folded ? this.foldedLibraries.delete(lib.path) : this.foldedLibraries.add(lib.path); this.render(); };
+    const head = el("div", "bin-row lib-group");
+    head.title = `${lib.path}${lib.source === "env" ? " (KUMA_LIBRARY)" : ""}`;
+    const caret = button(folded ? "▸" : "▾", toggle, folded ? "Expand" : "Collapse", "caret");
+    const note = lib.missing ? "not found" : blueprints.length ? String(blueprints.length) : "no blueprints";
+    const square = el("span", "kind-sq folder");
+    head.append(caret, square, el("span", "bin-name", lib.name), el("span", "bin-open", note));
+    head.onclick = (e) => { if (e.target !== caret) toggle(); };
+    head.oncontextmenu = (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const items: MenuItem[] = [{ heading: lib.name }];
+      items.push({ label: "Copy path", title: lib.path, run: () => void navigator.clipboard.writeText(lib.path) });
+      if (lib.source === "project") items.push({ label: "Stop using it in this project…", title: "One edit, undone like any other; other projects and the folder are not touched", run: () => void removeLibrary(lib.path, lib.name) });
+      else items.push({ label: lib.source === "user" ? "Your own library: every project reads it" : lib.source === "starter" ? "The starter set, read until `kuma library` installs one" : "Named by KUMA_LIBRARY", disabled: true, run: () => {} });
+      showMenu(items, e.clientX, e.clientY);
+    };
+    this.body.appendChild(head);
+    if (folded) return;
     for (const t of blueprints) {
       const card = blueprintCard(t.manifest.name || t.id, t.id);
       card.appendChild(blueprintActions(t.id));

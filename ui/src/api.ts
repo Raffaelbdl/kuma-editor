@@ -1,4 +1,4 @@
-import type { Activity, BlueprintInfo, HistoryEntry, MarkerInfo, CacheUsage, DaemonEvent, EffectPreset, FontFamily, Issue, Job, LintReport, OverlayInfo, PatchOp, Preset, Project, SequenceState } from "./types";
+import type { Activity, BlueprintInfo, LibraryInfo, HistoryEntry, MarkerInfo, CacheUsage, DaemonEvent, EffectPreset, FontFamily, Issue, Job, LintReport, OverlayInfo, PatchOp, Preset, Project, SequenceState } from "./types";
 
 async function json<T>(url: string, init?: RequestInit): Promise<T> {
   const r = await fetch(url, { headers: { "content-type": "application/json" }, ...init });
@@ -21,6 +21,15 @@ export interface RenderTarget { output: string; path: string; exists: boolean; p
  *  absent. The daemon refuses what the preset does not offer. */
 export interface RenderOptions { threads?: number; quality?: number; speed?: string }
 
+/** An export of text published beside a render: the `text` when nothing was written, else
+ *  the `path` it went to (project-relative when inside the project); and what to know about it. */
+interface Exported { sequence: string; warnings: string[]; text?: string; path?: string }
+export interface SubtitlesExport extends Exported { cues: number; entries: string[] }
+export interface ChaptersExport extends Exported { chapters: { start: number; at: string; title: string; clip?: string }[] }
+
+/** What every library route answers. */
+export interface Libraries { libraries: LibraryInfo[]; blueprints: BlueprintInfo[] }
+
 export const api = {
   project: () => json<Project>("/api/project"),
   patch: (patch: PatchOp[], base_revision: number, origin = "ui") =>
@@ -40,14 +49,20 @@ export const api = {
   sequence: () => json<SequenceState>("/api/sequence"),
   openSequence: (sequence: string) =>
     json<{ current: string }>("/api/sequence", { method: "POST", body: JSON.stringify({ sequence }) }),
-  blueprints: () => json<BlueprintInfo[]>("/api/blueprints"),
   fonts: () => json<FontFamily[]>("/api/fonts"),
   /** Copy a font file (relative to the project, or absolute) into the project's `fonts/`,
    *  or the user library's when `shared`. */
   addFont: (path: string, shared: boolean) =>
     json<{ family: string; origin: string; path: string }>("/api/fonts", { method: "POST", body: JSON.stringify({ path, shared }) }),
-  /** Rescan the libraries for blueprints. */
-  reloadBlueprints: () => json<BlueprintInfo[]>("/api/blueprints", { method: "POST", body: "{}" }),
+  /** The libraries read and their blueprints, from one read. */
+  libraries: () => json<Libraries>("/api/libraries"),
+  /** Read the libraries again, the list of added ones included. */
+  rescanLibraries: () => json<Libraries>("/api/libraries/rescan", { method: "POST", body: "{}" }),
+  /** Use a library folder in this project, as one edit (`revision` null when it already
+   *  did); nothing is copied. Answers with the library and what it holds. */
+  addLibrary: (path: string) => json<{ library: LibraryInfo & { contents: { blueprints: string[] } }; revision: number | null }>("/api/libraries", { method: "POST", body: JSON.stringify({ path, origin: "ui: add library" }) }),
+  /** Stop using one of this project's libraries, as one edit; its folder is left alone. */
+  removeLibrary: (path: string) => json<{ revision: number }>("/api/libraries/remove", { method: "POST", body: JSON.stringify({ path, origin: "ui: remove library" }) }),
   /** Copy a blueprint into `overlays/`; not an edit. Returns the folder. */
   copyBlueprint: (id: string, folder?: string) =>
     json<{ overlay: string }>(`/api/blueprints/${encodeURIComponent(id)}/copy`, { method: "POST", body: JSON.stringify({ folder }) }),
@@ -103,6 +118,14 @@ export const api = {
     if (output) q.set("output", output);
     return json<RenderTarget>(`/api/render/target?${q}`);
   },
+  /** `sequence`'s subtitles as SRT, in its own seconds: the daemon maps every cue through
+   *  the clips placing it. With `write`, saved beside the renders. Reads only the document. */
+  exportSubtitles: (sequence: string, opts: { write?: boolean; words_per_line?: number } = {}) =>
+    json<SubtitlesExport>("/api/export/subtitles", { method: "POST", body: JSON.stringify({ sequence, ...opts }) }),
+  /** `sequence`'s chapters as YouTube description timestamps, and why YouTube might not
+   *  read them as chapters. Reads only. */
+  exportChapters: (sequence: string) =>
+    json<ChaptersExport>("/api/export/chapters", { method: "POST", body: JSON.stringify({ sequence }) }),
   /** The jobs the daemon still remembers, oldest first. */
   jobs: (kind?: string) => json<{ jobs: Job[] }>(`/api/jobs${kind ? `?kind=${encodeURIComponent(kind)}` : ""}`),
   /** Forget every finished job, for every window. Running and queued ones stay. */

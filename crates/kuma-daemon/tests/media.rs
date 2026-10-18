@@ -7,12 +7,12 @@ use std::sync::Arc;
 
 use kuma_core::{BinSource, MediaKind};
 use kuma_daemon::media::{self, AddHow};
-use kuma_daemon::{AppState, Config};
+use kuma_daemon::{AppState, Config, Libraries};
 use serde_json::json;
 
 fn state(dir: &Path) -> Arc<AppState> {
     let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..").canonicalize().unwrap();
-    let config = Config { project_file: dir.join("t.kuma.json"), repo_root: repo.clone(), library_dirs: vec![repo.join("library")], bind: "127.0.0.1:0".parse().unwrap() };
+    let config = Config { project_file: dir.join("t.kuma.json"), repo_root: repo.clone(), libraries: Libraries::new(repo.join("library")), bind: "127.0.0.1:0".parse().unwrap() };
     Arc::new(AppState::load(config).unwrap())
 }
 

@@ -76,6 +76,10 @@ pub struct Face {
     /// written with one of them still finds the family (`FontLibrary::resolve`).
     #[serde(skip)]
     pub aliases: Vec<String>,
+    /// The family the file reads as, which a legacy per-weight name may join another under
+    /// (`FontLibrary::families`); it still answers to this name, with this face alone.
+    #[serde(skip)]
+    pub family: String,
     /// Every character it has a glyph for: what says a text var's characters are drawn by
     /// this font rather than by whatever the baking machine falls back to.
     #[serde(skip)]
@@ -148,12 +152,22 @@ impl Family {
     }
 
     /// `@font-face` rules for every face, under the family's name and each alias, with
-    /// sources at `<prefix><slug>/<file>`.
+    /// sources at `<prefix><slug>/<file>`; then a face that joined the family from one of
+    /// its own (`Face::family`) under that name too, alone, so a var written with it draws
+    /// what it drew before the face joined.
     pub fn css(&self, prefix: &str) -> String {
         let slug = self.slug();
         let mut css = String::new();
-        for family in std::iter::once(&self.name).chain(&self.aliases).map(|n| css_string(n)) {
-            for (file, f) in self.files() {
+        let wide = |n: &String| *n == self.name || self.aliases.contains(n);
+        let mut names: Vec<&String> = std::iter::once(&self.name).chain(&self.aliases).collect();
+        for f in &self.faces {
+            if !names.contains(&&f.family) {
+                names.push(&f.family);
+            }
+        }
+        for name in names {
+            let family = css_string(name);
+            for (file, f) in self.files().filter(|(_, f)| wide(name) || f.family == *name) {
                 let weight = if f.weight[0] == f.weight[1] { f.weight[0].to_string() } else { format!("{} {}", f.weight[0], f.weight[1]) };
                 let format = if f.ext() == "otf" { "opentype" } else { "truetype" };
                 css.push_str(&format!(
@@ -226,15 +240,14 @@ pub fn sfnt_ext(data: &[u8]) -> &'static str {
 
 /// What a font file says about itself, or `None` when it is not one kuma can read. A web
 /// font is read as the font it wraps.
-pub fn read_face(path: &Path) -> Option<(String, Face)> {
+pub fn read_face(path: &Path) -> Option<Face> {
     let data = std::fs::read(path).ok()?;
     let info = match unwrap_web_font(&data) {
         Some(sfnt) => parse_face(&sfnt.ok()?)?,
         None => parse_face(&data)?,
     };
     let digest = hex::encode(Sha256::digest(&data));
-    let face = Face { path: path.to_path_buf(), weight: info.weight, italic: info.italic, digest, scripts: info.scripts, aliases: info.aliases, coverage: info.coverage };
-    Some((info.family, face))
+    Some(Face { path: path.to_path_buf(), weight: info.weight, italic: info.italic, digest, scripts: info.scripts, aliases: info.aliases, family: info.family, coverage: info.coverage })
 }
 
 /// What a font's bytes say about it.
@@ -254,12 +267,14 @@ pub fn parse_face(data: &[u8]) -> Option<FaceInfo> {
     let face = Ttf::parse(data, 0).ok()?;
     // Every name for an id, English first: a CJK font often lists its localized names
     // first, and "WenQuanYi Zen Hei" is what a person types, not "文泉驛正黑". The rest
-    // stay aliases, so a var written when the first record won still resolves.
+    // stay aliases, so a var written when the first record won still resolves. Windows
+    // English before any other English, as FreeType picks.
     let names = |id: u16| {
         let records: Vec<_> = face.names().into_iter().filter(|n| n.name_id == id).collect();
-        let english = records.iter().filter(|n| n.language() == ttf_parser::Language::English_UnitedStates);
+        let english = |n: &&ttf_parser::name::Name| n.language() == ttf_parser::Language::English_UnitedStates;
+        let windows = records.iter().filter(english).filter(|n| n.platform_id == ttf_parser::PlatformId::Windows);
         let mut out: Vec<String> = Vec::new();
-        for s in english.chain(records.iter()).filter_map(|n| n.to_string()).map(|s| s.trim().to_string()) {
+        for s in windows.chain(records.iter().filter(english)).chain(records.iter()).filter_map(name_string).map(|s| s.trim().to_string()) {
             if !s.is_empty() && !out.contains(&s) {
                 out.push(s);
             }
@@ -290,6 +305,16 @@ pub fn parse_face(data: &[u8]) -> Option<FaceInfo> {
         });
     }
     Some(FaceInfo { family, weight, italic: face.is_italic() || face.is_oblique(), scripts, aliases, coverage: Coverage::from_points(points) })
+}
+
+/// A name record's text: the Unicode ones `ttf-parser` decodes, and the Macintosh Roman ones
+/// it leaves as bytes when they are plain ASCII — the record that can name a face's whole
+/// family (`FontLibrary::families`). A font with other Macintosh names has Windows ones too.
+fn name_string(n: &ttf_parser::name::Name) -> Option<String> {
+    if n.platform_id == ttf_parser::PlatformId::Macintosh && n.encoding_id == 0 {
+        return n.name.is_ascii().then(|| String::from_utf8_lossy(n.name).into_owned());
+    }
+    n.to_string()
 }
 
 /// The faces of a font collection as standalone fonts, each with the extension its
@@ -350,7 +375,7 @@ fn font_files(dir: &Path, exts: &[&str]) -> Vec<PathBuf> {
 }
 
 /// A parsed file, valid while its mtime and size hold; `None` when it is not a font.
-type Cached = ((SystemTime, u64), Option<(String, Face)>);
+type Cached = ((SystemTime, u64), Option<Face>);
 
 /// Folders of fonts, lowest precedence first, each with where it is.
 #[derive(Debug, Default, Clone)]
@@ -366,10 +391,15 @@ impl FontLibrary {
         FontLibrary { dirs, cache: Arc::default() }
     }
 
+    /// These folders instead, keeping what has been parsed.
+    pub fn with_dirs(&self, dirs: Vec<(PathBuf, Origin)>) -> Self {
+        FontLibrary { dirs, cache: self.cache.clone() }
+    }
+
     /// A font file anywhere, web fonts included (what an overlay's own `@font-face` rules
     /// point at), from its stamp and the cache or, when it changed, read afresh. `None`
     /// when it is not a font kuma can read. The lock is never held while reading a file.
-    pub fn face(&self, path: &Path) -> Option<(String, Face)> {
+    pub fn face(&self, path: &Path) -> Option<Face> {
         let meta = std::fs::metadata(path).ok()?;
         let stamp = (meta.modified().unwrap_or(SystemTime::UNIX_EPOCH), meta.len());
         let lock = || self.cache.lock().unwrap_or_else(|e| e.into_inner());
@@ -386,19 +416,41 @@ impl FontLibrary {
     /// Every family, by name; a later folder's family replaces an earlier one's whole.
     /// Within a family, upright before italic and light before heavy: a stable order,
     /// since `Family::files` numbers them.
+    ///
+    /// A file whose other names (`Face::aliases`) include a family the same folder has joins
+    /// it, as fontconfig does: a face under a legacy per-weight name ("Rounded Mplus 1c Bold",
+    /// whose Macintosh name is "Rounded Mplus 1c"). Only into a family that joins no other,
+    /// so two files naming each other stay apart.
     pub fn families(&self) -> BTreeMap<String, Family> {
         let mut out = BTreeMap::new();
         for (dir, origin) in &self.dirs {
             let mut found: BTreeMap<String, Vec<Face>> = BTreeMap::new();
-            for (family, face) in font_files(dir, EXTENSIONS).iter().filter_map(|p| self.face(p)) {
-                found.entry(family).or_default().push(face);
+            for face in font_files(dir, EXTENSIONS).iter().filter_map(|p| self.face(p)) {
+                found.entry(face.family.clone()).or_default().push(face);
+            }
+            let joins: BTreeMap<String, String> = found
+                .iter()
+                .filter_map(|(name, faces)| Some((name.clone(), faces.iter().flat_map(|f| &f.aliases).find(|a| found.contains_key(*a))?.clone())))
+                .collect();
+            for (from, to) in &joins {
+                if !joins.contains_key(to) {
+                    if let Some(faces) = found.remove(from) {
+                        found.entry(to.clone()).or_default().extend(faces);
+                    }
+                }
             }
             for (name, mut faces) in found {
                 faces.sort_by(|a, b| (a.italic, a.weight, &a.path).cmp(&(b.italic, b.weight, &b.path)));
                 let scripts = SCRIPTS.iter().map(|(s, _)| *s).filter(|s| faces.iter().any(|f| f.scripts.contains(s))).collect();
-                let mut aliases: Vec<String> = faces.iter().flat_map(|f| f.aliases.iter().cloned()).collect();
+                // A face that joined brings its own name, not its other names: those are
+                // its legacy family's, not this one's.
+                let mut aliases: Vec<String> = faces.iter().filter(|f| f.family == name).flat_map(|f| f.aliases.iter().cloned()).collect();
                 aliases.sort();
                 aliases.dedup();
+                for f in &faces {
+                    // Replaced whole, the families it took in included.
+                    out.remove(&f.family);
+                }
                 out.insert(name.clone(), Family { name, origin: *origin, scripts, aliases, faces });
             }
         }
@@ -428,7 +480,8 @@ impl FontLibrary {
         let all = self.families();
         let mut out = Resolved::default();
         for (var, name) in wanted {
-            match all.get(&name).or_else(|| all.values().find(|f| f.aliases.contains(&name))) {
+            let by_face = || all.values().find(|f| f.faces.iter().any(|x| x.family == name));
+            match all.get(&name).or_else(|| all.values().find(|f| f.aliases.contains(&name))).or_else(by_face) {
                 Some(f) if !out.families.iter().any(|o| o.name == f.name) => out.families.push(f.clone()),
                 Some(_) => {}
                 None => out.missing.push((var.clone(), name)),
@@ -500,6 +553,134 @@ mod tests {
         out
     }
 
+    /// A name record: `(platform, encoding, language, name id, bytes)`.
+    type Record = (u16, u16, u16, u16, Vec<u8>);
+
+    /// A Windows English record, UTF-16BE.
+    fn win(id: u16, s: &str) -> Record {
+        (3, 1, 0x409, id, s.encode_utf16().flat_map(u16::to_be_bytes).collect())
+    }
+
+    /// A Macintosh English record in Mac OS Roman, given as its bytes.
+    fn mac(id: u16, s: &[u8]) -> Record {
+        (1, 0, 0, id, s.to_vec())
+    }
+
+    /// The starter set's Anton with its `name` table replaced by `records` and its OS/2
+    /// weight class by `weight`: a font that says what a test needs it to say. The outlines
+    /// are beside the point, and checksums are not read.
+    fn renamed(records: &[Record], weight: u16) -> Vec<u8> {
+        use ttf_parser::{RawFace, Tag};
+        let data = std::fs::read(repo_fonts().join("Anton/Anton-Regular.ttf")).unwrap();
+        let mut name = Vec::new();
+        for v in [0, records.len(), 6 + 12 * records.len()] {
+            name.extend_from_slice(&(v as u16).to_be_bytes());
+        }
+        let mut strings = Vec::new();
+        for (platform, encoding, language, id, bytes) in records {
+            for v in [*platform, *encoding, *language, *id, bytes.len() as u16, strings.len() as u16] {
+                name.extend_from_slice(&v.to_be_bytes());
+            }
+            strings.extend_from_slice(bytes);
+        }
+        name.extend(strings);
+        let tables: Vec<_> = RawFace::parse(&data, 0).unwrap().table_records.into_iter().collect();
+        let n = tables.len();
+        let log = n.ilog2() as usize;
+        let mut out = vec![0, 1, 0, 0];
+        for v in [n, 16 << log, log, n * 16 - (16 << log)] {
+            out.extend_from_slice(&(v as u16).to_be_bytes());
+        }
+        let head = out.len() + 16 * n;
+        let mut body = Vec::new();
+        for r in &tables {
+            let mut table = data[r.offset as usize..][..r.length as usize].to_vec();
+            if r.tag == Tag::from_bytes(b"name") {
+                table = name.clone();
+            } else if r.tag == Tag::from_bytes(b"OS/2") {
+                table[4..6].copy_from_slice(&weight.to_be_bytes());
+            }
+            out.extend_from_slice(&r.tag.to_bytes());
+            out.extend_from_slice(&r.check_sum.to_be_bytes());
+            out.extend_from_slice(&((head + body.len()) as u32).to_be_bytes());
+            out.extend_from_slice(&(table.len() as u32).to_be_bytes());
+            body.extend(table);
+            body.resize(body.len().next_multiple_of(4), 0);
+        }
+        out.extend(body);
+        out
+    }
+
+    /// `MPLUSRounded1c-Bold.ttf`, in miniature: the Medium and ExtraBold have a typographic
+    /// family, the Bold only a legacy Windows family with the weight in it and, on the
+    /// Macintosh, the whole family. One family of three weights, as fontconfig reads them —
+    /// and the legacy name still draws the face it named.
+    fn rounded(dir: &Path) {
+        let typographic = |style: &str, weight: u16| {
+            renamed(&[win(1, &format!("Rounded Test {style}")), win(2, "Regular"), win(16, "Rounded Test"), win(17, style)], weight)
+        };
+        std::fs::write(dir.join("Rounded-Medium.ttf"), typographic("Medium", 500)).unwrap();
+        std::fs::write(dir.join("Rounded-ExtraBold.ttf"), typographic("ExtraBold", 800)).unwrap();
+        let bold = renamed(&[mac(1, b"Rounded Test"), mac(2, b"Bold"), win(1, "Rounded Test Bold"), win(2, "Bold")], 700);
+        std::fs::write(dir.join("Rounded-Bold.ttf"), bold).unwrap();
+    }
+
+    #[test]
+    fn a_legacy_weight_name_joins_the_family_the_file_also_names() {
+        let tmp = tempfile::tempdir().unwrap();
+        rounded(tmp.path());
+        let bold = parse_face(&std::fs::read(tmp.path().join("Rounded-Bold.ttf")).unwrap()).unwrap();
+        assert_eq!((bold.family.as_str(), bold.aliases.as_slice(), bold.weight), ("Rounded Test Bold", &["Rounded Test".to_string()][..], [700, 700]), "Windows English first, the Macintosh name an alias, the weight from OS/2");
+
+        let lib = FontLibrary::new(vec![(tmp.path().to_path_buf(), Origin::Project)]);
+        let all = lib.families();
+        assert_eq!(all.keys().collect::<Vec<_>>(), ["Rounded Test"], "one family, not one per legacy name");
+        let family = &all["Rounded Test"];
+        assert_eq!(family.faces.iter().map(|f| f.weight[0]).collect::<Vec<_>>(), [500, 700, 800]);
+        assert!(family.aliases.is_empty(), "{:?}", family.aliases);
+        let css = family.css("_fonts/");
+        for (i, w) in [500, 700, 800].iter().enumerate() {
+            assert!(css.contains(&format!("font-family: \"Rounded Test\"; src: url(\"_fonts/rounded-test/{i}.ttf\") format(\"truetype\"); font-weight: {w};")), "{css}");
+        }
+        // A var written with the legacy name draws the one face it drew.
+        let legacy: Vec<_> = css.lines().filter(|l| l.contains("\"Rounded Test Bold\"")).collect();
+        assert_eq!(legacy.len(), 1, "{css}");
+        assert!(legacy[0].contains("rounded-test/1.ttf") && legacy[0].contains("font-weight: 700;"), "{css}");
+        let r = lib.resolve(vec![("a".into(), "Rounded Test Bold".into()), ("b".into(), "Rounded Test".into())]);
+        assert!(r.missing.is_empty(), "{:?}", r.missing);
+        assert_eq!(r.families.iter().map(|f| f.name.as_str()).collect::<Vec<_>>(), ["Rounded Test"]);
+
+        // Alone in its folder it stays a family of its own, answering to the whole name too.
+        let alone = tempfile::tempdir().unwrap();
+        std::fs::copy(tmp.path().join("Rounded-Bold.ttf"), alone.path().join("b.ttf")).unwrap();
+        let lib = FontLibrary::new(vec![(alone.path().to_path_buf(), Origin::Library), (tmp.path().to_path_buf(), Origin::Project)]);
+        assert_eq!(lib.families().keys().collect::<Vec<_>>(), ["Rounded Test"], "a later folder's family replaces the families it took in, too");
+        let lib = FontLibrary::new(vec![(alone.path().to_path_buf(), Origin::Library)]);
+        assert_eq!(lib.families().keys().collect::<Vec<_>>(), ["Rounded Test Bold"]);
+        assert_eq!(lib.resolve(vec![("a".into(), "Rounded Test".into())]).families[0].name, "Rounded Test Bold");
+    }
+
+    /// Joining reads only the names of the id the family came from: a typographic family is
+    /// the file's word, whatever its legacy one says, and two files naming each other are
+    /// left as they are rather than guessed between.
+    #[test]
+    fn distinct_families_stay_distinct() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("a.ttf"), renamed(&[win(1, "Fam"), win(16, "Fam")], 400)).unwrap();
+        std::fs::write(tmp.path().join("b.ttf"), renamed(&[win(1, "Fam"), mac(1, b"Fam"), win(16, "Fam Display")], 400)).unwrap();
+        std::fs::write(tmp.path().join("c.ttf"), renamed(&[win(1, "One"), mac(1, b"Two")], 400)).unwrap();
+        std::fs::write(tmp.path().join("d.ttf"), renamed(&[win(1, "Two"), mac(1, b"One")], 400)).unwrap();
+        let lib = FontLibrary::new(vec![(tmp.path().to_path_buf(), Origin::Project)]);
+        assert_eq!(lib.families().keys().collect::<Vec<_>>(), ["Fam", "Fam Display", "One", "Two"]);
+    }
+
+    /// Macintosh names, which `ttf-parser` leaves undecoded, are read when they are ASCII.
+    #[test]
+    fn macintosh_names_are_read_when_plain_ascii() {
+        assert_eq!(parse_face(&renamed(&[mac(1, b"Rounded Test")], 400)).unwrap().family, "Rounded Test");
+        assert!(parse_face(&renamed(&[mac(1, b"Caf\x8e")], 400)).is_none(), "no name it can read");
+    }
+
     /// Each face of a collection comes out a font of its own that reads as the face it was.
     #[test]
     fn a_collection_splits_into_the_fonts_it_holds() {
@@ -527,8 +708,8 @@ mod tests {
             let sfnt = unwrap_web_font(&std::fs::read(fixtures.join(file)).unwrap()).expect("a web font").unwrap();
             assert_eq!(sfnt_ext(&sfnt), "ttf");
             assert_eq!(parse_face(&sfnt), Some(original.clone()), "{file}");
-            let (family, face) = read_face(&fixtures.join(file)).unwrap();
-            assert_eq!((family.as_str(), face.coverage), ("Bebas Neue", original.coverage.clone()), "{file} is read as what it wraps");
+            let face = read_face(&fixtures.join(file)).unwrap();
+            assert_eq!((face.family.as_str(), face.coverage), ("Bebas Neue", original.coverage.clone()), "{file} is read as what it wraps");
         }
         assert!(unwrap_web_font(&std::fs::read(repo_fonts().join("Anton/Anton-Regular.ttf")).unwrap()).is_none(), "a font that is not a web font");
         assert!(unwrap_web_font(b"wOF2 and then nothing").unwrap().is_err(), "a damaged one is refused, not read past");

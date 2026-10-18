@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use kuma_core::BinSource;
 use kuma_daemon::jobs::{self, TranscribeRequest};
-use kuma_daemon::{AppState, Config};
+use kuma_daemon::{AppState, Config, Libraries};
 use serde_json::json;
 
 const FAKE_WHISPER: &str = r#"#!/bin/sh
@@ -57,7 +57,7 @@ fn a_transcript_becomes_an_editable_subtitles_entry() {
     std::env::set_var("KUMA_WHISPER_BIN", &fake);
     std::env::set_var("KUMA_WHISPER_MODEL", &fake);
 
-    let config = Config { project_file: dir.path().join("t.kuma.json"), repo_root: repo.clone(), library_dirs: vec![repo.join("library")], bind: "127.0.0.1:0".parse().unwrap() };
+    let config = Config { project_file: dir.path().join("t.kuma.json"), repo_root: repo.clone(), libraries: Libraries::new(repo.join("library")), bind: "127.0.0.1:0".parse().unwrap() };
     let state = Arc::new(AppState::load(config).unwrap());
     kuma_daemon::media::add(&state, &[media.clone()], Default::default(), None, "test").unwrap();
 
@@ -233,7 +233,7 @@ fn a_long_transcript_has_real_gaps_and_is_cut_into_pieces_of_about_a_minute() {
     for m in ["ggml-base.bin", "ggml-large-v3.bin"] {
         std::fs::write(models.join(m), "").unwrap();
     }
-    let config = Config { project_file: dir.path().join("t.kuma.json"), repo_root: repo.clone(), library_dirs: vec![repo.join("library")], bind: "127.0.0.1:0".parse().unwrap() };
+    let config = Config { project_file: dir.path().join("t.kuma.json"), repo_root: repo.clone(), libraries: Libraries::new(repo.join("library")), bind: "127.0.0.1:0".parse().unwrap() };
     let mut state = AppState::load(config).unwrap();
     // Set here rather than through the environment, which the other test in this file owns.
     state.transcriber = kuma_overlay::Transcriber { cli: fake.clone(), model: Some(models.join("ggml-base.bin")), model_dir: models.clone() };

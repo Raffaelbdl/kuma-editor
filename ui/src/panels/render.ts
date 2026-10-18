@@ -3,7 +3,9 @@
 // runs, whoever asked (the editor, an agent, the CLI), and cancels those that can stop. The
 // master is preselected, and the sequence picked is always sent. An Advanced section,
 // folded by default, changes this render's frames at once and its preset's quality and
-// speed; left empty, each is the preset's (or the machine's) own.
+// speed; left empty, each is the preset's (or the machine's) own. "For YouTube" exports
+// the sequence's subtitles as an SRT file and copies its chapters as description
+// timestamps; the daemon computes both.
 
 import { api, type RenderOptions, type RenderTarget } from "../api";
 import { desktop } from "../desktop";
@@ -160,8 +162,53 @@ export function openRenderDialog(tab: Tab = "render"): void {
       show("queue");
     } catch (e) { fail(e); }
   }, "", "primary");
+  // ---- published beside the video: captions to upload and chapters to paste, of the
+  // sequence picked. The daemon works both out; this asks, and shows what it said.
+  const exported = el("p", "muted tiny render-export-note");
+  const exportWarnings = el("ul", "render-export-warnings");
+  const chaptersText = el("textarea", "render-chapters mono");
+  chaptersText.readOnly = true;
+  chaptersText.hidden = true;
+  let exportedFile = "";
+  const showExportedFile = button("Show file", () => void desktop()?.reveal(exportedFile), "Open the folder it was written to");
+  showExportedFile.hidden = true;
+  const said = (note: string, warnings: string[]) => {
+    exported.textContent = note;
+    exportWarnings.replaceChildren(...warnings.map((w) => el("li", "", w)));
+  };
+  const exportSrt = button("Export subtitles (.srt)", async () => {
+    try {
+      chaptersText.hidden = showExportedFile.hidden = true;
+      // The daemon writes no empty SRT: it says why there is none instead.
+      const r = await api.exportSubtitles(sequence.value, { write: true });
+      if (!r.cues) return said("No subtitles to export.", r.warnings);
+      exportedFile = r.path ?? "";
+      showExportedFile.hidden = !desktop();
+      said(`${plural(r.cues, "caption")} written to ${r.path}`, r.warnings);
+    } catch (e) { fail(e); }
+  }, "Write the subtitles this sequence shows as an SRT file beside the renders, timed in its seconds, to upload as captions");
+  const copyChapters = button("Copy chapters", async () => {
+    try {
+      const r = await api.exportChapters(sequence.value);
+      const text = r.text ?? "";
+      showExportedFile.hidden = true;
+      chaptersText.value = text;
+      chaptersText.hidden = !text;
+      chaptersText.rows = Math.min(8, Math.max(2, r.chapters.length));
+      // The clipboard can be refused (an insecure origin, no focus): the text is shown
+      // selected either way, so a copy by hand is one keystroke.
+      const copied = !!text && await navigator.clipboard?.writeText(text).then(() => true, () => false);
+      if (text) chaptersText.select();
+      said(!text ? "" : copied ? `${plural(r.chapters.length, "chapter")} copied, for the video's description` : `${plural(r.chapters.length, "chapter")}: copy them from here`, r.warnings);
+    } catch (e) { fail(e); }
+  }, "Copy this sequence's chapters (the sequences placed on it) as YouTube description timestamps");
+  const publish = row("render-export",
+    row("row", el("span", "render-export-label", "For YouTube"), exportSrt, copyChapters, showExportedFile),
+    exported, exportWarnings, chaptersText,
+  );
+
   const renderPane = row("render-pane",
-    field("Sequence", sequence), field("Preset", preset), field("Output", output), warning, box,
+    field("Sequence", sequence), field("Preset", preset), field("Output", output), warning, box, publish,
     el("p", "muted tiny", "Renders run one at a time; one asked for while another is encoding waits in the queue."),
     row("modal-actions", button("Close", close), start),
   );

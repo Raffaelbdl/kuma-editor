@@ -8,7 +8,7 @@
 use std::io::Write as _;
 use std::sync::Arc;
 
-use kuma_daemon::{serve, AppState, Config};
+use kuma_daemon::{serve, AppState, Config, Libraries};
 
 const PROJECT: &str = r##"{
   "version": 7, "name": "t", "master": "main",
@@ -58,7 +58,7 @@ async fn daemon() -> (Arc<AppState>, String, tempfile::TempDir) {
     let config = Config {
         project_file,
         repo_root: dir.path().join("repo"),
-        library_dirs: vec![dir.path().join("library")],
+        libraries: Libraries::new(dir.path().join("library")),
         bind: "127.0.0.1:0".parse().unwrap(),
     };
     let (state, addr) = serve(config).await.unwrap();
@@ -674,4 +674,110 @@ async fn a_sample_job_ends_with_the_frames_or_the_reason() {
     let times: Vec<f64> = job["result"]["samples"].as_array().unwrap().iter().map(|s| s["t"].as_f64().unwrap()).collect();
     assert_eq!(times.len(), kuma_daemon::jobs::RANGE_COUNT, "{job}");
     assert_eq!((times[0], times[times.len() - 1]), (0.2, 1.8));
+}
+
+/// A library is the project's: naming it is an edit of the document, which an undo takes
+/// back like any other, and nothing is copied or written anywhere else — so no other project
+/// sees it. While named, its blueprints are listed under it and its `_vendor/` serves beside
+/// the user library's; taking it off leaves its folder alone.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_library_is_the_projects_and_an_edit() {
+    let (state, addr, dir) = daemon().await;
+    let house = dir.path().join("house");
+    let blueprint = house.join("blueprints/house-tag");
+    std::fs::create_dir_all(&blueprint).unwrap();
+    std::fs::write(blueprint.join("overlay.json"), r#"{ "name": "House tag" }"#).unwrap();
+    std::fs::write(blueprint.join("index.html"), "<html><body data-composition-id=\"root\"></body></html>").unwrap();
+    std::fs::create_dir_all(house.join("blueprints/_vendor")).unwrap();
+    std::fs::write(house.join("blueprints/_vendor/house.js"), "// house").unwrap();
+    std::fs::create_dir_all(dir.path().join("not-one")).unwrap();
+    let user_library = || std::fs::read_dir(dir.path().join("library")).unwrap().map(|e| e.unwrap().file_name()).collect::<std::collections::BTreeSet<_>>();
+    let before = user_library();
+
+    let post = |path: &str, body: serde_json::Value| {
+        let (status, _, body) = request(&addr, "POST", path, &body.to_string());
+        (status, serde_json::from_str::<serde_json::Value>(&body).unwrap_or_default())
+    };
+    let listed = || serde_json::from_str::<serde_json::Value>(&get_body(&addr, "/api/libraries").1).unwrap();
+    let tagged = |out: &serde_json::Value| out["blueprints"].as_array().unwrap().iter().any(|b| b["id"] == "house-tag");
+    let (status, _) = post("/api/libraries", serde_json::json!({ "path": dir.path().join("not-one") }));
+    assert!(status.contains("400"), "a folder with no library in it is refused: {status}");
+
+    // Its `blueprints/` folder names it too, and the project names it from its own folder.
+    let (status, out) = post("/api/libraries", serde_json::json!({ "path": house.join("blueprints"), "origin": "ui: add library" }));
+    assert!(status.contains("200"), "{status} {out}");
+    assert_eq!((&out["library"]["name"], &out["library"]["source"]), (&serde_json::json!("house"), &serde_json::json!("project")));
+    assert_eq!(out["library"]["contents"]["blueprints"], serde_json::json!(["house-tag"]));
+    assert_eq!(state.project.read().unwrap().libraries, ["house"], "in the document, named from the project's folder");
+    let all = listed();
+    let names: Vec<(&str, &str)> = all["libraries"].as_array().unwrap().iter().map(|l| (l["name"].as_str().unwrap(), l["source"].as_str().unwrap())).collect();
+    assert_eq!(names, [("My library", "user"), ("house", "project")]);
+    assert!(tagged(&all), "its blueprint is listed");
+    for file in ["house.js", "kuma.js"] {
+        assert!(get(&addr, &format!("/vendor/{file}")).0.contains("200"), "{file}");
+    }
+    let (_, again) = post("/api/libraries", serde_json::json!({ "path": house }));
+    assert!(again["revision"].is_null(), "named once: {again}");
+    assert_eq!(user_library(), before, "nothing written outside the project");
+
+    // An undo is the document without it, and the libraries follow.
+    assert!(post("/api/project/undo", serde_json::json!({})).0.contains("200"));
+    assert!(state.project.read().unwrap().libraries.is_empty());
+    assert!(!tagged(&listed()));
+    assert!(get(&addr, "/vendor/house.js").0.contains("404"));
+
+    assert!(post("/api/project/redo", serde_json::json!({})).0.contains("200"));
+    let (status, out) = post("/api/libraries/remove", serde_json::json!({ "path": "house" }));
+    assert!(status.contains("200"), "{status} {out}");
+    assert!(!tagged(&listed()));
+    assert!(blueprint.join("overlay.json").is_file(), "its folder is left as it was");
+    let (status, _) = post("/api/libraries/remove", serde_json::json!({ "path": dir.path().join("library") }));
+    assert!(status.contains("400"), "the user library is not the project's to remove: {status}");
+}
+
+/// What an agent told "use this library" reads: what the library holds, the design systems
+/// it offers, and its presets marked as its own; and applying a design system copies it into
+/// the project, refusing to replace one unasked.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_library_says_what_it_holds() {
+    let (_state, addr, dir) = daemon().await;
+    let house = dir.path().join("house");
+    for (file, text) in [
+        ("README.md", "# House style"),
+        ("presets/house-dim.json", r#"{ "id": "house-dim", "name": "Dim", "params": {}, "effects": [] }"#),
+        ("design-systems/house/DESIGN.md", "# House\n\nWarm paper."),
+        ("design-systems/house/tokens.css", ":root { --paper: #f4ecd8; }"),
+    ] {
+        std::fs::create_dir_all(house.join(file).parent().unwrap()).unwrap();
+        std::fs::write(house.join(file), text).unwrap();
+    }
+    let post = |path: &str, body: serde_json::Value| {
+        let (status, _, body) = request(&addr, "POST", path, &body.to_string());
+        (status, serde_json::from_str::<serde_json::Value>(&body).unwrap_or_default())
+    };
+    assert!(post("/api/libraries", serde_json::json!({ "path": house })).0.contains("200"));
+
+    let (_, body) = get_body(&addr, "/api/libraries?detail=true");
+    let listed: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let contents = &listed["libraries"].as_array().unwrap().iter().find(|l| l["source"] == "project").unwrap()["contents"];
+    assert_eq!(contents["presets"], serde_json::json!(["house-dim"]));
+    assert_eq!(contents["design_systems"], serde_json::json!(["house"]));
+    assert_eq!(contents["docs"][0].as_str().map(|d| d.ends_with("house/README.md")), Some(true), "{contents}");
+
+    let (_, body) = get_body(&addr, "/api/presets/effects");
+    let presets: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let dim = presets.as_array().unwrap().iter().find(|p| p["id"] == "house-dim").unwrap();
+    assert!(dim["library"].as_str().is_some_and(|l| l.ends_with("house")), "{dim}");
+
+    let (_, body) = get_body(&addr, "/api/design-systems");
+    let systems: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(systems["design_systems"][0]["id"], "house");
+    assert_eq!(systems["design_systems"][0]["this_project"], false);
+    let (status, out) = post("/api/design-systems/house", serde_json::json!({}));
+    assert!(status.contains("200"), "{status} {out}");
+    assert_eq!(std::fs::read_to_string(dir.path().join("design-system/tokens.css")).unwrap(), ":root { --paper: #f4ecd8; }");
+    assert!(post("/api/design-systems/house", serde_json::json!({})).0.contains("400"), "not replaced unasked");
+    assert!(post("/api/design-systems/house", serde_json::json!({ "force": true })).0.contains("200"));
+    let (_, body) = get_body(&addr, "/api/design-systems");
+    assert_eq!(serde_json::from_str::<serde_json::Value>(&body).unwrap()["design_systems"][0]["this_project"], true);
 }

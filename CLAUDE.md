@@ -32,8 +32,9 @@ library/skills/       the agent skill (`kuma-video`) that `kuma init` / `kuma mc
 ```
 
 Blueprints, presets and fonts are user assets, not code: at runtime kuma reads
-`$XDG_DATA_HOME/kuma` (default `~/.local/share/kuma`) and every directory in
-`KUMA_LIBRARY`, later wins; presets also come from the project's own `presets/`, and
+`$XDG_DATA_HOME/kuma` (default `~/.local/share/kuma`), the libraries the open project names
+(`Project::libraries`; no other project sees them), and every directory in `KUMA_LIBRARY`,
+later wins; presets also come from the project's own `presets/`, and
 fonts from the project's own `fonts/`, which wins over every library.
 Blueprints never come from a project. `library/` is only the starter set that
 `kuma library` installs; until the user library has blueprints, and when `KUMA_LIBRARY` is

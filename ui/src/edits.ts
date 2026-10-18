@@ -6,6 +6,7 @@
 import { api } from "./api";
 import { button, checkbox, el, loadLocal, plural, row, saveLocal, selectInput } from "./dom";
 import { askForm, askText } from "./modal";
+import { desktop } from "./desktop";
 import { startJob, store, toast } from "./store";
 import type { ClipboardEntry, Found } from "./store";
 import type { MenuItem } from "./menu";
@@ -242,7 +243,7 @@ export function previewImg(base: string): HTMLImageElement {
 export async function promptNewOverlay(blueprint?: string, parent: string | null = null) {
   const blueprints = store.state.blueprints;
   if (!blueprints.length) {
-    toast("No blueprints found. Run `kuma library`, or point KUMA_LIBRARY at a folder of them.", "err", 8000);
+    toast("No blueprints found. Run `kuma library`, or add a library of them from the Blueprints panel.", "err", 8000);
     return;
   }
   const pick = selectInput(blueprints.map((t) => ({ value: t.id, label: blueprintName(t.id), title: t.manifest.description })), blueprint ?? blueprints[0].id, () => {
@@ -290,6 +291,43 @@ export async function makeOverlayUnique(id: string) {
   }
 }
 
+/** Read the libraries again; what was found arrives as a `libraries` event, as after any
+ *  change to them. */
+export async function rescanLibraries() {
+  await api.rescanLibraries();
+}
+
+/**
+ * Use a library folder in this project, as one edit — undone like any other, and seen by no
+ * other project: the desktop's folder picker, or a typed path in a browser tab. Nothing is
+ * copied; a blueprint is when it is used.
+ */
+export async function addLibrary() {
+  const app = desktop();
+  const path = app?.pickFolder
+    ? await app.pickFolder("Use a library in this project").catch((e) => { toast(`Cannot open the folder picker: ${(e as Error).message}`, "err"); return null; })
+    : await askText({ title: "Use a library in this project", label: "Folder", placeholder: "/path/to/library (holding blueprints/, presets/, fonts/…)", ok: "Add" });
+  if (!path) return;
+  try {
+    const { library, revision } = await api.addLibrary(path);
+    toast(revision === null ? `This project already uses ${library.name}` : `This project now uses ${library.name}: ${plural(library.contents.blueprints.length, "blueprint")}`, "ok", 5000);
+  } catch (e) {
+    toast((e as Error).message, "err", 8000);
+  }
+}
+
+/** Stop using one of this project's libraries, as one edit. Its folder, and the overlays
+ *  this project copied from it, stay. */
+export async function removeLibrary(path: string, name: string) {
+  const ok = await askForm({ title: `Stop using ${name} in this project?`, note: `Its blueprints leave this project's panel; other projects are not touched, and undo brings it back. Nothing is deleted: the folder stays where it is (${path}), and overlays this project copied from it keep working, unless they use its _vendor/ helpers or fonts.`, rows: [], ok: "Stop using" });
+  if (!ok) return;
+  try {
+    await api.removeLibrary(path);
+  } catch (e) {
+    toast((e as Error).message, "err", 8000);
+  }
+}
+
 /** Save an overlay entry as a blueprint (its vars as defaults), asking for the id and
  *  before replacing one. */
 export async function saveAsBlueprint(id: string) {
@@ -304,7 +342,7 @@ export async function saveAsBlueprint(id: string) {
   if (exists && !(await askForm({ title: "Replace blueprint?", note: `A blueprint “${bp}” is already in your library. Replace it with this overlay? Projects that copied it keep their copies.`, rows: [], ok: "Replace" }))) return;
   try {
     await api.saveBlueprint(id, bp, exists);
-    store.set({ blueprints: await api.reloadBlueprints() });
+    await rescanLibraries();
     toast(`Saved ${folder} as blueprint “${bp}”`, "ok");
   } catch (e) {
     toast((e as Error).message, "err");

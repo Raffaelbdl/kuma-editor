@@ -80,15 +80,21 @@ are listed as `author: "agent"`, yours, never waiting, so never answer your own.
 If the project directory holds a `design-system/` folder, read `design-system/DESIGN.md` before
 authoring or restyling an overlay and take its colours, type, geometry and motion from there;
 `tokens.css` beside it is the same values as a `:root` block to copy into an overlay. Nothing is
-injected at runtime — a design system is a document, and applying it is your edit. `health` says
-whether this project has one.
+injected at runtime — a design system is a document, and applying it is your edit.
+`list_design_systems` says what the project's libraries offer and which one it carries;
+`apply_design_system` copies one in.
+
+When the user names a library to use ("use `/path/to/house-style`"), set it up before the first
+edit: `add_library`, read every file in the `docs` it returns, `apply_design_system` with its
+design system, then build from its blueprints and effect presets (`list_blueprints` and
+`list_effect_presets` name each one's library; `remove_library` undoes it).
 
 An overlay entry names a folder in the project (`overlays/<name>/`: `index.html` +
 `overlay.json`) plus its `vars`; entries may share a folder. To make one: `new_overlay`, edit,
 `check_overlay`, then `import_overlay` (writing a folder does not add it to the bin). Or copy a
-**blueprint** from the user's library (`list_blueprints`, `add_blueprint`, with a `folder` name that
-says what the copy is for). `make_overlay_unique`
-before editing a shared folder; `save_blueprint` only when the user asks. See `overlay_guide`.
+**blueprint** from the user's library or one the project uses (`list_blueprints`, `add_blueprint`,
+with a `folder` name that says what the copy is for). `make_overlay_unique` before editing a shared
+folder; `save_blueprint` only when the user asks. See `overlay_guide`.
 Overlays are live DOM in the preview and baked to alpha frames at export. For a plain title, the
 `title` and `title-subtitle` blueprints are typography, box, outline, shadow and entrance/exit as
 vars — set those rather than writing markup. A `font` var takes a family name from `list_fonts`;
@@ -98,8 +104,8 @@ fonts, not the project's, so pick or add a family that covers the text. `validat
 about every entry whose `font` var names a family that is not installed, whose text has characters
 none of its fonts can set (it lists them), or that shows CJK text on a page whose `lang` is another
 language; a render's result carries the same `warnings` for what it drew. The page's language is an
-entry's `lang` var where the overlay declares one (`title`, `title-subtitle` and `subtitles` do):
-set it to `ja` on a Japanese title rather than copying the folder.
+entry's `lang` var where the overlay declares one (`list_blueprints` shows which do): set it to `ja`
+on a Japanese title rather than copying the folder.
 
 To look at the footage, call `sample_frames` with a time range (and an optional pixel `rect`); it
 returns the composited frames as images plus their PNG paths. To look at an *overlay you are
@@ -167,6 +173,13 @@ after every correction. `transcribe` cuts at the best pause near every `split` s
 0 for one entry): `<id>-1`, `<id>-2`… each with its own cues and `offset`, returned as `pieces`. From
 a clip, it makes the pieces the clip plays and places each over its stretch. `replace` overwrites one
 entry and refuses `split`: to redo a split transcript, remove its pieces and transcribe again.
+
+**Publishing text beside the render.** `export_subtitles` gives the SRT for a YouTube upload: the
+lines the master's subtitles overlays draw, in master seconds. A hidden subtitles track still counts
+(captions off the picture, in the SRT); `words_per_line` makes captions longer than the burned-in
+lines. `export_chapters` gives the master's chapters (clips placing a sequence, titled by `label`) as
+`M:SS Title` lines, and warns where YouTube would not read them. Both take `sequence` and return
+the text unless `output`/`write` asks for a file.
 
 Vertical (9:16) is only
 `width`/`height`: patch them to 1080×1920 (or swap them) and every preset renders portrait.

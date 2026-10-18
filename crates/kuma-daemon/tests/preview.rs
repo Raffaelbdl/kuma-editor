@@ -9,7 +9,7 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use kuma_daemon::preview;
-use kuma_daemon::{AppState, Config};
+use kuma_daemon::{AppState, Config, Libraries};
 use serde_json::{json, Value};
 
 /// A project of one colour clip and one sound: enough to compile, and it needs neither
@@ -51,7 +51,7 @@ fn fixture() -> Option<(Arc<AppState>, tempfile::TempDir)> {
     let config = Config {
         project_file,
         repo_root: repo,
-        library_dirs: vec![dir.path().join("empty-library")],
+        libraries: Libraries::new(dir.path().join("empty-library")),
         bind: "127.0.0.1:0".parse().unwrap(),
     };
     Some((Arc::new(AppState::load(config).unwrap()), dir))

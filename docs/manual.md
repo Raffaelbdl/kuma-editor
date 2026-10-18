@@ -128,6 +128,26 @@ kuma library                                 # copies library/{blueprints,preset
 kuma thumbs                                  # a still and a moving preview (animated WebP, alpha) per blueprint
 ```
 
+The user library is read by every project. Any other library — a series' house blueprints,
+kept wherever you keep the series — is **used by a project**, which names it in its own file
+(`"libraries": ["../house-style"]`, relative to the project so the two can move together);
+no other project sees it. Use one with the folder button in the Blueprints panel (right-click
+a library's folder there to copy its path or stop using it), or
+
+```
+kuma -p video.kuma.json library add ../my-library    # a folder holding blueprints/, presets/, fonts/, design-systems/ (any of them)
+kuma -p video.kuma.json library list                 # every library the project reads, lowest precedence first, and where each comes from
+kuma -p video.kuma.json library remove ../my-library # stop using it; nothing is deleted
+```
+
+Adding or removing one is an edit, undone like any other; a missing one (drive unmounted)
+reads as empty. A project's libraries come after the user library (or the starter set) and
+before `KUMA_LIBRARY`'s. A library's `blueprints/_vendor/` adds to kuma's file by file, so it
+ships only its own helpers. Using a blueprint copies it in, but an overlay that reads the
+library's `_vendor/` helpers or fonts still needs the project to use it. Told “use the
+library in `/path/to/house-style`”, an agent adds it, reads its docs and applies its design
+system.
+
 A project is a directory with `<name>.kuma.json` and your media:
 
 ```
@@ -296,6 +316,17 @@ bakes as one clip and is baked again after every correction. From a clip, the pi
 are made and each is placed over its stretch. **Replace** overwrites one entry's words, so it
 is offered when the media has one transcript, and the job refuses `replace` with `split`.
 
+**For YouTube: the SRT and the chapters.** The render dialog's **For YouTube** row exports
+the text published beside a video, of the sequence picked (the master unless you pick
+another): **Export subtitles (.srt)** writes `renders/<name>.srt` to upload as captions, and
+**Copy chapters** copies the timestamps for the description. Agents and scripts use the
+`export_subtitles` and `export_chapters` tools or `kuma export srt|chapters`. The SRT is what
+the picture shows, when it shows it, in the sequence's seconds, through every cut and nesting;
+a **hidden** subtitles track still counts, so hide one to keep the words off the picture and
+in the captions, and `words_per_line` makes captions longer than the burned-in lines.
+Chapters are the sequence's clips that place another sequence, one `M:SS Title` line each.
+Both warn where YouTube would not read them as you meant.
+
 **Den and power.** The editor has two modes over one set of panels; the backquote key, the
 top bar's toggle or the status line's first cell switches between them, keeping the playhead
 and the selection. **Power** docks everything round the frame. The dock starts with the side panels as tabs on
@@ -408,10 +439,11 @@ claude mcp add --scope user    kuma -- kuma mcp --project /abs/path.kuma.json  #
 `kuma mcp` starts the daemon in-process if none is running on the port, so the browser UI
 and the agent always share one state. Tools: `timeline_guide`, `get_project`, `get_schema`, `apply_edits`,
 `undo`, `redo`, `list_markers`, `validate_project`, `list_presets`, `add_media`, `probe_media`, `reprobe_media`, `unused_entries`,
-`transcribe`, **`sample_frames`**, `measure_audio`, `measure_media`, `bake_overlay`, `render`, `job_status`, `cancel_job`,
-`prune_cache`, `health`, and for overlays `overlay_guide`, `new_overlay`, `check_overlay`,
-`import_overlay`, `make_overlay_unique`, `list_blueprints`, `add_blueprint`,
-`save_blueprint`. An agent scaffolds an overlay with `new_overlay`, checks it with
+`transcribe`, **`sample_frames`**, `measure_audio`, `measure_media`, `bake_overlay`, `render`, `export_subtitles`, `export_chapters`, `job_status`, `cancel_job`,
+`prune_cache`, `health`, for libraries `list_libraries`, `add_library`, `remove_library`,
+`list_design_systems`, `apply_design_system`, `list_effect_presets`, and for overlays
+`overlay_guide`, `new_overlay`, `check_overlay`, `import_overlay`, `make_overlay_unique`,
+`list_blueprints`, `add_blueprint`, `save_blueprint`. An agent scaffolds an overlay with `new_overlay`, checks it with
 `check_overlay` and adds it with `import_overlay`; `sample_frames` with `overlay` (a bin id)
 shows one entry on its own, and with `times` and `tile` a contact sheet of chosen moments.
 `apply_edits` takes a patch inline or, with `patch_path`, from a file in the project, so a
@@ -525,6 +557,8 @@ kuma cache                                 # how big .kuma/ is: bakes, sampled f
 kuma cache prune                           # delete what the project no longer uses (--all: every bake and frame)
 kuma compile > timeline.mlt                # inspect the MLT graph (or open it in Kdenlive); baked overlays included, --bake bakes the rest
 kuma render --sequence intro               # render one nested sequence instead of the master
+kuma export srt > captions.srt             # the master's subtitles as SRT, in master seconds (-o file, --write for renders/<name>.srt, --words-per-line 10, --entry id)
+kuma export chapters                       # the master's chapters as YouTube description lines, `0:00 Title`; warnings on stderr (-s seq, -o file)
 kuma add-media media/                      # every media file in the folder, one edit (several paths too; --recursive, --parent)
 kuma reprobe                               # probe every media entry again after files were replaced; prints what changed
 kuma unused                                # entries no clip places, and those only sequences the master never reaches place
@@ -543,6 +577,8 @@ When a daemon serves the project (`--bind`, `127.0.0.1:7455` by default), `rende
 `sample`, `measure-audio`, `measure-media` and `transcribe` run as its jobs: they show in the
 editor's job queue (the **Queue** button), stamped `cli: <command>`, wait their turn with
 its renders, and print the same result; Ctrl-C cancels the job. Without one, they run in the `kuma` process itself.
+`export` is not a job (it takes milliseconds) but asks the daemon too when there is one, since
+it holds the latest document.
 
 ## The project file
 
@@ -669,7 +705,7 @@ read, and `check_overlay` says so where the family is missing.
 Each family reports the writing systems it sets (`scripts`: latin, han, kana, hangul, …): text
 in any other is drawn by whatever fonts the baking machine has. Which forms kanji take, and
 which font a missing character falls back to, follow the page's `lang`: an overlay that
-declares a `lang` var (the `title`, `title-subtitle` and `subtitles` blueprints do) gets the
+declares a `lang` var (most starter blueprints do; `list_blueprints` says which) gets the
 entry's value written onto `<html lang>` in the bake, the check and the preview alike, so one
 folder serves entries in several languages.
 

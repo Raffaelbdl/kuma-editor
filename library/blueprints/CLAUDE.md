@@ -20,11 +20,12 @@ them, so `make_overlay_unique` first to change one.
 
 `_vendor/` holds shared files, referenced as `_vendor/<file>` from the overlay. Each file is
 looked for in turn in the overlay's own `_vendor/`, then the one next to it (a project's
-`overlays/_vendor/`), then the shared one from the highest-precedence library that has it
-(`<library>/blueprints/_vendor/`); the first that has it wins, and the bake stages and the
-daemon serves exactly those files. So files several overlays of a project share (a house
-stylesheet, a font, a logo) go in `overlays/_vendor/` under names of their own, and
-`_vendor/kuma.js` still comes from the library. A copy of one of kuma's own files there
+`overlays/_vendor/`), then every library's (`<library>/blueprints/_vendor/`), the
+highest-precedence library first; the first that has it wins, and the bake stages and the
+daemon serves exactly those files. So a library of your own blueprints ships only its own
+helpers in its `_vendor/` (`house.js`, never a copy of `kuma.js`), and files several overlays
+of a project share (a house stylesheet, a font, a logo) go in `overlays/_vendor/` under names
+of their own. A copy of one of kuma's own files there
 shadows it for every overlay beside it, and `check_overlay` warns (`vendor_shadowed`) when
 it differs from the shipped one. The library's `_vendor/` is not copied into projects.
 
@@ -88,7 +89,10 @@ overlays/<name>`) does, optionally with `vars`, once it checks clean.
 - On `<html>`: `lang`, from the entry's `lang` var when the manifest declares one and it is
   not empty; otherwise the page keeps the `lang` it is written with. It decides the forms
   han characters are drawn in and which font a missing character falls back to, so one
-  folder serves a Japanese entry and an English one.
+  folder serves a Japanese entry and an English one. What decides is the *element's*
+  language, its nearest `lang`: text in one language inside a page in another (a Japanese
+  name in a French line) goes in an element of its own, `<span id="name" lang="ja">`, and
+  the page keeps its own.
 - The root `[data-composition-id]` element's `data-duration` (and `data-width`/`data-height`)
   are **rewritten in the markup** to the clip's real length before the renderer sees the
   file — hyperframes sizes the render from the attribute as written, before any script runs.
@@ -189,7 +193,10 @@ one editable row per `{start, end, text}` (seconds; `end` after `start`), `font`
 picker (its `--var-<name>` is the quoted family name), `lang` a language tag (`ja`,
 `zh-Hant`, `ko`, `en`, or empty for the page's own) that kuma writes onto `<html lang>` —
 the markup need not read it, and a manifest has at most one. Give an overlay that may show
-CJK text a `lang` var rather than copying its folder to change the page's language. A
+CJK text a `lang` var rather than copying its folder to change the page's language.
+`cjk_lang` follows a var's text through `text("id", vars.x)` into `#id` and its nearest
+`lang` in the markup; text written any other way (`textContent`, `innerHTML`, a template, a
+local first) is judged by the page's `lang`. A
 `cues` value reaches the overlay only through `window.kuma.vars` — a list has no CSS property.
 
 The inspector lists vars **in the order the manifest writes them**. `group` puts a var in a

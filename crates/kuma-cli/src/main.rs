@@ -2,7 +2,7 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
 use clap::{Parser, Subcommand};
-use kuma_daemon::{default_library_dirs, locate_repo_root, Config, RepoRoot};
+use kuma_daemon::{locate_repo_root, user_library, Config, Libraries, RepoRoot};
 
 mod skill;
 
@@ -26,6 +26,16 @@ struct Cli {
 }
 
 #[derive(Subcommand)]
+enum LibraryCmd {
+    /// Use a folder of blueprints, presets, fonts and design systems (each in its own subfolder) in this project (`-p`), as one edit; no other project sees it. Nothing is copied until a blueprint is used.
+    Add { path: PathBuf },
+    /// Stop using one of this project's libraries, as one edit. Its folder, and what the project copied from it, are left alone.
+    Remove { path: PathBuf },
+    /// The libraries this project reads, lowest precedence first, and where each comes from.
+    List,
+}
+
+#[derive(Subcommand)]
 enum Cmd {
     /// Run the daemon (HTTP API, UI, preview) in the foreground.
     Serve,
@@ -44,6 +54,12 @@ enum Cmd {
         /// Sequence (bin id) to use instead of the project's master.
         #[arg(long)]
         sequence: Option<String>,
+    },
+    /// Export the text published beside a render: subtitles as SRT, chapters as YouTube
+    /// timestamps. Of the master unless `--sequence` names another; warnings on stderr.
+    Export {
+        #[command(subcommand)]
+        what: ExportCmd,
     },
     /// Bake all overlay clips (or the given clip ids).
     Bake { clips: Vec<String> },
@@ -200,11 +216,13 @@ enum Cmd {
         #[arg(long)]
         force: bool,
     },
-    /// Install the starter blueprints, presets, design systems and fonts into the user library (`~/.local/share/kuma`). Adds what is missing and new faces of installed fonts, always refreshes `_vendor/`; `--force` replaces the rest too.
+    /// Install the starter blueprints, presets, design systems and fonts into the user library (`~/.local/share/kuma`). Adds what is missing and new faces of installed fonts, always refreshes `_vendor/`; `--force` replaces the rest too. `add`, `remove` and `list` manage the libraries a project uses besides it.
     Library {
         /// Overwrite blueprints and presets that already exist in the library.
         #[arg(long)]
         force: bool,
+        #[command(subcommand)]
+        action: Option<LibraryCmd>,
     },
     /// Probe media files and add them to the project bin, as one edit. A folder adds the
     /// media files directly in it (by extension) and says what it skipped.
@@ -281,6 +299,40 @@ enum Cmd {
 }
 
 #[derive(Subcommand)]
+enum ExportCmd {
+    /// The subtitles the sequence shows, as SRT in its seconds: what to upload as captions.
+    Srt {
+        /// Sequence (bin id) to use instead of the project's master.
+        #[arg(short, long)]
+        sequence: Option<String>,
+        /// Write it here instead of printing it.
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+        /// Write it beside the renders (`renders/<name>.srt`) when no `--output` names a file.
+        #[arg(long)]
+        write: bool,
+        /// Only this subtitles entry (bin id); repeat for several. Every one shown by default.
+        #[arg(long = "entry")]
+        entries: Vec<String>,
+        /// Words per caption instead of each entry's own `words_per_line`.
+        #[arg(long)]
+        words_per_line: Option<u32>,
+    },
+    /// The sequence's chapters as YouTube description timestamps, `M:SS Title`.
+    Chapters {
+        /// Sequence (bin id) to use instead of the project's master.
+        #[arg(short, long)]
+        sequence: Option<String>,
+        /// Write them here instead of printing them.
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+        /// Write them beside the renders (`renders/<name>-chapters.txt`) when no `--output` names a file.
+        #[arg(long)]
+        write: bool,
+    },
+}
+
+#[derive(Subcommand)]
 enum CacheCmd {
     /// Delete what the project no longer uses. Waits for renders using the cache.
     Prune {
@@ -313,7 +365,7 @@ fn repo_root_found(cli: &Cli) -> anyhow::Result<RepoRoot> {
 
 fn config(cli: &Cli) -> anyhow::Result<Config> {
     let repo_root = repo_root(cli)?;
-    Ok(Config { project_file: absolute(&cli.project)?, library_dirs: kuma_daemon::library_dirs(&repo_root), repo_root, bind: cli.bind })
+    Ok(Config { project_file: absolute(&cli.project)?, libraries: Libraries::from_env(&repo_root), repo_root, bind: cli.bind })
 }
 
 /// Load the project state for one-shot commands (no server).
@@ -405,6 +457,35 @@ async fn main() -> anyhow::Result<()> {
                 }
             };
             println!("{}", serde_json::to_string_pretty(&out)?);
+        }
+        Cmd::Export { what } => {
+            use kuma_daemon::export::{self, ChaptersRequest, Output, SubtitlesRequest};
+            let to = |output: &Option<PathBuf>, write: bool| anyhow::Ok(Output { output: output.as_deref().map(absolute).transpose()?, write });
+            // The daemon serving this project holds the latest document; else it is read here.
+            let daemon = running_daemon(&cli).await.map(|url| kuma_mcp::client::Client::new(&url));
+            let out = match what {
+                ExportCmd::Srt { sequence, output, write, entries, words_per_line } => {
+                    let req = SubtitlesRequest { sequence: sequence.clone(), entries: (!entries.is_empty()).then(|| entries.clone()), words_per_line: *words_per_line, to: to(output, *write)? };
+                    match &daemon {
+                        Some(c) => c.post("/api/export/subtitles", &serde_json::to_value(&req)?).await?,
+                        None => export::subtitles(&*open(&cli)?, &req)?,
+                    }
+                }
+                ExportCmd::Chapters { sequence, output, write } => {
+                    let req = ChaptersRequest { sequence: sequence.clone(), to: to(output, *write)? };
+                    match &daemon {
+                        Some(c) => c.post("/api/export/chapters", &serde_json::to_value(&req)?).await?,
+                        None => export::chapters(&*open(&cli)?, &req)?,
+                    }
+                }
+            };
+            for w in out["warnings"].as_array().into_iter().flatten() {
+                eprintln!("warning: {}", w.as_str().unwrap_or_default());
+            }
+            match out["path"].as_str() {
+                Some(file) => eprintln!("wrote {file}"),
+                None => print!("{}", out["text"].as_str().unwrap_or_default()),
+            }
         }
         Cmd::Bake { clips } => {
             let only = (!clips.is_empty()).then(|| clips.clone());
@@ -632,34 +713,57 @@ async fn main() -> anyhow::Result<()> {
         }
         Cmd::DesignSystem { id, force } => {
             let state = open(&cli)?;
-            let installed = state.config.installed_design_systems();
             let Some(id) = id else {
-                if installed.is_empty() {
-                    println!("no design systems installed — none ship yet; write one under `<library>/design-systems/<id>/` (`DESIGN.md` + `tokens.css`), or point KUMA_LIBRARY at a folder of them");
+                let listed = kuma_daemon::libraries::design_systems(&state);
+                let all = listed["design_systems"].as_array().cloned().unwrap_or_default();
+                if all.is_empty() {
+                    println!("no design systems in this project's libraries — write one under `<library>/design-systems/<id>/` (`DESIGN.md` + `tokens.css`), or use a library that has one (`kuma library add`)");
                 }
-                for (id, (dir, title)) in &installed {
-                    let here = state.config.project_design_system().is_some_and(|p| std::fs::read_to_string(p).ok().as_deref() == std::fs::read_to_string(dir.join("DESIGN.md")).ok().as_deref());
-                    println!("{id}\t{title}{}", if here { "  (this project's)" } else { "" });
+                for d in all {
+                    let here = if d["this_project"] == true { "  (this project's)" } else { "" };
+                    println!("{}\t{}{here}", d["id"].as_str().unwrap_or_default(), d["title"].as_str().unwrap_or_default());
                 }
                 return Ok(());
             };
-            let (src, title) = installed.get(id).cloned().ok_or_else(|| anyhow::anyhow!("unknown design system `{id}` — `kuma design-system` lists what is installed"))?;
-            // One fixed place, so the contract can say where it is and the agent can look
-            // without being told: `<project>/design-system/`.
-            let dst = state.config.project_root().join("design-system");
-            if dst.exists() && !*force {
-                anyhow::bail!("{} already exists — pass --force to replace it", dst.display());
-            }
-            if dst.exists() {
-                std::fs::remove_dir_all(&dst)?;
-            }
-            kuma_daemon::copy_tree(&src, &dst)?;
-            println!("{title} → {}", dst.display());
+            let out = kuma_daemon::libraries::apply_design_system(&state, id, *force)?;
+            println!("{} → {}", out["title"].as_str().unwrap_or_default(), out["path"].as_str().unwrap_or_default());
             println!("The agent reads `design-system/DESIGN.md`; overlays copy the `:root` block from `tokens.css`.");
         }
-        Cmd::Library { force } => {
+        Cmd::Library { action: Some(action), .. } => {
+            // Through the daemon serving the project when one does, else the project is opened here.
+            let daemon = running_daemon(&cli).await.map(|url| kuma_mcp::client::Client::new(&url));
+            let edit = |route: &'static str, path: PathBuf, origin: &'static str| (route, serde_json::json!({ "path": path, "origin": origin }));
+            let (route, body) = match action {
+                LibraryCmd::List => {
+                    let listed = match &daemon {
+                        Some(c) => c.get("/api/libraries").await?["libraries"].take(),
+                        None => serde_json::to_value(open(&cli)?.library_infos())?,
+                    };
+                    for l in listed.as_array().into_iter().flatten() {
+                        let missing = if l["missing"] == true { "  (missing)" } else { "" };
+                        println!("{:<8} {}{missing}", l["source"].as_str().unwrap_or_default(), l["path"].as_str().unwrap_or_default());
+                    }
+                    return Ok(());
+                }
+                LibraryCmd::Add { path } => edit("/api/libraries", absolute(path)?, "cli: library add"),
+                // A path to the folder, or the name the project gives it.
+                LibraryCmd::Remove { path } => edit("/api/libraries/remove", if path.exists() { absolute(path)? } else { path.clone() }, "cli: library remove"),
+            };
+            let (path, origin) = (body["path"].as_str().unwrap_or_default().to_string(), body["origin"].as_str().unwrap_or_default());
+            let revision = match &daemon {
+                Some(c) => c.post(route, &body).await?["revision"].as_u64(),
+                None if matches!(action, LibraryCmd::Add { .. }) => kuma_daemon::libraries::add(&*open(&cli)?, Path::new(&path), origin)?.1,
+                None => Some(kuma_daemon::libraries::remove(&*open(&cli)?, &path, origin)?),
+            };
+            match (revision, action) {
+                (None, _) => println!("{path} is already one of this project's libraries"),
+                (Some(rev), LibraryCmd::Add { .. }) => println!("added {path} (revision {rev})"),
+                (Some(rev), _) => println!("removed {path} (revision {rev})"),
+            }
+        }
+        Cmd::Library { force, action: None } => {
             let src = repo_root(&cli)?.join("library");
-            let dst = default_library_dirs().remove(0);
+            let dst = user_library();
             let n = install_library(&src, &dst, *force)?;
             println!("installed {n} entries into {}", dst.display());
         }
@@ -749,7 +853,7 @@ async fn main() -> anyhow::Result<()> {
             std::fs::create_dir_all(path.parent().unwrap())?;
             std::fs::write(&path, kuma_core::project_text(&p)?)?;
             println!("created {}", path.display());
-            let library = default_library_dirs().remove(0);
+            let library = user_library();
             if !library.join("blueprints").is_dir() {
                 println!("note: no blueprints at {} — run `kuma library` to install the starter set", library.display());
             }
@@ -790,9 +894,9 @@ async fn doctor(cli: &Cli) -> anyhow::Result<()> {
     println!("engine        {}", ok(cfg.repo_root.join("engine/build/kuma-preview").is_file(), "engine/build/kuma-preview", "cmake -S engine -B engine/build && cmake --build engine/build -j"));
     println!("melt          {}", ok(kuma_mlt::melt::melt_available(), "ok", "apt install melt"));
     println!("ffprobe       {}", ok(kuma_overlay::media::ffprobe_available(), "ok", "apt install ffmpeg"));
-    let baker = kuma_overlay::Baker::discover(&cfg.repo_root, PathBuf::new(), cfg.bakes_dir());
+    let baker = kuma_overlay::Baker::discover(&cfg.repo_root, cfg.bakes_dir());
     println!("hyperframes   {}", baker.available().map(|v| format!("{v} ({})", baker.hyperframes.display())).unwrap_or_else(|e| format!("MISSING — npm install at the repo root ({e})")));
-    let stt = kuma_overlay::Transcriber::discover(&cfg.repo_root, default_library_dirs().remove(0).join("models"));
+    let stt = kuma_overlay::Transcriber::discover(&cfg.repo_root, user_library().join("models"));
     println!("whisper       {}", stt.available().map(|m| format!("{} with {}", stt.cli.display(), m.display())).unwrap_or_else(|e| format!("MISSING — {e}")));
     println!("whisper models {}", if stt.models().is_empty() { format!("none in {}", stt.model_dir.display()) } else { stt.models().join(", ") });
     println!("browser       {}", baker.browser.as_ref().map(|p| p.display().to_string()).unwrap_or("not set — hyperframes will download Chrome headless shell on first bake".into()));

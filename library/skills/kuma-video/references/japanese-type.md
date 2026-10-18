@@ -34,11 +34,14 @@ So:
    Serif CJK JP", and would merge SemiBold and Black into one family. Whichever you choose,
    choose it before entries name it.
 4. **The page's language is Japanese** wherever Japanese is shown, so any fallback that
-   still happens picks Japanese forms: set the entry's `lang` var to `ja` (the `title`,
-   `title-subtitle` and `subtitles` blueprints have one; give your own components one too),
+   still happens picks Japanese forms: set the entry's `lang` var to `ja` (`list_blueprints`
+   shows which blueprints declare one; give your own components one too),
    so one folder serves Latin and Japanese entries alike. A component without one needs
    `<html lang="ja">` on its page. `transcribe` with `language: "ja"` sets it on the
-   subtitles it makes.
+   subtitles it makes. Japanese **inside** a line in another language (a place name in a
+   French sentence) is the element's business, not the page's: give it its own element,
+   `<span id="name" lang="ja">`, written with `text("name", vars.name)`, and leave the page
+   French.
 5. **A `jp` fallback font var** in every overlay whose font can be a Latin face (label,
    list, narration, bubble, code, timeline…):
    ```json
@@ -49,8 +52,9 @@ So:
    ```
    The `var(--var-jp, serif)` form keeps the stack valid where an overlay lacks the var.
 6. **Check it:** `validate_project` warns about every entry with characters none of its
-   `font` vars' families can set (`glyphs_missing`, with the characters), and CJK text on a
-   page whose `lang` is not a CJK one. `check_overlay` says the same of a folder's defaults.
+   `font` vars' families can set (`glyphs_missing`, with the characters), and CJK text that
+   lands in an element whose language (its nearest `lang`, else the page's) is not a CJK one
+   (`cjk_lang`). `check_overlay` says the same of a folder's defaults.
 7. Vertical text: `writing-mode: vertical-rl; text-orientation: upright`. Keep all layout
    features when subsetting (`vert`, `vrt2`).
 

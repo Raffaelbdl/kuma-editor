@@ -25,6 +25,9 @@ notes elsewhere.
    `list_fonts` (each family's `scripts`: one without `han`/`kana` cannot set Japanese).
 3. `validate_project`. Besides errors, it warns about every entry whose font is not
    installed and every character an entry's fonts cannot set.
+4. **Told to use a library** (a path): `add_library` (unless `list_libraries` already shows
+   it), read every file in its `docs`, `apply_design_system` and read
+   `design-system/DESIGN.md`; then prefer its blueprints and effect presets.
 
 ## Know what you are making
 
@@ -43,7 +46,10 @@ Most videos mix these. The shape below holds for all of them.
 
 - **A sequence per part** (chapter, segment, scene), and a master that places them end to
   end, with transitions and music crossing the cuts. A part can be sampled, measured and
-  rendered on its own (`sequence`). A short video can live on the master alone.
+  rendered on its own (`sequence`). A short video can live on the master alone. Every
+  sequence clip on the master is a chapter (`export_chapters`, `measure_audio`'s sections),
+  overlapping or not: start the first part at 0:00, and keep an inset or recurring sequence
+  inside a part, never on the master, or it splits that part in two.
 - **Tracks by layer band**, bottom to top. Video: backgrounds < main footage < cutaways.
   Overlays: panels < titles and callouts < captions < transitions. Audio: voice, music,
   effects. Put each clip in the first free lane of its band, so the stacking follows the
@@ -86,7 +92,7 @@ difference: `references/storyboard-as-code.md`. In short:
 | Frames with nothing on them, no error | a script on the overlay's page threw; a bake still succeeds | read the `warnings` of the sample, bake or render: they quote the error |
 | Adding a scene re-bakes every earlier one | an overlay reads something about the whole video (a progress bar over its full length) | give an overlay only what its own scene knows: progress within the chapter |
 | Baking runs at a few frames a second | shadows, blur or a full-frame gradient painted on every frame | → `references/overlays.md`, what a bake costs |
-| Kanji look Chinese, or odd | the machine's CJK fallback font under `lang="en"` (Noto CJK **SC** on Linux) | the entry's `lang` var (or `lang="ja"` on the page), a Japanese font var; `validate_project` names the characters → `references/japanese-type.md` |
+| Kanji look Chinese, or odd | the machine's CJK fallback font under `lang="en"` (Noto CJK **SC** on Linux) | the entry's `lang` var (or `lang="ja"` on the page, or on the element when the rest of the line is not Japanese), a Japanese font var; `validate_project` names the characters → `references/japanese-type.md` |
 | `<!--` drawn as an arrow | programming ligatures in a mono font | `font-feature-settings: "liga" 0, "calt" 0` on code |
 | Inserting one entry renamed every later one | counter-based entry ids | pin ids of new entries; content-based clip ids |
 | The mix is 10 dB too quiet | gains were guessed | `measure_audio`, then the master's `volume` and `limiter` → `references/audio.md` |
@@ -128,6 +134,9 @@ difference: `references/storyboard-as-code.md`. In short:
 
   Look at the frames. Keep the previous render under another name before re-rendering to
   the same path.
+- **Publishing on YouTube**: `export_subtitles` (the SRT) and `export_chapters` (the
+  description's `0:00 Title` lines); see `references/render-and-review.md`, and pass on
+  their `warnings`.
 - Final preset: `youtube-1080p` (x264 slow, CRF 18), or `youtube-nvenc` where available
   (much faster, somewhat larger). `threads`, `quality` and `speed` change one render only.
 

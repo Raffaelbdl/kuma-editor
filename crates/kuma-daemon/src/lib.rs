@@ -7,9 +7,11 @@
 pub mod activity;
 pub mod api;
 pub mod cache;
+pub mod export;
 pub mod fonts;
 pub mod history;
 pub mod jobs;
+pub mod libraries;
 pub mod markers;
 pub mod media;
 pub mod overlays;
@@ -20,13 +22,12 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-pub use state::{add_missing, copy_tree, default_library_dirs, library_dirs, AppState, Config};
+pub use state::{add_missing, copy_tree, user_library, AppState, Config, Libraries, LibrarySource};
 
 /// Start serving. Resolves when the listener is bound; the server runs in the background.
 pub async fn serve(config: Config) -> anyhow::Result<(Arc<AppState>, SocketAddr)> {
     let state = Arc::new(AppState::load(config)?);
-    let shipped = state.config.repo_root.join("library");
-    if state.config.library_dirs.contains(&shipped) {
+    if let Some(shipped) = &state.config.libraries.starter {
         tracing::info!("no library installed; reading the starter set in {} (`kuma library` installs it)", shipped.display());
     }
     let app = api::router(state.clone());

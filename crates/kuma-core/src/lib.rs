@@ -20,10 +20,11 @@ pub use model::*;
 pub use manifest::{OverlayManifest, VarSpec, VarType};
 pub use upgrade::{canonical, parse_project, project_text};
 pub use time::{ClipFrames, Fps};
-pub use validate::{validate, Issue, Severity, ValidationContext};
+pub use validate::{is_library, validate, Issue, Severity, ValidationContext, LIBRARY_KINDS};
 
 /// Current on-disk project format version.
 ///
+/// 10 — a project may name the asset `libraries` it uses besides the user's own.
 /// 9 — a marker may carry an `origin`: who left it (the daemon stamps it).
 /// 8 — a sequence carries `effects` on its mix (`volume`, `limiter`, `auto_level`); the
 ///     effect kinds `limiter`, `auto_level` and `freeze` are new.
@@ -37,4 +38,4 @@ pub use validate::{validate, Issue, Severity, ValidationContext};
 ///     keyframed effect now uses.
 /// 2 — keyframes gained `ease` (`linear`, `hold`, `smooth`).
 /// 1 — the first format.
-pub const PROJECT_VERSION: u32 = 9;
+pub const PROJECT_VERSION: u32 = 10;

@@ -7,7 +7,7 @@
 use std::io::{Read as _, Write as _};
 use std::sync::Arc;
 
-use kuma_daemon::{serve, AppState, Config};
+use kuma_daemon::{serve, AppState, Config, Libraries};
 use serde_json::{json, Value};
 
 const PROJECT: &str = r##"{
@@ -27,7 +27,7 @@ async fn daemon() -> (Arc<AppState>, String, tempfile::TempDir) {
     let dir = tempfile::tempdir().unwrap();
     let project_file = dir.path().join("t.kuma.json");
     std::fs::write(&project_file, PROJECT).unwrap();
-    let config = Config { project_file, repo_root: dir.path().join("repo"), library_dirs: vec![dir.path().join("library")], bind: "127.0.0.1:0".parse().unwrap() };
+    let config = Config { project_file, repo_root: dir.path().join("repo"), libraries: Libraries::new(dir.path().join("library")), bind: "127.0.0.1:0".parse().unwrap() };
     let (state, addr) = serve(config).await.unwrap();
     (state, addr.to_string(), dir)
 }

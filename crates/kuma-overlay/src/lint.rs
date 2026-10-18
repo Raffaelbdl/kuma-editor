@@ -21,6 +21,8 @@ use serde_json::{Map, Value};
 
 use crate::bake::{BakeError, BakeRequest, Baker};
 
+mod landing;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Level {
@@ -144,16 +146,19 @@ impl Baker {
         Ok(LintReport { overlay, findings, renderer_skipped })
     }
 
-    /// `_vendor/` files the overlay references that are not the library's, where the
-    /// library has one of that name with other bytes: a copy of kuma's runtime beside the
-    /// overlays shadows the shipped one for every overlay there, and does not get its fixes.
-    /// A file of the project's own under a name of its own is what that folder is for.
+    /// `_vendor/` files the overlay references that are not a library's, where a library
+    /// has one of that name with other bytes: a copy of kuma's runtime beside the overlays
+    /// shadows the shipped one for every overlay there, and does not get its fixes. A file
+    /// of the project's own under a name of its own is what that folder is for.
     pub fn vendor_findings(&self, overlay_dir: &Path, html: &str) -> Vec<Finding> {
         let mut out = Vec::new();
+        let libraries = self.vendor_dirs();
         for href in local_refs(html).into_iter().collect::<std::collections::BTreeSet<_>>() {
             let Some(rel) = href.strip_prefix("_vendor/") else { continue };
-            let (Some(used), shipped) = (self.vendor_file(overlay_dir, rel), self.vendor_dir.join(rel)) else { continue };
-            if used.starts_with(&self.vendor_dir) || !shipped.is_file() || std::fs::read(&used).ok() == std::fs::read(&shipped).ok() {
+            let Some(used) = self.vendor_file(overlay_dir, rel) else { continue };
+            // What the libraries alone would give, which a library's own blueprint uses.
+            let Some(shipped) = libraries.iter().map(|d| d.join(rel)).find(|p| p.is_file()) else { continue };
+            if libraries.iter().any(|d| used.starts_with(d)) || std::fs::read(&used).ok() == std::fs::read(&shipped).ok() {
                 continue;
             }
             out.push(Finding::warn(
@@ -181,11 +186,12 @@ impl Baker {
             sheets.push((base, css));
         }
         let mut out = Vec::new();
+        let fonts = self.font_library();
         for (base, css) in &sheets {
             for (family, src) in font_face_rules(css) {
                 let rel = src.and_then(|s| relative_path(base, &s))?;
-                let (read_as, face) = self.fonts.face(&file(&rel)?)?;
-                out.push((family.unwrap_or(read_as), face));
+                let face = fonts.face(&file(&rel)?)?;
+                out.push((family.unwrap_or_else(|| face.family.clone()), face));
             }
         }
         Some(out)
@@ -194,8 +200,8 @@ impl Baker {
     /// What an overlay's text will not be drawn in, with these (resolved) vars and its
     /// markup (as written, or staged): a family a `font` var names that is not installed,
     /// characters none of its fonts can set — its `font` vars' families and the faces its
-    /// own `@font-face` rules bring from `dir`, its folder — and CJK text on a page whose
-    /// `lang` is not a CJK one.
+    /// own `@font-face` rules bring from `dir`, its folder — and CJK text landing in an
+    /// element whose language (its nearest `lang`, else the page's) is not a CJK one.
     /// Each is legal and renders, in whatever the baking machine falls back to — a
     /// different picture on another machine, and not what anyone picked. Part of `lint`,
     /// and what the daemon checks every overlay entry of a project for.
@@ -210,7 +216,12 @@ impl Baker {
         let fonts = self.fonts(manifest, vars);
         // A collection in a font folder is not read; saying so is the difference between
         // "not installed" and "installed the wrong way".
-        let (collections, web) = if fonts.missing.is_empty() { Default::default() } else { (self.fonts.collections(), self.fonts.web_fonts()) };
+        let (collections, web) = if fonts.missing.is_empty() {
+            Default::default()
+        } else {
+            let library = self.font_library();
+            (library.collections(), library.web_fonts())
+        };
         for (k, family) in &fonts.missing {
             let mut fix = String::from("add the font file to the project's `fonts/` (or a library's), or pick one that is installed");
             if let Some(c) = collections.first() {
@@ -256,10 +267,9 @@ impl Baker {
             }
         }
 
-        // Han characters are drawn in the regional forms the page's language picks, and a
-        // fallback is chosen by it too: under `lang="en"` a Linux machine draws kanji from its
-        // Simplified Chinese face. A `lang` var's value is what the contract writes there, so
-        // it is the page's language whether `html` is the staged page or the one written.
+        // Han characters take the forms, and the fallback font, of the nearest `lang`
+        // (`landing.rs` says where each var's text lands). A `lang` var's value is what the
+        // contract writes onto `<html>`, so it is the page's whether `html` is staged or not.
         let lang = manifest.lang(vars).map(str::to_string).or_else(|| page_lang(html));
         let wanted = |s: &str| -> Option<&[&str]> {
             if s.chars().any(is_kana) {
@@ -272,26 +282,38 @@ impl Baker {
                 None
             }
         };
-        let cjk_page = lang.as_deref().and_then(|l| l.split('-').next()).is_some_and(|p| ["ja", "zh", "ko"].iter().any(|c| p.eq_ignore_ascii_case(c)));
-        if let Some((var, want)) = text.iter().find_map(|(var, s)| wanted(s).map(|w| (var, w))).filter(|_| !cjk_page) {
-            let is = lang.map(|l| format!("`lang=\"{l}\"`")).unwrap_or_else(|| "no `lang`".into());
+        let cjk = |l: &str| l.split('-').next().is_some_and(|p| ["ja", "zh", "ko"].iter().any(|c| p.eq_ignore_ascii_case(c)));
+        // The overlay's scripts are read once, and only when there is CJK text to place.
+        let scripts = std::cell::OnceCell::new();
+        let page = std::cell::OnceCell::new();
+        let off_cjk = text.iter().filter_map(|(var, s)| Some((var, wanted(s)?))).find_map(|(var, want)| {
+            let page = page.get_or_init(|| landing::Page::read(html, scripts.get_or_init(|| own_scripts(html, dir))));
+            let off = page.landings(var).into_iter().find(|l| !l.lang.as_deref().or(lang.as_deref()).is_some_and(cjk))?;
+            Some((var, want, off))
+        });
+        if let Some((var, want, off)) = off_cjk {
             let either = |f: &dyn Fn(&str) -> String| want.iter().map(|w| f(w)).collect::<Vec<_>>().join(" or ");
-            // An overlay with a `lang` var says it per entry; one without says it in its markup.
-            let fix = match manifest.lang_var() {
-                Some(k) => format!("set `{k}` to {}, whichever is the language of its text", either(&|w| format!("`{w}`"))),
-                None => format!(
-                    "put {} on the overlay's `<html>`, whichever is the language of its text, or declare a `lang` var so each entry can say its own",
-                    either(&|w| format!("`lang=\"{w}\"`"))
+            let follow = "which glyph forms are drawn, and which font falls back, follow";
+            let (message, fix) = match (&off.lang, &off.at) {
+                (Some(l), Some(at)) => (
+                    format!("`{var}` shows CJK text in `{at}`, whose `lang` is `{l}`: {follow} the element's language"),
+                    format!("make that `lang` {}, whichever is the language of its text", either(&|w| format!("`{w}`"))),
                 ),
+                _ => {
+                    let is = lang.map(|l| format!("`lang=\"{l}\"`")).unwrap_or_else(|| "no `lang`".into());
+                    // An overlay with a `lang` var says it per entry; one without says it in its markup.
+                    let fix = match manifest.lang_var() {
+                        Some(k) => format!("set `{k}` to {}, whichever is the language of its text", either(&|w| format!("`{w}`"))),
+                        None => format!(
+                            "put {} on the overlay's `<html>`, whichever is the language of its text, or declare a `lang` var so each entry can say its own",
+                            either(&|w| format!("`lang=\"{w}\"`"))
+                        ),
+                    };
+                    let fix = format!("{fix}; when the rest of the page is in another language, put the `lang` on the element that shows this text instead");
+                    (format!("`{var}` shows CJK text and the page has {is}: {follow} the page's language"), fix)
+                }
             };
-            out.push(
-                Finding::warn(
-                    "cjk_lang",
-                    format!("`{var}` shows CJK text and the page has {is}: which glyph forms are drawn, and which font falls back, follow the page's language"),
-                    &fix,
-                )
-                .about(var),
-            );
+            out.push(Finding::warn("cjk_lang", message, &fix).about(var));
         }
         out
     }
@@ -334,9 +356,25 @@ fn is_han(c: char) -> bool {
 /// The `lang` of the document's `<html>`, if it has one.
 fn page_lang(html: &str) -> Option<String> {
     let tag = crate::inject::tags(html).find(|t| t.name.eq_ignore_ascii_case("html"))?;
-    let (a, b) = crate::inject::attr_value_span(tag.text, "lang")?;
-    // A bare value runs to the end of the tag.
-    Some(tag.text[a..b].trim_end_matches(['>', '/']).trim().to_string()).filter(|v| !v.is_empty())
+    crate::inject::attr(tag.text, "lang").filter(|v| !v.is_empty()).map(str::to_string)
+}
+
+/// The overlay's own scripts: inline, and the local files it links that are not `_vendor/`'s,
+/// comments removed. kuma's injected script is not among them.
+fn own_scripts(html: &str, dir: &Path) -> String {
+    script_text(html) + &linked_scripts(html, dir)
+}
+
+/// The local `.js` files an overlay links that are not `_vendor/`'s, comments removed.
+fn linked_scripts(html: &str, dir: &Path) -> String {
+    let mut out = String::new();
+    for src in local_refs(html).into_iter().filter(|h| h.ends_with(".js") && !h.starts_with("_vendor/")) {
+        if let Ok(js) = std::fs::read_to_string(dir.join(&src)) {
+            out.push_str(&strip_comments(&js));
+            out.push('\n');
+        }
+    }
+    out
 }
 
 /// hyperframes rules that do not apply to an overlay kuma stages. `studio_*` are about
@@ -350,7 +388,8 @@ fn not_kumas(code: &str) -> bool {
 /// kuma's own contract, read off the staged document.
 fn contract_findings(html: &str, manifest: &OverlayManifest, dir: &Path) -> Vec<Finding> {
     let mut out = Vec::new();
-    let mut scripts = script_text(html);
+    let linked = linked_scripts(html, dir);
+    let scripts = script_text(html) + &linked;
     // The staged document carries kuma's own injection: `window.kuma = …` and a
     // `:root { --var-<name>: … }` for every var in the manifest. The var rules read the
     // overlay's markup, not that — or every declared var would look read. Its own
@@ -370,16 +409,10 @@ fn contract_findings(html: &str, manifest: &OverlayManifest, dir: &Path) -> Vec<
     // `engine.js` registers the timeline, reads the vars and may not read a clock either.
     // `_vendor/` is not, as above — which is where a library goes, the overlay's own
     // `_vendor/` included: one may call `Date.now` to no effect.
-    for src in local_refs(html).into_iter().filter(|h| h.ends_with(".js")) {
+    own.push_str(&linked);
+    for src in local_refs(html).into_iter().filter(|h| h.ends_with(".js") && h.starts_with("_vendor/")) {
         if let Ok(js) = std::fs::read_to_string(dir.join(&src)) {
-            if src.starts_with("_vendor/") {
-                vendor.push_str(&js);
-            } else {
-                let js = strip_comments(&js);
-                own.push_str(&js);
-                scripts.push_str(&js);
-                scripts.push('\n');
-            }
+            vendor.push_str(&js);
         }
     }
 
@@ -909,7 +942,7 @@ mod tests {
     fn with_fonts() -> (Baker, OverlayManifest) {
         let tmp = std::env::temp_dir();
         let fonts = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../library/fonts");
-        let baker = Baker::discover(&tmp, tmp.join("no-vendor"), tmp.join("no-cache")).with_fonts(vec![(fonts, crate::fonts::Origin::Library)]);
+        let baker = Baker::discover(&tmp, tmp.join("no-cache")).with_library(vec![tmp.join("no-vendor")], vec![(fonts, crate::fonts::Origin::Library)]);
         let manifest = serde_json::from_value(serde_json::json!({ "vars": {
             "font": { "type": "font", "default": "Inter" },
             "label": { "type": "text", "default": "" },
@@ -1026,6 +1059,44 @@ mod tests {
         assert!(contract_findings(html, &m, dir.path()).is_empty(), "{:?}", contract_findings(html, &m, dir.path()));
     }
 
+    /// The language text is drawn in is the nearest `lang` to the element it lands in, which
+    /// is the page's only when nothing nearer says one: a Japanese name in a French page is
+    /// `<span lang="ja">`, and the page stays French. Where a var lands is what the overlay's
+    /// scripts write it into, linked ones too.
+    #[test]
+    fn an_element_lang_decides_for_the_text_that_lands_in_it() {
+        let (baker, _) = with_fonts();
+        let m: OverlayManifest = serde_json::from_value(serde_json::json!({ "vars": {
+            "font": { "type": "font", "default": "Inter" }, "place": { "type": "string", "default": "" }, "name": { "type": "string", "default": "" } } }))
+        .unwrap();
+        let v = vars(serde_json::json!({ "font": "Inter", "place": "à Akihabara", "name": "秋葉原" }));
+        let page = |lang: &str, body: &str, js: &str| format!(r#"<!doctype html><html lang="{lang}"><body><div id="root" data-composition-id="main">{body}</div><script>const {{ vars, text }} = kumaTemplate({{}}); {js}</script></body></html>"#);
+        let cjk = |html: &str, dir: &Path| baker.font_findings(&m, &v, html, dir).into_iter().filter(|f| f.code == "cjk_lang").map(|f| (f.message, f.fix.unwrap_or_default())).collect::<Vec<_>>();
+        let set = r#"text("place", vars.place); text("name", vars.name);"#;
+
+        // A `lang` on the element, or the page's own: nothing to say.
+        assert_eq!(cjk(&page("fr", r#"<p id="place"></p><div lang="ja-JP"><span id="name"></span></div>"#, set), &nowhere()), []);
+        assert_eq!(cjk(&page("ja", r#"<p id="place"></p><span id="name"></span>"#, set), &nowhere()), []);
+        // An element whose `lang` is another language keeps the warning, even on a Japanese page.
+        for lang in ["fr", "ja"] {
+            let found = cjk(&page(lang, r#"<p id="place"></p><span id="name" lang="fr"></span>"#, set), &nowhere());
+            assert_eq!(found.len(), 1, "{found:?}");
+            assert!(found[0].0.contains("`#name`, whose `lang` is `fr`"), "{}", found[0].0);
+            assert!(found[0].1.starts_with("make that `lang` `ja` or `zh`"), "{}", found[0].1);
+        }
+        // So does a page in another language when the element has none, and the fix names both places.
+        let found = cjk(&page("fr", r#"<p id="place"></p><span id="name"></span>"#, set), &nowhere());
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(found[0].0.contains(r#"the page has `lang="fr"`"#), "{}", found[0].0);
+        assert!(found[0].1.contains("on the element that shows this text"), "{}", found[0].1);
+
+        // A linked script is the overlay's own: where it writes counts.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("engine.js"), "// the name, in Japanese\nkumaTemplate({}).text(\"name\", kumaTemplate({}).vars.name);").unwrap();
+        let linked = r#"<html lang="fr"><body><span id="name" lang="ja"></span><script src="engine.js"></script></body></html>"#;
+        assert_eq!(cjk(linked, dir.path()), []);
+    }
+
     /// A family that is not installed is `font_missing`, and there is then nothing to check
     /// coverage against; an overlay with no `font` var names its own fonts.
     #[test]
@@ -1061,7 +1132,7 @@ mod tests {
         std::fs::create_dir_all(&beside).unwrap();
         std::fs::write(beside.join("house.css"), "mine").unwrap();
         std::fs::write(beside.join("kuma.js"), "shipped").unwrap();
-        let baker = Baker::discover(tmp.path(), library, tmp.path().join("cache"));
+        let baker = Baker::discover(tmp.path(), tmp.path().join("cache")).with_library(vec![library], Vec::new());
         let html = r#"<link rel="stylesheet" href="_vendor/house.css"><script src="_vendor/kuma.js"></script><script src="_vendor/kuma.js"></script>"#;
         assert!(baker.vendor_findings(&overlay, html).is_empty());
         std::fs::write(beside.join("kuma.js"), "an older one").unwrap();

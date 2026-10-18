@@ -10,7 +10,7 @@
         position: absolute; bottom: calc(var(--var-bottom) * 100%);
         left: calc(5.5 * var(--u));
         display: grid; grid-template-columns: auto 1fr; align-items: stretch;
-        font-family: "Segoe UI", system-ui, sans-serif; color: #fff;
+        font-family: var(--var-font), "Segoe UI", system-ui, sans-serif; color: #fff;
         will-change: transform, opacity;
       }
       .lt.right { left: auto; right: calc(5.5 * var(--u)); direction: rtl; }
@@ -35,7 +35,7 @@
     </div>
     <script>
       const { vars, duration, text, timeline } = kumaTemplate({
-        name: "Raffael", title: "Hybrid video editing", accent: "#ff4f00", side: "left", bottom: 0.12, size: 1,
+        name: "Raffael", title: "Hybrid video editing", font: "Roboto", accent: "#ff4f00", side: "left", bottom: 0.12, size: 1,
       });
       text("name", vars.name);
       text("title", vars.title);

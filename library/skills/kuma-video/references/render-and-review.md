@@ -60,3 +60,11 @@ python3 <skill>/scripts/contact_sheet.py out.mp4 sheet.png 3.5 41.7 42.3 …   #
 
 Then **look at the sheet**, and keep the previous render under another name before
 rendering to the same path again (`…-v1.mp4`), so the two can be compared.
+
+For a YouTube upload, the text that goes with the file:
+```
+export_subtitles write=true words_per_line=10     # renders/<name>.srt, the captions, in master seconds
+export_chapters                                   # `0:00 Title` lines for the description; read its warnings
+```
+Run them after the last edit; give each chapter clip the `label` viewers should read, and
+pass on the warnings.

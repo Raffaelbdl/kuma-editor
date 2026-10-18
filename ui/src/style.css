@@ -525,6 +525,8 @@ button.linkish:hover { text-decoration: underline; }
 .bin-row.drop-before { box-shadow: 0 -2px 0 0 var(--accent); }
 .bin-row.drop-after { box-shadow: 0 2px 0 0 var(--accent); }
 .lib-item.open { outline: 1px solid var(--sel); }
+/* A library's folder in the Blueprints panel: a bin row's shape, full width, above its cards. */
+.lib-group { margin: 2px -10px 6px; width: auto; cursor: pointer; font-weight: 600; }
 .lib-item.selected { border-color: var(--sel); }
 /* Frames the bin while a file is dragged over the window. Lets the pointer through, so a
    folder row underneath can still take the drop. */
@@ -693,6 +695,16 @@ dialog.modal.render .field { grid-template-columns: 80px 1fr; }
 .render-advanced .field input[type="number"] { width: 110px; flex: 0 0 110px; }
 .render-advanced .field .row select { flex: 0 0 140px; }
 .render-fixed { margin: 0 0 6px 88px; }
+/* For YouTube: the SRT and the chapters of the sequence picked, beside the render. */
+.render-export { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--line); display: flex; flex-direction: column; gap: 4px; }
+.render-export > .row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.render-export-label { font-weight: 600; margin-right: auto; }
+.render-export-note { margin: 0; }
+.render-export-note:empty { display: none; }
+.render-export-warnings { margin: 0; padding-left: 18px; font-size: 12px; color: var(--sel); }
+.render-export-warnings:empty { display: none; }
+.render-chapters { width: 100%; resize: vertical; font-size: 12px; }
+.render-chapters[hidden] { display: none; }
 
 #toasts { position: fixed; right: 12px; bottom: 36px; display: flex; flex-direction: column; gap: 6px; z-index: 10; }
 .toast { background: var(--bg-3); border: 1px solid var(--line); border-left: 3px solid var(--accent); padding: 8px 10px; border-radius: 6px; max-width: 360px; font-size: 12px; }

@@ -39,7 +39,11 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/markers/done", post(tick_marker))
         .route("/api/sequence", get(get_sequence).post(open_sequence))
         .route("/api/schema", get(schema))
-        .route("/api/blueprints", get(blueprints).post(reload_blueprints))
+        .route("/api/libraries", get(libraries).post(add_library))
+        .route("/api/libraries/rescan", post(rescan_libraries))
+        .route("/api/libraries/remove", post(remove_library))
+        .route("/api/design-systems", get(design_systems))
+        .route("/api/design-systems/{id}", post(apply_design_system))
         .route("/api/blueprints/thumbs", post(thumbs))
         .route("/api/blueprints/{id}/copy", post(copy_blueprint))
         .route("/api/blueprints/{id}/lint", get(lint_blueprint))
@@ -62,6 +66,8 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/presets", get(presets))
         .route("/api/render", post(render))
         .route("/api/render/target", get(render_target))
+        .route("/api/export/subtitles", post(export_subtitles))
+        .route("/api/export/chapters", post(export_chapters))
         .route("/api/bake", post(bake))
         .route("/api/sample", post(sample))
         .route("/api/sample/job", post(sample_job))
@@ -406,13 +412,90 @@ async fn schema() -> Json<Value> {
     Json(json!({ "project": kuma_core::schema::project_schema(), "overlay": kuma_core::schema::overlay_schema() }))
 }
 
-async fn blueprints(State(st): S) -> Json<Value> {
-    Json(json!(st.blueprint_infos()))
+/// The libraries and their blueprints, from one read: each blueprint names its library.
+fn libraries_answer(st: &AppState) -> Value {
+    json!({ "libraries": st.library_infos(), "blueprints": st.blueprint_infos() })
 }
 
-async fn reload_blueprints(State(st): S) -> Json<Value> {
-    st.reload_blueprints();
-    Json(json!(st.blueprint_infos()))
+#[derive(Deserialize, Default)]
+struct LibrariesQuery {
+    /// Each library with what it holds (`libraries::contents`), for an agent deciding how
+    /// to use one.
+    #[serde(default)]
+    detail: bool,
+}
+
+async fn libraries(State(st): S, Query(q): Query<LibrariesQuery>) -> Result<Json<Value>, ApiError> {
+    blocking(move || {
+        let mut out = libraries_answer(&st);
+        if q.detail {
+            let dirs: Vec<_> = st.library_infos().into_iter().map(|l| l.path).collect();
+            for (l, contents) in out["libraries"].as_array_mut().into_iter().flatten().zip(crate::libraries::contents(&st, &dirs)) {
+                l["contents"] = contents;
+            }
+        }
+        Json(out)
+    })
+    .await
+}
+
+async fn design_systems(State(st): S) -> Json<Value> {
+    Json(crate::libraries::design_systems(&st))
+}
+
+#[derive(Deserialize, Default)]
+struct ApplyDesignSystem {
+    /// Replace the one the project carries.
+    #[serde(default)]
+    force: bool,
+}
+
+/// Copy a design system of the project's libraries into its `design-system/`.
+async fn apply_design_system(State(st): S, Path(id): Path<String>, body: Option<Json<ApplyDesignSystem>>) -> ApiResult {
+    let force = body.is_some_and(|b| b.0.force);
+    Ok(Json(blocking(move || crate::libraries::apply_design_system(&st, &id, force)).await?.map_err(bad_request_err)?))
+}
+
+/// Read the libraries again — the list of added ones included — and answer as `libraries`.
+async fn rescan_libraries(State(st): S) -> ApiResult {
+    Ok(Json(blocking(move || {
+        st.reload_blueprints();
+        libraries_answer(&st)
+    })
+    .await?))
+}
+
+/// A library folder of this project's, and who asks.
+#[derive(Deserialize)]
+struct LibraryPath {
+    /// A folder (relative to the project, or absolute); to remove, also the name the
+    /// project gives it.
+    path: PathBuf,
+    #[serde(default = "default_origin")]
+    origin: String,
+}
+
+/// Name a library in this project, as one edit: its blueprints join the Blueprints panel,
+/// its `_vendor/` and fonts this project's overlays. Nothing is copied, and no other project
+/// sees it. Answers with the library and what it holds, and the revision (null when the
+/// project already named it).
+async fn add_library(State(st): S, Json(req): Json<LibraryPath>) -> ApiResult {
+    let out = blocking(move || -> anyhow::Result<Value> {
+        let (dir, revision) = crate::libraries::add(&st, &crate::jobs::resolve_path(&st, &req.path), &req.origin)?;
+        let mut library = json!(st.library_infos().into_iter().find(|l| l.path == dir));
+        library["contents"] = crate::libraries::contents(&st, std::slice::from_ref(&dir)).remove(0);
+        Ok(json!({ "library": library, "revision": revision }))
+    })
+    .await?
+    .map_err(bad_request_err)?;
+    Ok(Json(out))
+}
+
+/// Stop naming a library in this project, as one edit. Its folder is left as it is, and so
+/// is every overlay the project already copied from it.
+async fn remove_library(State(st): S, Json(req): Json<LibraryPath>) -> ApiResult {
+    let revision = blocking(move || crate::libraries::remove(&st, &req.path.to_string_lossy(), &req.origin)).await?.map_err(bad_request_err)?;
+    Ok(Json(json!({ "revision": revision })))
 }
 
 fn bad_request_err(e: anyhow::Error) -> ApiError {
@@ -542,7 +625,7 @@ async fn save_blueprint(State(st): S, Json(req): Json<SaveBlueprint>) -> ApiResu
 
 /// Every family a `font` var can name, with where it comes from and the faces it has.
 async fn fonts(State(st): S) -> ApiResult {
-    let families = blocking(move || st.baker.fonts.families()).await?;
+    let families = blocking(move || st.baker.font_library().families()).await?;
     Ok(Json(json!(families.into_values().collect::<Vec<_>>())))
 }
 
@@ -569,12 +652,12 @@ const FONT_ROUTE: &str = "/fonts/";
 /// `@font-face` for every family, for the editor's own page: the picker shows each name
 /// in its face.
 async fn fonts_css(State(st): S) -> Result<Response, ApiError> {
-    let css: String = blocking(move || st.baker.fonts.families().values().map(|f| f.css(FONT_ROUTE)).collect()).await?;
+    let css: String = blocking(move || st.baker.font_library().families().values().map(|f| f.css(FONT_ROUTE)).collect()).await?;
     Ok(([(header::CONTENT_TYPE, "text/css")], css).into_response())
 }
 
 async fn font_file(State(st): S, Path((slug, file)): Path<(String, String)>) -> Result<Response, ApiError> {
-    let path = blocking(move || st.baker.fonts.file(&slug, &file)).await?;
+    let path = blocking(move || st.baker.font_library().file(&slug, &file)).await?;
     file_response(&path.ok_or(ApiError::not_found("no such font"))?)
 }
 
@@ -584,17 +667,17 @@ async fn presets() -> ApiResult {
     Ok(Json(json!(blocking(kuma_mlt::presets::offered).await?)))
 }
 
-/// Effect presets: `presets/*.json` from every library, then the project (wins on id).
+/// Effect presets: `presets/*.json` from every library, then the project's own (wins on id),
+/// each with the `library` it comes from (absent for the project's).
 async fn effect_presets(State(st): S) -> Json<Value> {
     let mut out: std::collections::BTreeMap<String, Value> = Default::default();
+    let project = st.config.project_root().join("presets");
     for dir in st.config.all_preset_dirs() {
-        let Ok(rd) = std::fs::read_dir(&dir) else { continue };
-        for p in rd.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "json")) {
-            if let Some(v) = std::fs::read_to_string(&p).ok().and_then(|s| serde_json::from_str::<Value>(&s).ok()) {
-                if let Some(id) = v.get("id").and_then(Value::as_str) {
-                    out.insert(id.to_string(), v);
-                }
+        for (id, mut v) in crate::libraries::preset_files(&dir) {
+            if dir != project {
+                v["library"] = json!(dir.parent());
             }
+            out.insert(id, v);
         }
     }
     Json(json!(out.into_values().collect::<Vec<_>>()))
@@ -1005,6 +1088,21 @@ async fn job_cancel(State(st): S, Path(id): Path<u64>) -> ApiResult {
     }
 }
 
+// ---------- exports (text published beside a render) ----------
+
+/// A sequence's subtitles as SRT, in its own seconds — the master's unless `sequence`
+/// names another — returned as `srt`, or written (`write`, `output`) and the path returned.
+/// Reads the document and nothing else, and takes milliseconds, so it is not a job.
+async fn export_subtitles(State(st): S, Json(req): Json<crate::export::SubtitlesRequest>) -> ApiResult {
+    Ok(Json(blocking(move || crate::export::subtitles(&st, &req)).await?.map_err(ApiError::bad_request)?))
+}
+
+/// A sequence's chapters as YouTube description timestamps (`text`), or written to a file;
+/// `warnings` say what would keep YouTube from reading them as chapters.
+async fn export_chapters(State(st): S, Json(req): Json<crate::export::ChaptersRequest>) -> ApiResult {
+    Ok(Json(blocking(move || crate::export::chapters(&st, &req)).await?.map_err(ApiError::bad_request)?))
+}
+
 // ---------- websockets ----------
 
 async fn events_ws(State(st): S, ws: WebSocketUpgrade) -> Response {
@@ -1258,11 +1356,11 @@ fn serve_overlay_file(st: &AppState, dir: &std::path::Path, rest: &str) -> Resul
     file_response(&st.baker.overlay_file(dir, rest).unwrap_or(path))
 }
 
-/// The hyperframes runtime (from the repo's `node_modules`) and the shared `_vendor/`.
+/// The hyperframes runtime (from the repo's `node_modules`) and the libraries' `_vendor/`.
 async fn vendor(State(st): S, Path(rest): Path<String>) -> Result<Response, ApiError> {
-    let bases = [st.config.repo_root.join("node_modules/hyperframes/dist"), st.baker.vendor_dir.clone()];
-    bases
-        .iter()
+    let runtime = st.config.repo_root.join("node_modules/hyperframes/dist");
+    std::iter::once(&runtime)
+        .chain(&st.baker.vendor_dirs())
         .filter_map(|b| safe_join(b, &rest))
         .find(|c| c.is_file())
         .map(|c| file_response(&c))

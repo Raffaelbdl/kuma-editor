@@ -14,7 +14,7 @@
         display: flex;
         align-items: center;
         gap: calc(1.6 * var(--u));
-        font-family: "Segoe UI", system-ui, sans-serif;
+        font-family: var(--var-font), "Segoe UI", system-ui, sans-serif;
         color: #fff;
         will-change: transform, opacity;
       }
@@ -80,7 +80,7 @@
 
     <script>
       const { vars, duration, text, timeline } = kumaTemplate({
-        label: "Paris, France", sub: "48.8566° N, 2.3522° E", accent: "#ff4f00", anchor: { x: 0.68, y: 0.28 }, style: "pin", size: 1,
+        label: "Paris, France", sub: "48.8566° N, 2.3522° E", font: "Roboto", accent: "#ff4f00", anchor: { x: 0.68, y: 0.28 }, style: "pin", size: 1,
       });
       text("label", vars.label);
       text("sub", vars.sub);

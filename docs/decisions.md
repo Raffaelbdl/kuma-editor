@@ -634,6 +634,17 @@ rendered differently on another machine.
 outside the project. Dragging an `overlay.json` in from any folder is the natural gesture;
 it is copied into `overlays/` first, so the project still owns what it plays.
 
+**Every library's `_vendor/` is a layer** — adopted. `_vendor/<file>` resolves file by
+file through the overlay's own `_vendor/`, the one beside it, then every library's, the
+highest-precedence library first (`Baker::vendor_layers`). It used to stop at one library
+folder, the highest that had a `_vendor/` at all, so a library of someone's own blueprints
+that shipped its helpers (`mat.js`) and, rightly, no copy of `kuma.js` replaced kuma's runtime
+for every overlay once it was listed last; and listed first, its helpers were never found,
+so each project needed a copy in `overlays/_vendor/`. The key still hashes what is staged: an
+overlay whose layers are the ones it had keeps its key, and adding a library with a
+`_vendor/` re-bakes every overlay once, since any of them could reach the new files.
+`vendor_shadowed` compares a project copy with the first library that has the name.
+
 **Named vaults** — deferred. A shared set of blueprints for a series of videos, e.g.
 `<library>/vaults/<name>/`, chosen per project. `KUMA_LIBRARY` is a crude version today.
 

@@ -20,9 +20,11 @@ them, so `make_overlay_unique` first to change one.
 
 `_vendor/` holds shared files, referenced as `_vendor/<file>` from the overlay. Each file is
 looked for in turn in the overlay's own `_vendor/`, then the one next to it (a project's
-`overlays/_vendor/`), then the shared one from the highest-precedence library that has it
-(`<library>/blueprints/_vendor/`); the first that has it wins, and the bake stages and the
-daemon serves exactly those files. So files several overlays of a project share (a house
+`overlays/_vendor/`), then every library's (`<library>/blueprints/_vendor/`), the
+highest-precedence library first; the first that has it wins, and the bake stages and the
+daemon serves exactly those files. A library of your own blueprints therefore ships only its
+own helpers in its `_vendor/` (`house.js`, never a copy of `kuma.js`), and kuma's come from
+kuma's library. So files several overlays of a project share (a house
 stylesheet, a font, a logo) go in `overlays/_vendor/` under names of their own, and
 `_vendor/kuma.js` still comes from the library. A copy of one of kuma's own files there
 shadows it for every overlay beside it, and `check_overlay` warns (`vendor_shadowed`) when

@@ -1258,11 +1258,11 @@ fn serve_overlay_file(st: &AppState, dir: &std::path::Path, rest: &str) -> Resul
     file_response(&st.baker.overlay_file(dir, rest).unwrap_or(path))
 }
 
-/// The hyperframes runtime (from the repo's `node_modules`) and the shared `_vendor/`.
+/// The hyperframes runtime (from the repo's `node_modules`) and the libraries' `_vendor/`.
 async fn vendor(State(st): S, Path(rest): Path<String>) -> Result<Response, ApiError> {
-    let bases = [st.config.repo_root.join("node_modules/hyperframes/dist"), st.baker.vendor_dir.clone()];
-    bases
-        .iter()
+    let runtime = st.config.repo_root.join("node_modules/hyperframes/dist");
+    std::iter::once(&runtime)
+        .chain(&st.baker.vendor_dirs)
         .filter_map(|b| safe_join(b, &rest))
         .find(|c| c.is_file())
         .map(|c| file_response(&c))

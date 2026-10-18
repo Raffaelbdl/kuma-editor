@@ -790,7 +790,7 @@ async fn doctor(cli: &Cli) -> anyhow::Result<()> {
     println!("engine        {}", ok(cfg.repo_root.join("engine/build/kuma-preview").is_file(), "engine/build/kuma-preview", "cmake -S engine -B engine/build && cmake --build engine/build -j"));
     println!("melt          {}", ok(kuma_mlt::melt::melt_available(), "ok", "apt install melt"));
     println!("ffprobe       {}", ok(kuma_overlay::media::ffprobe_available(), "ok", "apt install ffmpeg"));
-    let baker = kuma_overlay::Baker::discover(&cfg.repo_root, PathBuf::new(), cfg.bakes_dir());
+    let baker = kuma_overlay::Baker::discover(&cfg.repo_root, Vec::new(), cfg.bakes_dir());
     println!("hyperframes   {}", baker.available().map(|v| format!("{v} ({})", baker.hyperframes.display())).unwrap_or_else(|e| format!("MISSING — npm install at the repo root ({e})")));
     let stt = kuma_overlay::Transcriber::discover(&cfg.repo_root, default_library_dirs().remove(0).join("models"));
     println!("whisper       {}", stt.available().map(|m| format!("{} with {}", stt.cli.display(), m.display())).unwrap_or_else(|e| format!("MISSING — {e}")));

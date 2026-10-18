@@ -144,16 +144,18 @@ impl Baker {
         Ok(LintReport { overlay, findings, renderer_skipped })
     }
 
-    /// `_vendor/` files the overlay references that are not the library's, where the
-    /// library has one of that name with other bytes: a copy of kuma's runtime beside the
-    /// overlays shadows the shipped one for every overlay there, and does not get its fixes.
-    /// A file of the project's own under a name of its own is what that folder is for.
+    /// `_vendor/` files the overlay references that are not a library's, where a library
+    /// has one of that name with other bytes: a copy of kuma's runtime beside the overlays
+    /// shadows the shipped one for every overlay there, and does not get its fixes. A file
+    /// of the project's own under a name of its own is what that folder is for.
     pub fn vendor_findings(&self, overlay_dir: &Path, html: &str) -> Vec<Finding> {
         let mut out = Vec::new();
         for href in local_refs(html).into_iter().collect::<std::collections::BTreeSet<_>>() {
             let Some(rel) = href.strip_prefix("_vendor/") else { continue };
-            let (Some(used), shipped) = (self.vendor_file(overlay_dir, rel), self.vendor_dir.join(rel)) else { continue };
-            if used.starts_with(&self.vendor_dir) || !shipped.is_file() || std::fs::read(&used).ok() == std::fs::read(&shipped).ok() {
+            let Some(used) = self.vendor_file(overlay_dir, rel) else { continue };
+            // What the libraries alone would give, which a library's own blueprint uses.
+            let Some(shipped) = self.vendor_dirs.iter().map(|d| d.join(rel)).find(|p| p.is_file()) else { continue };
+            if self.vendor_dirs.iter().any(|d| used.starts_with(d)) || std::fs::read(&used).ok() == std::fs::read(&shipped).ok() {
                 continue;
             }
             out.push(Finding::warn(
@@ -909,7 +911,7 @@ mod tests {
     fn with_fonts() -> (Baker, OverlayManifest) {
         let tmp = std::env::temp_dir();
         let fonts = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../library/fonts");
-        let baker = Baker::discover(&tmp, tmp.join("no-vendor"), tmp.join("no-cache")).with_fonts(vec![(fonts, crate::fonts::Origin::Library)]);
+        let baker = Baker::discover(&tmp, vec![tmp.join("no-vendor")], tmp.join("no-cache")).with_fonts(vec![(fonts, crate::fonts::Origin::Library)]);
         let manifest = serde_json::from_value(serde_json::json!({ "vars": {
             "font": { "type": "font", "default": "Inter" },
             "label": { "type": "text", "default": "" },
@@ -1061,7 +1063,7 @@ mod tests {
         std::fs::create_dir_all(&beside).unwrap();
         std::fs::write(beside.join("house.css"), "mine").unwrap();
         std::fs::write(beside.join("kuma.js"), "shipped").unwrap();
-        let baker = Baker::discover(tmp.path(), library, tmp.path().join("cache"));
+        let baker = Baker::discover(tmp.path(), vec![library], tmp.path().join("cache"));
         let html = r#"<link rel="stylesheet" href="_vendor/house.css"><script src="_vendor/kuma.js"></script><script src="_vendor/kuma.js"></script>"#;
         assert!(baker.vendor_findings(&overlay, html).is_empty());
         std::fs::write(beside.join("kuma.js"), "an older one").unwrap();

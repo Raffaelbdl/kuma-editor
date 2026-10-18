@@ -55,6 +55,12 @@ impl Config {
     pub fn blueprint_dirs(&self) -> Vec<PathBuf> {
         self.library_dirs.iter().map(|d| d.join("blueprints")).collect()
     }
+    /// Every library's shared `_vendor/`, highest precedence first, each consulted file by
+    /// file (`Baker::vendor_layers`): one library's helpers never hide another's. Project
+    /// overlays use them too.
+    pub fn vendor_dirs(&self) -> Vec<PathBuf> {
+        self.blueprint_dirs().into_iter().rev().map(|d| d.join("_vendor")).collect()
+    }
     /// Where "Save as blueprint" writes: the user library, not a `KUMA_LIBRARY` entry.
     pub fn user_blueprint_dir(&self) -> PathBuf {
         self.library_dirs[0].join("blueprints")
@@ -306,10 +312,7 @@ impl AppState {
             Project::new_default(Project::name_from_path(&config.project_file), 1920, 1080, kuma_core::Fps::default())
         };
         std::fs::create_dir_all(config.cache_dir())?;
-        // The shared `_vendor/` is the highest-precedence library that has one; project
-        // overlays use it too.
-        let vendor_dir = config.blueprint_dirs().iter().rev().map(|d| d.join("_vendor")).find(|d| d.is_dir()).unwrap_or_else(|| config.user_blueprint_dir().join("_vendor"));
-        let baker = Baker::discover(&config.repo_root, vendor_dir, config.bakes_dir()).with_fonts(config.font_dirs());
+        let baker = Baker::discover(&config.repo_root, config.vendor_dirs(), config.bakes_dir()).with_fonts(config.font_dirs());
         let transcriber = Transcriber::discover(&config.repo_root, config.library_dirs[0].join("models"));
         let (events, _) = broadcast::channel(256);
         let st = AppState {

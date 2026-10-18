@@ -32,7 +32,7 @@ fn lint(baker: &Baker, dir: &Path) -> LintReport {
 
 fn baker(tmp: &tempfile::TempDir) -> (Baker, PathBuf) {
     let root = repo_root();
-    let vendor = root.join("library/blueprints/_vendor");
+    let vendor = vec![root.join("library/blueprints/_vendor")];
     // The starter fonts, as `kuma library` installs them: the titles name them.
     let fonts = vec![(root.join("library/fonts"), kuma_overlay::Origin::Library)];
     (Baker::discover(&root, vendor, tmp.path().join("cache")).with_fonts(fonts), root)

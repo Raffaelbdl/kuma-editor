@@ -117,8 +117,10 @@ pub struct Baker {
     pub browser: Option<PathBuf>,
     /// Installed hyperframes version (part of the cache key); `None` if it cannot run.
     pub version: Option<String>,
-    /// Shared `_vendor/` library used when an overlay has none of its own.
-    pub vendor_dir: PathBuf,
+    /// Every library's shared `_vendor/`, highest precedence first: what an overlay's
+    /// `_vendor/<file>` falls through to when neither its own folder nor the one beside it
+    /// has that file.
+    pub vendor_dirs: Vec<PathBuf>,
     /// What `font` vars resolve against. Empty unless the caller sets it.
     pub fonts: FontLibrary,
     /// How many renders may run at once, across every caller of this baker and its clones
@@ -143,7 +145,7 @@ struct Slots {
 
 impl Baker {
     /// Locate hyperframes and a browser, preferring the repo's own `node_modules`.
-    pub fn discover(repo_root: &Path, vendor_dir: PathBuf, cache_dir: PathBuf) -> Self {
+    pub fn discover(repo_root: &Path, vendor_dirs: Vec<PathBuf>, cache_dir: PathBuf) -> Self {
         let hyperframes = std::env::var_os("KUMA_HYPERFRAMES")
             .map(PathBuf::from)
             .filter(|p| p.is_file())
@@ -161,7 +163,7 @@ impl Baker {
             hyperframes,
             browser,
             version: None,
-            vendor_dir,
+            vendor_dirs,
             fonts: FontLibrary::default(),
             concurrency: kuma_mlt::melt::threads_from_env("KUMA_BAKE_JOBS"),
             inflight: Arc::default(),
@@ -173,16 +175,19 @@ impl Baker {
 
     /// The `_vendor/` folders an overlay resolves `_vendor/<file>` against, highest
     /// precedence first: its own, the one beside it (a project's `overlays/_vendor/`), then
-    /// the shared library's. A file is looked for in each in turn, so a folder of the
-    /// project's own shared files adds to kuma's runtime rather than hiding all of it. The
-    /// bake stages, the lint reads and the preview serves the same files.
+    /// every library's, the last library first. A file is looked for in each in turn, so a
+    /// folder of the project's own shared files adds to kuma's runtime rather than hiding
+    /// all of it, and a library of someone's own blueprints can ship its helpers beside
+    /// kuma's without copying or replacing them. The bake stages, the lint reads and the
+    /// preview serves the same files.
     pub fn vendor_layers(&self, overlay_dir: &Path) -> Vec<PathBuf> {
         let sibling = overlay_dir.parent().map(|p| p.join("_vendor"));
         // A blueprint's sibling is usually the library's own `_vendor/`.
         let mut seen = std::collections::HashSet::new();
-        [Some(overlay_dir.join("_vendor")), sibling, Some(self.vendor_dir.clone())]
+        [Some(overlay_dir.join("_vendor")), sibling]
             .into_iter()
             .flatten()
+            .chain(self.vendor_dirs.iter().cloned())
             .filter(|dir| dir.is_dir() && seen.insert(dir.canonicalize().unwrap_or_else(|_| dir.clone())))
             .collect()
     }
@@ -851,7 +856,7 @@ mod tests {
         std::fs::create_dir_all(&overlay).unwrap();
         std::fs::write(overlay.join("overlay.json"), "{}").unwrap();
         std::fs::write(overlay.join("index.html"), r#"<html><body><div data-composition-id="main" data-no-timeline></div></body></html>"#).unwrap();
-        let mut baker = Baker::discover(tmp.path(), library, tmp.path().join("cache"));
+        let mut baker = Baker::discover(tmp.path(), vec![library], tmp.path().join("cache"));
         (baker.version, baker.browser) = (None, None);
         (tmp, baker, overlay)
     }
@@ -892,6 +897,26 @@ mod tests {
         assert_eq!(baker.vendor_file(&overlay, ".notes"), None, "what is not staged is not served");
         assert_eq!(baker.vendor_file(&overlay, "../title/index.html"), None);
         assert_eq!(baker.vendor_file(&overlay, "nope.js"), None);
+    }
+
+    /// Every library's `_vendor/` is a layer: a library of someone's own blueprints ships
+    /// its helpers beside kuma's, and the higher library wins only the names both have. One
+    /// library's whole folder used to win, so a library without `kuma.js` broke every overlay.
+    #[test]
+    fn every_librarys_vendor_is_a_layer() {
+        let (tmp, mut baker, overlay) = vendor_fixture();
+        let house = tmp.path().join("house/blueprints/_vendor");
+        std::fs::create_dir_all(&house).unwrap();
+        std::fs::write(house.join("house.js"), "house helpers").unwrap();
+        std::fs::write(house.join("gsap.min.js"), "house gsap").unwrap();
+        baker.vendor_dirs.insert(0, house.clone());
+        for (file, holds) in [("kuma.js", "library kuma"), ("house.js", "house helpers"), ("gsap.min.js", "house gsap")] {
+            assert_eq!(std::fs::read_to_string(baker.vendor_file(&overlay, file).unwrap()).unwrap(), holds, "{file}");
+        }
+        // A library's own blueprint sees the same layers, its library's `_vendor/` once.
+        let blueprint = house.parent().unwrap().join("house-title");
+        std::fs::create_dir_all(&blueprint).unwrap();
+        assert_eq!(baker.vendor_layers(&blueprint), [house, tmp.path().join("library/_vendor")]);
     }
 
     /// What is staged carries the entry's language on `<html lang>`, so the bake and the

@@ -32,7 +32,7 @@ fn rgba_at(png: &std::path::Path, x: u32, y: u32) -> [u8; 4] {
 fn bakes_location_tag_with_alpha_and_caches() {
     let root = repo_root();
     let tmp = tempfile::tempdir().unwrap();
-    let baker = Baker::discover(&root, root.join("library/blueprints/_vendor"), tmp.path().join("cache"));
+    let baker = Baker::discover(&root, vec![root.join("library/blueprints/_vendor")], tmp.path().join("cache"));
     if baker.available().is_err() {
         eprintln!("hyperframes unavailable; skipping bake test");
         return;
@@ -113,7 +113,7 @@ fn bakes_location_tag_with_alpha_and_caches() {
 fn previews_an_overlay_as_an_animated_webp_with_alpha() {
     let root = repo_root();
     let tmp = tempfile::tempdir().unwrap();
-    let baker = Baker::discover(&root, root.join("library/blueprints/_vendor"), tmp.path().join("cache"));
+    let baker = Baker::discover(&root, vec![root.join("library/blueprints/_vendor")], tmp.path().join("cache"));
     if baker.available().is_err() || (baker.browser.is_none() && std::env::var_os("KUMA_ALLOW_BROWSER_DOWNLOAD").is_none()) {
         eprintln!("hyperframes or a browser is unavailable; skipping preview test");
         return;
@@ -146,7 +146,7 @@ fn previews_an_overlay_as_an_animated_webp_with_alpha() {
 fn a_drawn_overlay_bakes_the_same_pixels_twice() {
     let root = repo_root();
     let tmp = tempfile::tempdir().unwrap();
-    let baker = |cache: &str| Baker::discover(&root, root.join("library/blueprints/_vendor"), tmp.path().join(cache));
+    let baker = |cache: &str| Baker::discover(&root, vec![root.join("library/blueprints/_vendor")], tmp.path().join(cache));
     let (a, b) = (baker("a"), baker("b"));
     if a.available().is_err() || (a.browser.is_none() && std::env::var_os("KUMA_ALLOW_BROWSER_DOWNLOAD").is_none()) {
         eprintln!("hyperframes or a browser is unavailable; skipping drawn-overlay bake test");
@@ -182,7 +182,7 @@ fn a_drawn_overlay_bakes_the_same_pixels_twice() {
 fn an_apostrophe_in_a_var_leaves_the_vars_after_it_alone() {
     let root = repo_root();
     let tmp = tempfile::tempdir().unwrap();
-    let baker = Baker::discover(&root, root.join("library/blueprints/_vendor"), tmp.path().join("cache"));
+    let baker = Baker::discover(&root, vec![root.join("library/blueprints/_vendor")], tmp.path().join("cache"));
     if baker.available().is_err() || (baker.browser.is_none() && std::env::var_os("KUMA_ALLOW_BROWSER_DOWNLOAD").is_none()) {
         eprintln!("hyperframes or a browser is unavailable; skipping");
         return;
@@ -215,7 +215,7 @@ fn an_apostrophe_in_a_var_leaves_the_vars_after_it_alone() {
 fn an_entry_bakes_in_its_own_language_with_shared_files_from_beside_it() {
     let root = repo_root();
     let tmp = tempfile::tempdir().unwrap();
-    let baker = Baker::discover(&root, root.join("library/blueprints/_vendor"), tmp.path().join("cache"));
+    let baker = Baker::discover(&root, vec![root.join("library/blueprints/_vendor")], tmp.path().join("cache"));
     if baker.available().is_err() || (baker.browser.is_none() && std::env::var_os("KUMA_ALLOW_BROWSER_DOWNLOAD").is_none()) {
         eprintln!("hyperframes or a browser is unavailable; skipping");
         return;
@@ -266,7 +266,7 @@ fn stand_in_writing(tmp: &std::path::Path, frames: &str) -> (Baker, PathBuf, Ove
     std::fs::write(overlay.join("overlay.json"), r#"{ "name": "Probe" }"#).unwrap();
     std::fs::write(overlay.join("index.html"), "<html><body data-composition-id=\"root\"></body></html>").unwrap();
     let manifest = OverlayManifest::load(&overlay).unwrap();
-    let mut baker = Baker::discover(tmp, tmp.join("vendor"), tmp.join("cache"));
+    let mut baker = Baker::discover(tmp, vec![tmp.join("vendor")], tmp.join("cache"));
     baker.hyperframes = fake;
     baker.version = Some("stand-in".into());
     baker.browser = None;
@@ -387,7 +387,7 @@ fn a_clip_between_frames_bakes_the_frames_it_is_placed_on() {
 fn on_frames_bakes_what_on_frame_does() {
     let root = repo_root();
     let tmp = tempfile::tempdir().unwrap();
-    let baker = Baker::discover(&root, root.join("library/blueprints/_vendor"), tmp.path().join("cache"));
+    let baker = Baker::discover(&root, vec![root.join("library/blueprints/_vendor")], tmp.path().join("cache"));
     if baker.available().is_err() || (baker.browser.is_none() && std::env::var_os("KUMA_ALLOW_BROWSER_DOWNLOAD").is_none()) {
         eprintln!("hyperframes or a browser is unavailable; skipping");
         return;

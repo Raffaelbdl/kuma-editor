@@ -1,111 +1,72 @@
-//! Where a var's text lands, and what language it is drawn in there.
+//! Where a var's text lands, and the `lang` there: what `cjk_lang` reads (`lint.rs`).
 //!
-//! The `cjk_lang` check is about the language an element's text is drawn in. Chromium picks
-//! the regional forms of han characters, and the font a missing character falls back to, by
-//! the element's own language: its nearest `lang`, which is `<html lang>` only when nothing
-//! nearer says one. A Japanese name in a French page is `<span lang="ja">`, and the page's
-//! `lang` is then right to stay French.
-//!
-//! Text reaches an overlay through vars, at run time, so the markup alone does not say where
-//! a var's text goes; the overlay's own scripts do. This reads them for the writes the
-//! contract teaches and a few DOM ones, and nothing cleverer:
-//!
-//! - `text("id", …vars.name…)` — `kumaTemplate`'s setter, as `text`, `tpl.text` or the
-//!   name a destructuring gives it (`text: setText`) — lands in `#id`;
-//! - `el.textContent = …`, `innerText`, `innerHTML`, `outerHTML` (and `+=`), and
-//!   `el.append(…)`, `prepend`, `replaceChildren`, land in `el`, when `el` is
-//!   `getElementById("id")`, `querySelector("#id")`, a setter call, or a name declared as
-//!   one of those;
-//! - a `${…}` inside a template literal lands inside the template's own markup first: a
-//!   `lang` on an element of the template around it decides, and without one the template
-//!   lands wherever it is written;
-//! - anything else that writes text (`createTextNode`, `insertAdjacentHTML`, a write to an
-//!   element it cannot name) lands somewhere unknown, which counts as the page.
-//!
-//! An element's language is its own `lang` or its nearest ancestor's below `<html>`, from the
-//! markup as written or set by a script (`el.lang = …`, `el.setAttribute("lang", …)`) to a
-//! string or a var's value. A read of a var that writes no text (`if (vars.name)`, a length)
-//! is no landing at all. A var with no landing found is on the page, as before.
-//!
-//! The limits are those of reading code without running it: text that travels through a
-//! local first (`const words = vars.title.split(…)`, then `span.textContent = w`) is not
-//! followed, so such a var is judged by its other landings, or by the page when it has none —
-//! conservative, since that is the warning that was always given. What is not conservative
-//! is a var written both into a `lang="ja"` element and, by a route not followed, into
-//! another: only the first is seen.
+//! Chromium picks the regional forms of han characters, and the font a missing one falls
+//! back to, by the nearest `lang` — a Japanese name in a French page is `<span lang="ja">`,
+//! and the page stays French. Text reaches an overlay through vars at run time, so this
+//! reads the overlay's own scripts for the contract's setter, `text("id", …vars.name…)` (as
+//! `text`, `tpl.text`, or the name `text: setText` gives it), whose text lands in `#id`
+//! under the nearest `lang` the markup gives it. Any other write of a var's text — a DOM
+//! write (`textContent`, `innerHTML`, `append`…), a template literal — lands on the page, and
+//! so does a var found landing nowhere; a read that writes nothing (`if (vars.name)`, a
+//! length) is no landing. What it cannot place is judged by the page's `lang`, so the check
+//! errs towards warning. The one way to silence it wrongly is a var set into a `lang="ja"`
+//! element and also written by a route that is not a write here (through a local first).
 
 use std::collections::HashMap;
 
-use serde_json::{Map, Value};
-
 use crate::inject::{attr, is_void, tags};
 
-/// The language a landing's text is drawn in.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) enum Lang {
-    /// Nothing between it and `<html>` says one: the page's.
-    Page,
-    /// A `lang` says this.
-    Is(String),
-    /// A script sets one to something this cannot read.
-    Unread,
-}
-
-/// A place a var's text is written into.
+/// A place a var's text is written: an element (`at`, `#id`) or the page (`None`), with the
+/// nearest `lang` it gives (`None`: the page's).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct Landing {
-    pub lang: Lang,
-    /// Where, for a message: `#id`, or `None` for markup a script writes or a place unknown.
+    pub lang: Option<String>,
     pub at: Option<String>,
 }
+
+const PAGE: Landing = Landing { lang: None, at: None };
 
 /// An overlay's markup and its own scripts, read once for every var asked about.
 pub(super) struct Page<'a> {
     js: Js<'a>,
-    elements: Elements,
-    /// The `lang`s scripts set, by element id.
-    dynamic: HashMap<String, Lang>,
-    vars: &'a Map<String, Value>,
+    /// Each element with an id, by id, with the nearest `lang` the markup gives it.
+    langs: HashMap<String, Option<String>>,
 }
 
 impl<'a> Page<'a> {
-    /// `scripts` run against `html`; `vars` are the resolved vars a `lang` may be set from.
-    pub(super) fn read(html: &str, scripts: &'a str, vars: &'a Map<String, Value>) -> Self {
-        let js = Js::scan(scripts);
-        let dynamic = js.dynamic_langs(vars);
-        Page { js, elements: Elements::read(html), dynamic, vars }
+    /// `scripts` (comments removed) run against `html`.
+    pub(super) fn read(html: &str, scripts: &'a str) -> Self {
+        Page { js: Js::scan(scripts), langs: element_langs(html) }
     }
 
-    /// Every place the scripts write the text of the var `var` into.
+    /// Every place the scripts write the text of the var `var` into; the page when none.
     pub(super) fn landings(&self, var: &str) -> Vec<Landing> {
         let mut out = Vec::new();
         for p in self.js.reads_of(var) {
-            let landing = match self.js.sink(p, self.vars) {
+            let landing = match self.js.sink(p) {
                 None => continue,
-                Some(Sink::Lang(lang)) => Landing { lang, at: None },
-                Some(Sink::Element(id)) => Landing { lang: self.elements.lang_of(&id, &self.dynamic), at: Some(format!("#{id}")) },
+                Some(Sink::Element(id)) => Landing { lang: self.langs.get(&id).cloned().flatten(), at: Some(format!("#{id}")) },
+                Some(Sink::Page) => PAGE,
             };
             if !out.contains(&landing) {
                 out.push(landing);
             }
+        }
+        if out.is_empty() {
+            out.push(PAGE);
         }
         out
     }
 }
 
 /// Where one read's text goes.
-#[derive(Debug, PartialEq)]
 enum Sink {
     Element(String),
-    /// Inside markup a script writes, under a `lang` of that markup, or somewhere this
-    /// cannot name, which is the page.
-    Lang(Lang),
+    Page,
 }
 
-/// Written somewhere this cannot name: the page, as far as anyone can tell.
-const UNPLACED: Sink = Sink::Lang(Lang::Page);
-
-/// What each byte of a script is: code, a quoted string, or a template literal's text.
+/// What each byte of a script is: code, a quoted string, or inside a template literal
+/// (its `${…}` included).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Kind {
     Code,
@@ -117,48 +78,36 @@ enum Kind {
 struct Js<'a> {
     src: &'a str,
     kind: Vec<Kind>,
-    /// For a byte inside a template literal (its interpolations included), where the
-    /// outermost template around it opens.
-    owner: Vec<Option<usize>>,
-    /// Each `${…}`: where its template opens, where its code starts, where it ends.
-    interps: Vec<(usize, usize, usize)>,
     /// The names `kumaTemplate`'s `text` goes by besides `text`.
     setters: Vec<String>,
-    /// Names declared as an element: `const card = document.getElementById("card")`.
-    aliases: HashMap<String, String>,
 }
 
 impl<'a> Js<'a> {
     fn scan(src: &'a str) -> Self {
+        // A stack, since a template's `${…}` is code that may open templates of its own.
         enum Frame {
-            Code { depth: usize, interp: Option<usize> },
-            Tmpl { start: usize },
+            Code { depth: usize },
+            Tmpl,
         }
         let b = src.as_bytes();
         let n = b.len();
         let mut kind = vec![Kind::Code; n];
-        let mut owner = vec![None; n];
-        let mut interps: Vec<(usize, usize, usize)> = Vec::new();
-        let mut stack = vec![Frame::Code { depth: 0, interp: None }];
-        // Where the outermost open template starts, if one is open.
-        let outermost = |stack: &[Frame]| stack.iter().find_map(|f| if let Frame::Tmpl { start } = f { Some(*start) } else { None });
+        let mut stack = vec![Frame::Code { depth: 0 }];
         let mut i = 0;
         while i < n {
             let from = i;
-            let before = outermost(&stack);
+            let in_template = stack.len() > 1;
             match stack.last_mut().expect("the bottom frame is never popped") {
-                Frame::Code { depth, interp } => match b[i] {
+                Frame::Code { depth } => match b[i] {
                     q @ (b'"' | b'\'') => {
                         i += 1;
                         while i < n && b[i] != q && b[i] != b'\n' {
                             i += if b[i] == b'\\' { 2 } else { 1 };
                         }
-                        i = (i + 1).min(n);
-                        kind[from..i].fill(Kind::Str);
+                        i += 1;
                     }
                     b'`' => {
-                        kind[i] = Kind::Tmpl;
-                        stack.push(Frame::Tmpl { start: i });
+                        stack.push(Frame::Tmpl);
                         i += 1;
                     }
                     b'{' => {
@@ -169,46 +118,37 @@ impl<'a> Js<'a> {
                         *depth -= 1;
                         i += 1;
                     }
-                    b'}' => {
-                        if let Some(k) = *interp {
-                            interps[k].2 = i;
-                            kind[i] = Kind::Tmpl;
-                            stack.pop();
-                        }
+                    b'}' if in_template => {
+                        stack.pop();
                         i += 1;
                     }
                     _ => i += 1,
                 },
-                Frame::Tmpl { start } => {
-                    let start = *start;
-                    kind[i] = Kind::Tmpl;
-                    match b[i] {
-                        b'\\' => {
-                            i = (i + 2).min(n);
-                            kind[from..i].fill(Kind::Tmpl);
-                        }
-                        b'`' => {
-                            stack.pop();
-                            i += 1;
-                        }
-                        b'$' if b.get(i + 1) == Some(&b'{') => {
-                            kind[i + 1] = Kind::Tmpl;
-                            interps.push((start, i + 2, n));
-                            stack.push(Frame::Code { depth: 0, interp: Some(interps.len() - 1) });
-                            i += 2;
-                        }
-                        _ => i += 1,
+                Frame::Tmpl => match b[i] {
+                    b'\\' => i += 2,
+                    b'`' => {
+                        stack.pop();
+                        i += 1;
                     }
-                }
+                    b'$' if b.get(i + 1) == Some(&b'{') => {
+                        stack.push(Frame::Code { depth: 0 });
+                        i += 2;
+                    }
+                    _ => i += 1,
+                },
             }
-            // The bytes that open and close a template are its own.
-            if let Some(open) = before.or_else(|| outermost(&stack)) {
-                owner[from..i].fill(Some(open));
-            }
+            i = i.min(n);
+            let what = if in_template || stack.len() > 1 {
+                Kind::Tmpl
+            } else if matches!(b[from], b'"' | b'\'') {
+                Kind::Str
+            } else {
+                Kind::Code
+            };
+            kind[from..i].fill(what);
         }
-        let mut js = Js { src, kind, owner, interps, setters: Vec::new(), aliases: HashMap::new() };
+        let mut js = Js { src, kind, setters: Vec::new() };
         js.setters = js.setter_aliases();
-        js.aliases = js.element_aliases();
         js
     }
 
@@ -216,69 +156,44 @@ impl<'a> Js<'a> {
         self.kind[i] == Kind::Code
     }
 
-    /// Each read of `vars.<var>` (or `vars["<var>"]`) in code, by where it starts.
+    /// Each read of `vars.<var>` (or `vars["<var>"]`) outside a quoted string, by where it starts.
     fn reads_of(&self, var: &str) -> Vec<usize> {
         let b = self.src.as_bytes();
-        let mut out = Vec::new();
-        for (i, _) in self.src.match_indices("vars") {
-            if !self.code(i) || (i > 0 && is_ident(b[i - 1])) {
-                continue;
-            }
+        let named = |i: usize| {
             let rest = &self.src[i + 4..];
-            let named = if let Some(r) = rest.strip_prefix('.') {
+            if let Some(r) = rest.strip_prefix('.') {
                 r.strip_prefix(var).is_some_and(|after| !after.bytes().next().is_some_and(is_ident))
             } else if let Some(r) = rest.strip_prefix('[') {
                 let r = r.trim_start();
                 [format!("\"{var}\""), format!("'{var}'")].iter().any(|q| r.starts_with(q.as_str()))
             } else {
                 false
-            };
-            if named {
-                out.push(i);
             }
-        }
-        out
+        };
+        self.src
+            .match_indices("vars")
+            .map(|(i, _)| i)
+            .filter(|&i| self.kind[i] != Kind::Str && !(i > 0 && is_ident(b[i - 1])) && named(i))
+            .collect()
     }
 
     /// `text: <name>` in a destructuring of `kumaTemplate`'s result.
     fn setter_aliases(&self) -> Vec<String> {
         let b = self.src.as_bytes();
-        let mut out = Vec::new();
-        for (i, _) in self.src.match_indices("text") {
-            if !self.code(i) || (i > 0 && (is_ident(b[i - 1]) || b[i - 1] == b'.')) {
-                continue;
-            }
-            let Some(rest) = self.src[i + 4..].trim_start().strip_prefix(':') else { continue };
-            let rest = rest.trim_start();
-            let name: String = rest.bytes().take_while(|&c| is_ident(c)).map(char::from).collect();
-            if !name.is_empty() && rest[name.len()..].trim_start().starts_with([',', '}']) {
-                out.push(name);
-            }
-        }
-        out
+        self.src
+            .match_indices("text")
+            .map(|(i, _)| i)
+            .filter(|&i| self.code(i) && !(i > 0 && (is_ident(b[i - 1]) || b[i - 1] == b'.')))
+            .filter_map(|i| {
+                let rest = self.src[i + 4..].trim_start().strip_prefix(':')?.trim_start();
+                let name: String = rest.bytes().take_while(|&c| is_ident(c)).map(char::from).collect();
+                (!name.is_empty() && rest[name.len()..].trim_start().starts_with([',', '}'])).then_some(name)
+            })
+            .collect()
     }
 
     fn is_setter(&self, callee: &str) -> bool {
         callee == "text" || callee.ends_with(".text") || self.setters.iter().any(|s| s == callee)
-    }
-
-    /// `<name> = <element>` anywhere: the element a name holds.
-    fn element_aliases(&self) -> HashMap<String, String> {
-        let mut out = HashMap::new();
-        for (i, _) in self.src.match_indices('=') {
-            if !self.code(i) || !self.is_assignment(i) {
-                continue;
-            }
-            let name = self.src[..i].trim_end();
-            let name = &name[name.bytes().rposition(|c| !is_ident(c)).map_or(0, |k| k + 1)..];
-            if name.is_empty() || name.bytes().next().is_some_and(|c| c.is_ascii_digit()) {
-                continue;
-            }
-            if let Some(id) = self.element_of(self.expr_after(i + 1)) {
-                out.insert(name.to_string(), id);
-            }
-        }
-        out
     }
 
     /// True when the `=` at `i` assigns: not `==`, `=>`, `<=`, `>=`, `!=`.
@@ -289,24 +204,6 @@ impl<'a> Js<'a> {
         !matches!(next, Some(b'=' | b'>')) && !matches!(prev, Some(b'=' | b'!' | b'<' | b'>'))
     }
 
-    /// The element an expression names, if it names one by id.
-    fn element_of(&self, expr: &str) -> Option<String> {
-        let expr = expr.trim();
-        if let Some(id) = self.aliases.get(expr) {
-            return Some(id.clone());
-        }
-        let (callee, args) = split_call(expr)?;
-        let first = args.split(',').next().map(str::trim).and_then(string_literal)?;
-        if callee.ends_with("getElementById") || self.is_setter(callee) {
-            return Some(first);
-        }
-        if callee.ends_with("querySelector") {
-            let id = first.strip_prefix('#')?;
-            return id.bytes().all(|c| is_ident(c) || c == b'-').then(|| id.to_string());
-        }
-        None
-    }
-
     /// The expression that ends at `end`: names, dots and bracketed groups, read backwards.
     fn expr_before(&self, end: usize) -> &'a str {
         let b = self.src.as_bytes();
@@ -315,150 +212,35 @@ impl<'a> Js<'a> {
             j -= 1;
         }
         let stop = j;
+        let mut depth = 0usize;
         while j > 0 {
-            let c = b[j - 1];
-            if self.code(j - 1) && (is_ident(c) || c == b'.') {
-                j -= 1;
-            } else if self.code(j - 1) && matches!(c, b')' | b']') {
-                let mut depth = 0usize;
-                let mut k = j;
-                let mut matched = false;
-                while k > 0 {
-                    k -= 1;
-                    if !self.code(k) {
-                        continue;
-                    }
-                    match b[k] {
-                        b')' | b']' => depth += 1,
-                        b'(' | b'[' => {
-                            depth -= 1;
-                            if depth == 0 {
-                                matched = true;
-                                break;
-                            }
-                        }
-                        _ => {}
-                    }
+            let k = j - 1;
+            if self.code(k) {
+                match b[k] {
+                    b')' | b']' => depth += 1,
+                    b'(' | b'[' if depth > 0 => depth -= 1,
+                    c if depth == 0 && !(is_ident(c) || c == b'.') => break,
+                    _ => {}
                 }
-                if !matched {
-                    break;
-                }
-                j = k;
-            } else {
+            } else if depth == 0 {
                 break;
             }
+            j = k;
         }
         &self.src[j..stop]
     }
 
-    /// The expression that starts at `start`: names, dots, strings and bracketed groups.
-    fn expr_after(&self, start: usize) -> &'a str {
-        let b = self.src.as_bytes();
-        let mut i = start;
-        while i < b.len() && b[i].is_ascii_whitespace() {
-            i += 1;
-        }
-        let from = i;
-        let mut depth = 0usize;
-        while i < b.len() {
-            if !self.code(i) {
-                i += 1;
-                continue;
-            }
-            match b[i] {
-                b'(' | b'[' => depth += 1,
-                b')' | b']' if depth > 0 => depth -= 1,
-                c if depth == 0 && !(is_ident(c) || c == b'.') => break,
-                _ => {}
-            }
-            i += 1;
-        }
-        &self.src[from..i]
-    }
-
-    /// The language an expression gives: a string, or a var's value; anything else is unread.
-    fn lang_of(expr: &str, vars: &Map<String, Value>) -> Lang {
-        let read = || -> Option<String> {
-            let expr = expr.trim();
-            if let Some(s) = string_literal(expr) {
-                return Some(s);
-            }
-            let at = expr.rfind("vars")?;
-            if at > 0 && !expr[..at].ends_with('.') {
-                return None;
-            }
-            let rest = &expr[at + 4..];
-            let name = match rest.strip_prefix('.') {
-                Some(n) => n.to_string(),
-                None => string_literal(rest.strip_prefix('[')?.strip_suffix(']')?.trim())?,
-            };
-            if !name.bytes().all(is_ident) || !expr[..at].bytes().all(|c| is_ident(c) || c == b'.') {
-                return None;
-            }
-            vars.get(&name)?.as_str().map(|s| s.trim().to_string())
-        };
-        read().map_or(Lang::Unread, Lang::Is)
-    }
-
-    /// `lang`s scripts set: `el.lang = …` and `el.setAttribute("lang", …)`, by element id.
-    fn dynamic_langs(&self, vars: &Map<String, Value>) -> HashMap<String, Lang> {
-        let b = self.src.as_bytes();
-        let mut out = HashMap::new();
-        for (i, _) in self.src.match_indices(".lang") {
-            if !self.code(i) || b.get(i + 5).is_some_and(|&c| is_ident(c)) {
-                continue;
-            }
-            let after = self.src[i + 5..].trim_start();
-            let eq = self.src.len() - after.len();
-            if !after.starts_with('=') || !self.is_assignment(eq) {
-                continue;
-            }
-            if let Some(id) = self.element_of(self.expr_before(i)) {
-                out.insert(id, Self::lang_of(self.expr_after(eq + 1), vars));
-            }
-        }
-        for (i, _) in self.src.match_indices(".setAttribute(") {
-            if !self.code(i) {
-                continue;
-            }
-            let call = self.expr_after(i + 1);
-            let Some((_, args)) = split_call(call) else { continue };
-            let Some((name, value)) = args.split_once(',') else { continue };
-            if string_literal(name.trim()).as_deref() != Some("lang") {
-                continue;
-            }
-            if let Some(id) = self.element_of(self.expr_before(i)) {
-                out.insert(id, Self::lang_of(value, vars));
-            }
-        }
-        out
-    }
-
-    /// The innermost `${…}` around `p`.
-    fn interp_around(&self, p: usize) -> Option<(usize, usize)> {
-        self.interps.iter().filter(|&&(_, from, to)| from <= p && p < to).max_by_key(|&&(_, from, _)| from).map(|&(t, from, _)| (t, from))
-    }
-
     /// Where the text read at `p` is written, if it is written anywhere.
-    fn sink(&self, mut p: usize, vars: &Map<String, Value>) -> Option<Sink> {
-        // Inside a template: its own markup first, then wherever the template goes.
-        while let Some((open, from)) = self.interp_around(p) {
-            let markup = &self.src[open + 1..from - 2];
-            if let Some(lang) = template_lang(markup, vars) {
-                return Some(Sink::Lang(lang));
-            }
-            p = open;
+    fn sink(&self, p: usize) -> Option<Sink> {
+        // In a template literal: written as markup or a string somewhere this does not follow.
+        if self.kind[p] == Kind::Tmpl {
+            return Some(Sink::Page);
         }
         let b = self.src.as_bytes();
         let mut depth = 0usize;
         let mut j = p;
         while j > 0 {
             j -= 1;
-            if let Some(open) = self.owner[j] {
-                // A whole template before `p`: one value, stepped over.
-                j = open;
-                continue;
-            }
             if !self.code(j) {
                 continue;
             }
@@ -467,38 +249,26 @@ impl<'a> Js<'a> {
                 b'(' | b'[' | b'{' if depth > 0 => depth -= 1,
                 b'{' => return None,
                 b';' if depth == 0 => return None,
-                b'[' => {}
                 b'(' => {
                     let callee = self.expr_before(j);
                     if self.is_setter(callee) {
-                        let args = &self.src[j + 1..p];
-                        let mut parts = args.splitn(2, ',');
-                        let id = parts.next().map(str::trim).and_then(string_literal);
+                        let mut args = self.src[j + 1..p].splitn(2, ',');
+                        let id = args.next().map(str::trim).and_then(string_literal);
                         // An id the check cannot read is a place it cannot name.
-                        return match (id, parts.next()) {
-                            (Some(id), Some(_)) => Some(Sink::Element(id)),
-                            (None, Some(_)) => Some(UNPLACED),
-                            (_, None) => None,
-                        };
+                        return args.next().map(|_| id.map_or(Sink::Page, Sink::Element));
                     }
-                    let method = callee.rsplit('.').next().unwrap_or(callee);
-                    let object = callee.strip_suffix(method).and_then(|o| o.strip_suffix('.'));
-                    match method {
+                    match callee.rsplit('.').next().unwrap_or(callee) {
                         "if" | "while" | "for" | "switch" | "catch" => return None,
-                        "append" | "prepend" | "replaceChildren" => {
-                            return Some(object.and_then(|o| self.element_of(o)).map_or(UNPLACED, Sink::Element));
-                        }
-                        "createTextNode" | "insertAdjacentText" | "insertAdjacentHTML" | "before" | "after" | "replaceWith" | "write" | "writeln" => {
-                            return Some(UNPLACED);
+                        "append" | "prepend" | "replaceChildren" | "createTextNode" | "insertAdjacentText" | "insertAdjacentHTML" | "before" | "after" | "replaceWith" | "write" | "writeln" => {
+                            return Some(Sink::Page);
                         }
                         _ => {}
                     }
                 }
                 b'=' if depth == 0 && self.is_assignment(j) => {
-                    let lhs_end = if j > 0 && b[j - 1] == b'+' { j - 1 } else { j };
-                    let lhs = self.expr_before(lhs_end);
-                    let target = ["textContent", "innerText", "innerHTML", "outerHTML"].iter().find_map(|prop| lhs.strip_suffix(prop)?.strip_suffix('.'));
-                    return target.map(|el| self.element_of(el).map_or(UNPLACED, Sink::Element));
+                    let lhs = self.expr_before(if j > 0 && b[j - 1] == b'+' { j - 1 } else { j });
+                    let written = ["textContent", "innerText", "innerHTML", "outerHTML"].iter().any(|prop| lhs.strip_suffix(prop).is_some_and(|o| o.ends_with('.')));
+                    return written.then_some(Sink::Page);
                 }
                 _ => {}
             }
@@ -507,89 +277,34 @@ impl<'a> Js<'a> {
     }
 }
 
-/// The `lang` of the innermost element still open at the end of a template's `markup`, if
-/// one of them has one.
-fn template_lang(markup: &str, vars: &Map<String, Value>) -> Option<Lang> {
-    let mut open: Vec<(String, Option<&str>)> = Vec::new();
-    for t in tags(markup) {
+/// Each element of `html` with an id, by id, with the nearest `lang` on it or an ancestor
+/// below `<html>` (whose `lang` is the page's, which the caller has).
+fn element_langs(html: &str) -> HashMap<String, Option<String>> {
+    let mut out = HashMap::new();
+    // Open elements, each with its name and the nearest `lang` from it up.
+    let mut open: Vec<(String, Option<String>)> = Vec::new();
+    for t in tags(html) {
         if let Some(name) = t.text.strip_prefix("</") {
-            close(&mut open, name, |e| &e.0);
+            let name = name.trim_end_matches('>').trim().to_ascii_lowercase();
+            // A stray one closes nothing; one closing an outer element closes what is inside.
+            if let Some(k) = open.iter().rposition(|e| e.0 == name) {
+                open.truncate(k);
+            }
             continue;
         }
-        if t.name.starts_with('!') || t.name.is_empty() || is_void(t.name, t.text) {
+        let name = t.name.to_ascii_lowercase();
+        if name.starts_with('!') || name.is_empty() || name == "html" {
             continue;
         }
-        open.push((t.name.to_ascii_lowercase(), attr(t.text, "lang")));
-    }
-    let lang = open.iter().rev().find_map(|(_, l)| *l)?;
-    Some(match lang.strip_prefix("${").and_then(|l| l.strip_suffix('}')) {
-        Some(expr) => Js::lang_of(expr, vars),
-        None if lang.contains("${") => Lang::Unread,
-        None => Lang::Is(lang.to_string()),
-    })
-}
-
-/// The markup's elements with an id, each with the `lang`s of it and its ancestors below
-/// `<html>` (nearest last), by id.
-struct Elements {
-    chains: HashMap<String, Vec<Link>>,
-}
-
-/// One element of a chain: its id and its `lang`, either of which it may lack.
-type Link = (Option<String>, Option<String>);
-
-impl Elements {
-    fn read(html: &str) -> Self {
-        let mut chains = HashMap::new();
-        let mut open: Vec<(String, Option<String>, Option<String>)> = Vec::new();
-        for t in tags(html) {
-            if let Some(name) = t.text.strip_prefix("</") {
-                close(&mut open, name, |e| &e.0);
-                continue;
-            }
-            let name = t.name.to_ascii_lowercase();
-            // `<html lang>` is the page's language, which the caller has (a `lang` var may
-            // replace it).
-            if name.starts_with('!') || name.is_empty() || name == "html" {
-                continue;
-            }
-            let id = attr(t.text, "id").map(str::to_string);
-            let lang = attr(t.text, "lang").map(str::to_string);
-            let element = (name.clone(), id.clone(), lang);
-            if let Some(id) = id {
-                let chain = open.iter().chain([&element]).map(|(_, id, lang)| (id.clone(), lang.clone())).collect();
-                chains.entry(id).or_insert(chain);
-            }
-            if !is_void(&name, t.text) {
-                open.push(element);
-            }
+        let lang = attr(t.text, "lang").map(str::to_string).or_else(|| open.last().and_then(|e| e.1.clone()));
+        if let Some(id) = attr(t.text, "id") {
+            out.entry(id.to_string()).or_insert_with(|| lang.clone());
         }
-        Elements { chains }
-    }
-
-    /// The language `#id`'s text is drawn in: the nearest `lang`, a script's first.
-    fn lang_of(&self, id: &str, dynamic: &HashMap<String, Lang>) -> Lang {
-        if let Some(l) = dynamic.get(id) {
-            return l.clone();
+        if !is_void(&name, t.text) {
+            open.push((name, lang));
         }
-        for (eid, lang) in self.chains.get(id).into_iter().flatten().rev() {
-            if let Some(l) = eid.as_ref().and_then(|e| dynamic.get(e)) {
-                return l.clone();
-            }
-            if let Some(l) = lang {
-                return Lang::Is(l.clone());
-            }
-        }
-        Lang::Page
     }
-}
-
-/// Close the element a `</name>` ends, and any left open inside it; a stray one closes nothing.
-fn close<T>(open: &mut Vec<T>, name: &str, tag: impl Fn(&T) -> &String) {
-    let name = name.trim_end_matches('>').trim().to_ascii_lowercase();
-    if let Some(k) = open.iter().rposition(|e| *tag(e) == name) {
-        open.truncate(k);
-    }
+    out
 }
 
 fn is_ident(c: u8) -> bool {
@@ -604,89 +319,55 @@ fn string_literal(expr: &str) -> Option<String> {
     (!inner.contains(q) && !inner.contains('\\') && !(q == '`' && inner.contains("${"))).then(|| inner.to_string())
 }
 
-/// `callee(args)` split, when the expression is exactly one call.
-fn split_call(expr: &str) -> Option<(&str, &str)> {
-    let open = expr.find('(')?;
-    let inner = expr[open + 1..].strip_suffix(')')?;
-    Some((expr[..open].trim(), inner))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn at(html: &str, js: &str, var: &str) -> Vec<(Lang, Option<String>)> {
-        at_with(html, js, var, serde_json::json!({}))
+    type Seen = (Option<String>, Option<String>);
+
+    fn at(html: &str, js: &str, var: &str) -> Vec<Seen> {
+        Page::read(html, js).landings(var).into_iter().map(|l| (l.lang, l.at)).collect()
     }
 
-    fn at_with(html: &str, js: &str, var: &str, vars: Value) -> Vec<(Lang, Option<String>)> {
-        Page::read(html, js, vars.as_object().unwrap()).landings(var).into_iter().map(|l| (l.lang, l.at)).collect()
+    fn el(lang: Option<&str>, id: &str) -> Seen {
+        (lang.map(String::from), Some(format!("#{id}")))
     }
 
-    fn is(l: &str) -> Lang {
-        Lang::Is(l.into())
-    }
+    const ON_PAGE: Seen = (None, None);
 
     #[test]
     fn the_setter_lands_in_its_element_under_its_nearest_lang() {
         let html = r#"<html lang="fr"><body><div id="root"><p lang="ja"><b><span id="name"></span></b></p><span id="sub"></span><img src="x.png"><span id="x" lang="en"></span></div></body></html>"#;
-        assert_eq!(at(html, r#"text("name", vars.name);"#, "name"), [(is("ja"), Some("#name".into()))]);
-        assert_eq!(at(html, r#"const { text: setText } = kumaTemplate({}); setText("sub", vars.name)"#, "name"), [(Lang::Page, Some("#sub".into()))]);
-        assert_eq!(at(html, r#"tpl.text("x", String(tpl.vars["name"]).trim())"#, "name"), [(is("en"), Some("#x".into()))]);
-        // A read that writes no text is no landing; a var not read at all has none.
-        assert_eq!(at(html, r##"if (vars.name) { gsap.set("#x", {}); } const n = vars.name.length;"##, "name"), []);
-        assert_eq!(at(html, r#"text("name", vars.other)"#, "name"), []);
-        assert_eq!(at(html, r#"text("name", myvars.name)"#, "name"), []);
+        assert_eq!(at(html, r#"text("name", vars.name);"#, "name"), [el(Some("ja"), "name")]);
+        assert_eq!(at(html, r#"const { text: setText } = kumaTemplate({}); setText("sub", vars.name)"#, "name"), [el(None, "sub")]);
+        assert_eq!(at(html, r#"tpl.text("x", String(tpl.vars["name"]).trim())"#, "name"), [el(Some("en"), "x")]);
+        // A read that writes no text is no landing, and a var with none is on the page.
+        assert_eq!(at(html, r##"if (vars.name) { gsap.set("#x", {}); } const n = vars.name.length;"##, "name"), [ON_PAGE]);
+        assert_eq!(at(html, r#"text("name", vars.other); text("name", myvars.name)"#, "name"), [ON_PAGE]);
     }
 
+    /// Any other write lands on the page, so a var set into a `lang="ja"` element and also
+    /// written elsewhere is seen landing twice.
     #[test]
-    fn dom_writes_land_where_they_name() {
-        let html = r#"<div id="a" lang="ja-JP"></div><div id="b"></div>"#;
-        assert_eq!(at(html, r#"document.getElementById("a").textContent = vars.v;"#, "v"), [(is("ja-JP"), Some("#a".into()))]);
-        assert_eq!(at(html, r#"const el = document.querySelector('#a'); el.innerHTML += vars.v"#, "v"), [(is("ja-JP"), Some("#a".into()))]);
-        assert_eq!(at(html, r#"document.getElementById("b").append(vars.v)"#, "v"), [(Lang::Page, Some("#b".into()))]);
-        // A write the check cannot follow to an element is on the page.
-        assert_eq!(at(html, r#"for (const e of els) e.textContent = vars.v;"#, "v"), [(Lang::Page, None)]);
-        assert_eq!(at(html, r#"root.appendChild(document.createTextNode(vars.v))"#, "v"), [(Lang::Page, None)]);
-    }
-
-    #[test]
-    fn a_template_lands_under_its_own_lang_first() {
-        let html = r#"<div id="host" lang="ko"></div><div id="plain"></div>"#;
-        let js = r#"document.getElementById("plain").innerHTML = `<p class="x"><span lang="ja">${vars.name}</span> ${vars.place}</p>`;"#;
-        assert_eq!(at(html, js, "name"), [(is("ja"), None)]);
-        assert_eq!(at(html, js, "place"), [(Lang::Page, Some("#plain".into()))]);
-        let js = r#"const host = document.getElementById("host"); host.innerHTML = `<b>${vars.name.toUpperCase()}</b>`;"#;
-        assert_eq!(at(html, js, "name"), [(is("ko"), Some("#host".into()))]);
-        // A `lang` from a var is that var's value.
-        let js = r#"el.innerHTML = `<span lang="${vars.name_lang}">${vars.name}</span>`;"#;
-        assert_eq!(at_with(html, js, "name", serde_json::json!({ "name_lang": "zh-Hant" })), [(is("zh-Hant"), None)]);
-        let js = r#"el.innerHTML = `<span lang="${pick(vars.name_lang)}">${vars.name}</span>`;"#;
-        assert_eq!(at(html, js, "name"), [(Lang::Unread, None)]);
-        // A template before the read is one value, whatever its inside holds.
-        let js = r#"const a = `${f(1)}; {`; text("plain", vars.name)"#;
-        assert_eq!(at(html, js, "name"), [(Lang::Page, Some("#plain".into()))]);
-    }
-
-    #[test]
-    fn a_script_sets_a_lang_from_a_string_or_a_var() {
-        let html = r#"<div id="card"><span id="name"></span></div><span id="sub" lang="ja"></span>"#;
-        let vars = serde_json::json!({ "name_lang": "ja" });
-        let js = r#"const card = document.getElementById("card"); card.lang = vars.name_lang; text("name", vars.name);"#;
-        assert_eq!(at_with(html, js, "name", vars.clone()), [(is("ja"), Some("#name".into()))]);
-        let js = r#"const s = text("name", vars.name); s.setAttribute("lang", "zh");"#;
-        assert_eq!(at(html, js, "name"), [(is("zh"), Some("#name".into()))]);
-        let js = r#"document.getElementById("sub").lang = vars.missing; text("sub", vars.name);"#;
-        assert_eq!(at(html, js, "name"), [(Lang::Unread, Some("#sub".into()))]);
-        // A comparison is not a setting.
-        let js = r#"if (document.getElementById("sub").lang == "en") {} text("sub", vars.name);"#;
-        assert_eq!(at(html, js, "name"), [(is("ja"), Some("#sub".into()))]);
+    fn other_writes_land_on_the_page() {
+        let html = r#"<div id="a" lang="ja"></div>"#;
+        for js in [
+            r#"document.getElementById("a").textContent = vars.v;"#,
+            r#"el.innerHTML += vars.v"#,
+            r#"root.appendChild(document.createTextNode(vars.v))"#,
+            r#"el.innerHTML = `<p lang="ja">${vars.v}</p>`;"#,
+        ] {
+            assert_eq!(at(html, js, "v"), [ON_PAGE], "{js}");
+        }
+        assert_eq!(at(html, r#"text("a", vars.v); other.textContent = vars.v;"#, "v"), [el(Some("ja"), "a"), ON_PAGE]);
+        // A template or a string before the read is one value, whatever its inside holds.
+        assert_eq!(at(html, r#"const a = `${f(1)}; {`, b = "(;"; text("a", vars.v)"#, "v"), [el(Some("ja"), "a")]);
     }
 
     #[test]
     fn closing_tags_end_the_elements_they_close() {
         let html = r#"<div lang="ja"><span>a</span></div><p><span id="after"></span></p><ul lang="ja"><li>x<li id="li"></ul>"#;
-        assert_eq!(at(html, r#"text("after", vars.v)"#, "v"), [(Lang::Page, Some("#after".into()))]);
-        assert_eq!(at(html, r#"text("li", vars.v)"#, "v"), [(is("ja"), Some("#li".into()))]);
+        assert_eq!(at(html, r#"text("after", vars.v)"#, "v"), [el(None, "after")]);
+        assert_eq!(at(html, r#"text("li", vars.v)"#, "v"), [el(Some("ja"), "li")]);
     }
 }

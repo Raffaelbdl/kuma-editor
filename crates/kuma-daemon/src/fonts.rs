@@ -60,10 +60,11 @@ pub fn add_font(state: &AppState, path: &Path, shared: bool) -> anyhow::Result<V
         placed.push((info, target));
     }
     // The family each face is found under: a legacy per-weight name joins one the folder has.
-    let fonts = state.baker.font_library();
+    let families = state.baker.font_library().families();
+    let family_of = |path: &Path| families.values().find(|f| f.faces.iter().any(|x| x.path == path)).map(|f| f.name.clone());
     let added: Vec<Value> = placed
         .into_iter()
-        .map(|(info, target)| json!({ "family": fonts.family_of(&target).unwrap_or(info.family), "path": target, "scripts": info.scripts }))
+        .map(|(info, target)| json!({ "family": family_of(&target).unwrap_or(info.family), "path": target, "scripts": info.scripts }))
         .collect();
     let origin = if shared { kuma_overlay::Origin::Library } else { kuma_overlay::Origin::Project };
     Ok(json!({ "family": added[0]["family"], "origin": origin, "path": added[0]["path"], "faces": added }))

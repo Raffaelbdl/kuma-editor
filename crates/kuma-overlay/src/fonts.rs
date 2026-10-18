@@ -76,9 +76,8 @@ pub struct Face {
     /// written with one of them still finds the family (`FontLibrary::resolve`).
     #[serde(skip)]
     pub aliases: Vec<String>,
-    /// The family the file reads as. Not always the family it is in: a file whose other
-    /// names include a family in the same folder joins that one (`FontLibrary::families`),
-    /// and still answers to this name, with this face alone (`Family::css`).
+    /// The family the file reads as, which a legacy per-weight name may join another under
+    /// (`FontLibrary::families`); it still answers to this name, with this face alone.
     #[serde(skip)]
     pub family: String,
     /// Every character it has a glyph for: what says a text var's characters are drawn by
@@ -269,9 +268,7 @@ pub fn parse_face(data: &[u8]) -> Option<FaceInfo> {
     // Every name for an id, English first: a CJK font often lists its localized names
     // first, and "WenQuanYi Zen Hei" is what a person types, not "文泉驛正黑". The rest
     // stay aliases, so a var written when the first record won still resolves. Windows
-    // English before any other English, as FreeType picks: the Macintosh records are read
-    // too (`name_string`), and on that platform a family can be the whole family where the
-    // Windows one is a legacy per-weight name — an alias `FontLibrary::families` joins by.
+    // English before any other English, as FreeType picks.
     let names = |id: u16| {
         let records: Vec<_> = face.names().into_iter().filter(|n| n.name_id == id).collect();
         let english = |n: &&ttf_parser::name::Name| n.language() == ttf_parser::Language::English_UnitedStates;
@@ -310,17 +307,12 @@ pub fn parse_face(data: &[u8]) -> Option<FaceInfo> {
     Some(FaceInfo { family, weight, italic: face.is_italic() || face.is_oblique(), scripts, aliases, coverage: Coverage::from_points(points) })
 }
 
-/// Mac OS Roman's upper half, 0x80–0xFF (0xDB as the euro, as Apple remapped it in 1998).
-const MAC_ROMAN: &str = "ÄÅÇÉÑÖÜáàâäãåçéèêëíìîïñóòôöõúùûü†°¢£§•¶ß®©™´¨≠ÆØ∞±≤≥¥µ∂∑∏π∫ªºΩæø¿¡¬√ƒ≈∆«»…\u{a0}ÀÃÕŒœ–—“”‘’÷◊ÿŸ⁄€‹›ﬁﬂ‡·‚„‰ÂÊÁËÈÍÎÏÌÓÔ\u{f8ff}ÒÚÛÙıˆ˜¯˘˙˚¸˝˛ˇ";
-
-/// A name record's text: the Unicode ones `ttf-parser` decodes, and the Macintosh Roman
-/// ones it leaves as bytes, which FreeType and fontconfig read — and which can be the only
-/// record that names a face's whole family (`FontLibrary::families`). Other Macintosh
-/// encodings (Japanese, Chinese, …) are not decoded; a font carrying those has Windows
-/// records too.
+/// A name record's text: the Unicode ones `ttf-parser` decodes, and the Macintosh Roman ones
+/// it leaves as bytes when they are plain ASCII — the record that can name a face's whole
+/// family (`FontLibrary::families`). A font with other Macintosh names has Windows ones too.
 fn name_string(n: &ttf_parser::name::Name) -> Option<String> {
     if n.platform_id == ttf_parser::PlatformId::Macintosh && n.encoding_id == 0 {
-        return Some(n.name.iter().map(|&b| if b < 0x80 { b as char } else { MAC_ROMAN.chars().nth(b as usize - 0x80).unwrap_or('\u{fffd}') }).collect());
+        return n.name.is_ascii().then(|| String::from_utf8_lossy(n.name).into_owned());
     }
     n.to_string()
 }
@@ -425,14 +417,10 @@ impl FontLibrary {
     /// Within a family, upright before italic and light before heavy: a stable order,
     /// since `Family::files` numbers them.
     ///
-    /// A file whose other names (`Face::aliases`) include a family the same folder has
-    /// joins it: that is a face of the family under a legacy per-weight name, which is how
-    /// `MPLUSRounded1c-Bold.ttf` reads as "Rounded Mplus 1c Bold" on Windows and "Rounded
-    /// Mplus 1c" on the Macintosh, with no typographic family to settle it. fontconfig,
-    /// and so Chrome's `local()`, puts it under both. Only into a family that does not
-    /// itself join another, so two files naming each other stay as they are; and only by
-    /// the names of the id the family was read from, so "Inter Display" never joins
-    /// "Inter". The face keeps answering to its own name (`Face::family`).
+    /// A file whose other names (`Face::aliases`) include a family the same folder has joins
+    /// it, as fontconfig does: a face under a legacy per-weight name ("Rounded Mplus 1c Bold",
+    /// whose Macintosh name is "Rounded Mplus 1c"). Only into a family that joins no other,
+    /// so two files naming each other stay apart.
     pub fn families(&self) -> BTreeMap<String, Family> {
         let mut out = BTreeMap::new();
         for (dir, origin) in &self.dirs {
@@ -442,12 +430,13 @@ impl FontLibrary {
             }
             let joins: BTreeMap<String, String> = found
                 .iter()
-                .filter_map(|(name, faces)| Some((name.clone(), faces.iter().flat_map(|f| &f.aliases).find(|a| *a != name && found.contains_key(*a))?.clone())))
+                .filter_map(|(name, faces)| Some((name.clone(), faces.iter().flat_map(|f| &f.aliases).find(|a| found.contains_key(*a))?.clone())))
                 .collect();
             for (from, to) in &joins {
                 if !joins.contains_key(to) {
-                    let faces = found.remove(from).unwrap_or_default();
-                    found.entry(to.clone()).or_default().extend(faces);
+                    if let Some(faces) = found.remove(from) {
+                        found.entry(to.clone()).or_default().extend(faces);
+                    }
                 }
             }
             for (name, mut faces) in found {
@@ -455,7 +444,7 @@ impl FontLibrary {
                 let scripts = SCRIPTS.iter().map(|(s, _)| *s).filter(|s| faces.iter().any(|f| f.scripts.contains(s))).collect();
                 // A face that joined brings its own name, not its other names: those are
                 // its legacy family's, not this one's.
-                let mut aliases: Vec<String> = faces.iter().filter(|f| f.family == name).flat_map(|f| f.aliases.iter().cloned()).filter(|a| *a != name).collect();
+                let mut aliases: Vec<String> = faces.iter().filter(|f| f.family == name).flat_map(|f| f.aliases.iter().cloned()).collect();
                 aliases.sort();
                 aliases.dedup();
                 for f in &faces {
@@ -466,12 +455,6 @@ impl FontLibrary {
             }
         }
         out
-    }
-
-    /// The family the face at `path` is found under, which is not always the one it reads as
-    /// (`families`).
-    pub fn family_of(&self, path: &Path) -> Option<String> {
-        self.families().into_values().find(|f| f.faces.iter().any(|x| x.path == path)).map(|f| f.name)
     }
 
     /// Collections left in a font folder as they are: not read, since a face has to be its
@@ -691,12 +674,11 @@ mod tests {
         assert_eq!(lib.families().keys().collect::<Vec<_>>(), ["Fam", "Fam Display", "One", "Two"]);
     }
 
-    /// Macintosh names are Mac OS Roman, which `ttf-parser` leaves undecoded.
+    /// Macintosh names, which `ttf-parser` leaves undecoded, are read when they are ASCII.
     #[test]
-    fn macintosh_names_are_read_as_mac_roman() {
-        assert_eq!(MAC_ROMAN.chars().count(), 128);
-        let face = parse_face(&renamed(&[mac(1, b"Caf\x8e \xa5")], 400)).unwrap();
-        assert_eq!(face.family, "Café •");
+    fn macintosh_names_are_read_when_plain_ascii() {
+        assert_eq!(parse_face(&renamed(&[mac(1, b"Rounded Test")], 400)).unwrap().family, "Rounded Test");
+        assert!(parse_face(&renamed(&[mac(1, b"Caf\x8e")], 400)).is_none(), "no name it can read");
     }
 
     /// Each face of a collection comes out a font of its own that reads as the face it was.

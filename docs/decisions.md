@@ -761,7 +761,7 @@ project's `fonts/` or, for every project, the user library's.
 
 **A file that also names a family its folder has joins that family** — adopted. A family is
 name id 16, else id 1 (Windows English first, as FreeType); that id's other names — localized,
-and Macintosh Roman, which kuma now decodes — are aliases. `MPLUSRounded1c-Bold.ttf` has no id
+and Macintosh Roman ones when ASCII, which kuma now reads — are aliases. `MPLUSRounded1c-Bold.ttf` has no id
 16, a Windows "Rounded Mplus 1c Bold" and a Macintosh "Rounded Mplus 1c", so "Rounded Mplus 1c"
 lacked its 700. A face whose aliases name another family in the same folder now joins it at its
 OS/2 weight, as fontconfig (and so Chrome's `local()`) does; it still answers to its own name
@@ -1587,10 +1587,13 @@ all: how long a line must stay on screen to be read.
 glyph forms and fallback by the nearest `lang` (checked: `lang="ja"` on a span under `lang="fr"`
 draws 直/骨 in Japanese forms), so reading only `<html lang>` flagged `<span lang="ja">秋葉原</span>`
 in a French page and pushed the whole page to `ja`. Where var text lands is read off the
-overlay's scripts (`lint/landing.rs`: `text("id", vars.x)`, `textContent`/`innerHTML`/`append`
-by id, `${vars.x}` in template markup); text it cannot place is judged by the page's `lang`, so
-the check stays conservative. Rejected: a declarative binding attribute, a new contract for one
-check.
+overlay's scripts (`lint/landing.rs`): through the contract's setter, `text("id", vars.x)`, into
+`#id` under its nearest markup `lang`; any other write is judged by the page's `lang`, so the
+check errs towards warning. A first cut also followed DOM writes by id, templates with their own
+`lang` and `lang`s set by scripts — about 400 lines for patterns no blueprint, starter or a
+user's library of 34, wrote, and it still missed the one that did (text through a local); cut.
+Rejected: a declarative binding attribute, a new contract for one check; a check in the browser
+(exact, but a browser launch per entry on every validate and render).
 
 ## Design systems
 

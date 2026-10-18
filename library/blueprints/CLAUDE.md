@@ -91,8 +91,8 @@ overlays/<name>`) does, optionally with `vars`, once it checks clean.
   han characters are drawn in and which font a missing character falls back to, so one
   folder serves a Japanese entry and an English one. What decides is the *element's*
   language, its nearest `lang`: text in one language inside a page in another (a Japanese
-  name in a French line) goes in an element of its own, `<span id="name" lang="ja">`, or
-  one whose `lang` a script sets (`el.lang = vars.name_lang`), and the page keeps its own.
+  name in a French line) goes in an element of its own, `<span id="name" lang="ja">`, and
+  the page keeps its own.
 - The root `[data-composition-id]` element's `data-duration` (and `data-width`/`data-height`)
   are **rewritten in the markup** to the clip's real length before the renderer sees the
   file — hyperframes sizes the render from the attribute as written, before any script runs.
@@ -194,9 +194,9 @@ picker (its `--var-<name>` is the quoted family name), `lang` a language tag (`j
 `zh-Hant`, `ko`, `en`, or empty for the page's own) that kuma writes onto `<html lang>` —
 the markup need not read it, and a manifest has at most one. Give an overlay that may show
 CJK text a `lang` var rather than copying its folder to change the page's language.
-`cjk_lang` follows var text into the element it lands in (`text("id", vars.x)`,
-`textContent`/`innerHTML`/`append` by id, `${vars.x}` in a template); text through a local
-(`vars.x.split(…)`) is judged by the page's `lang`. A
+`cjk_lang` follows a var's text through `text("id", vars.x)` into `#id` and its nearest
+`lang` in the markup; text written any other way (`textContent`, `innerHTML`, a template, a
+local first) is judged by the page's `lang`. A
 `cues` value reaches the overlay only through `window.kuma.vars` — a list has no CSS property.
 
 The inspector lists vars **in the order the manifest writes them**. `group` puts a var in a

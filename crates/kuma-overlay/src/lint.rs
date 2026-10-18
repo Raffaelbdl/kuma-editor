@@ -267,13 +267,9 @@ impl Baker {
             }
         }
 
-        // Han characters are drawn in the regional forms the language of the element they
-        // are in picks, and a fallback is chosen by it too: under `lang="en"` a Linux machine
-        // draws kanji from its Simplified Chinese face. That language is the nearest `lang`,
-        // which is the page's unless an element nearer the text says one — a Japanese name in
-        // a French page is `<span lang="ja">` (`landing.rs`). A `lang` var's value is what the
-        // contract writes onto `<html>`, so it is the page's language whether `html` is the
-        // staged page or the one written.
+        // Han characters take the forms, and the fallback font, of the nearest `lang`
+        // (`landing.rs` says where each var's text lands). A `lang` var's value is what the
+        // contract writes onto `<html>`, so it is the page's whether `html` is staged or not.
         let lang = manifest.lang(vars).map(str::to_string).or_else(|| page_lang(html));
         let wanted = |s: &str| -> Option<&[&str]> {
             if s.chars().any(is_kana) {
@@ -287,30 +283,23 @@ impl Baker {
             }
         };
         let cjk = |l: &str| l.split('-').next().is_some_and(|p| ["ja", "zh", "ko"].iter().any(|c| p.eq_ignore_ascii_case(c)));
-        // Where each var's text lands is read off the overlay's own scripts, once, and only
-        // when there is CJK text to place. A var whose text is not found landing anywhere is
-        // on the page.
+        // The overlay's scripts are read once, and only when there is CJK text to place.
         let scripts = std::cell::OnceCell::new();
         let page = std::cell::OnceCell::new();
         let off_cjk = text.iter().filter_map(|(var, s)| Some((var, wanted(s)?))).find_map(|(var, want)| {
-            let page = page.get_or_init(|| landing::Page::read(html, scripts.get_or_init(|| own_scripts(html, dir)), vars));
-            let mut lands = page.landings(var);
-            if lands.is_empty() {
-                lands.push(landing::Landing { lang: landing::Lang::Page, at: None });
-            }
-            let off = lands.into_iter().find(|l| match &l.lang {
-                landing::Lang::Page => !lang.as_deref().is_some_and(cjk),
-                landing::Lang::Is(l) => !cjk(l),
-                landing::Lang::Unread => true,
-            })?;
+            let page = page.get_or_init(|| landing::Page::read(html, scripts.get_or_init(|| own_scripts(html, dir))));
+            let off = page.landings(var).into_iter().find(|l| !l.lang.as_deref().or(lang.as_deref()).is_some_and(cjk))?;
             Some((var, want, off))
         });
         if let Some((var, want, off)) = off_cjk {
             let either = |f: &dyn Fn(&str) -> String| want.iter().map(|w| f(w)).collect::<Vec<_>>().join(" or ");
             let follow = "which glyph forms are drawn, and which font falls back, follow";
-            let place = |at: &Option<String>| at.as_deref().map_or("markup a script writes".to_string(), |a| format!("`{a}`"));
-            let (message, fix) = match &off.lang {
-                landing::Lang::Page => {
+            let (message, fix) = match (&off.lang, &off.at) {
+                (Some(l), Some(at)) => (
+                    format!("`{var}` shows CJK text in `{at}`, whose `lang` is `{l}`: {follow} the element's language"),
+                    format!("make that `lang` {}, whichever is the language of its text", either(&|w| format!("`{w}`"))),
+                ),
+                _ => {
                     let is = lang.map(|l| format!("`lang=\"{l}\"`")).unwrap_or_else(|| "no `lang`".into());
                     // An overlay with a `lang` var says it per entry; one without says it in its markup.
                     let fix = match manifest.lang_var() {
@@ -323,14 +312,6 @@ impl Baker {
                     let fix = format!("{fix}; when the rest of the page is in another language, put the `lang` on the element that shows this text instead");
                     (format!("`{var}` shows CJK text and the page has {is}: {follow} the page's language"), fix)
                 }
-                landing::Lang::Is(l) => (
-                    format!("`{var}` shows CJK text in {}, whose `lang` is `{l}`: {follow} the element's language", place(&off.at)),
-                    format!("make that `lang` {}, whichever is the language of its text", either(&|w| format!("`{w}`"))),
-                ),
-                landing::Lang::Unread => (
-                    format!("`{var}` shows CJK text in {}, whose `lang` a script sets to a value this check cannot read", place(&off.at)),
-                    format!("set it to a string or straight from a var (`el.lang = vars.<name>`), {} for this text", either(&|w| format!("`{w}`"))),
-                ),
             };
             out.push(Finding::warn("cjk_lang", message, &fix).about(var));
         }
@@ -381,7 +362,12 @@ fn page_lang(html: &str) -> Option<String> {
 /// The overlay's own scripts: inline, and the local files it links that are not `_vendor/`'s,
 /// comments removed. kuma's injected script is not among them.
 fn own_scripts(html: &str, dir: &Path) -> String {
-    let mut out = script_text(html);
+    script_text(html) + &linked_scripts(html, dir)
+}
+
+/// The local `.js` files an overlay links that are not `_vendor/`'s, comments removed.
+fn linked_scripts(html: &str, dir: &Path) -> String {
+    let mut out = String::new();
     for src in local_refs(html).into_iter().filter(|h| h.ends_with(".js") && !h.starts_with("_vendor/")) {
         if let Ok(js) = std::fs::read_to_string(dir.join(&src)) {
             out.push_str(&strip_comments(&js));
@@ -402,7 +388,8 @@ fn not_kumas(code: &str) -> bool {
 /// kuma's own contract, read off the staged document.
 fn contract_findings(html: &str, manifest: &OverlayManifest, dir: &Path) -> Vec<Finding> {
     let mut out = Vec::new();
-    let scripts = own_scripts(html, dir);
+    let linked = linked_scripts(html, dir);
+    let scripts = script_text(html) + &linked;
     // The staged document carries kuma's own injection: `window.kuma = …` and a
     // `:root { --var-<name>: … }` for every var in the manifest. The var rules read the
     // overlay's markup, not that — or every declared var would look read. Its own
@@ -422,9 +409,10 @@ fn contract_findings(html: &str, manifest: &OverlayManifest, dir: &Path) -> Vec<
     // `engine.js` registers the timeline, reads the vars and may not read a clock either.
     // `_vendor/` is not, as above — which is where a library goes, the overlay's own
     // `_vendor/` included: one may call `Date.now` to no effect.
-    for src in local_refs(html).into_iter().filter(|h| h.ends_with(".js")) {
+    own.push_str(&linked);
+    for src in local_refs(html).into_iter().filter(|h| h.ends_with(".js") && h.starts_with("_vendor/")) {
         if let Ok(js) = std::fs::read_to_string(dir.join(&src)) {
-            if src.starts_with("_vendor/") { vendor.push_str(&js) } else { own.push_str(&strip_comments(&js)) }
+            vendor.push_str(&js);
         }
     }
 
@@ -1079,23 +1067,16 @@ mod tests {
     fn an_element_lang_decides_for_the_text_that_lands_in_it() {
         let (baker, _) = with_fonts();
         let m: OverlayManifest = serde_json::from_value(serde_json::json!({ "vars": {
-            "font": { "type": "font", "default": "Inter" }, "place": { "type": "string", "default": "" },
-            "name": { "type": "string", "default": "" }, "name_lang": { "type": "string", "default": "" } } }))
+            "font": { "type": "font", "default": "Inter" }, "place": { "type": "string", "default": "" }, "name": { "type": "string", "default": "" } } }))
         .unwrap();
-        let v = vars(serde_json::json!({ "font": "Inter", "place": "à Akihabara", "name": "秋葉原", "name_lang": "ja" }));
+        let v = vars(serde_json::json!({ "font": "Inter", "place": "à Akihabara", "name": "秋葉原" }));
         let page = |lang: &str, body: &str, js: &str| format!(r#"<!doctype html><html lang="{lang}"><body><div id="root" data-composition-id="main">{body}</div><script>const {{ vars, text }} = kumaTemplate({{}}); {js}</script></body></html>"#);
         let cjk = |html: &str, dir: &Path| baker.font_findings(&m, &v, html, dir).into_iter().filter(|f| f.code == "cjk_lang").map(|f| (f.message, f.fix.unwrap_or_default())).collect::<Vec<_>>();
         let set = r#"text("place", vars.place); text("name", vars.name);"#;
 
-        // On the element itself, and on an ancestor: nothing to say.
-        assert_eq!(cjk(&page("fr", r#"<p id="place"></p><span id="name" lang="ja"></span>"#, set), &nowhere()), []);
-        assert_eq!(cjk(&page("fr", r#"<p id="place"></p><div lang="ja-JP"><b><span id="name"></span></b></div>"#, set), &nowhere()), []);
-        // In markup a script writes, and with the `lang` taken from a var.
-        let written = r#"document.getElementById("root").innerHTML = `<p>${vars.place}</p><span lang="${vars.name_lang}">${vars.name}</span>`;"#;
-        assert_eq!(cjk(&page("fr", "", written), &nowhere()), []);
-        // The page's own `lang` still serves, as it always did.
+        // A `lang` on the element, or the page's own: nothing to say.
+        assert_eq!(cjk(&page("fr", r#"<p id="place"></p><div lang="ja-JP"><span id="name"></span></div>"#, set), &nowhere()), []);
         assert_eq!(cjk(&page("ja", r#"<p id="place"></p><span id="name"></span>"#, set), &nowhere()), []);
-
         // An element whose `lang` is another language keeps the warning, even on a Japanese page.
         for lang in ["fr", "ja"] {
             let found = cjk(&page(lang, r#"<p id="place"></p><span id="name" lang="fr"></span>"#, set), &nowhere());
@@ -1108,12 +1089,6 @@ mod tests {
         assert_eq!(found.len(), 1, "{found:?}");
         assert!(found[0].0.contains(r#"the page has `lang="fr"`"#), "{}", found[0].0);
         assert!(found[0].1.contains("on the element that shows this text"), "{}", found[0].1);
-        // Text that lands twice is drawn twice: once outside a `lang="ja"` is enough to say so.
-        let twice = r#"text("name", vars.name); document.getElementById("echo").textContent = vars.name;"#;
-        assert_eq!(cjk(&page("fr", r#"<span id="name" lang="ja"></span><span id="echo"></span>"#, twice), &nowhere()).len(), 1);
-        // Text the check cannot follow to an element is on the page.
-        let local = r#"const s = vars.name.split(""); for (const c of s) { const e = document.createElement("i"); e.textContent = c; }"#;
-        assert_eq!(cjk(&page("fr", r#"<span lang="ja"></span>"#, local), &nowhere()).len(), 1);
 
         // A linked script is the overlay's own: where it writes counts.
         let dir = tempfile::tempdir().unwrap();

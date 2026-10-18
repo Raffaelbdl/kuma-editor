@@ -98,8 +98,9 @@ fonts, not the project's, so pick or add a family that covers the text. `validat
 about every entry whose `font` var names a family that is not installed, whose text has characters
 none of its fonts can set (it lists them), or that shows CJK text on a page whose `lang` is another
 language; a render's result carries the same `warnings` for what it drew. The page's language is an
-entry's `lang` var where the overlay declares one (`title`, `title-subtitle` and `subtitles` do):
-set it to `ja` on a Japanese title rather than copying the folder.
+entry's `lang` var where the overlay declares one (`title`, `title-subtitle`, `section-title`,
+`lower-third`, `location-tag` and `subtitles` do): set it to `ja` on a Japanese title rather than
+copying the folder.
 
 To look at the footage, call `sample_frames` with a time range (and an optional pixel `rect`); it
 returns the composited frames as images plus their PNG paths. To look at an *overlay you are

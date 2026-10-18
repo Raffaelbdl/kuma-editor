@@ -35,7 +35,8 @@ So:
    choose it before entries name it.
 4. **The page's language is Japanese** wherever Japanese is shown, so any fallback that
    still happens picks Japanese forms: set the entry's `lang` var to `ja` (the `title`,
-   `title-subtitle` and `subtitles` blueprints have one; give your own components one too),
+   `title-subtitle`, `section-title`, `lower-third`, `location-tag` and `subtitles`
+   blueprints have one; give your own components one too),
    so one folder serves Latin and Japanese entries alike. A component without one needs
    `<html lang="ja">` on its page. `transcribe` with `language: "ja"` sets it on the
    subtitles it makes. Japanese **inside** a line in another language (a place name in a

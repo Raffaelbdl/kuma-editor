@@ -801,6 +801,25 @@ undeclared var. A read in a `_vendor/` stylesheet now counts toward a var being 
 unknown. Rejected: excusing every read that has a fallback, which would also have hidden a
 typo like `var(--var-colr, red)` in the overlay's own CSS.
 
+**The older text blueprints take a `font` and a `lang` var, defaulting to what they drew**
+— adopted. `section-title`, `lower-third` and `location-tag` set their text in `"Segoe UI",
+system-ui, sans-serif` and had no `lang`, so a Japanese place name meant copying the folder
+to change `<html lang>` (or living with the `cjk_lang` warning), and nobody could pick the
+family. Each now declares `font` and `lang` after its text vars, as `title` does, ungrouped
+because their manifests have no groups (as in `subtitles`); the markup reads
+`var(--var-font), "Segoe UI", system-ui, sans-serif`, the old stack kept as the fallback.
+The default family is **Roboto**: hyperframes maps a `"Segoe UI"` in a font stack onto the
+Roboto it bundles, so Roboto is what every bake of them drew, on any machine. With the
+library's Roboto the default frames are unchanged — measured at 2.5 s, `location-tag` and
+`section-title` pixel-identical, `lower-third` at 78.8 dB PSNR (antialiasing). Rejected:
+- **Inter**, the titles' default: it would re-style every new copy (33.7 dB on the lower third).
+- **A system family** (`Segoe UI`, or what `system-ui` is here): `font_missing` wherever it is
+  not installed, which the clean-lint test of the starter library refuses, and the machine
+  dependence the font search path exists to avoid.
+
+Finished videos do not move: projects hold copies. The live preview, a browser without
+hyperframes' mapping, drew Segoe UI or the system's sans before; it now draws the bake's Roboto.
+
 **More classic blueprints** — deferred. Shapes, rolling credits and crawls, a quote card,
 a progress bar, a spotlight, a timer, a checklist, a typed code block: the same pattern,
 each with `create` once it exists.

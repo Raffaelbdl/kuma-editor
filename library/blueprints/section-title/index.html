@@ -8,7 +8,7 @@
     <style>
       .dim { position: absolute; inset: 0; background: rgba(0, 0, 0, 0.55); }
       .card { position: absolute; left: 8%; right: 8%; top: 50%; transform: translateY(-50%);
-              font-family: "Segoe UI", system-ui, sans-serif; color: #fff; }
+              font-family: var(--var-font), "Segoe UI", system-ui, sans-serif; color: #fff; }
       .card.center { text-align: center; }
       .rule { width: calc(9 * var(--u)); height: calc(0.7 * var(--u)); background: var(--var-accent); border-radius: 2px; margin-bottom: calc(2.2 * var(--u)); }
       .card.center .rule { margin-left: auto; margin-right: auto; }
@@ -30,7 +30,7 @@
     </div>
     <script>
       const { vars, duration, text, timeline } = kumaTemplate({
-        title: "Chapter one", subtitle: "Setting things up", accent: "#ff4f00", align: "left", dim: true, size: 1,
+        title: "Chapter one", subtitle: "Setting things up", font: "Roboto", accent: "#ff4f00", align: "left", dim: true, size: 1,
       });
       const title = document.getElementById("title");
       for (const w of String(vars.title).split(/\s+/)) { const s = document.createElement("span"); s.className = "w"; s.textContent = w; title.appendChild(s); }

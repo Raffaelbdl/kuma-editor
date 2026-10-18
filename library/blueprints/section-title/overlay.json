@@ -6,6 +6,8 @@
   "vars": {
     "title":    { "type": "string",  "default": "Chapter one", "label": "Title" },
     "subtitle": { "type": "string",  "default": "Setting things up", "label": "Subtitle" },
+    "font":     { "type": "font",    "default": "Roboto", "label": "Font" },
+    "lang":     { "type": "lang",    "default": "", "label": "Language", "description": "The language of both lines as a tag: ja, zh-Hant, ko, en. Kanji are drawn in the forms this language uses, and a character the font lacks falls back to a font for it. Empty keeps the page's own, English." },
     "accent":   { "type": "color",   "default": "#ff4f00", "label": "Accent" },
     "align":    { "type": "enum",    "options": ["left", "center"], "default": "left", "label": "Align" },
     "dim":      { "type": "boolean", "default": true, "label": "Dim background" },

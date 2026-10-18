@@ -6,6 +6,8 @@
   "vars": {
     "label":   { "type": "string", "default": "Paris, France", "label": "Place" },
     "sub":     { "type": "string", "default": "48.8566° N, 2.3522° E", "label": "Subtitle" },
+    "font":    { "type": "font",   "default": "Roboto", "label": "Font" },
+    "lang":    { "type": "lang",   "default": "", "label": "Language", "description": "The language of both lines as a tag: ja, zh-Hant, ko, en. Kanji are drawn in the forms this language uses, and a character the font lacks falls back to a font for it. Empty keeps the page's own, English." },
     "accent":  { "type": "color",  "default": "#ff4f00", "label": "Accent" },
     "anchor":  { "type": "point",  "default": { "x": 0.68, "y": 0.28 }, "label": "Anchor (fraction of frame)" },
     "style":   { "type": "enum",   "options": ["pin", "chip"], "default": "pin", "label": "Style" },

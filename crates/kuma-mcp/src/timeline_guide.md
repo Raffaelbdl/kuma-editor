@@ -169,5 +169,14 @@ after every correction. `transcribe` cuts at the best pause near every `split` s
 a clip, it makes the pieces the clip plays and places each over its stretch. `replace` overwrites one
 entry and refuses `split`: to redo a split transcript, remove its pieces and transcribe again.
 
+**Publishing text beside the render.** `export_subtitles` writes the SRT a YouTube upload takes: the
+lines the master's subtitles overlays draw, in master seconds, through every clip that places them
+(nested sequences, `in` points, speed) and cut where those clips are cut. A subtitles track that is
+hidden still counts, which is how captions stay off the picture and in the SRT; `words_per_line`
+groups more words per caption than the picture does. `export_chapters` lists the master's chapters,
+its clips that place a sequence, as `M:SS Title` lines for the description, and warns where YouTube
+would not read them (first not at 0:00, fewer than 3, one under 10 s). Both default to the master,
+take `sequence`, and return the text unless `output`/`write` asks for a file (`renders/`).
+
 Vertical (9:16) is only
 `width`/`height`: patch them to 1080×1920 (or swap them) and every preset renders portrait.

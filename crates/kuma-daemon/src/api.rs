@@ -64,6 +64,8 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/presets", get(presets))
         .route("/api/render", post(render))
         .route("/api/render/target", get(render_target))
+        .route("/api/export/subtitles", post(export_subtitles))
+        .route("/api/export/chapters", post(export_chapters))
         .route("/api/bake", post(bake))
         .route("/api/sample", post(sample))
         .route("/api/sample/job", post(sample_job))
@@ -1043,6 +1045,21 @@ async fn job_cancel(State(st): S, Path(id): Path<u64>) -> ApiResult {
         Err(e @ jobs::CancelError::NotFound) => Err(ApiError::not_found(e)),
         Err(e) => Err(ApiError::new(StatusCode::CONFLICT, e)),
     }
+}
+
+// ---------- exports (text published beside a render) ----------
+
+/// A sequence's subtitles as SRT, in its own seconds — the master's unless `sequence`
+/// names another — returned as `srt`, or written (`write`, `output`) and the path returned.
+/// Reads the document and nothing else, and takes milliseconds, so it is not a job.
+async fn export_subtitles(State(st): S, Json(req): Json<crate::export::SubtitlesRequest>) -> ApiResult {
+    Ok(Json(blocking(move || crate::export::subtitles(&st, &req)).await?.map_err(ApiError::bad_request)?))
+}
+
+/// A sequence's chapters as YouTube description timestamps (`text`), or written to a file;
+/// `warnings` say what would keep YouTube from reading them as chapters.
+async fn export_chapters(State(st): S, Json(req): Json<crate::export::ChaptersRequest>) -> ApiResult {
+    Ok(Json(blocking(move || crate::export::chapters(&st, &req)).await?.map_err(ApiError::bad_request)?))
 }
 
 // ---------- websockets ----------

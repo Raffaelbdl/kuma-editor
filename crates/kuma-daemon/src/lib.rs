@@ -7,6 +7,7 @@
 pub mod activity;
 pub mod api;
 pub mod cache;
+pub mod export;
 pub mod fonts;
 pub mod history;
 pub mod jobs;

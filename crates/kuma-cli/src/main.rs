@@ -55,6 +55,12 @@ enum Cmd {
         #[arg(long)]
         sequence: Option<String>,
     },
+    /// Export the text published beside a render: subtitles as SRT, chapters as YouTube
+    /// timestamps. Of the master unless `--sequence` names another; warnings on stderr.
+    Export {
+        #[command(subcommand)]
+        what: ExportCmd,
+    },
     /// Bake all overlay clips (or the given clip ids).
     Bake { clips: Vec<String> },
     /// Sample composited frames as PNGs.
@@ -293,6 +299,40 @@ enum Cmd {
 }
 
 #[derive(Subcommand)]
+enum ExportCmd {
+    /// The subtitles the sequence shows, as SRT in its seconds: what to upload as captions.
+    Srt {
+        /// Sequence (bin id) to use instead of the project's master.
+        #[arg(short, long)]
+        sequence: Option<String>,
+        /// Write it here instead of printing it.
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+        /// Write it beside the renders (`renders/<name>.srt`) when no `--output` names a file.
+        #[arg(long)]
+        write: bool,
+        /// Only this subtitles entry (bin id); repeat for several. Every one shown by default.
+        #[arg(long = "entry")]
+        entries: Vec<String>,
+        /// Words per caption instead of each entry's own `words_per_line`.
+        #[arg(long)]
+        words_per_line: Option<u32>,
+    },
+    /// The sequence's chapters as YouTube description timestamps, `M:SS Title`.
+    Chapters {
+        /// Sequence (bin id) to use instead of the project's master.
+        #[arg(short, long)]
+        sequence: Option<String>,
+        /// Write them here instead of printing them.
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+        /// Write them beside the renders (`renders/<name>-chapters.txt`) when no `--output` names a file.
+        #[arg(long)]
+        write: bool,
+    },
+}
+
+#[derive(Subcommand)]
 enum CacheCmd {
     /// Delete what the project no longer uses. Waits for renders using the cache.
     Prune {
@@ -417,6 +457,35 @@ async fn main() -> anyhow::Result<()> {
                 }
             };
             println!("{}", serde_json::to_string_pretty(&out)?);
+        }
+        Cmd::Export { what } => {
+            use kuma_daemon::export::{self, ChaptersRequest, Output, SubtitlesRequest};
+            let to = |output: &Option<PathBuf>, write: bool| anyhow::Ok(Output { output: output.as_deref().map(absolute).transpose()?, write });
+            let (path, body) = match what {
+                ExportCmd::Srt { sequence, output, write, entries, words_per_line } => {
+                    let req = SubtitlesRequest { sequence: sequence.clone(), entries: (!entries.is_empty()).then(|| entries.clone()), words_per_line: *words_per_line, to: to(output, *write)? };
+                    ("/api/export/subtitles", serde_json::to_value(req)?)
+                }
+                ExportCmd::Chapters { sequence, output, write } => ("/api/export/chapters", serde_json::to_value(ChaptersRequest { sequence: sequence.clone(), to: to(output, *write)? })?),
+            };
+            // The daemon serving this project holds the latest document; else it is read here.
+            let out = match running_daemon(&cli).await {
+                Some(url) => kuma_mcp::client::Client::new(&url).post(path, &body).await?,
+                None => {
+                    let state = open(&cli)?;
+                    match what {
+                        ExportCmd::Srt { .. } => export::subtitles(&state, &serde_json::from_value(body)?)?,
+                        ExportCmd::Chapters { .. } => export::chapters(&state, &serde_json::from_value(body)?)?,
+                    }
+                }
+            };
+            for w in out["warnings"].as_array().into_iter().flatten() {
+                eprintln!("warning: {}", w.as_str().unwrap_or_default());
+            }
+            match out["output"].as_str() {
+                Some(file) => eprintln!("wrote {file}"),
+                None => print!("{}", out["srt"].as_str().or(out["text"].as_str()).unwrap_or_default()),
+            }
         }
         Cmd::Bake { clips } => {
             let only = (!clips.is_empty()).then(|| clips.clone());

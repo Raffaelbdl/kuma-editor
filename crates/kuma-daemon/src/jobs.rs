@@ -1350,8 +1350,9 @@ pub fn measure_media(state: &AppState, req: &MediaMeasureRequest, progress: &dyn
     Ok(out)
 }
 
-/// A sequence's chapters: its clips that place another sequence, in time order.
-fn chapters(project: &Project, sequence: &str) -> Vec<Section> {
+/// A sequence's chapters: its clips that place another sequence, in time order. What
+/// `measure_audio` measures one by one, and what `export::chapters` lists for YouTube.
+pub(crate) fn chapters(project: &Project, sequence: &str) -> Vec<Section> {
     let Some(seq) = project.seq(sequence) else { return Vec::new() };
     let mut out: Vec<Section> = seq
         .clips()

@@ -495,6 +495,41 @@ impl Render {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct ExportSubtitles {
+    /// Bin id of the sequence whose seconds the SRT is in. The project's `master` when omitted.
+    #[serde(default)]
+    pub sequence: Option<String>,
+    /// Only these subtitles entries (bin ids). Every one the sequence shows when omitted.
+    #[serde(default)]
+    pub entries: Option<Vec<String>>,
+    /// Words (cues) per caption instead of each entry's own `words_per_line`: captions for
+    /// an upload are usually longer than the lines drawn on the picture (8 to 12 reads well).
+    #[serde(default)]
+    pub words_per_line: Option<u32>,
+    /// Write the file here, relative to the project. Without it (and without `write`) the
+    /// SRT comes back as text.
+    #[serde(default)]
+    pub output: Option<String>,
+    /// Write the file at `output`, or at `renders/<name>.srt` beside the renders.
+    #[serde(default)]
+    pub write: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct ExportChapters {
+    /// Bin id of the sequence whose chapters to list. The project's `master` when omitted.
+    #[serde(default)]
+    pub sequence: Option<String>,
+    /// Write the file here, relative to the project. Without it (and without `write`) the
+    /// timestamps come back as text.
+    #[serde(default)]
+    pub output: Option<String>,
+    /// Write the file at `output`, or at `renders/<name>-chapters.txt`.
+    #[serde(default)]
+    pub write: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct MeasureAudio {
     /// Bin id of the sequence to measure. The project's `master` when omitted.
     #[serde(default)]
@@ -863,6 +898,18 @@ impl KumaServer {
     #[tool(description = "Render the timeline to a video file with an export preset. Renders the master unless `sequence` names another one. `threads`, `quality` and `speed` change this render only and default to the preset's (see list_presets). Renders run one at a time: a render asked for while another encodes waits `queued`. `cancel_job` stops it.")]
     async fn render(&self, Parameters(p): Parameters<Render>, ctx: RequestContext<RoleServer>) -> Result<CallToolResult, McpError> {
         self.job("/api/render", p.body(), Duration::from_secs(p.wait_seconds.unwrap_or(900)), &ctx).await
+    }
+
+    #[tool(description = "The subtitles a sequence shows (the master unless `sequence` names another) as SRT, to upload as YouTube captions: every line its `subtitles` overlays draw, in that sequence's seconds — mapped through each clip placing them, nested sequences and cuts included, so a cue across a cut is split and one cut out is gone. Hidden tracks count: hide a subtitles track to keep captions off the picture and in the SRT. `words_per_line` regroups the words into longer captions than the picture's. Returns `srt`, or with `output` or `write` writes the file and returns its `path`; `warnings` name subtitles entries nothing places and two entries showing at once. Reads only.")]
+    async fn export_subtitles(&self, Parameters(p): Parameters<ExportSubtitles>) -> Result<CallToolResult, McpError> {
+        let body = json!({ "sequence": p.sequence, "entries": p.entries, "words_per_line": p.words_per_line, "output": p.output, "write": p.write.unwrap_or(false) });
+        self.post("/api/export/subtitles", &body).await
+    }
+
+    #[tool(description = "A sequence's chapters (the master's by default) as YouTube description timestamps, one `M:SS Title` line per clip that places another sequence, titled by the clip's label or else the placed sequence's name — the same chapters `measure_audio` measures. Returns `text` (or writes it, like `export_subtitles`) and `warnings` where YouTube would not read the lines as chapters: the first not at 0:00, fewer than 3, one shorter than 10 s. Markers are never chapters. Reads only.")]
+    async fn export_chapters(&self, Parameters(p): Parameters<ExportChapters>) -> Result<CallToolResult, McpError> {
+        let body = json!({ "sequence": p.sequence, "output": p.output, "write": p.write.unwrap_or(false) });
+        self.post("/api/export/chapters", &body).await
     }
 
     #[tool(description = "Measure how loud a sequence is (the master by default): its sound rendered through the real graph, no bakes needed, and metered to EBU R128. Returns integrated loudness (LUFS), loudness range and true peak (dBTP) overall and per section (by default each clip placing a sequence, i.e. each chapter), the five loudest moments, and silent stretches of a second or more. Measured after the sequence's own effects, so a master stage (`volume` then `limiter` in the master's `effects`) is measured as it renders. Check this before a final render: a fade that silences music, or effects stacking on a peak, show up here. `solo` (track ids, nested ones too) measures the voice or the music alone and `mute` leaves tracks out, for this measurement only: the project is not edited.")]

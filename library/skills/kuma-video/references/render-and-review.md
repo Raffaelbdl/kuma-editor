@@ -66,8 +66,5 @@ For a YouTube upload, the text that goes with the file:
 export_subtitles write=true words_per_line=10     # renders/<name>.srt, the captions, in master seconds
 export_chapters                                   # `0:00 Title` lines for the description; read its warnings
 ```
-Both are of the master unless `sequence` names another, and both read the document, so run
-them after the last edit. Chapters are the sequences the master places, titled by the clip's
-`label` or else the sequence's name: give each chapter clip the title viewers should read.
-YouTube shows no chapters unless the first is at 0:00, there are three or more, and each
-lasts 10 s.
+Run them after the last edit; give each chapter clip the `label` viewers should read, and
+pass on the warnings.

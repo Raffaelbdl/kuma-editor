@@ -178,13 +178,8 @@ impl Libraries {
 
     /// What every daemon and command reads besides a project's own: the user library,
     /// `KUMA_LIBRARY`'s (a `:`-separated list), and — when that is unset and the user
-    /// library holds no blueprints — the checkout's own `library/`, the starter set.
-    ///
-    /// The desktop shell has always done this for the daemons it starts (`libraryFallback`
-    /// in `app/src/kuma.ts`, which also says so in the launcher). A daemon `kuma mcp` or
-    /// `kuma serve` started did not, so before `kuma library` had been run it had no
-    /// blueprints and none of the fonts they name: the same project drew its titles in
-    /// fallback fonts or not, depending on which process had started the daemon.
+    /// library holds no blueprints — the checkout's own `library/`, the starter set (as the
+    /// desktop shell's `libraryFallback` reports).
     pub fn from_env(repo_root: &Path) -> Self {
         let mut libraries = Libraries::new(user_library());
         let asked = std::env::var_os("KUMA_LIBRARY");
@@ -193,9 +188,10 @@ impl Libraries {
         libraries
     }
 
-    /// Read `project`'s libraries from now on, resolved against `root`, its folder.
+    /// Read `project`'s libraries from now on, resolved against `root`, its folder, each in
+    /// its one spelling (`crate::libraries::spelling`).
     pub fn follow(&self, project: &kuma_core::Project, root: &Path) {
-        *write(&self.project) = project.library_dirs(root);
+        *write(&self.project) = project.library_dirs(root).into_iter().map(|d| crate::libraries::spelling(&d)).collect();
     }
 
     /// Every library, lowest precedence first, with where it comes from: the user library
@@ -225,22 +221,8 @@ fn starter_set(user: &Path, asked: bool, repo_root: &Path) -> Option<PathBuf> {
     (!asked && !installed && shipped.join("blueprints").is_dir()).then_some(shipped)
 }
 
-/// `dir` as a project names it: relative to `root`, the project's folder, wherever it is
-/// (`../house-style`), so a folder that moves together with its library keeps finding it;
-/// absolute only when they share nothing (another drive). Both are absolute.
-pub fn relative_to(dir: &Path, root: &Path) -> PathBuf {
-    let (a, b): (Vec<_>, Vec<_>) = (dir.components().collect(), root.components().collect());
-    let common = a.iter().zip(&b).take_while(|(x, y)| x == y).count();
-    if common <= 1 {
-        return dir.to_path_buf();
-    }
-    let up = std::iter::repeat_n(std::path::Component::ParentDir, b.len() - common);
-    let rel: PathBuf = up.chain(a[common..].iter().copied()).collect();
-    if rel.as_os_str().is_empty() { PathBuf::from(".") } else { rel }
-}
-
 /// Where a library on the search path comes from, which says whether it can be taken off.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LibrarySource {
     /// The user library (`~/.local/share/kuma`), where saved blueprints and shared fonts go.
@@ -265,7 +247,7 @@ impl LibrarySource {
 }
 
 /// A library as the Blueprints panel lists it.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LibraryInfo {
     pub path: PathBuf,
     /// Its folder's name, or what it is for the user library and the starter set.
@@ -293,6 +275,10 @@ pub enum Event {
     /// have changed: a marker edited (by an edit, a step or a restore), answered, ticked or
     /// unticked. At most one per operation, after its `history`.
     Markers { markers: Vec<crate::markers::MarkerInfo> },
+    /// The libraries and their blueprints, whole and as `GET /api/libraries` lists them,
+    /// sent at every scan (`reload_blueprints`): a rescan, or the project's libraries changed
+    /// by an edit, a step or a restore — before that edit's `project_changed`.
+    Libraries { libraries: Vec<LibraryInfo>, blueprints: Vec<BlueprintInfo> },
 }
 
 /// Documents to step back and forward to, each with the origin of the edit that left it.
@@ -376,7 +362,7 @@ impl Edited {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BlueprintInfo {
     pub id: String,
     /// The library it comes from (`LibraryInfo::path`).
@@ -466,6 +452,7 @@ impl AppState {
             tracing::warn!("no blueprints loaded from {:?}; run `kuma library` to install the starter set", self.config.blueprint_dirs());
         }
         *write(&self.blueprints) = Blueprints { loaded: all, errors };
+        let _ = self.events.send(Event::Libraries { libraries: self.library_infos(), blueprints: self.blueprint_infos() });
     }
 
     /// The folder of an installed blueprint.
@@ -551,55 +538,6 @@ impl AppState {
         }
         let _ = self.events.send(Event::ProjectChanged { revision: rev, origin: origin.to_string() });
         Ok(prev)
-    }
-
-    /// Name the library at `path` in this project, as one edit: nothing is copied, and no
-    /// other project sees it. Its `blueprints/` folder names it too. Answers with how the
-    /// project names it (`relative_to` its folder) and the revision, none when it already did.
-    pub fn add_library(&self, path: &Path, origin: &str) -> anyhow::Result<(String, Option<u64>)> {
-        use kuma_core::LIBRARY_KINDS;
-        let mut dir = path.canonicalize().map_err(|e| anyhow::anyhow!("cannot open {}: {e}", path.display()))?;
-        anyhow::ensure!(dir.is_dir(), "{} is not a folder", dir.display());
-        if dir.file_name().is_some_and(|n| n == "blueprints") && !LIBRARY_KINDS.iter().any(|k| dir.join(k).is_dir()) {
-            dir.pop();
-        }
-        anyhow::ensure!(LIBRARY_KINDS.iter().any(|k| dir.join(k).is_dir()), "{} is not a kuma library: it has none of {}/", dir.display(), LIBRARY_KINDS.join("/, "));
-        anyhow::ensure!(self.config.libraries.user.canonicalize().ok().as_ref() != Some(&dir), "{} is your own library, which every project reads", dir.display());
-        let root = self.config.project_root();
-        let root = root.canonicalize().unwrap_or(root);
-        let name = relative_to(&dir, &root).to_string_lossy().into_owned();
-        let p = read(&self.project);
-        if p.library_dirs(&root).iter().any(|d| d.canonicalize().ok().as_ref() == Some(&dir)) {
-            return Ok((name, None));
-        }
-        let ops = if p.libraries.is_empty() {
-            serde_json::json!([{ "op": "add", "path": "/libraries", "value": [name] }])
-        } else {
-            serde_json::json!([{ "op": "add", "path": "/libraries/-", "value": name }])
-        };
-        let base = p.revision;
-        drop(p);
-        let (rev, _) = self.apply_patch(&serde_json::from_value::<Vec<json_patch::PatchOperation>>(ops)?, Some(base), origin, &[])?;
-        Ok((name, Some(rev)))
-    }
-
-    /// Stop naming a library in this project — by the name the project gives it, or a path
-    /// to the folder — as one edit. Its folder is left as it is, and so is every overlay
-    /// the project copied from it.
-    pub fn remove_library(&self, path: &str, origin: &str) -> anyhow::Result<u64> {
-        let root = self.config.project_root();
-        let wanted = root.join(path).canonicalize().ok();
-        let p = read(&self.project);
-        let i = p
-            .libraries
-            .iter()
-            .position(|l| l == path || (wanted.is_some() && root.join(l).canonicalize().ok() == wanted))
-            .ok_or_else(|| anyhow::anyhow!("`{path}` is not one of this project's libraries: the user library, the starter set and KUMA_LIBRARY's are not a project's to remove"))?;
-        let base = p.revision;
-        drop(p);
-        let ops = serde_json::json!([{ "op": "remove", "path": format!("/libraries/{i}") }]);
-        let (rev, _) = self.apply_patch(&serde_json::from_value::<Vec<json_patch::PatchOperation>>(ops)?, Some(base), origin, &[])?;
-        Ok(rev)
     }
 
     fn edit<F>(&self, origin: &str, kind: Kind, step: &Step, f: F) -> Result<(u64, Vec<Issue>), EditError>
@@ -888,16 +826,6 @@ mod tests {
         let named = Libraries { starter: None, env: vec![starter.clone()], ..libraries.clone() };
         named.follow(&project(&[starter.to_str().unwrap()]), &root);
         assert_eq!(named.sources(), [(user, LibrarySource::User), (starter, LibrarySource::Env)]);
-    }
-
-    /// A project names a library from its own folder, so the two can move together.
-    #[test]
-    fn a_library_is_named_relative_to_the_project() {
-        let rel = |dir: &str, root: &str| relative_to(Path::new(dir), Path::new(root));
-        assert_eq!(rel("/media/T7/yt/overlays-mat", "/media/T7/yt/16bit-akiba"), Path::new("../overlays-mat"));
-        assert_eq!(rel("/media/T7/yt/shorts/lib", "/media/T7/yt/16bit-akiba"), Path::new("../shorts/lib"));
-        assert_eq!(rel("/media/T7/yt/16bit-akiba/lib", "/media/T7/yt/16bit-akiba"), Path::new("lib"));
-        assert_eq!(rel("/opt/lib", "/home/me/video"), Path::new("/opt/lib"), "nothing shared but the root");
     }
 
     #[test]

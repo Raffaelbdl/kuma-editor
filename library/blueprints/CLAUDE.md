@@ -22,11 +22,10 @@ them, so `make_overlay_unique` first to change one.
 looked for in turn in the overlay's own `_vendor/`, then the one next to it (a project's
 `overlays/_vendor/`), then every library's (`<library>/blueprints/_vendor/`), the
 highest-precedence library first; the first that has it wins, and the bake stages and the
-daemon serves exactly those files. A library of your own blueprints therefore ships only its
-own helpers in its `_vendor/` (`house.js`, never a copy of `kuma.js`), and kuma's come from
-kuma's library. So files several overlays of a project share (a house
-stylesheet, a font, a logo) go in `overlays/_vendor/` under names of their own, and
-`_vendor/kuma.js` still comes from the library. A copy of one of kuma's own files there
+daemon serves exactly those files. So a library of your own blueprints ships only its own
+helpers in its `_vendor/` (`house.js`, never a copy of `kuma.js`), and files several overlays
+of a project share (a house stylesheet, a font, a logo) go in `overlays/_vendor/` under names
+of their own. A copy of one of kuma's own files there
 shadows it for every overlay beside it, and `check_overlay` warns (`vendor_shadowed`) when
 it differs from the shipped one. The library's `_vendor/` is not copied into projects.
 
@@ -194,11 +193,10 @@ one editable row per `{start, end, text}` (seconds; `end` after `start`), `font`
 picker (its `--var-<name>` is the quoted family name), `lang` a language tag (`ja`,
 `zh-Hant`, `ko`, `en`, or empty for the page's own) that kuma writes onto `<html lang>` —
 the markup need not read it, and a manifest has at most one. Give an overlay that may show
-CJK text a `lang` var rather than copying its folder to change the page's language. The
-check (`cjk_lang`) reads the language of the element a var's text lands in, from the
-overlay's scripts: `text("id", vars.x)`, `textContent`/`innerHTML`/`append` on an element it
-can name by id, `${vars.x}` inside a template's markup. Text it cannot follow (through a
-local, `vars.x.split(…)`) is judged by the page's `lang`. A
+CJK text a `lang` var rather than copying its folder to change the page's language.
+`cjk_lang` follows var text into the element it lands in (`text("id", vars.x)`,
+`textContent`/`innerHTML`/`append` by id, `${vars.x}` in a template); text through a local
+(`vars.x.split(…)`) is judged by the page's `lang`. A
 `cues` value reaches the overlay only through `window.kuma.vars` — a list has no CSS property.
 
 The inspector lists vars **in the order the manifest writes them**. `group` puts a var in a

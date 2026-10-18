@@ -45,6 +45,11 @@ pub struct ValidationContext {
 /// What a library holds, by folder: a folder with none of them is not one.
 pub const LIBRARY_KINDS: [&str; 4] = ["blueprints", "presets", "fonts", "design-systems"];
 
+/// Whether `dir` holds any of [`LIBRARY_KINDS`].
+pub fn is_library(dir: &std::path::Path) -> bool {
+    LIBRARY_KINDS.iter().any(|k| dir.join(k).is_dir())
+}
+
 /// Each library named once and by a path. On disk, one that is not there is a warning, not an
 /// error: a drive not mounted must leave the project editable, and it reads as empty.
 fn check_libraries(issues: &mut Vec<Issue>, p: &Project, ctx: &ValidationContext) {
@@ -57,7 +62,7 @@ fn check_libraries(issues: &mut Vec<Issue>, p: &Project, ctx: &ValidationContext
             issues.push(Issue::error(at, format!("`{name}` is named twice")));
         } else if ctx.check_files && !dir.is_dir() {
             issues.push(Issue::warn(at, format!("library `{name}` is not there ({}): it reads as empty until it is", dir.display())));
-        } else if ctx.check_files && !LIBRARY_KINDS.iter().any(|k| dir.join(k).is_dir()) {
+        } else if ctx.check_files && !is_library(&dir) {
             issues.push(Issue::warn(at, format!("`{name}` is not a library: it has none of {}/", LIBRARY_KINDS.join("/, "))));
         }
     }

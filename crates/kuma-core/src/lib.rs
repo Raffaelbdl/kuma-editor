@@ -20,7 +20,7 @@ pub use model::*;
 pub use manifest::{OverlayManifest, VarSpec, VarType};
 pub use upgrade::{canonical, parse_project, project_text};
 pub use time::{ClipFrames, Fps};
-pub use validate::{validate, Issue, Severity, ValidationContext, LIBRARY_KINDS};
+pub use validate::{is_library, validate, Issue, Severity, ValidationContext, LIBRARY_KINDS};
 
 /// Current on-disk project format version.
 ///

@@ -54,16 +54,15 @@ export const api = {
    *  or the user library's when `shared`. */
   addFont: (path: string, shared: boolean) =>
     json<{ family: string; origin: string; path: string }>("/api/fonts", { method: "POST", body: JSON.stringify({ path, shared }) }),
-  /** None from a daemon older than the route: its blueprints are then shown unfoldered. */
   /** The libraries read and their blueprints, from one read. */
   libraries: () => json<Libraries>("/api/libraries"),
   /** Read the libraries again, the list of added ones included. */
   rescanLibraries: () => json<Libraries>("/api/libraries/rescan", { method: "POST", body: "{}" }),
   /** Use a library folder in this project, as one edit (`revision` null when it already
-   *  did). Nothing is copied; `path` is how the project names it. */
-  addLibrary: (path: string) => json<Libraries & { path: string; revision: number | null }>("/api/libraries", { method: "POST", body: JSON.stringify({ path, origin: "ui: add library" }) }),
+   *  did); nothing is copied. Answers with the library and what it holds. */
+  addLibrary: (path: string) => json<{ library: LibraryInfo & { contents: { blueprints: string[] } }; revision: number | null }>("/api/libraries", { method: "POST", body: JSON.stringify({ path, origin: "ui: add library" }) }),
   /** Stop using one of this project's libraries, as one edit; its folder is left alone. */
-  removeLibrary: (path: string) => json<Libraries & { revision: number }>("/api/libraries/remove", { method: "POST", body: JSON.stringify({ path, origin: "ui: remove library" }) }),
+  removeLibrary: (path: string) => json<{ revision: number }>("/api/libraries/remove", { method: "POST", body: JSON.stringify({ path, origin: "ui: remove library" }) }),
   /** Copy a blueprint into `overlays/`; not an edit. Returns the folder. */
   copyBlueprint: (id: string, folder?: string) =>
     json<{ overlay: string }>(`/api/blueprints/${encodeURIComponent(id)}/copy`, { method: "POST", body: JSON.stringify({ folder }) }),

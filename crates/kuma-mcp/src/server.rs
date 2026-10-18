@@ -239,10 +239,9 @@ fn resumable(mut j: Value) -> Value {
     j
 }
 
-/// The daemon's `[{id, manifest}]` without what makes a library tens of thousands of tokens:
-/// each var's default, range and description, leaving its type.
-/// Each blueprint in brief, with the name of the library it comes from (`libraries`, as
-/// `/api/libraries` lists them) and the label it offers under New, if any.
+/// Each blueprint in brief: its manifest without what makes a library tens of thousands of
+/// tokens (each var's default, range and description, leaving its type), with the name of
+/// the library it comes from (`libraries`, as `/api/libraries` lists them) and its `create`.
 fn blueprint_summaries(all: &[Value], libraries: &[Value]) -> Value {
     let library = |path: &Value| libraries.iter().find(|l| l["path"] == *path).map_or(Value::Null, |l| l["name"].clone());
     let summary = |b: &Value| {
@@ -534,7 +533,7 @@ pub struct ExportSubtitles {
     pub output: Option<String>,
     /// Write the file at `output`, or at `renders/<name>.srt` beside the renders.
     #[serde(default)]
-    pub write: Option<bool>,
+    pub write: bool,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -548,7 +547,7 @@ pub struct ExportChapters {
     pub output: Option<String>,
     /// Write the file at `output`, or at `renders/<name>-chapters.txt`.
     #[serde(default)]
-    pub write: Option<bool>,
+    pub write: bool,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -775,13 +774,9 @@ impl KumaServer {
         Ok(ok_json(&out["libraries"]))
     }
 
-    #[tool(description = "Use a library in this project — a folder holding any of `blueprints/`, `presets/`, `fonts/`, `design-systems/` (its `blueprints/` folder names it too) — as one edit, undone like any other; no other project sees it. Nothing is copied: its blueprints join `list_blueprints` and `add_blueprint`, its fonts `list_fonts`, its presets `list_effect_presets`, its design systems `list_design_systems`, and its `_vendor/` helpers every overlay of the project. Returns how the project names it (relative to the project when it can be), the revision (null when it was already used) and what it holds, with its `docs` to read next. When the user names a library for a video, call this first.")]
+    #[tool(description = "Use a library in this project — a folder holding any of `blueprints/`, `presets/`, `fonts/`, `design-systems/` (its `blueprints/` folder names it too) — as one edit; nothing is copied and no other project sees it. Returns the `library` with its `contents`, among them the `docs` to read next, and the `revision` (null when the project already used it). When the user names a library for a video, call this first.")]
     async fn add_library(&self, Parameters(p): Parameters<LibraryArg>) -> Result<CallToolResult, McpError> {
-        let added = self.client.post("/api/libraries", &json!({ "path": p.path, "origin": "mcp: add library" })).await.map_err(err)?;
-        let detail = self.client.get("/api/libraries?detail=true").await.map_err(err)?;
-        // A library is added last of the project's.
-        let library = detail["libraries"].as_array().into_iter().flatten().filter(|l| l["source"] == "project").last().cloned().unwrap_or_default();
-        Ok(ok_json(&json!({ "named": added["path"], "revision": added["revision"], "library": library })))
+        self.post("/api/libraries", &json!({ "path": p.path, "origin": "mcp: add library" })).await
     }
 
     #[tool(description = "Stop using one of this project's libraries, as one edit. Its folder is left as it is, and so are the overlays already copied from it — though one reading its `_vendor/` helpers or fonts needs it, which `check_overlay` and `validate_project` then report. The user's own library and KUMA_LIBRARY's are not a project's to remove.")]
@@ -958,15 +953,15 @@ impl KumaServer {
         self.job("/api/render", p.body(), Duration::from_secs(p.wait_seconds.unwrap_or(900)), &ctx).await
     }
 
-    #[tool(description = "The subtitles a sequence shows (the master unless `sequence` names another) as SRT, to upload as YouTube captions: every line its `subtitles` overlays draw, in that sequence's seconds — mapped through each clip placing them, nested sequences and cuts included, so a cue across a cut is split and one cut out is gone. Hidden tracks count: hide a subtitles track to keep captions off the picture and in the SRT. `words_per_line` regroups the words into longer captions than the picture's. Returns `text`, or with `output` or `write` writes the file (never an empty one) and returns its `path`; `warnings` name subtitles entries nothing places and two entries showing at once. Reads only.")]
+    #[tool(description = "The subtitles a sequence shows (the master unless `sequence` names another) as SRT, to upload as YouTube captions: every line its `subtitles` overlays draw, in that sequence's seconds, through every cut and nesting. Hidden tracks count: hide a subtitles track to keep captions off the picture and in the SRT. `words_per_line` regroups the words into longer captions than the picture's. Returns `text`, or with `output` or `write` writes the file (never an empty one) and returns its `path`; `warnings` name subtitles entries nothing places and two entries showing at once. Reads only.")]
     async fn export_subtitles(&self, Parameters(p): Parameters<ExportSubtitles>) -> Result<CallToolResult, McpError> {
-        let body = json!({ "sequence": p.sequence, "entries": p.entries, "words_per_line": p.words_per_line, "output": p.output, "write": p.write.unwrap_or(false) });
+        let body = json!({ "sequence": p.sequence, "entries": p.entries, "words_per_line": p.words_per_line, "output": p.output, "write": p.write });
         self.post("/api/export/subtitles", &body).await
     }
 
     #[tool(description = "A sequence's chapters (the master's by default) as YouTube description timestamps, one `M:SS Title` line per clip that places another sequence, titled by the clip's label or else the placed sequence's name — the same chapters `measure_audio` measures. Returns `text` (or writes it, like `export_subtitles`) and `warnings` where YouTube would not read the lines as chapters: the first not at 0:00, fewer than 3, one shorter than 10 s. Markers are never chapters. Reads only.")]
     async fn export_chapters(&self, Parameters(p): Parameters<ExportChapters>) -> Result<CallToolResult, McpError> {
-        let body = json!({ "sequence": p.sequence, "output": p.output, "write": p.write.unwrap_or(false) });
+        let body = json!({ "sequence": p.sequence, "output": p.output, "write": p.write });
         self.post("/api/export/chapters", &body).await
     }
 

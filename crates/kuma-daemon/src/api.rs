@@ -39,7 +39,6 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/markers/done", post(tick_marker))
         .route("/api/sequence", get(get_sequence).post(open_sequence))
         .route("/api/schema", get(schema))
-        .route("/api/blueprints", get(blueprints).post(reload_blueprints))
         .route("/api/libraries", get(libraries).post(add_library))
         .route("/api/libraries/rescan", post(rescan_libraries))
         .route("/api/libraries/remove", post(remove_library))
@@ -413,15 +412,6 @@ async fn schema() -> Json<Value> {
     Json(json!({ "project": kuma_core::schema::project_schema(), "overlay": kuma_core::schema::overlay_schema() }))
 }
 
-async fn blueprints(State(st): S) -> Json<Value> {
-    Json(json!(st.blueprint_infos()))
-}
-
-async fn reload_blueprints(State(st): S) -> Json<Value> {
-    st.reload_blueprints();
-    Json(json!(st.blueprint_infos()))
-}
-
 /// The libraries and their blueprints, from one read: each blueprint names its library.
 fn libraries_answer(st: &AppState) -> Value {
     json!({ "libraries": st.library_infos(), "blueprints": st.blueprint_infos() })
@@ -439,8 +429,9 @@ async fn libraries(State(st): S, Query(q): Query<LibrariesQuery>) -> Result<Json
     blocking(move || {
         let mut out = libraries_answer(&st);
         if q.detail {
-            for l in out["libraries"].as_array_mut().into_iter().flatten() {
-                l["contents"] = crate::libraries::contents(&st, std::path::Path::new(l["path"].as_str().unwrap_or_default()));
+            let dirs: Vec<_> = st.library_infos().into_iter().map(|l| l.path).collect();
+            for (l, contents) in out["libraries"].as_array_mut().into_iter().flatten().zip(crate::libraries::contents(&st, &dirs)) {
+                l["contents"] = contents;
             }
         }
         Json(out)
@@ -486,14 +477,14 @@ struct LibraryPath {
 
 /// Name a library in this project, as one edit: its blueprints join the Blueprints panel,
 /// its `_vendor/` and fonts this project's overlays. Nothing is copied, and no other project
-/// sees it; a blueprint's folder is copied in when one is used, as from any library.
+/// sees it. Answers with the library and what it holds, and the revision (null when the
+/// project already named it).
 async fn add_library(State(st): S, Json(req): Json<LibraryPath>) -> ApiResult {
     let out = blocking(move || -> anyhow::Result<Value> {
-        let (path, revision) = st.add_library(&crate::jobs::resolve_path(&st, &req.path), &req.origin)?;
-        let mut out = libraries_answer(&st);
-        out["path"] = json!(path);
-        out["revision"] = json!(revision);
-        Ok(out)
+        let (dir, revision) = crate::libraries::add(&st, &crate::jobs::resolve_path(&st, &req.path), &req.origin)?;
+        let mut library = json!(st.library_infos().into_iter().find(|l| l.path == dir));
+        library["contents"] = crate::libraries::contents(&st, std::slice::from_ref(&dir)).remove(0);
+        Ok(json!({ "library": library, "revision": revision }))
     })
     .await?
     .map_err(bad_request_err)?;
@@ -503,15 +494,8 @@ async fn add_library(State(st): S, Json(req): Json<LibraryPath>) -> ApiResult {
 /// Stop naming a library in this project, as one edit. Its folder is left as it is, and so
 /// is every overlay the project already copied from it.
 async fn remove_library(State(st): S, Json(req): Json<LibraryPath>) -> ApiResult {
-    let out = blocking(move || -> anyhow::Result<Value> {
-        let revision = st.remove_library(&req.path.to_string_lossy(), &req.origin)?;
-        let mut out = libraries_answer(&st);
-        out["revision"] = json!(revision);
-        Ok(out)
-    })
-    .await?
-    .map_err(bad_request_err)?;
-    Ok(Json(out))
+    let revision = blocking(move || crate::libraries::remove(&st, &req.path.to_string_lossy(), &req.origin)).await?.map_err(bad_request_err)?;
+    Ok(Json(json!({ "revision": revision })))
 }
 
 fn bad_request_err(e: anyhow::Error) -> ApiError {
@@ -683,9 +667,8 @@ async fn presets() -> ApiResult {
     Ok(Json(json!(blocking(kuma_mlt::presets::offered).await?)))
 }
 
-/// Effect presets: `presets/*.json` from every library, then the project (wins on id).
-/// Every effect preset, a later folder's winning an id, each with the `library` it comes from
-/// (absent for the project's own `presets/`).
+/// Effect presets: `presets/*.json` from every library, then the project's own (wins on id),
+/// each with the `library` it comes from (absent for the project's).
 async fn effect_presets(State(st): S) -> Json<Value> {
     let mut out: std::collections::BTreeMap<String, Value> = Default::default();
     let project = st.config.project_root().join("presets");

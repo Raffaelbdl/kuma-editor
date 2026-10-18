@@ -365,13 +365,7 @@ fn repo_root_found(cli: &Cli) -> anyhow::Result<RepoRoot> {
 
 fn config(cli: &Cli) -> anyhow::Result<Config> {
     let repo_root = repo_root(cli)?;
-    let config = Config { project_file: absolute(&cli.project)?, libraries: Libraries::from_env(&repo_root), repo_root, bind: cli.bind };
-    // The project's own libraries, for commands that read the libraries without loading it
-    // (`design-system`, `library list`); loading the project follows them as well.
-    if let Some(p) = std::fs::read_to_string(&config.project_file).ok().and_then(|t| kuma_core::parse_project(&t).ok()) {
-        config.libraries.follow(&p, &config.project_root());
-    }
-    Ok(config)
+    Ok(Config { project_file: absolute(&cli.project)?, libraries: Libraries::from_env(&repo_root), repo_root, bind: cli.bind })
 }
 
 /// Load the project state for one-shot commands (no server).
@@ -735,33 +729,36 @@ async fn main() -> anyhow::Result<()> {
             println!("{} → {}", out["title"].as_str().unwrap_or_default(), out["path"].as_str().unwrap_or_default());
             println!("The agent reads `design-system/DESIGN.md`; overlays copy the `:root` block from `tokens.css`.");
         }
-        Cmd::Library { action: Some(LibraryCmd::List), .. } => {
-            for (dir, source) in config(&cli)?.libraries.sources() {
-                let missing = if dir.is_dir() { "" } else { "  (missing)" };
-                println!("{:<8} {}{missing}", format!("{source:?}").to_lowercase(), dir.display());
-            }
-        }
         Cmd::Library { action: Some(action), .. } => {
-            // An edit of the project: through the daemon serving it when one does.
-            let (route, path, origin) = match action {
-                LibraryCmd::Add { path } => ("/api/libraries", absolute(path)?, "cli: library add"),
-                // A path to the folder, or the name the project gives it.
-                LibraryCmd::Remove { path } => ("/api/libraries/remove", if path.exists() { absolute(path)? } else { path.clone() }, "cli: library remove"),
-                LibraryCmd::List => unreachable!("listed above"),
-            };
-            let revision = match running_daemon(&cli).await {
-                Some(url) => kuma_mcp::client::Client::new(&url).post(route, &serde_json::json!({ "path": path, "origin": origin })).await?["revision"].as_u64(),
-                None => {
-                    let state = open(&cli)?;
-                    match action {
-                        LibraryCmd::Add { .. } => state.add_library(&path, origin)?.1,
-                        _ => Some(state.remove_library(&path.to_string_lossy(), origin)?),
+            // Through the daemon serving the project when one does, else the project is opened here.
+            let daemon = running_daemon(&cli).await.map(|url| kuma_mcp::client::Client::new(&url));
+            let edit = |route: &'static str, path: PathBuf, origin: &'static str| (route, serde_json::json!({ "path": path, "origin": origin }));
+            let (route, body) = match action {
+                LibraryCmd::List => {
+                    let listed = match &daemon {
+                        Some(c) => c.get("/api/libraries").await?["libraries"].take(),
+                        None => serde_json::to_value(open(&cli)?.library_infos())?,
+                    };
+                    for l in listed.as_array().into_iter().flatten() {
+                        let missing = if l["missing"] == true { "  (missing)" } else { "" };
+                        println!("{:<8} {}{missing}", l["source"].as_str().unwrap_or_default(), l["path"].as_str().unwrap_or_default());
                     }
+                    return Ok(());
                 }
+                LibraryCmd::Add { path } => edit("/api/libraries", absolute(path)?, "cli: library add"),
+                // A path to the folder, or the name the project gives it.
+                LibraryCmd::Remove { path } => edit("/api/libraries/remove", if path.exists() { absolute(path)? } else { path.clone() }, "cli: library remove"),
             };
-            match revision {
-                Some(rev) => println!("{} {} (revision {rev})", if route.ends_with("remove") { "removed" } else { "added" }, path.display()),
-                None => println!("{} is already one of this project's libraries", path.display()),
+            let (path, origin) = (body["path"].as_str().unwrap_or_default().to_string(), body["origin"].as_str().unwrap_or_default());
+            let revision = match &daemon {
+                Some(c) => c.post(route, &body).await?["revision"].as_u64(),
+                None if matches!(action, LibraryCmd::Add { .. }) => kuma_daemon::libraries::add(&*open(&cli)?, Path::new(&path), origin)?.1,
+                None => Some(kuma_daemon::libraries::remove(&*open(&cli)?, &path, origin)?),
+            };
+            match (revision, action) {
+                (None, _) => println!("{path} is already one of this project's libraries"),
+                (Some(rev), LibraryCmd::Add { .. }) => println!("added {path} (revision {rev})"),
+                (Some(rev), _) => println!("removed {path} (revision {rev})"),
             }
         }
         Cmd::Library { force, action: None } => {

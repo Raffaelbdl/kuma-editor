@@ -698,6 +698,7 @@ async fn a_library_is_the_projects_and_an_edit() {
         let (status, _, body) = request(&addr, "POST", path, &body.to_string());
         (status, serde_json::from_str::<serde_json::Value>(&body).unwrap_or_default())
     };
+    let listed = || serde_json::from_str::<serde_json::Value>(&get_body(&addr, "/api/libraries").1).unwrap();
     let tagged = |out: &serde_json::Value| out["blueprints"].as_array().unwrap().iter().any(|b| b["id"] == "house-tag");
     let (status, _) = post("/api/libraries", serde_json::json!({ "path": dir.path().join("not-one") }));
     assert!(status.contains("400"), "a folder with no library in it is refused: {status}");
@@ -705,11 +706,13 @@ async fn a_library_is_the_projects_and_an_edit() {
     // Its `blueprints/` folder names it too, and the project names it from its own folder.
     let (status, out) = post("/api/libraries", serde_json::json!({ "path": house.join("blueprints"), "origin": "ui: add library" }));
     assert!(status.contains("200"), "{status} {out}");
-    assert_eq!(out["path"], "house");
-    assert_eq!(state.project.read().unwrap().libraries, ["house"], "in the document");
-    let names: Vec<(&str, &str)> = out["libraries"].as_array().unwrap().iter().map(|l| (l["name"].as_str().unwrap(), l["source"].as_str().unwrap())).collect();
+    assert_eq!((&out["library"]["name"], &out["library"]["source"]), (&serde_json::json!("house"), &serde_json::json!("project")));
+    assert_eq!(out["library"]["contents"]["blueprints"], serde_json::json!(["house-tag"]));
+    assert_eq!(state.project.read().unwrap().libraries, ["house"], "in the document, named from the project's folder");
+    let all = listed();
+    let names: Vec<(&str, &str)> = all["libraries"].as_array().unwrap().iter().map(|l| (l["name"].as_str().unwrap(), l["source"].as_str().unwrap())).collect();
     assert_eq!(names, [("My library", "user"), ("house", "project")]);
-    assert!(tagged(&out), "its blueprint is listed");
+    assert!(tagged(&all), "its blueprint is listed");
     for file in ["house.js", "kuma.js"] {
         assert!(get(&addr, &format!("/vendor/{file}")).0.contains("200"), "{file}");
     }
@@ -720,13 +723,13 @@ async fn a_library_is_the_projects_and_an_edit() {
     // An undo is the document without it, and the libraries follow.
     assert!(post("/api/project/undo", serde_json::json!({})).0.contains("200"));
     assert!(state.project.read().unwrap().libraries.is_empty());
-    assert!(!tagged(&serde_json::from_str(&get_body(&addr, "/api/libraries").1).unwrap()));
+    assert!(!tagged(&listed()));
     assert!(get(&addr, "/vendor/house.js").0.contains("404"));
 
     assert!(post("/api/project/redo", serde_json::json!({})).0.contains("200"));
     let (status, out) = post("/api/libraries/remove", serde_json::json!({ "path": "house" }));
     assert!(status.contains("200"), "{status} {out}");
-    assert!(!tagged(&out));
+    assert!(!tagged(&listed()));
     assert!(blueprint.join("overlay.json").is_file(), "its folder is left as it was");
     let (status, _) = post("/api/libraries/remove", serde_json::json!({ "path": dir.path().join("library") }));
     assert!(status.contains("400"), "the user library is not the project's to remove: {status}");

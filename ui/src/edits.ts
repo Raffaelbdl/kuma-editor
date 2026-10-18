@@ -3,7 +3,7 @@
 // revision-checked patch with its rule checked once — and no panel has to import another
 // to place a clip.
 
-import { api, type Libraries } from "./api";
+import { api } from "./api";
 import { button, checkbox, el, loadLocal, plural, row, saveLocal, selectInput } from "./dom";
 import { askForm, askText } from "./modal";
 import { desktop } from "./desktop";
@@ -291,15 +291,10 @@ export async function makeOverlayUnique(id: string) {
   }
 }
 
-/** The libraries as the daemon now reads them: their blueprints, and the fonts they bring. */
-function applyLibraries({ blueprints, libraries }: Libraries) {
-  store.set({ blueprints, libraries });
-  void store.reloadFonts();
-}
-
-/** Read the libraries again: the panel's rescan, and what follows anything that changed them. */
+/** Read the libraries again; what was found arrives as a `libraries` event, as after any
+ *  change to them. */
 export async function rescanLibraries() {
-  applyLibraries(await api.rescanLibraries());
+  await api.rescanLibraries();
 }
 
 /**
@@ -314,12 +309,8 @@ export async function addLibrary() {
     : await askText({ title: "Use a library in this project", label: "Folder", placeholder: "/path/to/library (holding blueprints/, presets/, fonts/…)", ok: "Add" });
   if (!path) return;
   try {
-    const r = await api.addLibrary(path);
-    applyLibraries(r);
-    // A library is added last of the project's.
-    const lib = r.libraries.filter((l) => l.source === "project").at(-1);
-    const n = lib ? r.blueprints.filter((b) => b.library === lib.path).length : 0;
-    toast(r.revision === null ? `This project already uses ${r.path}` : `This project now uses ${r.path}: ${plural(n, "blueprint")}`, "ok", 5000);
+    const { library, revision } = await api.addLibrary(path);
+    toast(revision === null ? `This project already uses ${library.name}` : `This project now uses ${library.name}: ${plural(library.contents.blueprints.length, "blueprint")}`, "ok", 5000);
   } catch (e) {
     toast((e as Error).message, "err", 8000);
   }
@@ -331,7 +322,7 @@ export async function removeLibrary(path: string, name: string) {
   const ok = await askForm({ title: `Stop using ${name} in this project?`, note: `Its blueprints leave this project's panel; other projects are not touched, and undo brings it back. Nothing is deleted: the folder stays where it is (${path}), and overlays this project copied from it keep working, unless they use its _vendor/ helpers or fonts.`, rows: [], ok: "Stop using" });
   if (!ok) return;
   try {
-    applyLibraries(await api.removeLibrary(path));
+    await api.removeLibrary(path);
   } catch (e) {
     toast((e as Error).message, "err", 8000);
   }

@@ -199,6 +199,10 @@ class Store {
       this.set({ history: [h, ...this.state.history].slice(0, 500) });
     } else if (e.type === "markers") {
       this.set({ markerList: e.markers });
+    } else if (e.type === "libraries") {
+      // The blueprints, `_vendor/` and fonts the project reads: the fonts are fetched again.
+      this.set({ libraries: e.libraries, blueprints: e.blueprints });
+      void this.reloadFonts();
     } else if (e.type === "jobs_cleared") {
       const jobs = { ...this.state.jobs };
       for (const id of e.ids) delete jobs[id];
@@ -240,14 +244,7 @@ class Store {
           const sequences = same(this.state.sequences, withId(this.state.sequences.filter((id) => sequenceOf(project, id)), sequence));
           const overlays = same(this.state.overlays, this.state.overlays.filter((id) => isOverlayEntry(project, id)));
           const tab = overlays.includes(this.state.tab) ? this.state.tab : SEQUENCE_TAB;
-          // The project names its libraries: when that changed (an edit, an undo, an agent),
-          // the blueprints and fonts it reads did too, and the daemon has already read them.
-          const librariesChanged = JSON.stringify(project.libraries ?? []) !== JSON.stringify(this.state.project?.libraries ?? []);
           this.set({ project, manifests, sequence, sequences, selection, track, overlays, tab });
-          if (librariesChanged) {
-            this.set(await api.libraries());
-            void this.reloadFonts();
-          }
         } while (this.refreshAgain);
       } catch (e) {
         toast(`Cannot reload the project: ${(e as Error).message}`, "err");

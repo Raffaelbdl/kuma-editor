@@ -634,54 +634,36 @@ rendered differently on another machine.
 outside the project. Dragging an `overlay.json` in from any folder is the natural gesture;
 it is copied into `overlays/` first, so the project still owns what it plays.
 
-**Every library's `_vendor/` is a layer** — adopted. `_vendor/<file>` resolves file by
-file through the overlay's own `_vendor/`, the one beside it, then every library's, the
-highest-precedence library first (`Baker::vendor_layers`). It used to stop at one library
-folder, the highest that had a `_vendor/` at all, so a library of someone's own blueprints
-that shipped its helpers (`mat.js`) and, rightly, no copy of `kuma.js` replaced kuma's runtime
-for every overlay once it was listed last; and listed first, its helpers were never found,
-so each project needed a copy in `overlays/_vendor/`. The key still hashes what is staged: an
-overlay whose layers are the ones it had keeps its key, and adding a library with a
-`_vendor/` re-bakes every overlay once, since any of them could reach the new files.
-`vendor_shadowed` compares a project copy with the first library that has the name.
+**Every library's `_vendor/` is a layer** — adopted. `_vendor/<file>` resolves file by file:
+the overlay's own `_vendor/`, the one beside it, then every library's, highest precedence first
+(`Baker::vendor_layers`). Replaced: the one `_vendor/` of the highest library that had one — a
+library shipping only its helpers (`mat.js`) hid kuma's `kuma.js` when listed last, and its
+helpers were never found when listed first. The key hashes what is staged, so adding a library
+with a `_vendor/` re-bakes every overlay once. `vendor_shadowed` compares a project copy with
+the first library that has the name.
 
-**A project names the libraries it uses** — adopted, format version 10. A channel's house
-blueprints live beside its videos (an external drive, a folder of its own with its
-`_vendor/`, presets, fonts and design system), and the only way to read them was
-`KUMA_LIBRARY`, set in every shell, app launch and `.mcp.json`, which also stopped the
-starter set standing in. Now the document has `libraries`, each relative to the project
-when it can be (`../overlays-mat`, so a folder of videos that moves with its library keeps
-finding it), read after the user library and before `KUMA_LIBRARY`'s; the Blueprints panel
-shows one folder per library, and `kuma library add|remove|list` edit the `-p` project.
-Being a document field makes it an edit — revision-checked, undoable, in the history, made by
-an agent as a patch — and makes the project file say what its renders need: an overlay
-copied from a library still reads that library's `_vendor/` helpers and fonts. The daemon
-follows the field wherever a document lands (`AppState::commit`, so undo and restore too):
-the blueprints are read again, and the baker's `_vendor/` layers and fonts with them
-(`Baker::set_library`), before clients are told. A library that is not there is a warning,
-not an error: a drive not mounted leaves the project editable, and it reads as empty.
+**A project names the libraries it uses** — adopted, format version 10. A series' house
+library (blueprints, `_vendor/`, presets, fonts, design system) lives beside its videos, and
+`KUMA_LIBRARY` had to be set in every shell, launch and `.mcp.json`. The document's
+`libraries`, relative to the project when possible (`../overlays-mat`, so the two move
+together), are read after the user library and before `KUMA_LIBRARY`'s. As a field it is an
+edit — undoable, in the history, an agent's patch — and the project file says what its renders
+need. The daemon follows it wherever a document lands (`AppState::commit`, so undo and restore
+too), re-reading blueprints, `_vendor/` layers and fonts and sending them as a `libraries`
+event before the edit's `project_changed`. A missing library (drive unmounted) warns and
+reads empty.
 
-Tried first and rejected by the user: **a list for the whole machine** (`libraries.json` in
-the user library, `kuma library add <dir>`). A library added for one series then offered
-its `create` items in every project's New menu, and taking it off for one project took it
-off for all. Projects must be independent of each other, and depending on a library is a
-project's own business; only the user library, kuma's own, is every project's. Rejected
-too: **importing a library into a project**, copying every blueprint in — the project would
-carry dozens of overlays it never uses, and blueprints are already copied one by one when
-used, which is what keeps a finished video from being re-styled. Rejected: **a file beside
-the project** (like `.mcp.json`): no undo, no history, and the project file alone would not
-say what it needs.
+Rejected: **a machine-wide list** (`libraries.json`, tried first) — one series' library
+appeared in every project's New menu, and removing it for one removed it for all; projects
+must stay independent. **Importing a library** (copying every blueprint in) — dozens of unused
+overlays, when blueprints are already copied one by one on use. **A file beside the project**
+(like `.mcp.json`) — no undo or history, and the project file would not say what it needs.
 
-**An agent sets a library up from its path** — adopted. "Make a video with the library in
-`/path/to/house-style`" has to be enough, so the MCP server has `add_library` (the same edit as
-the panel's), `list_libraries` with what each holds and the documents it carries about itself
-(`README.md`, `CLAUDE.md`… at its top), `list_design_systems` and `apply_design_system` (the
-copy `kuma design-system` makes), and `list_effect_presets`; `list_blueprints` says each
-blueprint's library and `create` label. The guide and the skill say the order: add, read its
-docs, apply its design system, build from its blueprints. Effect presets are listed as they
-are, `$expr` values and all, for the agent to write as effects: expanding them in the daemon
-would be a second copy of the editor's evaluator (`expandPreset`), and a third once the
-editor called it — **deferred** until both can share one.
+**An agent sets a library up from its path** — adopted: "use the library in `/path`" is
+enough. `add_library` (answering with what the library holds and the docs at its top),
+`list_libraries`, `list_design_systems`, `apply_design_system`, `list_effect_presets`; the guide
+and skill give the order. Presets are listed raw, `$expr` and all: expanding them in the daemon
+would copy the editor's `expandPreset` — **deferred** until both can share one.
 
 **Named vaults** — superseded by a project's libraries, above.
 
@@ -765,27 +747,17 @@ Adding a font is a file, not an edit, like an overlay folder: it is copied into 
 project's `fonts/` or, for every project, the user library's.
 
 **A file that also names a family its folder has joins that family** — adopted. A family is
-the typographic family (name id 16) or else the legacy one (id 1), Windows English first as
-FreeType picks, and the other names of that id — localized ones, and the Macintosh Roman
-records, which `ttf-parser` leaves as bytes and kuma now decodes — are aliases. Google's
-`MPLUSRounded1c-Bold.ttf` has no id 16, a Windows family of "Rounded Mplus 1c Bold" and a
-Macintosh one of "Rounded Mplus 1c", so it read as a family of its own and "Rounded Mplus
-1c" had 500 and 800 but no 700 (the browser synthesised it). Now a face whose aliases
-include another family in the same folder is that family's face under a legacy per-weight
-name, and joins it, at the weight OS/2 gives — which is what fontconfig, and so Chrome's
-`local()`, does by putting the file under both names. The face still answers to its own name
-(`Face::family`): `css` declares it under that name alone, so a var written "Rounded Mplus
-1c Bold" draws exactly what it drew, and the picker no longer lists it; `add_font` answers
-with the family the face is found under. Limits, so distinct
-families stay distinct: only the names of the id the family was read from count (a file
-whose id 16 is "Inter Display" never joins "Inter", whatever its id 1 says), only within
-one folder (a later folder still replaces a family whole, the names it took in included),
-and only into a family that does not itself join another (two files naming each other are
-left alone). Bake keys move only for families that gain a face this way; the starter set
-and the 228 families under `/usr/share/fonts` of the machine this was written on write
-byte-identical CSS. Rejected: stripping weight words from a family name ("Bold",
-"ExtraBold", …), a guess about language the file does not make; and taking the Macintosh
-family as the family, which would rename fonts whose Macintosh records are the legacy ones.
+name id 16, else id 1 (Windows English first, as FreeType); that id's other names — localized,
+and Macintosh Roman, which kuma now decodes — are aliases. `MPLUSRounded1c-Bold.ttf` has no id
+16, a Windows "Rounded Mplus 1c Bold" and a Macintosh "Rounded Mplus 1c", so "Rounded Mplus 1c"
+lacked its 700. A face whose aliases name another family in the same folder now joins it at its
+OS/2 weight, as fontconfig (and so Chrome's `local()`) does; it still answers to its own name
+(`Face::family`), so existing vars draw the same, and leaves the picker. Limits keep families
+distinct: only aliases of the id read (id-16 "Inter Display" never joins "Inter"), only within
+one folder, only into a family that joins no other. Bake keys move only for families that gain
+a face (the starter set and 228 system families wrote identical CSS). Rejected: stripping weight
+words ("Bold", …), a guess about language; taking the Macintosh name as the family, which
+renames fonts whose Macintosh records are the legacy ones.
 
 **Fonts are added by path** — adopted, as media and overlays are. `POST /api/fonts
 { path, shared }` (the **+** by a font picker, MCP `add_font`): the desktop app's picker
@@ -821,24 +793,15 @@ undeclared var. A read in a `_vendor/` stylesheet now counts toward a var being 
 unknown. Rejected: excusing every read that has a fallback, which would also have hidden a
 typo like `var(--var-colr, red)` in the overlay's own CSS.
 
-**The older text blueprints take a `font` and a `lang` var, defaulting to what they drew**
-— adopted. `section-title`, `lower-third` and `location-tag` set their text in `"Segoe UI",
-system-ui, sans-serif` and had no `lang`, so a Japanese place name meant copying the folder
-to change `<html lang>` (or living with the `cjk_lang` warning), and nobody could pick the
-family. Each now declares `font` and `lang` after its text vars, as `title` does, ungrouped
-because their manifests have no groups (as in `subtitles`); the markup reads
-`var(--var-font), "Segoe UI", system-ui, sans-serif`, the old stack kept as the fallback.
-The default family is **Roboto**: hyperframes maps a `"Segoe UI"` in a font stack onto the
-Roboto it bundles, so Roboto is what every bake of them drew, on any machine. With the
-library's Roboto the default frames are unchanged — measured at 2.5 s, `location-tag` and
-`section-title` pixel-identical, `lower-third` at 78.8 dB PSNR (antialiasing). Rejected:
-- **Inter**, the titles' default: it would re-style every new copy (33.7 dB on the lower third).
-- **A system family** (`Segoe UI`, or what `system-ui` is here): `font_missing` wherever it is
-  not installed, which the clean-lint test of the starter library refuses, and the machine
-  dependence the font search path exists to avoid.
-
-Finished videos do not move: projects hold copies. The live preview, a browser without
-hyperframes' mapping, drew Segoe UI or the system's sans before; it now draws the bake's Roboto.
+**The older text blueprints take a `font` and a `lang` var, defaulting to what they drew** —
+adopted. `section-title`, `lower-third` and `location-tag` hard-coded `"Segoe UI", system-ui,
+sans-serif` with no `lang`, so a Japanese name meant copying the folder. Each now declares
+`font` and `lang` (ungrouped, as in `subtitles`), the old stack kept as fallback. Default
+**Roboto**: hyperframes maps `"Segoe UI"` to its bundled Roboto, so that is what every bake drew
+(measured: two pixel-identical, `lower-third` 78.8 dB PSNR); the live preview, which lacked the
+mapping, now matches the bake. Rejected: **Inter**, the titles' default (re-styles new copies,
+33.7 dB); **a system family** — `font_missing` where not installed, and the machine dependence
+the font path exists to avoid.
 
 **More classic blueprints** — deferred. Shapes, rolling credits and crawls, a quote card,
 a progress bar, a spotlight, a timer, a checklist, a typed code block: the same pattern,
@@ -1607,22 +1570,14 @@ departure and change; out-curves for entrances; never scale from zero — is now
 `library/overlays/CLAUDE.md` with numbers, beside the thing that has no UI equivalent at
 all: how long a line must stay on screen to be read.
 
-**`cjk_lang` reads the language of the element the text lands in** — adopted. It read only
-`<html lang>` (or the `lang` var), so a Japanese name in a French page, `<span
-lang="ja">秋葉原</span>`, was reported, and the workaround was setting the whole page to `ja`
-— wrong for the Latin text around it. Chromium picks glyph forms and the fallback font by
-the element's nearest `lang`, which is the page's only when nothing nearer says one
-(checked: under `lang="fr"`, `lang="zh-CN"` on a span draws 直 and 骨 in Chinese forms,
-`lang="ja"` on it, on an ancestor or set by a script in Japanese ones). Text arrives through
-vars at run time, so where it lands is read off the overlay's own scripts
-(`lint/landing.rs`): `text("id", vars.x)`, `textContent`/`innerHTML`/`append` on an element
-named by id, and `${vars.x}` inside a template's markup; an element's `lang` comes from the
-markup or from a script setting it to a string or a var. Text found landing somewhere it
-cannot name, or nowhere, is on the page, so the check stays conservative where it cannot
-see: a var that reaches the DOM through a local (`vars.title.split(…)`) still needs the
-page's `lang`. The one way to silence it wrongly is a var written into a `lang="ja"` element
-*and*, by a route not followed, into another. Rejected: a declarative binding attribute
-for where a var lands, which would be a new contract for one check.
+**`cjk_lang` reads the language of the element the text lands in** — adopted. Chromium picks
+glyph forms and fallback by the nearest `lang` (checked: `lang="ja"` on a span under `lang="fr"`
+draws 直/骨 in Japanese forms), so reading only `<html lang>` flagged `<span lang="ja">秋葉原</span>`
+in a French page and pushed the whole page to `ja`. Where var text lands is read off the
+overlay's scripts (`lint/landing.rs`: `text("id", vars.x)`, `textContent`/`innerHTML`/`append`
+by id, `${vars.x}` in template markup); text it cannot place is judged by the page's `lang`, so
+the check stays conservative. Rejected: a declarative binding attribute, a new contract for one
+check.
 
 ## Design systems
 
@@ -1965,77 +1920,43 @@ the preset's own, or the machine's for threads.
 
 ## SRT and chapters for YouTube
 
-Asked for by a YouTuber: an SRT to upload as captions for a long video, and chapter
-timestamps to paste into its description. Both are text published beside a render, so they
-follow the render's rule: **the master unless a sequence is named**, on every surface
-(`POST /api/export/subtitles` and `/chapters`, the `export_subtitles` and `export_chapters`
-tools, `kuma export srt|chapters`, and **For YouTube** in the render dialog, which sends the
-sequence picked there). Neither reads session state; `tests/export.rs` opens another
-sequence first and checks the master still comes out. All of it is in
-`crates/kuma-daemon/src/export.rs`.
+An SRT to upload as captions and chapter timestamps for the description: text published beside
+a render, so **the master unless a sequence is named** on every surface (`/api/export/*`,
+`export_subtitles`/`export_chapters`, `kuma export`, the render dialog's **For YouTube**), and no
+session state. All in `crates/kuma-daemon/src/export.rs`.
 
-**The SRT is what the picture shows, mapped, not the transcript dumped** — adopted.
-Subtitles are not a model concept, so there is no list of "the video's cues" to print: a
-transcript is a `cues` var in source seconds, and a clip placing its entry — possibly inside a
-sequence placed in turn, cut by an `in`, sped up — is what puts a word on screen. The export
-walks every placement that reaches the root (`overlay_placements`), carrying an affine map
-from each overlay's own time to the root's (a sequence clip adds `start − in/speed`; an
-overlay clip `start + t/speed`, or `end − t/|speed|` reversed, as the bake seeks it) and the
-window of the root each placement shows, cut down at every level of nesting. Each line is
-mapped through each placement and cut to its window. So one sequence placed twice gives its
-subtitles twice, a cue across a cut is split between the two sides, and a cue in a part cut
-out is gone. The map is seconds to seconds and never meets a frame: SRT counts milliseconds,
-rounded once at the end, and a cue that rounds to nothing is dropped rather than numbered.
-Frame-snapping the edges was considered and not done — it would be frame math outside
-`Fps::frame` for a precision a caption cannot show.
+**The SRT is what the picture shows, mapped, not the transcript dumped** — adopted. A transcript
+is a `cues` var in source seconds; what puts a word on screen is a clip placing it, possibly
+nested, cut by an `in`, sped up. The export walks every placement reaching the root
+(`overlay_placements`) with a seconds-to-seconds map and the window each shows: a sequence
+placed twice gives its subtitles twice, a cue across a cut is split. Milliseconds are rounded
+once, at the end; a cue that rounds to nothing is dropped. Rejected: frame-snapping the edges —
+frame math outside `Fps::frame` for a precision a caption cannot show.
 
-**Lines are grouped as the blueprint draws them** — adopted. A transcript is one cue per
-word; an SRT of one word per caption is unusable. The `subtitles` template groups words by
-`words_per_line`, starts a new line after a pause over 0.8 s, holds a line until the next
-across a shorter one, and draws nothing outside its clip — and does all of that per clip,
-since words before the clip's zero are dropped before grouping. `Captions::lines` restates
-those steps (`LINE_GAP` is the template's `GAP`), per placement, so the SRT times lines the
-way the video shows them. That couples Rust to one template's script, which is the cost; the
-alternative, a grouping of the export's own, would give captions that disagree with the
-burned-in words on the same frame. The coupling is narrow and pinned: the names read off a
-manifest are `cues` (any `cues`-typed var), `offset` and `words_per_line`, and
-`tests/export.rs` runs against the shipped blueprint's own `overlay.json`. An overlay that
-takes `cues` but has no `words_per_line` is assumed to show each cue for its own window.
-`words_per_line` on the export overrides the grouping, because captions read better longer
-than the three-word lines a short burns in. Looks are not text: `uppercase` and `stress` are
-left out.
+**Lines are grouped as the blueprint draws them** — adopted. One cue per word is unusable, so
+`Captions::lines` restates the `subtitles` template's grouping (`LINE_GAP` is its `GAP`). The
+cost is Rust coupled to one template's script; a grouping of the export's own would disagree
+with the burned-in words on the same frame. Pinned: only `cues`, `offset`, `words_per_line` are
+read, and `tests/export.rs` runs on the shipped `overlay.json`. `words_per_line` on the export
+overrides it (captions read better longer); `uppercase` and `stress` are looks, not text.
 
-**Hidden tracks count** — adopted. Hiding is a property of the picture. A long video often
-wants captions on YouTube and none burned in, and a hidden subtitles track is the way to say
-that without a new concept; the export says it included one, so it is never a surprise.
-Rejected: a per-entry "export" flag, which would be a second way of saying the same thing.
+**Hidden tracks count** — adopted. Hiding is a property of the picture: a hidden subtitles track
+is how a video gets captions on YouTube and none burned in; the export says it included one.
+Rejected: a per-entry "export" flag, a second way of saying the same.
 
-**Chapters are the sequence's clips that place a sequence** — adopted, reusing
-`jobs::chapters`, so the export and `measure_audio`'s per-chapter loudness mean the same
-parts. The title is the clip's label, else the placed entry's name. **Markers are not
-chapters**, considered and rejected: a marker is a person's comment on the cut ("too dark",
-"see this") and a request to the agent, so turning them into chapters would publish review
-notes. A sequence that places no sequence has no chapters, and the warning says how to make
-some.
+**Chapters are the sequence's clips that place a sequence** — adopted, via `jobs::chapters`, so
+they are the parts `measure_audio` measures; titled by the clip's label, else the entry's name.
+Rejected: **markers as chapters** — a marker is a review note or a request, and would be
+published.
 
-**Warn, never refuse, on YouTube's rules** — adopted. YouTube reads description timestamps as
-chapters only if the first is `0:00`, there are at least three, and each lasts ten seconds or
-more. The text is produced whatever they say and each broken rule is a warning, since what
-to do about it (a title card at the start, merging two short parts) is an editing decision,
-not the exporter's. Timestamps are `M:SS`, `H:MM:SS` from an hour, as YouTube prints them,
-and **rounded down** to the second: a chapter link that lands a fraction early shows the cut,
-one that lands late misses the first word. Lengths are checked on those rounded times, which
-is what YouTube sees, the last one to the end of the sequence.
+**Warn, never refuse, on YouTube's rules** (first at 0:00, at least three, each ≥ 10 s) —
+adopted: fixing them is an editing decision. Timestamps are **rounded down** (a link landing
+early shows the cut; late misses the first word), and lengths are checked on the rounded times.
 
-**Synchronous, and the text unless a file is asked for** — adopted. It reads the document and
-takes milliseconds, so it is a plain request rather than a job in the queue. The answer
-carries the `text`; with `write` or `output` the file is written atomically —
-by default `renders/<name>[-<sequence>].srt` and `…-chapters.txt`, beside the renders and
-named as they are (`jobs::output_stem`) — and the answer gives its `path` instead, so an agent
-writing a long transcript to disk does not get it all back in its context. An SRT with no
-cues is never written, whoever asks: the answer says why there is none. Copying the chapters uses the
-clipboard where the browser allows it and shows the text selected either way, since
-neither a non-secure origin nor a page without focus may write the clipboard.
+**Synchronous, the text unless a file is asked for** — adopted: it takes milliseconds, so a
+request, not a queued job. `write`/`output` writes atomically (`renders/<name>[-<seq>].srt`,
+`…-chapters.txt`, `jobs::output_stem`) and answers with the `path`, keeping a long transcript out
+of an agent's context. An empty SRT is never written.
 
 ## Pruning the cache
 
@@ -2707,8 +2628,8 @@ Its worst item, bakes read at 25 fps whatever the project's rate, had already be
    It lists each blueprint's id, name, description, tags and vars by type, and `id` returns
    one whole manifest. This project's 35 manifests went from 76 KB to 21 KB. Every var's
    default, range, options and description is what the bulk was, and an agent needs them
-   for the one or two blueprints it adds, not for picking. `GET /api/blueprints` is
-   unchanged: the editor's blueprint browser draws from the manifests.
+   for the one or two blueprints it adds, not for picking. The daemon's listing
+   (now `GET /api/libraries`) is unchanged: the editor's blueprint browser draws from the manifests.
    `a_blueprint_summary_names_its_vars_by_type`.
 
 **Fixed before the report:** bakes read at 25 fps, `patch_path` for a patch too big to

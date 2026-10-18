@@ -41,8 +41,7 @@ So:
    subtitles it makes. Japanese **inside** a line in another language (a place name in a
    French sentence) is the element's business, not the page's: give it its own element,
    `<span id="name" lang="ja">`, written with `text("name", vars.name)`, and leave the page
-   French. Setting the whole page to `ja` for one name gives the Latin text around it a
-   Japanese language.
+   French.
 5. **A `jp` fallback font var** in every overlay whose font can be a Latin face (label,
    list, narration, bubble, code, timeline…):
    ```json

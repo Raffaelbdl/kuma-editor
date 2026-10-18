@@ -85,18 +85,16 @@ injected at runtime — a design system is a document, and applying it is your e
 `apply_design_system` copies one in.
 
 When the user names a library to use ("use `/path/to/house-style`"), set it up before the first
-edit: `add_library` (one undoable edit; no other project sees it), read every file in the `docs` it
-returns, `apply_design_system` with the one it holds, then build from its blueprints and effect
-presets (`list_blueprints` and `list_effect_presets` say which library each comes from).
+edit: `add_library`, read every file in the `docs` it returns, `apply_design_system` with its
+design system, then build from its blueprints and effect presets (`list_blueprints` and
+`list_effect_presets` name each one's library; `remove_library` undoes it).
 
 An overlay entry names a folder in the project (`overlays/<name>/`: `index.html` +
 `overlay.json`) plus its `vars`; entries may share a folder. To make one: `new_overlay`, edit,
 `check_overlay`, then `import_overlay` (writing a folder does not add it to the bin). Or copy a
 **blueprint** from the user's library or one the project uses (`list_blueprints`, `add_blueprint`,
-with a `folder` name that says what the copy is for). A project names the libraries it uses besides
-the user's own in its `libraries` (`list_libraries`, `add_library`, `remove_library`).
-`make_overlay_unique`
-before editing a shared folder; `save_blueprint` only when the user asks. See `overlay_guide`.
+with a `folder` name that says what the copy is for). `make_overlay_unique` before editing a shared
+folder; `save_blueprint` only when the user asks. See `overlay_guide`.
 Overlays are live DOM in the preview and baked to alpha frames at export. For a plain title, the
 `title` and `title-subtitle` blueprints are typography, box, outline, shadow and entrance/exit as
 vars — set those rather than writing markup. A `font` var takes a family name from `list_fonts`;
@@ -176,14 +174,12 @@ after every correction. `transcribe` cuts at the best pause near every `split` s
 a clip, it makes the pieces the clip plays and places each over its stretch. `replace` overwrites one
 entry and refuses `split`: to redo a split transcript, remove its pieces and transcribe again.
 
-**Publishing text beside the render.** `export_subtitles` writes the SRT a YouTube upload takes: the
-lines the master's subtitles overlays draw, in master seconds, through every clip that places them
-(nested sequences, `in` points, speed) and cut where those clips are cut. A subtitles track that is
-hidden still counts, which is how captions stay off the picture and in the SRT; `words_per_line`
-groups more words per caption than the picture does. `export_chapters` lists the master's chapters,
-its clips that place a sequence, as `M:SS Title` lines for the description, and warns where YouTube
-would not read them (first not at 0:00, fewer than 3, one under 10 s). Both default to the master,
-take `sequence`, and return the text unless `output`/`write` asks for a file (`renders/`).
+**Publishing text beside the render.** `export_subtitles` gives the SRT for a YouTube upload: the
+lines the master's subtitles overlays draw, in master seconds. A hidden subtitles track still counts
+(captions off the picture, in the SRT); `words_per_line` makes captions longer than the burned-in
+lines. `export_chapters` gives the master's chapters (clips placing a sequence, titled by `label`) as
+`M:SS Title` lines, and warns where YouTube would not read them. Both take `sequence` and return
+the text unless `output`/`write` asks for a file.
 
 Vertical (9:16) is only
 `width`/`height`: patch them to 1080×1920 (or swap them) and every preset renders portrait.

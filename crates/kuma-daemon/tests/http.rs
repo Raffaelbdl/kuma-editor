@@ -676,12 +676,13 @@ async fn a_sample_job_ends_with_the_frames_or_the_reason() {
     assert_eq!((times[0], times[times.len() - 1]), (0.2, 1.8));
 }
 
-/// A library added while the daemon runs is read from then on, with nothing copied: its
-/// blueprints are listed under it, its `_vendor/` serves beside the user library's, and
-/// taking it off leaves its folder alone.
+/// A library is the project's: naming it is an edit of the document, which an undo takes
+/// back like any other, and nothing is copied or written anywhere else — so no other project
+/// sees it. While named, its blueprints are listed under it and its `_vendor/` serves beside
+/// the user library's; taking it off leaves its folder alone.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_library_added_while_running_is_read_at_once() {
-    let (_state, addr, dir) = daemon().await;
+async fn a_library_is_the_projects_and_an_edit() {
+    let (state, addr, dir) = daemon().await;
     let house = dir.path().join("house");
     let blueprint = house.join("blueprints/house-tag");
     std::fs::create_dir_all(&blueprint).unwrap();
@@ -690,35 +691,43 @@ async fn a_library_added_while_running_is_read_at_once() {
     std::fs::create_dir_all(house.join("blueprints/_vendor")).unwrap();
     std::fs::write(house.join("blueprints/_vendor/house.js"), "// house").unwrap();
     std::fs::create_dir_all(dir.path().join("not-one")).unwrap();
+    let user_library = || std::fs::read_dir(dir.path().join("library")).unwrap().map(|e| e.unwrap().file_name()).collect::<std::collections::BTreeSet<_>>();
+    let before = user_library();
 
     let post = |path: &str, body: serde_json::Value| {
         let (status, _, body) = request(&addr, "POST", path, &body.to_string());
         (status, serde_json::from_str::<serde_json::Value>(&body).unwrap_or_default())
     };
+    let tagged = |out: &serde_json::Value| out["blueprints"].as_array().unwrap().iter().any(|b| b["id"] == "house-tag");
     let (status, _) = post("/api/libraries", serde_json::json!({ "path": dir.path().join("not-one") }));
     assert!(status.contains("400"), "a folder with no library in it is refused: {status}");
 
-    // Its `blueprints/` folder names it too.
-    let (status, out) = post("/api/libraries", serde_json::json!({ "path": house.join("blueprints") }));
+    // Its `blueprints/` folder names it too, and the project names it from its own folder.
+    let (status, out) = post("/api/libraries", serde_json::json!({ "path": house.join("blueprints"), "origin": "ui: add library" }));
     assert!(status.contains("200"), "{status} {out}");
-    let canonical = house.canonicalize().unwrap();
-    assert_eq!(out["path"], serde_json::json!(canonical));
+    assert_eq!(out["path"], "house");
+    assert_eq!(state.project.read().unwrap().libraries, ["house"], "in the document");
     let names: Vec<(&str, &str)> = out["libraries"].as_array().unwrap().iter().map(|l| (l["name"].as_str().unwrap(), l["source"].as_str().unwrap())).collect();
-    assert_eq!(names, [("My library", "user"), ("house", "added")]);
-    let tag = out["blueprints"].as_array().unwrap().iter().find(|b| b["id"] == "house-tag").expect("its blueprint is listed");
-    assert_eq!(tag["library"], serde_json::json!(canonical));
-    // Both libraries' `_vendor/` serve, file by file.
+    assert_eq!(names, [("My library", "user"), ("house", "project")]);
+    assert!(tagged(&out), "its blueprint is listed");
     for file in ["house.js", "kuma.js"] {
         assert!(get(&addr, &format!("/vendor/{file}")).0.contains("200"), "{file}");
     }
     let (_, again) = post("/api/libraries", serde_json::json!({ "path": house }));
-    assert_eq!(again["added"], false, "listed once");
+    assert!(again["revision"].is_null(), "named once: {again}");
+    assert_eq!(user_library(), before, "nothing written outside the project");
 
-    let (status, out) = post("/api/libraries/remove", serde_json::json!({ "path": house }));
-    assert!(status.contains("200"), "{status} {out}");
-    assert!(out["blueprints"].as_array().unwrap().iter().all(|b| b["id"] != "house-tag"));
+    // An undo is the document without it, and the libraries follow.
+    assert!(post("/api/project/undo", serde_json::json!({})).0.contains("200"));
+    assert!(state.project.read().unwrap().libraries.is_empty());
+    assert!(!tagged(&serde_json::from_str(&get_body(&addr, "/api/libraries").1).unwrap()));
     assert!(get(&addr, "/vendor/house.js").0.contains("404"));
+
+    assert!(post("/api/project/redo", serde_json::json!({})).0.contains("200"));
+    let (status, out) = post("/api/libraries/remove", serde_json::json!({ "path": "house" }));
+    assert!(status.contains("200"), "{status} {out}");
+    assert!(!tagged(&out));
     assert!(blueprint.join("overlay.json").is_file(), "its folder is left as it was");
     let (status, _) = post("/api/libraries/remove", serde_json::json!({ "path": dir.path().join("library") }));
-    assert!(status.contains("400"), "the user library is not taken off: {status}");
+    assert!(status.contains("400"), "the user library is not the project's to remove: {status}");
 }

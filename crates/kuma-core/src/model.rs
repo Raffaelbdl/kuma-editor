@@ -48,6 +48,13 @@ pub struct Project {
     /// sequence is reached by being placed on it, directly or through another sequence.
     #[serde(default = "default_master")]
     pub master: BinId,
+    /// The asset libraries this project uses besides the user's own: folders of blueprints,
+    /// presets, fonts and design systems, each relative to the project (`../house-style`)
+    /// or absolute, lowest precedence first. What one gives is read from it, never copied
+    /// in, except a blueprint, which is copied when used; so another project neither sees
+    /// these nor is touched by adding or removing one.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub libraries: Vec<String>,
 }
 
 fn default_version() -> u32 {
@@ -78,11 +85,33 @@ impl Default for Project {
             sample_rate: 48000,
             bin: BTreeMap::new(),
             master: default_master(),
+            libraries: Vec::new(),
         }
     }
 }
 
 impl Project {
+    /// The folders `libraries` names, relative ones resolved against `root`, the project's,
+    /// and `..` taken out (`/v/one/../house` is `/v/house`), so each has one spelling.
+    pub fn library_dirs(&self, root: &std::path::Path) -> Vec<std::path::PathBuf> {
+        use std::path::Component;
+        let resolve = |l: &String| {
+            let mut out = std::path::PathBuf::new();
+            for c in root.join(l).components() {
+                match c {
+                    Component::ParentDir => {
+                        out.pop();
+                    }
+                    Component::CurDir => {}
+                    c => out.push(c),
+                }
+            }
+            out
+        };
+        self.libraries.iter().map(resolve).collect()
+    }
+
+
     /// A fresh project with the three default tracks (video, overlays, audio). Used by
     /// `kuma init` and by the daemon when the project file does not exist yet.
     pub fn new_default(name: impl Into<String>, width: u32, height: u32, fps: Fps) -> Self {

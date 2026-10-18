@@ -27,11 +27,11 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum LibraryCmd {
-    /// Read a folder of blueprints, presets, fonts and design systems (each in its own subfolder) in every project, beside the user library. Nothing is copied until a project uses a blueprint.
+    /// Use a folder of blueprints, presets, fonts and design systems (each in its own subfolder) in this project (`-p`), as one edit; no other project sees it. Nothing is copied until a blueprint is used.
     Add { path: PathBuf },
-    /// Stop reading an added library. Its folder, and what projects copied from it, are left alone.
+    /// Stop using one of this project's libraries, as one edit. Its folder, and what the project copied from it, are left alone.
     Remove { path: PathBuf },
-    /// The libraries read, lowest precedence first, and where each comes from.
+    /// The libraries this project reads, lowest precedence first, and where each comes from.
     List,
 }
 
@@ -216,7 +216,7 @@ enum Cmd {
         #[arg(long)]
         force: bool,
     },
-    /// Install the starter blueprints, presets, design systems and fonts into the user library (`~/.local/share/kuma`). Adds what is missing and new faces of installed fonts, always refreshes `_vendor/`; `--force` replaces the rest too. `add`, `remove` and `list` manage the other libraries every project reads.
+    /// Install the starter blueprints, presets, design systems and fonts into the user library (`~/.local/share/kuma`). Adds what is missing and new faces of installed fonts, always refreshes `_vendor/`; `--force` replaces the rest too. `add`, `remove` and `list` manage the libraries a project uses besides it.
     Library {
         /// Overwrite blueprints and presets that already exist in the library.
         #[arg(long)]
@@ -365,7 +365,13 @@ fn repo_root_found(cli: &Cli) -> anyhow::Result<RepoRoot> {
 
 fn config(cli: &Cli) -> anyhow::Result<Config> {
     let repo_root = repo_root(cli)?;
-    Ok(Config { project_file: absolute(&cli.project)?, libraries: Libraries::from_env(&repo_root), repo_root, bind: cli.bind })
+    let config = Config { project_file: absolute(&cli.project)?, libraries: Libraries::from_env(&repo_root), repo_root, bind: cli.bind };
+    // The project's own libraries, for commands that read the libraries without loading it
+    // (`design-system`, `library list`); loading the project follows them as well.
+    if let Some(p) = std::fs::read_to_string(&config.project_file).ok().and_then(|t| kuma_core::parse_project(&t).ok()) {
+        config.libraries.follow(&p, &config.project_root());
+    }
+    Ok(config)
 }
 
 /// Load the project state for one-shot commands (no server).
@@ -738,29 +744,33 @@ async fn main() -> anyhow::Result<()> {
             println!("{title} → {}", dst.display());
             println!("The agent reads `design-system/DESIGN.md`; overlays copy the `:root` block from `tokens.css`.");
         }
-        Cmd::Library { action: Some(action), .. } => {
-            let user = user_library();
-            match action {
-                LibraryCmd::Add { path } => {
-                    let (dir, added) = kuma_daemon::add_library(&user, &absolute(path)?)?;
-                    println!("{} {}", if added { "added" } else { "already added:" }, dir.display());
-                }
-                LibraryCmd::Remove { path } => {
-                    kuma_daemon::remove_library(&user, &absolute(path)?)?;
-                    println!("removed {}", path.display());
-                }
-                LibraryCmd::List => {
-                    for (dir, source) in config(&cli)?.libraries.sources() {
-                        let missing = if dir.is_dir() { "" } else { "  (missing)" };
-                        println!("{:<8} {}{missing}", format!("{source:?}").to_lowercase(), dir.display());
-                    }
-                    return Ok(());
-                }
+        Cmd::Library { action: Some(LibraryCmd::List), .. } => {
+            for (dir, source) in config(&cli)?.libraries.sources() {
+                let missing = if dir.is_dir() { "" } else { "  (missing)" };
+                println!("{:<8} {}{missing}", format!("{source:?}").to_lowercase(), dir.display());
             }
-            // A daemon running here reads the list again now rather than on its next rescan.
-            if let Some(url) = running_daemon(&cli).await {
-                kuma_mcp::client::Client::new(&url).post("/api/blueprints", &serde_json::json!({})).await?;
-                println!("the daemon at {url} rescanned its libraries");
+        }
+        Cmd::Library { action: Some(action), .. } => {
+            // An edit of the project: through the daemon serving it when one does.
+            let (route, path, origin) = match action {
+                LibraryCmd::Add { path } => ("/api/libraries", absolute(path)?, "cli: library add"),
+                // A path to the folder, or the name the project gives it.
+                LibraryCmd::Remove { path } => ("/api/libraries/remove", if path.exists() { absolute(path)? } else { path.clone() }, "cli: library remove"),
+                LibraryCmd::List => unreachable!("listed above"),
+            };
+            let revision = match running_daemon(&cli).await {
+                Some(url) => kuma_mcp::client::Client::new(&url).post(route, &serde_json::json!({ "path": path, "origin": origin })).await?["revision"].as_u64(),
+                None => {
+                    let state = open(&cli)?;
+                    match action {
+                        LibraryCmd::Add { .. } => state.add_library(&path, origin)?.1,
+                        _ => Some(state.remove_library(&path.to_string_lossy(), origin)?),
+                    }
+                }
+            };
+            match revision {
+                Some(rev) => println!("{} {} (revision {rev})", if route.ends_with("remove") { "removed" } else { "added" }, path.display()),
+                None => println!("{} is already one of this project's libraries", path.display()),
             }
         }
         Cmd::Library { force, action: None } => {

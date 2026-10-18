@@ -59,10 +59,11 @@ export const api = {
   libraries: () => json<Libraries>("/api/libraries"),
   /** Read the libraries again, the list of added ones included. */
   rescanLibraries: () => json<Libraries>("/api/libraries/rescan", { method: "POST", body: "{}" }),
-  /** Read a library folder in every project on this machine. Nothing is copied. */
-  addLibrary: (path: string) => json<Libraries & { path: string; added: boolean }>("/api/libraries", { method: "POST", body: JSON.stringify({ path }) }),
-  /** Stop reading an added library; its folder is left alone. */
-  removeLibrary: (path: string) => json<Libraries>("/api/libraries/remove", { method: "POST", body: JSON.stringify({ path }) }),
+  /** Use a library folder in this project, as one edit (`revision` null when it already
+   *  did). Nothing is copied; `path` is how the project names it. */
+  addLibrary: (path: string) => json<Libraries & { path: string; revision: number | null }>("/api/libraries", { method: "POST", body: JSON.stringify({ path, origin: "ui: add library" }) }),
+  /** Stop using one of this project's libraries, as one edit; its folder is left alone. */
+  removeLibrary: (path: string) => json<Libraries & { revision: number }>("/api/libraries/remove", { method: "POST", body: JSON.stringify({ path, origin: "ui: remove library" }) }),
   /** Copy a blueprint into `overlays/`; not an edit. Returns the folder. */
   copyBlueprint: (id: string, folder?: string) =>
     json<{ overlay: string }>(`/api/blueprints/${encodeURIComponent(id)}/copy`, { method: "POST", body: JSON.stringify({ folder }) }),

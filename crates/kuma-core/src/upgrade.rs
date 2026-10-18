@@ -89,6 +89,11 @@ fn upgrade(v: &mut Value) -> Result<(), String> {
         // refuses a v9 file rather than load it and drop the origins when it saves.
         version = 9;
     }
+    if version == 9 {
+        // 9 → 10: a project may name the `libraries` it uses, absent meaning none. A stamp,
+        // so that an older kuma refuses a v10 file rather than drop its libraries on save.
+        version = 10;
+    }
     v["version"] = Value::from(version);
     Ok(())
 }

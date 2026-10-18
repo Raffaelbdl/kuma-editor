@@ -303,29 +303,32 @@ export async function rescanLibraries() {
 }
 
 /**
- * Read a library folder in every project on this machine: the desktop's folder picker, or a
- * typed path in a browser tab. Nothing is copied; a blueprint is when a project uses it.
+ * Use a library folder in this project, as one edit — undone like any other, and seen by no
+ * other project: the desktop's folder picker, or a typed path in a browser tab. Nothing is
+ * copied; a blueprint is when it is used.
  */
 export async function addLibrary() {
   const app = desktop();
   const path = app?.pickFolder
-    ? await app.pickFolder("Add a library of blueprints").catch((e) => { toast(`Cannot open the folder picker: ${(e as Error).message}`, "err"); return null; })
-    : await askText({ title: "Add a library", label: "Folder", placeholder: "/path/to/library (holding blueprints/, presets/, fonts/…)", ok: "Add" });
+    ? await app.pickFolder("Use a library in this project").catch((e) => { toast(`Cannot open the folder picker: ${(e as Error).message}`, "err"); return null; })
+    : await askText({ title: "Use a library in this project", label: "Folder", placeholder: "/path/to/library (holding blueprints/, presets/, fonts/…)", ok: "Add" });
   if (!path) return;
   try {
     const r = await api.addLibrary(path);
     applyLibraries(r);
-    const name = r.libraries.find((l) => l.path === r.path)?.name ?? r.path;
-    const n = r.blueprints.filter((b) => b.library === r.path).length;
-    toast(r.added ? `Added ${name}: ${plural(n, "blueprint")}, for every project` : `${name} is already read`, "ok", 5000);
+    // A library is added last of the project's.
+    const lib = r.libraries.filter((l) => l.source === "project").at(-1);
+    const n = lib ? r.blueprints.filter((b) => b.library === lib.path).length : 0;
+    toast(r.revision === null ? `This project already uses ${r.path}` : `This project now uses ${r.path}: ${plural(n, "blueprint")}`, "ok", 5000);
   } catch (e) {
     toast((e as Error).message, "err", 8000);
   }
 }
 
-/** Stop reading an added library. Its folder, and what projects copied from it, stay. */
+/** Stop using one of this project's libraries, as one edit. Its folder, and the overlays
+ *  this project copied from it, stay. */
 export async function removeLibrary(path: string, name: string) {
-  const ok = await askForm({ title: `Stop reading ${name}?`, note: `Its blueprints leave this panel in every project. Nothing is deleted: the folder stays where it is (${path}), and overlays a project copied from it keep working, unless they use its _vendor/ helpers or fonts.`, rows: [], ok: "Stop reading" });
+  const ok = await askForm({ title: `Stop using ${name} in this project?`, note: `Its blueprints leave this project's panel; other projects are not touched, and undo brings it back. Nothing is deleted: the folder stays where it is (${path}), and overlays this project copied from it keep working, unless they use its _vendor/ helpers or fonts.`, rows: [], ok: "Stop using" });
   if (!ok) return;
   try {
     applyLibraries(await api.removeLibrary(path));

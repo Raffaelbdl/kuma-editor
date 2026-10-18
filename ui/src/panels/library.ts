@@ -176,17 +176,17 @@ export class Library {
 
   private renderBlueprints(tools: HTMLElement) {
     tools.append(
-      tool("folder-plus", "Add a library — a folder of blueprints, presets and fonts read in every project", () => void addLibrary()),
+      tool("folder-plus", "Use a library in this project — a folder of blueprints, presets and fonts; other projects do not see it", () => void addLibrary()),
       tool("refresh", "Rescan the libraries", () => void rescanLibraries()),
     );
 
     const q = this.filter.value.trim().toLowerCase();
     const blueprints = store.state.blueprints.filter((b) => !q || (b.manifest.name || b.id).toLowerCase().includes(q));
     if (!store.state.blueprints.length) {
-      this.body.appendChild(el("p", "muted", "No blueprints found. Run `kuma library` to install the starter set, add a library of them with the folder button above, or save an overlay from the bin as one."));
+      this.body.appendChild(el("p", "muted", "No blueprints found. Run `kuma library` to install the starter set, use a library of them in this project with the folder button above, or save an overlay from the bin as one."));
     }
     // A folder per library, in the order they are read. One whose blueprints were all
-    // shadowed, or that has none, is shown only if it was added here, so it can be taken off.
+    // shadowed, or that has none, is shown only if the project names it, so it can be taken off.
     const byLibrary = new Map<string, BlueprintInfo[]>();
     for (const b of blueprints) {
       const own = byLibrary.get(b.library);
@@ -195,7 +195,7 @@ export class Library {
     }
     for (const lib of store.state.libraries) {
       const own = byLibrary.get(lib.path) ?? [];
-      if (!own.length && (q || lib.source !== "added")) continue;
+      if (!own.length && (q || lib.source !== "project")) continue;
       this.libraryGroup(lib, own, !!q);
     }
   }
@@ -217,8 +217,8 @@ export class Library {
       e.stopPropagation();
       const items: MenuItem[] = [{ heading: lib.name }];
       items.push({ label: "Copy path", title: lib.path, run: () => void navigator.clipboard.writeText(lib.path) });
-      if (lib.source === "added") items.push({ label: "Stop reading this library…", title: "Take it off the list every project reads; nothing is deleted", run: () => void removeLibrary(lib.path, lib.name) });
-      else items.push({ label: lib.source === "user" ? "Your own library: always read" : lib.source === "starter" ? "The starter set, read until `kuma library` installs one" : "Named by KUMA_LIBRARY", disabled: true, run: () => {} });
+      if (lib.source === "project") items.push({ label: "Stop using it in this project…", title: "One edit, undone like any other; other projects and the folder are not touched", run: () => void removeLibrary(lib.path, lib.name) });
+      else items.push({ label: lib.source === "user" ? "Your own library: every project reads it" : lib.source === "starter" ? "The starter set, read until `kuma library` installs one" : "Named by KUMA_LIBRARY", disabled: true, run: () => {} });
       showMenu(items, e.clientX, e.clientY);
     };
     this.body.appendChild(head);

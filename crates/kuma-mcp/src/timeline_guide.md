@@ -86,8 +86,10 @@ whether this project has one.
 An overlay entry names a folder in the project (`overlays/<name>/`: `index.html` +
 `overlay.json`) plus its `vars`; entries may share a folder. To make one: `new_overlay`, edit,
 `check_overlay`, then `import_overlay` (writing a folder does not add it to the bin). Or copy a
-**blueprint** from the user's library (`list_blueprints`, `add_blueprint`, with a `folder` name that
-says what the copy is for). `make_overlay_unique`
+**blueprint** from the user's library or one the project uses (`list_blueprints`, `add_blueprint`,
+with a `folder` name that says what the copy is for). A project names the libraries it uses besides
+the user's own in its `libraries` (paths relative to the project, e.g. `"../house-style"`); adding one
+is a patch to `/libraries`, seen by no other project. `make_overlay_unique`
 before editing a shared folder; `save_blueprint` only when the user asks. See `overlay_guide`.
 Overlays are live DOM in the preview and baked to alpha frames at export. For a plain title, the
 `title` and `title-subtitle` blueprints are typography, box, outline, shadow and entrance/exit as

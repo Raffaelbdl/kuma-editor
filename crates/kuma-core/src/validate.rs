@@ -42,6 +42,27 @@ pub struct ValidationContext {
     pub check_files: bool,
 }
 
+/// What a library holds, by folder: a folder with none of them is not one.
+pub const LIBRARY_KINDS: [&str; 4] = ["blueprints", "presets", "fonts", "design-systems"];
+
+/// Each library named once and by a path. On disk, one that is not there is a warning, not an
+/// error: a drive not mounted must leave the project editable, and it reads as empty.
+fn check_libraries(issues: &mut Vec<Issue>, p: &Project, ctx: &ValidationContext) {
+    let mut seen = HashSet::new();
+    for (i, (name, dir)) in p.libraries.iter().zip(p.library_dirs(&ctx.root)).enumerate() {
+        let at = format!("/libraries/{i}");
+        if name.trim().is_empty() {
+            issues.push(Issue::error(at, "a library is a folder's path, not an empty string"));
+        } else if !seen.insert(name) {
+            issues.push(Issue::error(at, format!("`{name}` is named twice")));
+        } else if ctx.check_files && !dir.is_dir() {
+            issues.push(Issue::warn(at, format!("library `{name}` is not there ({}): it reads as empty until it is", dir.display())));
+        } else if ctx.check_files && !LIBRARY_KINDS.iter().any(|k| dir.join(k).is_dir()) {
+            issues.push(Issue::warn(at, format!("`{name}` is not a library: it has none of {}/", LIBRARY_KINDS.join("/, "))));
+        }
+    }
+}
+
 pub fn validate(p: &Project, ctx: &ValidationContext) -> Vec<Issue> {
     let mut issues = Vec::new();
 
@@ -54,6 +75,7 @@ pub fn validate(p: &Project, ctx: &ValidationContext) -> Vec<Issue> {
     if p.width == 0 || p.height == 0 || p.width % 2 == 1 || p.height % 2 == 1 {
         issues.push(Issue::error("/width", "width/height must be positive even numbers"));
     }
+    check_libraries(&mut issues, p, ctx);
 
     // Bin entries are checked once each, however many clips place them. Overlay vars are
     // checked here rather than per clip, because the entry is what carries them now.
@@ -1015,5 +1037,20 @@ mod tests {
         }));
         let issues = validate(&p, &ValidationContext::default());
         assert!(issues.iter().any(|i| i.severity == Severity::Error && i.path == "/bin/far/source/overlay"), "{issues:?}");
+    }
+
+    /// A library is named once, by a path; one not there, or not a library, is a warning —
+    /// a drive not mounted leaves the project editable.
+    #[test]
+    fn libraries_are_named_once_and_missing_ones_warn() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join("house/presets")).unwrap();
+        std::fs::create_dir_all(tmp.path().join("plain")).unwrap();
+        let p = Project { libraries: ["house", "plain", "gone", "house", " "].map(String::from).to_vec(), ..Default::default() };
+        let ctx = ValidationContext { root: tmp.path().to_path_buf(), check_files: true };
+        let found: Vec<(Severity, String)> = validate(&p, &ctx).into_iter().filter(|i| i.path.starts_with("/libraries")).map(|i| (i.severity, i.path)).collect();
+        let at = |i: usize| format!("/libraries/{i}");
+        assert_eq!(found, [(Severity::Warning, at(1)), (Severity::Warning, at(2)), (Severity::Error, at(3)), (Severity::Error, at(4))]);
+        assert!(validate(&p, &ValidationContext::default()).iter().filter(|i| i.path.starts_with("/libraries")).all(|i| i.severity == Severity::Error), "nothing read off the disk unless asked");
     }
 }

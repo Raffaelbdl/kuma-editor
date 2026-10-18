@@ -162,6 +162,8 @@ export interface Marker { t: number; label: string; color?: string | null; origi
 export interface Project {
   version: number; name: string; revision: number; fps: Fps; width: number; height: number; sample_rate: number;
   bin: Record<string, BinItem>; master: string;
+  /** The asset libraries this project uses besides the user's own, as it names them. */
+  libraries?: string[];
 }
 
 /** What the daemon says about the sequence currently open (session state, not document).
@@ -199,8 +201,8 @@ export interface FontFamily {
 /** A blueprint, and the library (`LibraryInfo.path`) it comes from. */
 export interface BlueprintInfo { id: string; library: string; manifest: OverlayManifest }
 /** A library the daemon reads (`GET /api/libraries`), lowest precedence first: the user's
- *  own, the starter set standing in for it, those added to it, then `KUMA_LIBRARY`'s. */
-export interface LibraryInfo { path: string; name: string; source: "user" | "starter" | "added" | "env"; missing: boolean }
+ *  own, the starter set standing in for it, the project's, then `KUMA_LIBRARY`'s. */
+export interface LibraryInfo { path: string; name: string; source: "user" | "starter" | "project" | "env"; missing: boolean }
 /** An overlay folder the bin uses: its manifest, or why it will not load. */
 export interface OverlayInfo { manifest?: OverlayManifest; error?: string }
 

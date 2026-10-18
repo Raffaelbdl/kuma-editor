@@ -158,28 +158,27 @@ pub fn user_library() -> PathBuf {
 /// taken off, and what stands in for what, is then never guessed back from a path.
 #[derive(Debug, Clone)]
 pub struct Libraries {
-    /// The user library: where saved blueprints, shared fonts and whisper models go, and
-    /// where the list of added libraries is kept.
+    /// The user library, read by every project: where saved blueprints, shared fonts and
+    /// whisper models go.
     pub user: PathBuf,
     /// The checkout's starter set, standing in while the user library has no blueprints.
     pub starter: Option<PathBuf>,
     /// `KUMA_LIBRARY`'s, lowest precedence first.
     pub env: Vec<PathBuf>,
-    /// The libraries added to the user library, as last read (`refresh`). Shared by clones.
-    added: Arc<RwLock<Vec<PathBuf>>>,
+    /// The libraries the open project names (`Project::libraries`), resolved: set whenever
+    /// the document's list changes (`follow`). Shared by clones.
+    project: Arc<RwLock<Vec<PathBuf>>>,
 }
 
 impl Libraries {
-    /// The user library, and what was added to it.
+    /// The user library alone, until `follow` is given a project's.
     pub fn new(user: PathBuf) -> Self {
-        let libraries = Libraries { user, starter: None, env: Vec::new(), added: Arc::default() };
-        libraries.refresh();
-        libraries
+        Libraries { user, starter: None, env: Vec::new(), project: Arc::default() }
     }
 
-    /// What every daemon and command reads: the user library, `KUMA_LIBRARY`'s (a
-    /// `:`-separated list), and — when that is unset and the user library holds no
-    /// blueprints — the checkout's own `library/`, the starter set.
+    /// What every daemon and command reads besides a project's own: the user library,
+    /// `KUMA_LIBRARY`'s (a `:`-separated list), and — when that is unset and the user
+    /// library holds no blueprints — the checkout's own `library/`, the starter set.
     ///
     /// The desktop shell has always done this for the daemons it starts (`libraryFallback`
     /// in `app/src/kuma.ts`, which also says so in the launcher). A daemon `kuma mcp` or
@@ -194,20 +193,19 @@ impl Libraries {
         libraries
     }
 
-    /// Read the list of added libraries again: what a rescan does, so a library added by
-    /// another daemon or by `kuma library add` is read from the next one.
-    pub fn refresh(&self) {
-        *write(&self.added) = added_libraries(&self.user);
+    /// Read `project`'s libraries from now on, resolved against `root`, its folder.
+    pub fn follow(&self, project: &kuma_core::Project, root: &Path) {
+        *write(&self.project) = project.library_dirs(root);
     }
 
     /// Every library, lowest precedence first, with where it comes from: the user library
-    /// and the starter set standing in for it, those added to the user library, then
-    /// `KUMA_LIBRARY`'s. A library added and also named otherwise is read where it is named.
+    /// and the starter set standing in for it, the project's, then `KUMA_LIBRARY`'s. A
+    /// project's library also named otherwise is read where it is named.
     pub fn sources(&self) -> Vec<(PathBuf, LibrarySource)> {
         let named = |d: &PathBuf| *d == self.user || self.starter.as_ref() == Some(d) || self.env.contains(d);
         std::iter::once((self.user.clone(), LibrarySource::User))
             .chain(self.starter.iter().map(|d| (d.clone(), LibrarySource::Starter)))
-            .chain(read(&self.added).iter().filter(|d| !named(d)).map(|d| (d.clone(), LibrarySource::Added)))
+            .chain(read(&self.project).iter().filter(|d| !named(d)).map(|d| (d.clone(), LibrarySource::Project)))
             .chain(self.env.iter().map(|d| (d.clone(), LibrarySource::Env)))
             .collect()
     }
@@ -227,74 +225,18 @@ fn starter_set(user: &Path, asked: bool, repo_root: &Path) -> Option<PathBuf> {
     (!asked && !installed && shipped.join("blueprints").is_dir()).then_some(shipped)
 }
 
-/// Where the user library lists the libraries added to it: `libraries.json`,
-/// `{ "libraries": ["/abs/path", …] }`, lowest precedence first. It lives in the user library
-/// so every daemon on the machine reads the same list, whoever started it.
-pub fn added_libraries_file(user: &Path) -> PathBuf {
-    user.join("libraries.json")
-}
-
-#[derive(Debug, Default, Serialize, Deserialize)]
-struct AddedLibraries {
-    libraries: Vec<PathBuf>,
-}
-
-/// The libraries added to the user library `user`, as listed; none when there is no list,
-/// and none, with a warning, when it does not parse.
-pub fn added_libraries(user: &Path) -> Vec<PathBuf> {
-    let file = added_libraries_file(user);
-    let Ok(text) = std::fs::read_to_string(&file) else { return Vec::new() };
-    match serde_json::from_str::<AddedLibraries>(&text) {
-        Ok(l) => l.libraries,
-        Err(e) => {
-            tracing::warn!("{} is not a library list, so no added library is read: {e}", file.display());
-            Vec::new()
-        }
+/// `dir` as a project names it: relative to `root`, the project's folder, wherever it is
+/// (`../house-style`), so a folder that moves together with its library keeps finding it;
+/// absolute only when they share nothing (another drive). Both are absolute.
+pub fn relative_to(dir: &Path, root: &Path) -> PathBuf {
+    let (a, b): (Vec<_>, Vec<_>) = (dir.components().collect(), root.components().collect());
+    let common = a.iter().zip(&b).take_while(|(x, y)| x == y).count();
+    if common <= 1 {
+        return dir.to_path_buf();
     }
-}
-
-fn write_added_libraries(user: &Path, libraries: Vec<PathBuf>) -> anyhow::Result<()> {
-    crate::jobs::write_atomic(&added_libraries_file(user), (serde_json::to_string_pretty(&AddedLibraries { libraries })? + "\n").as_bytes())
-}
-
-/// What a library holds, by folder: anything else is not one.
-pub const LIBRARY_KINDS: [&str; 4] = ["blueprints", "presets", "fonts", "design-systems"];
-
-/// Add `dir` to the libraries the user library `user` lists, last, so it wins over the ones
-/// added before it. Its `blueprints/` folder names the library too. Answers with the folder
-/// as it is listed (absolute), and whether it was new.
-pub fn add_library(user: &Path, dir: &Path) -> anyhow::Result<(PathBuf, bool)> {
-    let mut dir = dir.canonicalize().map_err(|e| anyhow::anyhow!("cannot open {}: {e}", dir.display()))?;
-    anyhow::ensure!(dir.is_dir(), "{} is not a folder", dir.display());
-    if dir.file_name().is_some_and(|n| n == "blueprints") && !LIBRARY_KINDS.iter().any(|k| dir.join(k).is_dir()) {
-        dir.pop();
-    }
-    anyhow::ensure!(
-        LIBRARY_KINDS.iter().any(|k| dir.join(k).is_dir()),
-        "{} is not a kuma library: it has none of {}/",
-        dir.display(),
-        LIBRARY_KINDS.join("/, ")
-    );
-    anyhow::ensure!(user.canonicalize().ok().as_ref() != Some(&dir), "{} is your own library, which is always read", dir.display());
-    let mut listed = added_libraries(user);
-    if listed.contains(&dir) {
-        return Ok((dir, false));
-    }
-    listed.push(dir.clone());
-    write_added_libraries(user, listed)?;
-    Ok((dir, true))
-}
-
-/// Take `dir` off the list. Nothing in it is touched, and nothing a project copied from it.
-/// Refused for a folder the list does not have: the user library, the starter set and
-/// `KUMA_LIBRARY`'s are not taken off here.
-pub fn remove_library(user: &Path, dir: &Path) -> anyhow::Result<()> {
-    let mut listed = added_libraries(user);
-    let before = listed.len();
-    let canonical = dir.canonicalize().ok();
-    listed.retain(|d| d != dir && Some(d) != canonical.as_ref());
-    anyhow::ensure!(listed.len() < before, "{} is not an added library (`kuma library list` says where each comes from)", dir.display());
-    write_added_libraries(user, listed)
+    let up = std::iter::repeat_n(std::path::Component::ParentDir, b.len() - common);
+    let rel: PathBuf = up.chain(a[common..].iter().copied()).collect();
+    if rel.as_os_str().is_empty() { PathBuf::from(".") } else { rel }
 }
 
 /// Where a library on the search path comes from, which says whether it can be taken off.
@@ -305,8 +247,8 @@ pub enum LibrarySource {
     User,
     /// The checkout's starter set, read while the user library has no blueprints.
     Starter,
-    /// Added to the user library's list (`kuma library add`, the Blueprints panel).
-    Added,
+    /// Named by the project (`Project::libraries`): `kuma library add`, the Blueprints panel.
+    Project,
     /// Named by `KUMA_LIBRARY`.
     Env,
 }
@@ -497,6 +439,7 @@ impl AppState {
             (p.revision, history::snapshot(&p)?)
         };
         lock(&st.history).keep(opened.0, opened.1);
+        st.config.libraries.follow(&read(&st.project), &st.config.project_root());
         st.reload_blueprints();
         if !st.config.project_file.is_file() {
             st.save()?;
@@ -507,7 +450,6 @@ impl AppState {
     /// Later libraries win on an id clash.
     pub fn reload_blueprints(&self) {
         // The libraries may have changed since the last scan: the baker follows them.
-        self.config.libraries.refresh();
         self.baker.set_library(self.config.vendor_dirs(), self.config.font_dirs());
         let mut all = BTreeMap::new();
         let mut errors = Vec::new();
@@ -599,9 +541,65 @@ impl AppState {
     fn commit(&self, next: Project, origin: &str) -> anyhow::Result<Project> {
         self.write_file(&next)?;
         let rev = next.revision;
+        let libraries_differ = next.libraries != read(&self.project).libraries;
         let prev = std::mem::replace(&mut *write(&self.project), next);
+        // The project's libraries are what its blueprints, `_vendor/` and fonts come from:
+        // read them again before anyone is told, an undo or a restore as much as an edit.
+        if libraries_differ {
+            self.config.libraries.follow(&read(&self.project), &self.config.project_root());
+            self.reload_blueprints();
+        }
         let _ = self.events.send(Event::ProjectChanged { revision: rev, origin: origin.to_string() });
         Ok(prev)
+    }
+
+    /// Name the library at `path` in this project, as one edit: nothing is copied, and no
+    /// other project sees it. Its `blueprints/` folder names it too. Answers with how the
+    /// project names it (`relative_to` its folder) and the revision, none when it already did.
+    pub fn add_library(&self, path: &Path, origin: &str) -> anyhow::Result<(String, Option<u64>)> {
+        use kuma_core::LIBRARY_KINDS;
+        let mut dir = path.canonicalize().map_err(|e| anyhow::anyhow!("cannot open {}: {e}", path.display()))?;
+        anyhow::ensure!(dir.is_dir(), "{} is not a folder", dir.display());
+        if dir.file_name().is_some_and(|n| n == "blueprints") && !LIBRARY_KINDS.iter().any(|k| dir.join(k).is_dir()) {
+            dir.pop();
+        }
+        anyhow::ensure!(LIBRARY_KINDS.iter().any(|k| dir.join(k).is_dir()), "{} is not a kuma library: it has none of {}/", dir.display(), LIBRARY_KINDS.join("/, "));
+        anyhow::ensure!(self.config.libraries.user.canonicalize().ok().as_ref() != Some(&dir), "{} is your own library, which every project reads", dir.display());
+        let root = self.config.project_root();
+        let root = root.canonicalize().unwrap_or(root);
+        let name = relative_to(&dir, &root).to_string_lossy().into_owned();
+        let p = read(&self.project);
+        if p.library_dirs(&root).iter().any(|d| d.canonicalize().ok().as_ref() == Some(&dir)) {
+            return Ok((name, None));
+        }
+        let ops = if p.libraries.is_empty() {
+            serde_json::json!([{ "op": "add", "path": "/libraries", "value": [name] }])
+        } else {
+            serde_json::json!([{ "op": "add", "path": "/libraries/-", "value": name }])
+        };
+        let base = p.revision;
+        drop(p);
+        let (rev, _) = self.apply_patch(&serde_json::from_value::<Vec<json_patch::PatchOperation>>(ops)?, Some(base), origin, &[])?;
+        Ok((name, Some(rev)))
+    }
+
+    /// Stop naming a library in this project — by the name the project gives it, or a path
+    /// to the folder — as one edit. Its folder is left as it is, and so is every overlay
+    /// the project copied from it.
+    pub fn remove_library(&self, path: &str, origin: &str) -> anyhow::Result<u64> {
+        let root = self.config.project_root();
+        let wanted = root.join(path).canonicalize().ok();
+        let p = read(&self.project);
+        let i = p
+            .libraries
+            .iter()
+            .position(|l| l == path || (wanted.is_some() && root.join(l).canonicalize().ok() == wanted))
+            .ok_or_else(|| anyhow::anyhow!("`{path}` is not one of this project's libraries: the user library, the starter set and KUMA_LIBRARY's are not a project's to remove"))?;
+        let base = p.revision;
+        drop(p);
+        let ops = serde_json::json!([{ "op": "remove", "path": format!("/libraries/{i}") }]);
+        let (rev, _) = self.apply_patch(&serde_json::from_value::<Vec<json_patch::PatchOperation>>(ops)?, Some(base), origin, &[])?;
+        Ok(rev)
     }
 
     fn edit<F>(&self, origin: &str, kind: Kind, step: &Step, f: F) -> Result<(u64, Vec<Issue>), EditError>
@@ -869,39 +867,37 @@ mod tests {
         assert_eq!(starter(&tmp.path().join("elsewhere"), false), None, "no checkout, nothing to fall back on");
     }
 
-    /// An added library sits after the user library and the starter set standing in for
-    /// it, before `KUMA_LIBRARY`'s, and is read from the next rescan; a folder with nothing
-    /// of a library's in it is refused. Where each comes from is kept, never read off a
-    /// path: `KUMA_LIBRARY` naming the checkout's `library/` is still `KUMA_LIBRARY`'s.
+    /// A project's libraries sit after the user library and the starter set standing in
+    /// for it, before `KUMA_LIBRARY`'s, and change only with the document. Where each comes
+    /// from is kept, never read off a path: `KUMA_LIBRARY` naming the checkout's `library/`
+    /// is still `KUMA_LIBRARY`'s, and a project naming it too reads it there.
     #[test]
-    fn added_libraries_come_after_the_user_library() {
+    fn a_projects_libraries_come_after_the_user_library() {
         let tmp = tempfile::tempdir().unwrap();
-        let (user, repo, env) = (tmp.path().join("user"), tmp.path().to_path_buf(), tmp.path().join("env"));
-        let house = tmp.path().join("house");
-        std::fs::create_dir_all(house.join("presets")).unwrap();
-        std::fs::create_dir_all(tmp.path().join("empty")).unwrap();
-        assert!(add_library(&user, &tmp.path().join("empty")).is_err());
-        assert!(add_library(&user, &tmp.path().join("nowhere")).is_err());
-        let (dir, added) = add_library(&user, &house).unwrap();
-        assert!(added && dir == house.canonicalize().unwrap());
-        assert!(!add_library(&user, &house).unwrap().1, "once");
-
+        let (user, repo, env, root) = (tmp.path().join("user"), tmp.path().to_path_buf(), tmp.path().join("env"), tmp.path().join("videos/one"));
         let starter = repo.join("library");
         let mut libraries = Libraries::new(user.clone());
         libraries.starter = Some(starter.clone());
         libraries.env = vec![env.clone()];
-        assert_eq!(libraries.dirs(), [user.clone(), starter.clone(), dir.clone(), env.clone()]);
+        let project = |names: &[&str]| kuma_core::Project { libraries: names.iter().map(|n| n.to_string()).collect(), ..Default::default() };
+        assert_eq!(libraries.dirs(), [user.clone(), starter.clone(), env.clone()], "none until a project is followed");
+        libraries.follow(&project(&["../house"]), &root);
+        assert_eq!(libraries.dirs(), [user.clone(), starter.clone(), tmp.path().join("videos/house"), env.clone()]);
         let sources: Vec<_> = libraries.sources().into_iter().map(|(_, s)| s).collect();
-        assert_eq!(sources, [LibrarySource::User, LibrarySource::Starter, LibrarySource::Added, LibrarySource::Env]);
+        assert_eq!(sources, [LibrarySource::User, LibrarySource::Starter, LibrarySource::Project, LibrarySource::Env]);
         let named = Libraries { starter: None, env: vec![starter.clone()], ..libraries.clone() };
-        assert_eq!(named.sources()[2], (starter, LibrarySource::Env));
+        named.follow(&project(&[starter.to_str().unwrap()]), &root);
+        assert_eq!(named.sources(), [(user, LibrarySource::User), (starter, LibrarySource::Env)]);
+    }
 
-        remove_library(&user, &house).unwrap();
-        assert!(remove_library(&user, &house).is_err(), "not listed any more");
-        assert_eq!(libraries.dirs().len(), 4, "until the next rescan");
-        libraries.refresh();
-        assert!(!libraries.dirs().contains(&dir));
-        assert!(house.join("presets").is_dir());
+    /// A project names a library from its own folder, so the two can move together.
+    #[test]
+    fn a_library_is_named_relative_to_the_project() {
+        let rel = |dir: &str, root: &str| relative_to(Path::new(dir), Path::new(root));
+        assert_eq!(rel("/media/T7/yt/overlays-mat", "/media/T7/yt/16bit-akiba"), Path::new("../overlays-mat"));
+        assert_eq!(rel("/media/T7/yt/shorts/lib", "/media/T7/yt/16bit-akiba"), Path::new("../shorts/lib"));
+        assert_eq!(rel("/media/T7/yt/16bit-akiba/lib", "/media/T7/yt/16bit-akiba"), Path::new("lib"));
+        assert_eq!(rel("/opt/lib", "/home/me/video"), Path::new("/opt/lib"), "nothing shared but the root");
     }
 
     #[test]

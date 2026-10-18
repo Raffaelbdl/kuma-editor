@@ -438,22 +438,25 @@ async fn rescan_libraries(State(st): S) -> ApiResult {
     .await?))
 }
 
-/// A library folder, by path: added to the user library's list, or taken off it.
+/// A library folder of this project's, and who asks.
 #[derive(Deserialize)]
 struct LibraryPath {
+    /// A folder (relative to the project, or absolute); to remove, also the name the
+    /// project gives it.
     path: PathBuf,
+    #[serde(default = "default_origin")]
+    origin: String,
 }
 
-/// Add a library for every project on this machine, and rescan: its blueprints join the
-/// Blueprints panel, its `_vendor/` and fonts every overlay. Nothing is copied: a project
-/// takes a blueprint's folder when it uses one, as from any library.
+/// Name a library in this project, as one edit: its blueprints join the Blueprints panel,
+/// its `_vendor/` and fonts this project's overlays. Nothing is copied, and no other project
+/// sees it; a blueprint's folder is copied in when one is used, as from any library.
 async fn add_library(State(st): S, Json(req): Json<LibraryPath>) -> ApiResult {
     let out = blocking(move || -> anyhow::Result<Value> {
-        let (path, added) = crate::state::add_library(&st.config.libraries.user, &crate::jobs::resolve_path(&st, &req.path))?;
-        st.reload_blueprints();
+        let (path, revision) = st.add_library(&crate::jobs::resolve_path(&st, &req.path), &req.origin)?;
         let mut out = libraries_answer(&st);
         out["path"] = json!(path);
-        out["added"] = json!(added);
+        out["revision"] = json!(revision);
         Ok(out)
     })
     .await?
@@ -461,13 +464,14 @@ async fn add_library(State(st): S, Json(req): Json<LibraryPath>) -> ApiResult {
     Ok(Json(out))
 }
 
-/// Stop reading an added library. Its folder is left as it is, and so is every overlay a
-/// project already copied from it.
+/// Stop naming a library in this project, as one edit. Its folder is left as it is, and so
+/// is every overlay the project already copied from it.
 async fn remove_library(State(st): S, Json(req): Json<LibraryPath>) -> ApiResult {
     let out = blocking(move || -> anyhow::Result<Value> {
-        crate::state::remove_library(&st.config.libraries.user, &req.path)?;
-        st.reload_blueprints();
-        Ok(libraries_answer(&st))
+        let revision = st.remove_library(&req.path.to_string_lossy(), &req.origin)?;
+        let mut out = libraries_answer(&st);
+        out["revision"] = json!(revision);
+        Ok(out)
     })
     .await?
     .map_err(bad_request_err)?;

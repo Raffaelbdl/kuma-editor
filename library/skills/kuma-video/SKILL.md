@@ -46,7 +46,10 @@ Most videos mix these. The shape below holds for all of them.
 
 - **A sequence per part** (chapter, segment, scene), and a master that places them end to
   end, with transitions and music crossing the cuts. A part can be sampled, measured and
-  rendered on its own (`sequence`). A short video can live on the master alone.
+  rendered on its own (`sequence`). A short video can live on the master alone. Every
+  sequence clip on the master is a chapter (`export_chapters`, `measure_audio`'s sections),
+  overlapping or not: start the first part at 0:00, and keep an inset or recurring sequence
+  inside a part, never on the master, or it splits that part in two.
 - **Tracks by layer band**, bottom to top. Video: backgrounds < main footage < cutaways.
   Overlays: panels < titles and callouts < captions < transitions. Audio: voice, music,
   effects. Put each clip in the first free lane of its band, so the stacking follows the

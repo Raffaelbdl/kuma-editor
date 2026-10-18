@@ -313,6 +313,29 @@ bakes as one clip and is baked again after every correction. From a clip, the pi
 are made and each is placed over its stretch. **Replace** overwrites one entry's words, so it
 is offered when the media has one transcript, and the job refuses `replace` with `split`.
 
+**For YouTube: the SRT and the chapters.** The render dialog's **For YouTube** row exports
+the text published beside a video, of the sequence picked (the master unless you pick
+another): **Export subtitles (.srt)** writes `renders/<name>.srt` to upload as captions, and
+**Copy chapters** copies the timestamps for the description (and shows them, selected, where
+the browser will not let a page write the clipboard). The daemon computes both from the
+document alone, so what is open in the editor changes nothing (`POST /api/export/subtitles`,
+`POST /api/export/chapters`; the `export_subtitles` and `export_chapters` tools; `kuma export
+srt|chapters`). The SRT is what the picture would show, when it would show it, in the
+sequence's seconds: every line the `subtitles` overlays draw — grouped by their own
+`words_per_line`, held across short pauses, cut at the clip's ends, as the blueprint draws
+them — mapped through every clip that places them, nested sequences, `in` points and speed
+included. A sequence placed twice shows its subtitles twice; a cue across a cut is split
+between the two sides, and one in a part cut out is gone. A **hidden** subtitles track still
+counts: hide it to keep the words off the picture and in the captions. `words_per_line` on
+the export (`--words-per-line`) groups more words per caption than the picture does, which
+reads better as YouTube captions; the warnings name a subtitles entry nothing in the
+sequence places and two entries showing at once. Chapters are the sequence's clips that place
+another sequence, the ones `measure_audio` measures, titled by the clip's label or else the
+placed entry's name, one `M:SS Title` line each (`H:MM:SS` past an hour, rounded down to the
+second so a chapter link lands on its cut). They are written whatever YouTube makes of them,
+with a warning where it would not read them as chapters: the first not at `0:00`, fewer than
+three, or one under ten seconds. Markers are never chapters — they are comments on the cut.
+
 **Den and power.** The editor has two modes over one set of panels; the backquote key, the
 top bar's toggle or the status line's first cell switches between them, keeping the playhead
 and the selection. **Power** docks everything round the frame. The dock starts with the side panels as tabs on
@@ -425,7 +448,7 @@ claude mcp add --scope user    kuma -- kuma mcp --project /abs/path.kuma.json  #
 `kuma mcp` starts the daemon in-process if none is running on the port, so the browser UI
 and the agent always share one state. Tools: `timeline_guide`, `get_project`, `get_schema`, `apply_edits`,
 `undo`, `redo`, `list_markers`, `validate_project`, `list_presets`, `add_media`, `probe_media`, `reprobe_media`, `unused_entries`,
-`transcribe`, **`sample_frames`**, `measure_audio`, `measure_media`, `bake_overlay`, `render`, `job_status`, `cancel_job`,
+`transcribe`, **`sample_frames`**, `measure_audio`, `measure_media`, `bake_overlay`, `render`, `export_subtitles`, `export_chapters`, `job_status`, `cancel_job`,
 `prune_cache`, `health`, and for overlays `overlay_guide`, `new_overlay`, `check_overlay`,
 `import_overlay`, `make_overlay_unique`, `list_blueprints`, `add_blueprint`,
 `save_blueprint`. An agent scaffolds an overlay with `new_overlay`, checks it with
@@ -542,6 +565,8 @@ kuma cache                                 # how big .kuma/ is: bakes, sampled f
 kuma cache prune                           # delete what the project no longer uses (--all: every bake and frame)
 kuma compile > timeline.mlt                # inspect the MLT graph (or open it in Kdenlive); baked overlays included, --bake bakes the rest
 kuma render --sequence intro               # render one nested sequence instead of the master
+kuma export srt > captions.srt             # the master's subtitles as SRT, in master seconds (-o file, --write for renders/<name>.srt, --words-per-line 10, --entry id)
+kuma export chapters                       # the master's chapters as YouTube description lines, `0:00 Title`; warnings on stderr (-s seq, -o file)
 kuma add-media media/                      # every media file in the folder, one edit (several paths too; --recursive, --parent)
 kuma reprobe                               # probe every media entry again after files were replaced; prints what changed
 kuma unused                                # entries no clip places, and those only sequences the master never reaches place
@@ -560,6 +585,8 @@ When a daemon serves the project (`--bind`, `127.0.0.1:7455` by default), `rende
 `sample`, `measure-audio`, `measure-media` and `transcribe` run as its jobs: they show in the
 editor's job queue (the **Queue** button), stamped `cli: <command>`, wait their turn with
 its renders, and print the same result; Ctrl-C cancels the job. Without one, they run in the `kuma` process itself.
+`export` is not a job (it takes milliseconds) but asks the daemon too when there is one, since
+it holds the latest document.
 
 ## The project file
 

@@ -128,6 +128,12 @@ difference: `references/storyboard-as-code.md`. In short:
 
   Look at the frames. Keep the previous render under another name before re-rendering to
   the same path.
+- **Publishing on YouTube**: `export_subtitles` with `write` gives the SRT to upload as
+  captions (the subtitles the master shows, in master seconds, through every cut and
+  nesting; a hidden subtitles track still counts, and `words_per_line` of 8–12 makes
+  captions longer than burned-in lines), and `export_chapters` the description's `0:00 Title`
+  lines, one per sequence the master places. Pass on their `warnings`: a chapter under 10 s,
+  or fewer than 3, and YouTube shows no chapters.
 - Final preset: `youtube-1080p` (x264 slow, CRF 18), or `youtube-nvenc` where available
   (much faster, somewhat larger). `threads`, `quality` and `speed` change one render only.
 

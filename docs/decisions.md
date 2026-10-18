@@ -1943,6 +1943,80 @@ the preset's own, or the machine's for threads.
 - On the HTTP API (`threads`, `quality`, `speed` on `POST /api/render`) and the MCP
   `render` tool, whose `list_presets` says what each preset offers. Not on `kuma render`.
 
+## SRT and chapters for YouTube
+
+Asked for by a YouTuber: an SRT to upload as captions for a long video, and chapter
+timestamps to paste into its description. Both are text published beside a render, so they
+follow the render's rule: **the master unless a sequence is named**, on every surface
+(`POST /api/export/subtitles` and `/chapters`, the `export_subtitles` and `export_chapters`
+tools, `kuma export srt|chapters`, and **For YouTube** in the render dialog, which sends the
+sequence picked there). Neither reads session state; `tests/export.rs` opens another
+sequence first and checks the master still comes out. All of it is in
+`crates/kuma-daemon/src/export.rs`.
+
+**The SRT is what the picture shows, mapped, not the transcript dumped** — adopted.
+Subtitles are not a model concept, so there is no list of "the video's cues" to print: a
+transcript is a `cues` var in source seconds, and a clip placing its entry — possibly inside a
+sequence placed in turn, cut by an `in`, sped up — is what puts a word on screen. The export
+walks every placement that reaches the root (`overlay_placements`), carrying an affine map
+from each overlay's own time to the root's (a sequence clip adds `start − in/speed`; an
+overlay clip `start + t/speed`, or `end − t/|speed|` reversed, as the bake seeks it) and the
+window of the root each placement shows, cut down at every level of nesting. Each line is
+mapped through each placement and cut to its window. So one sequence placed twice gives its
+subtitles twice, a cue across a cut is split between the two sides, and a cue in a part cut
+out is gone. The map is seconds to seconds and never meets a frame: SRT counts milliseconds,
+rounded once at the end, and a cue that rounds to nothing is dropped rather than numbered.
+Frame-snapping the edges was considered and not done — it would be frame math outside
+`Fps::frame` for a precision a caption cannot show.
+
+**Lines are grouped as the blueprint draws them** — adopted. A transcript is one cue per
+word; an SRT of one word per caption is unusable. The `subtitles` template groups words by
+`words_per_line`, starts a new line after a pause over 0.8 s, holds a line until the next
+across a shorter one, and draws nothing outside its clip — and does all of that per clip,
+since words before the clip's zero are dropped before grouping. `Captions::lines` restates
+those steps (`LINE_GAP` is the template's `GAP`), per placement, so the SRT times lines the
+way the video shows them. That couples Rust to one template's script, which is the cost; the
+alternative, a grouping of the export's own, would give captions that disagree with the
+burned-in words on the same frame. The coupling is narrow and pinned: the names read off a
+manifest are `cues` (any `cues`-typed var), `offset` and `words_per_line`, and
+`tests/export.rs` runs against the shipped blueprint's own `overlay.json`. An overlay that
+takes `cues` but has no `words_per_line` is assumed to show each cue for its own window.
+`words_per_line` on the export overrides the grouping, because captions read better longer
+than the three-word lines a short burns in. Looks are not text: `uppercase` and `stress` are
+left out.
+
+**Hidden tracks count** — adopted. Hiding is a property of the picture. A long video often
+wants captions on YouTube and none burned in, and a hidden subtitles track is the way to say
+that without a new concept; the export says it included one, so it is never a surprise.
+Rejected: a per-entry "export" flag, which would be a second way of saying the same thing.
+
+**Chapters are the sequence's clips that place a sequence** — adopted, reusing
+`jobs::chapters`, so the export and `measure_audio`'s per-chapter loudness mean the same
+parts. The title is the clip's label, else the placed entry's name. **Markers are not
+chapters**, considered and rejected: a marker is a person's comment on the cut ("too dark",
+"see this") and a request to the agent, so turning them into chapters would publish review
+notes. A sequence that places no sequence has no chapters, and the warning says how to make
+some.
+
+**Warn, never refuse, on YouTube's rules** — adopted. YouTube reads description timestamps as
+chapters only if the first is `0:00`, there are at least three, and each lasts ten seconds or
+more. The text is produced whatever they say and each broken rule is a warning, since what
+to do about it (a title card at the start, merging two short parts) is an editing decision,
+not the exporter's. Timestamps are `M:SS`, `H:MM:SS` from an hour, as YouTube prints them,
+and **rounded down** to the second: a chapter link that lands a fraction early shows the cut,
+one that lands late misses the first word. Lengths are checked on those rounded times, which
+is what YouTube sees, the last one to the end of the sequence.
+
+**Synchronous, and the text unless a file is asked for** — adopted. It reads the document and
+takes milliseconds, so it is a plain request rather than a job in the queue. The answer
+carries the text (`srt`, `text`); with `write` or `output` the file is written atomically —
+by default `renders/<name>[-<sequence>].srt` and `…-chapters.txt`, beside the renders and
+named as they are — and the answer gives its `path` instead, so an agent writing a long
+transcript to disk does not get it all back in its context. The editor asks once without
+writing first, so an empty SRT is never left in `renders/`. Copying the chapters uses the
+clipboard where the browser allows it and shows the text selected either way, since
+neither a non-secure origin nor a page without focus may write the clipboard.
+
 ## Pruning the cache
 
 **Adopted** (`crates/kuma-daemon/src/cache.rs`). Bakes, sampled frames and bin thumbnails

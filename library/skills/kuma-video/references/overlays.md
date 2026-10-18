@@ -139,7 +139,8 @@ A wipe, a shutter, a page turn drawn by an overlay over a cut:
 - Inline markup in text vars (`*emphasis*`, `` `code` ``) is parsed by one shared helper
   in `_vendor/`, not by each component, so it means the same everywhere.
 - CJK text: see `japanese-type.md`. In short, the entry's `lang` var set to `ja` (or
-  `lang="ja"` on the page) and a `jp` fallback
+  `lang="ja"` on the page, or on the one element that shows Japanese inside a line in
+  another language) and a `jp` fallback
   font var in every font stack.
 
 ## Lint messages worth knowing

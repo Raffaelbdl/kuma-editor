@@ -90,7 +90,10 @@ overlays/<name>`) does, optionally with `vars`, once it checks clean.
 - On `<html>`: `lang`, from the entry's `lang` var when the manifest declares one and it is
   not empty; otherwise the page keeps the `lang` it is written with. It decides the forms
   han characters are drawn in and which font a missing character falls back to, so one
-  folder serves a Japanese entry and an English one.
+  folder serves a Japanese entry and an English one. What decides is the *element's*
+  language, its nearest `lang`: text in one language inside a page in another (a Japanese
+  name in a French line) goes in an element of its own, `<span id="name" lang="ja">`, or
+  one whose `lang` a script sets (`el.lang = vars.name_lang`), and the page keeps its own.
 - The root `[data-composition-id]` element's `data-duration` (and `data-width`/`data-height`)
   are **rewritten in the markup** to the clip's real length before the renderer sees the
   file — hyperframes sizes the render from the attribute as written, before any script runs.
@@ -191,7 +194,11 @@ one editable row per `{start, end, text}` (seconds; `end` after `start`), `font`
 picker (its `--var-<name>` is the quoted family name), `lang` a language tag (`ja`,
 `zh-Hant`, `ko`, `en`, or empty for the page's own) that kuma writes onto `<html lang>` —
 the markup need not read it, and a manifest has at most one. Give an overlay that may show
-CJK text a `lang` var rather than copying its folder to change the page's language. A
+CJK text a `lang` var rather than copying its folder to change the page's language. The
+check (`cjk_lang`) reads the language of the element a var's text lands in, from the
+overlay's scripts: `text("id", vars.x)`, `textContent`/`innerHTML`/`append` on an element it
+can name by id, `${vars.x}` inside a template's markup. Text it cannot follow (through a
+local, `vars.x.split(…)`) is judged by the page's `lang`. A
 `cues` value reaches the overlay only through `window.kuma.vars` — a list has no CSS property.
 
 The inspector lists vars **in the order the manifest writes them**. `group` puts a var in a

@@ -73,10 +73,10 @@ pub fn add_font(state: &AppState, path: &Path, shared: bool) -> anyhow::Result<V
 
 /// What the overlay entries `ids` will not be drawn in (`Baker::font_findings`), as project
 /// warnings pointing at the var: a family that is not installed, characters none of the
-/// entry's fonts can set, CJK text on a page in another language. All of it is legal and
-/// renders in the baking machine's fallbacks, which is why a render says so rather than
-/// falling back quietly, and `validate_project` checks the whole bin. An entry whose folder
-/// does not load is validation's to report, not this.
+/// entry's fonts can set, CJK text landing in an element (or a page) in another language.
+/// All of it is legal and renders in the baking machine's fallbacks, which is why a render
+/// says so rather than falling back quietly, and `validate_project` checks the whole bin.
+/// An entry whose folder does not load is validation's to report, not this.
 pub fn check(state: &AppState, project: &kuma_core::Project, ids: &[&str]) -> Vec<kuma_core::Issue> {
     use kuma_core::{BinSource, Issue, Severity};
     let mut folders: std::collections::HashMap<&str, Option<(crate::overlays::Resolved, String, kuma_overlay::lint::BundledFaces)>> = Default::default();

@@ -1568,6 +1568,23 @@ departure and change; out-curves for entrances; never scale from zero — is now
 `library/overlays/CLAUDE.md` with numbers, beside the thing that has no UI equivalent at
 all: how long a line must stay on screen to be read.
 
+**`cjk_lang` reads the language of the element the text lands in** — adopted. It read only
+`<html lang>` (or the `lang` var), so a Japanese name in a French page, `<span
+lang="ja">秋葉原</span>`, was reported, and the workaround was setting the whole page to `ja`
+— wrong for the Latin text around it. Chromium picks glyph forms and the fallback font by
+the element's nearest `lang`, which is the page's only when nothing nearer says one
+(checked: under `lang="fr"`, `lang="zh-CN"` on a span draws 直 and 骨 in Chinese forms,
+`lang="ja"` on it, on an ancestor or set by a script in Japanese ones). Text arrives through
+vars at run time, so where it lands is read off the overlay's own scripts
+(`lint/landing.rs`): `text("id", vars.x)`, `textContent`/`innerHTML`/`append` on an element
+named by id, and `${vars.x}` inside a template's markup; an element's `lang` comes from the
+markup or from a script setting it to a string or a var. Text found landing somewhere it
+cannot name, or nowhere, is on the page, so the check stays conservative where it cannot
+see: a var that reaches the DOM through a local (`vars.title.split(…)`) still needs the
+page's `lang`. The one way to silence it wrongly is a var written into a `lang="ja"` element
+*and*, by a route not followed, into another. Rejected: a declarative binding attribute
+for where a var lands, which would be a new contract for one check.
+
 ## Design systems
 
 **A design system is a document copied into the project** — adopted, and deliberately not

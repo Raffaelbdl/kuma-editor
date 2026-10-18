@@ -25,6 +25,12 @@ notes elsewhere.
    `list_fonts` (each family's `scripts`: one without `han`/`kana` cannot set Japanese).
 3. `validate_project`. Besides errors, it warns about every entry whose font is not
    installed and every character an entry's fonts cannot set.
+4. **Told to use a library** ("use the library in `/path/to/house-style`"): `add_library`
+   with that path, then read every file in its `docs` (a library says how its blueprints
+   are meant to be used), `apply_design_system` with the design system it holds and read
+   `design-system/DESIGN.md`, and from then on prefer its blueprints (`list_blueprints`,
+   each says its `library`) and its effect presets (`list_effect_presets`) over the
+   starter set's. Already in the project's `libraries`: skip the add, still read.
 
 ## Know what you are making
 

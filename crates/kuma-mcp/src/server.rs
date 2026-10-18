@@ -241,13 +241,19 @@ fn resumable(mut j: Value) -> Value {
 
 /// The daemon's `[{id, manifest}]` without what makes a library tens of thousands of tokens:
 /// each var's default, range and description, leaving its type.
-fn blueprint_summaries(all: &[Value]) -> Value {
+/// Each blueprint in brief, with the name of the library it comes from (`libraries`, as
+/// `/api/libraries` lists them) and the label it offers under New, if any.
+fn blueprint_summaries(all: &[Value], libraries: &[Value]) -> Value {
+    let library = |path: &Value| libraries.iter().find(|l| l["path"] == *path).map_or(Value::Null, |l| l["name"].clone());
     let summary = |b: &Value| {
         let m = &b["manifest"];
         let vars: serde_json::Map<String, Value> = m["vars"].as_object().into_iter().flatten().map(|(k, v)| (k.clone(), v["type"].clone())).collect();
-        let mut out = json!({ "id": b["id"], "name": m["name"], "description": m["description"], "tags": m["tags"], "vars": vars });
+        let mut out = json!({ "id": b["id"], "name": m["name"], "library": library(&b["library"]), "description": m["description"], "tags": m["tags"], "vars": vars });
         if m["static"] == true {
             out["static"] = json!(true);
+        }
+        if let Some(label) = m["create"].as_str() {
+            out["create"] = json!(label);
         }
         out
     };
@@ -323,6 +329,22 @@ pub struct ListBlueprints {
     /// A blueprint id: return its whole manifest rather than every blueprint's summary.
     #[serde(default)]
     pub id: Option<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct LibraryArg {
+    /// The library's folder: absolute, or relative to the project. To remove, also the name
+    /// the project gives it (as `get_project` lists it in `libraries`).
+    pub path: String,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct ApplyDesignSystem {
+    /// A design system id, as `list_design_systems` gives it.
+    pub id: String,
+    /// Replace the design system the project already carries.
+    #[serde(default)]
+    pub force: bool,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -727,12 +749,12 @@ impl KumaServer {
         self.get("/api/project/validate").await
     }
 
-    #[tool(description = "Rescan the user's library and list its blueprints (reusable overlays): id, name, description, tags and each var's type. With `id`, that blueprint's whole manifest: every var's default, range, options and description. Failed manifests are listed by `health`.")]
+    #[tool(description = "Rescan the libraries and list their blueprints (reusable overlays): id, name, the `library` it comes from, description, tags, each var's type, and `create` — the label it offers under New — when it has one. With `id`, that blueprint's whole manifest: every var's default, range, options and description. Failed manifests are listed by `health`.")]
     async fn list_blueprints(&self, Parameters(p): Parameters<ListBlueprints>) -> Result<CallToolResult, McpError> {
-        let all = self.client.post("/api/blueprints", &json!({})).await.map_err(err)?;
-        let all = all.as_array().map(Vec::as_slice).unwrap_or_default();
+        let scan = self.client.post("/api/libraries/rescan", &json!({})).await.map_err(err)?;
+        let all = scan["blueprints"].as_array().map(Vec::as_slice).unwrap_or_default();
         let Some(id) = p.id else {
-            return Ok(ok_json(&blueprint_summaries(all)));
+            return Ok(ok_json(&blueprint_summaries(all, scan["libraries"].as_array().map(Vec::as_slice).unwrap_or_default())));
         };
         match all.iter().find(|b| b["id"] == id.as_str()) {
             Some(b) => Ok(ok_json(b)),
@@ -745,6 +767,42 @@ impl KumaServer {
         let copied = self.client.post(&format!("/api/blueprints/{}/copy", p.blueprint), &json!({ "folder": p.folder })).await.map_err(err)?;
         let body = json!({ "path": copied["overlay"], "id": p.id, "name": p.name, "vars": p.vars.unwrap_or_default(), "origin": format!("mcp: add {}", p.blueprint) });
         self.post("/api/overlays/import", &body).await
+    }
+
+    #[tool(description = "The asset libraries this project reads, lowest precedence first: the user's own (`user`, every project's), the starter set standing in for it, the ones this project names (`project`, from its `libraries`), and KUMA_LIBRARY's. Each with what it holds — blueprints, effect presets, design systems, font families — and `docs`: the files it carries about itself (README.md, CLAUDE.md…), to read before using it.")]
+    async fn list_libraries(&self) -> Result<CallToolResult, McpError> {
+        let out = self.client.get("/api/libraries?detail=true").await.map_err(err)?;
+        Ok(ok_json(&out["libraries"]))
+    }
+
+    #[tool(description = "Use a library in this project — a folder holding any of `blueprints/`, `presets/`, `fonts/`, `design-systems/` (its `blueprints/` folder names it too) — as one edit, undone like any other; no other project sees it. Nothing is copied: its blueprints join `list_blueprints` and `add_blueprint`, its fonts `list_fonts`, its presets `list_effect_presets`, its design systems `list_design_systems`, and its `_vendor/` helpers every overlay of the project. Returns how the project names it (relative to the project when it can be), the revision (null when it was already used) and what it holds, with its `docs` to read next. When the user names a library for a video, call this first.")]
+    async fn add_library(&self, Parameters(p): Parameters<LibraryArg>) -> Result<CallToolResult, McpError> {
+        let added = self.client.post("/api/libraries", &json!({ "path": p.path, "origin": "mcp: add library" })).await.map_err(err)?;
+        let detail = self.client.get("/api/libraries?detail=true").await.map_err(err)?;
+        // A library is added last of the project's.
+        let library = detail["libraries"].as_array().into_iter().flatten().filter(|l| l["source"] == "project").last().cloned().unwrap_or_default();
+        Ok(ok_json(&json!({ "named": added["path"], "revision": added["revision"], "library": library })))
+    }
+
+    #[tool(description = "Stop using one of this project's libraries, as one edit. Its folder is left as it is, and so are the overlays already copied from it — though one reading its `_vendor/` helpers or fonts needs it, which `check_overlay` and `validate_project` then report. The user's own library and KUMA_LIBRARY's are not a project's to remove.")]
+    async fn remove_library(&self, Parameters(p): Parameters<LibraryArg>) -> Result<CallToolResult, McpError> {
+        let out = self.client.post("/api/libraries/remove", &json!({ "path": p.path, "origin": "mcp: remove library" })).await.map_err(err)?;
+        Ok(ok_json(&json!({ "revision": out["revision"] })))
+    }
+
+    #[tool(description = "The design systems this project's libraries offer (`DESIGN.md` + `tokens.css`): id, title, library and the `DESIGN.md` to read, and which one, if any, the project carries in its `design-system/`.")]
+    async fn list_design_systems(&self) -> Result<CallToolResult, McpError> {
+        self.get("/api/design-systems").await
+    }
+
+    #[tool(description = "Copy a design system into the project's `design-system/`, where you read it from: `DESIGN.md` says how the videos look and move, `tokens.css` holds the `:root` block overlays copy. Nothing applies it for you — it is a document, and following it is your edits to overlays and vars. Refused over the one the project carries unless `force`. Not an edit of the document.")]
+    async fn apply_design_system(&self, Parameters(p): Parameters<ApplyDesignSystem>) -> Result<CallToolResult, McpError> {
+        self.post(&format!("/api/design-systems/{}", p.id), &json!({ "force": p.force })).await
+    }
+
+    #[tool(description = "The effect presets this project can use, from its libraries and its own `presets/`: id, name, description, the `library` it comes from (absent for the project's), typed `params`, and the `effects` it expands to. A preset is not applied by name: write its `effects` onto a clip with `apply_edits`, replacing each `\"$…\"` value by the arithmetic it spells (param names, the project's `width` and `height`, numbers, + - * / and parentheses), with the params' defaults for any you leave alone; inside an `mlt` effect's `properties` the result is a string.")]
+    async fn list_effect_presets(&self) -> Result<CallToolResult, McpError> {
+        self.get("/api/presets/effects").await
     }
 
     #[tool(description = "List the font families a `font` var can name, each with where it comes from (`project` fonts/ or the `library`), the writing systems it can set (`scripts`: latin, han, kana, hangul, …) and its faces (weight range, italic). A family not listed renders in the overlay's fallback stack, and so does text in a script the family lacks: that fallback is whatever the baking machine has, so pick (or add) a family that covers the text.")]
@@ -1036,17 +1094,19 @@ mod tests {
         assert!(!Build::current().replaced(), "the test binary is the one running");
     }
 
-    /// A summary keeps what picks a blueprint and drops what configures one.
+    /// A summary keeps what picks a blueprint — the library it comes from and the label it
+    /// offers under New included — and drops what configures one.
     #[test]
     fn a_blueprint_summary_names_its_vars_by_type() {
-        let all = json!([{ "id": "title", "manifest": {
-            "name": "Title", "description": "A big title", "duration_default": 4.0, "static": false, "tags": ["text"],
+        let all = json!([{ "id": "title", "library": "/lib/house", "manifest": {
+            "name": "Title", "description": "A big title", "duration_default": 4.0, "static": false, "tags": ["text"], "create": "Title",
             "vars": { "text": { "type": "string", "default": "Hello", "description": "What it says" },
                       "accent": { "type": "color", "default": "#ff0000" } } } },
-            { "id": "logo", "manifest": { "name": "Logo", "description": "", "duration_default": 4.0, "static": true, "tags": [], "vars": {} } }]);
-        assert_eq!(blueprint_summaries(all.as_array().unwrap()), json!([
-            { "id": "title", "name": "Title", "description": "A big title", "tags": ["text"], "vars": { "text": "string", "accent": "color" } },
-            { "id": "logo", "name": "Logo", "description": "", "tags": [], "vars": {}, "static": true },
+            { "id": "logo", "library": "/elsewhere", "manifest": { "name": "Logo", "description": "", "duration_default": 4.0, "static": true, "tags": [], "vars": {} } }]);
+        let libraries = json!([{ "path": "/lib/house", "name": "house" }]);
+        assert_eq!(blueprint_summaries(all.as_array().unwrap(), libraries.as_array().unwrap()), json!([
+            { "id": "title", "name": "Title", "library": "house", "description": "A big title", "tags": ["text"], "vars": { "text": "string", "accent": "color" }, "create": "Title" },
+            { "id": "logo", "name": "Logo", "library": null, "description": "", "tags": [], "vars": {}, "static": true },
         ]));
     }
 

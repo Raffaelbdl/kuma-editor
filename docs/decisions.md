@@ -672,6 +672,17 @@ used, which is what keeps a finished video from being re-styled. Rejected: **a f
 the project** (like `.mcp.json`): no undo, no history, and the project file alone would not
 say what it needs.
 
+**An agent sets a library up from its path** — adopted. "Make a video with the library in
+`/path/to/house-style`" has to be enough, so the MCP server has `add_library` (the same edit as
+the panel's), `list_libraries` with what each holds and the documents it carries about itself
+(`README.md`, `CLAUDE.md`… at its top), `list_design_systems` and `apply_design_system` (the
+copy `kuma design-system` makes), and `list_effect_presets`; `list_blueprints` says each
+blueprint's library and `create` label. The guide and the skill say the order: add, read its
+docs, apply its design system, build from its blueprints. Effect presets are listed as they
+are, `$expr` values and all, for the agent to write as effects: expanding them in the daemon
+would be a second copy of the editor's evaluator (`expandPreset`), and a third once the
+editor called it — **deferred** until both can share one.
+
 **Named vaults** — superseded by a project's libraries, above.
 
 **Blueprints and presets live outside the codebase** — adopted. kuma reads

@@ -80,16 +80,22 @@ are listed as `author: "agent"`, yours, never waiting, so never answer your own.
 If the project directory holds a `design-system/` folder, read `design-system/DESIGN.md` before
 authoring or restyling an overlay and take its colours, type, geometry and motion from there;
 `tokens.css` beside it is the same values as a `:root` block to copy into an overlay. Nothing is
-injected at runtime — a design system is a document, and applying it is your edit. `health` says
-whether this project has one.
+injected at runtime — a design system is a document, and applying it is your edit.
+`list_design_systems` says what the project's libraries offer and which one it carries;
+`apply_design_system` copies one in.
+
+When the user names a library to use ("use `/path/to/house-style`"), set it up before the first
+edit: `add_library` (one undoable edit; no other project sees it), read every file in the `docs` it
+returns, `apply_design_system` with the one it holds, then build from its blueprints and effect
+presets (`list_blueprints` and `list_effect_presets` say which library each comes from).
 
 An overlay entry names a folder in the project (`overlays/<name>/`: `index.html` +
 `overlay.json`) plus its `vars`; entries may share a folder. To make one: `new_overlay`, edit,
 `check_overlay`, then `import_overlay` (writing a folder does not add it to the bin). Or copy a
 **blueprint** from the user's library or one the project uses (`list_blueprints`, `add_blueprint`,
 with a `folder` name that says what the copy is for). A project names the libraries it uses besides
-the user's own in its `libraries` (paths relative to the project, e.g. `"../house-style"`); adding one
-is a patch to `/libraries`, seen by no other project. `make_overlay_unique`
+the user's own in its `libraries` (`list_libraries`, `add_library`, `remove_library`).
+`make_overlay_unique`
 before editing a shared folder; `save_blueprint` only when the user asks. See `overlay_guide`.
 Overlays are live DOM in the preview and baked to alpha frames at export. For a plain title, the
 `title` and `title-subtitle` blueprints are typography, box, outline, shadow and entrance/exit as

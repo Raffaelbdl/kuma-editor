@@ -731,3 +731,50 @@ async fn a_library_is_the_projects_and_an_edit() {
     let (status, _) = post("/api/libraries/remove", serde_json::json!({ "path": dir.path().join("library") }));
     assert!(status.contains("400"), "the user library is not the project's to remove: {status}");
 }
+
+/// What an agent told "use this library" reads: what the library holds, the design systems
+/// it offers, and its presets marked as its own; and applying a design system copies it into
+/// the project, refusing to replace one unasked.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_library_says_what_it_holds() {
+    let (_state, addr, dir) = daemon().await;
+    let house = dir.path().join("house");
+    for (file, text) in [
+        ("README.md", "# House style"),
+        ("presets/house-dim.json", r#"{ "id": "house-dim", "name": "Dim", "params": {}, "effects": [] }"#),
+        ("design-systems/house/DESIGN.md", "# House\n\nWarm paper."),
+        ("design-systems/house/tokens.css", ":root { --paper: #f4ecd8; }"),
+    ] {
+        std::fs::create_dir_all(house.join(file).parent().unwrap()).unwrap();
+        std::fs::write(house.join(file), text).unwrap();
+    }
+    let post = |path: &str, body: serde_json::Value| {
+        let (status, _, body) = request(&addr, "POST", path, &body.to_string());
+        (status, serde_json::from_str::<serde_json::Value>(&body).unwrap_or_default())
+    };
+    assert!(post("/api/libraries", serde_json::json!({ "path": house })).0.contains("200"));
+
+    let (_, body) = get_body(&addr, "/api/libraries?detail=true");
+    let listed: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let contents = &listed["libraries"].as_array().unwrap().iter().find(|l| l["source"] == "project").unwrap()["contents"];
+    assert_eq!(contents["presets"], serde_json::json!(["house-dim"]));
+    assert_eq!(contents["design_systems"], serde_json::json!(["house"]));
+    assert_eq!(contents["docs"][0].as_str().map(|d| d.ends_with("house/README.md")), Some(true), "{contents}");
+
+    let (_, body) = get_body(&addr, "/api/presets/effects");
+    let presets: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let dim = presets.as_array().unwrap().iter().find(|p| p["id"] == "house-dim").unwrap();
+    assert!(dim["library"].as_str().is_some_and(|l| l.ends_with("house")), "{dim}");
+
+    let (_, body) = get_body(&addr, "/api/design-systems");
+    let systems: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(systems["design_systems"][0]["id"], "house");
+    assert_eq!(systems["design_systems"][0]["this_project"], false);
+    let (status, out) = post("/api/design-systems/house", serde_json::json!({}));
+    assert!(status.contains("200"), "{status} {out}");
+    assert_eq!(std::fs::read_to_string(dir.path().join("design-system/tokens.css")).unwrap(), ":root { --paper: #f4ecd8; }");
+    assert!(post("/api/design-systems/house", serde_json::json!({})).0.contains("400"), "not replaced unasked");
+    assert!(post("/api/design-systems/house", serde_json::json!({ "force": true })).0.contains("200"));
+    let (_, body) = get_body(&addr, "/api/design-systems");
+    assert_eq!(serde_json::from_str::<serde_json::Value>(&body).unwrap()["design_systems"][0]["this_project"], true);
+}

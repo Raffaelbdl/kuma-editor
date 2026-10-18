@@ -385,7 +385,7 @@ pub struct BlueprintInfo {
 }
 
 /// The library a blueprint folder (`<library>/blueprints/<id>`) belongs to.
-fn library_of(blueprint: &Path) -> PathBuf {
+pub(crate) fn library_of(blueprint: &Path) -> PathBuf {
     blueprint.parent().and_then(Path::parent).map(Path::to_path_buf).unwrap_or_default()
 }
 

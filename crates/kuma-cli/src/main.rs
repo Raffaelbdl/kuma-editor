@@ -719,29 +719,20 @@ async fn main() -> anyhow::Result<()> {
         }
         Cmd::DesignSystem { id, force } => {
             let state = open(&cli)?;
-            let installed = state.config.installed_design_systems();
             let Some(id) = id else {
-                if installed.is_empty() {
-                    println!("no design systems installed — none ship yet; write one under `<library>/design-systems/<id>/` (`DESIGN.md` + `tokens.css`), or point KUMA_LIBRARY at a folder of them");
+                let listed = kuma_daemon::libraries::design_systems(&state);
+                let all = listed["design_systems"].as_array().cloned().unwrap_or_default();
+                if all.is_empty() {
+                    println!("no design systems in this project's libraries — write one under `<library>/design-systems/<id>/` (`DESIGN.md` + `tokens.css`), or use a library that has one (`kuma library add`)");
                 }
-                for (id, (dir, title)) in &installed {
-                    let here = state.config.project_design_system().is_some_and(|p| std::fs::read_to_string(p).ok().as_deref() == std::fs::read_to_string(dir.join("DESIGN.md")).ok().as_deref());
-                    println!("{id}\t{title}{}", if here { "  (this project's)" } else { "" });
+                for d in all {
+                    let here = if d["this_project"] == true { "  (this project's)" } else { "" };
+                    println!("{}\t{}{here}", d["id"].as_str().unwrap_or_default(), d["title"].as_str().unwrap_or_default());
                 }
                 return Ok(());
             };
-            let (src, title) = installed.get(id).cloned().ok_or_else(|| anyhow::anyhow!("unknown design system `{id}` — `kuma design-system` lists what is installed"))?;
-            // One fixed place, so the contract can say where it is and the agent can look
-            // without being told: `<project>/design-system/`.
-            let dst = state.config.project_root().join("design-system");
-            if dst.exists() && !*force {
-                anyhow::bail!("{} already exists — pass --force to replace it", dst.display());
-            }
-            if dst.exists() {
-                std::fs::remove_dir_all(&dst)?;
-            }
-            kuma_daemon::copy_tree(&src, &dst)?;
-            println!("{title} → {}", dst.display());
+            let out = kuma_daemon::libraries::apply_design_system(&state, id, *force)?;
+            println!("{} → {}", out["title"].as_str().unwrap_or_default(), out["path"].as_str().unwrap_or_default());
             println!("The agent reads `design-system/DESIGN.md`; overlays copy the `:root` block from `tokens.css`.");
         }
         Cmd::Library { action: Some(LibraryCmd::List), .. } => {

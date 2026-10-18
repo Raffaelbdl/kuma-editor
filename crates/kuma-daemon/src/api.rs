@@ -43,6 +43,8 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/libraries", get(libraries).post(add_library))
         .route("/api/libraries/rescan", post(rescan_libraries))
         .route("/api/libraries/remove", post(remove_library))
+        .route("/api/design-systems", get(design_systems))
+        .route("/api/design-systems/{id}", post(apply_design_system))
         .route("/api/blueprints/thumbs", post(thumbs))
         .route("/api/blueprints/{id}/copy", post(copy_blueprint))
         .route("/api/blueprints/{id}/lint", get(lint_blueprint))
@@ -425,8 +427,42 @@ fn libraries_answer(st: &AppState) -> Value {
     json!({ "libraries": st.library_infos(), "blueprints": st.blueprint_infos() })
 }
 
-async fn libraries(State(st): S) -> Json<Value> {
-    Json(libraries_answer(&st))
+#[derive(Deserialize, Default)]
+struct LibrariesQuery {
+    /// Each library with what it holds (`libraries::contents`), for an agent deciding how
+    /// to use one.
+    #[serde(default)]
+    detail: bool,
+}
+
+async fn libraries(State(st): S, Query(q): Query<LibrariesQuery>) -> Result<Json<Value>, ApiError> {
+    blocking(move || {
+        let mut out = libraries_answer(&st);
+        if q.detail {
+            for l in out["libraries"].as_array_mut().into_iter().flatten() {
+                l["contents"] = crate::libraries::contents(&st, std::path::Path::new(l["path"].as_str().unwrap_or_default()));
+            }
+        }
+        Json(out)
+    })
+    .await
+}
+
+async fn design_systems(State(st): S) -> Json<Value> {
+    Json(crate::libraries::design_systems(&st))
+}
+
+#[derive(Deserialize, Default)]
+struct ApplyDesignSystem {
+    /// Replace the one the project carries.
+    #[serde(default)]
+    force: bool,
+}
+
+/// Copy a design system of the project's libraries into its `design-system/`.
+async fn apply_design_system(State(st): S, Path(id): Path<String>, body: Option<Json<ApplyDesignSystem>>) -> ApiResult {
+    let force = body.is_some_and(|b| b.0.force);
+    Ok(Json(blocking(move || crate::libraries::apply_design_system(&st, &id, force)).await?.map_err(bad_request_err)?))
 }
 
 /// Read the libraries again — the list of added ones included — and answer as `libraries`.
@@ -648,16 +684,17 @@ async fn presets() -> ApiResult {
 }
 
 /// Effect presets: `presets/*.json` from every library, then the project (wins on id).
+/// Every effect preset, a later folder's winning an id, each with the `library` it comes from
+/// (absent for the project's own `presets/`).
 async fn effect_presets(State(st): S) -> Json<Value> {
     let mut out: std::collections::BTreeMap<String, Value> = Default::default();
+    let project = st.config.project_root().join("presets");
     for dir in st.config.all_preset_dirs() {
-        let Ok(rd) = std::fs::read_dir(&dir) else { continue };
-        for p in rd.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "json")) {
-            if let Some(v) = std::fs::read_to_string(&p).ok().and_then(|s| serde_json::from_str::<Value>(&s).ok()) {
-                if let Some(id) = v.get("id").and_then(Value::as_str) {
-                    out.insert(id.to_string(), v);
-                }
+        for (id, mut v) in crate::libraries::preset_files(&dir) {
+            if dir != project {
+                v["library"] = json!(dir.parent());
             }
+            out.insert(id, v);
         }
     }
     Json(json!(out.into_values().collect::<Vec<_>>()))

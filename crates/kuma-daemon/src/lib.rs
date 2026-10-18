@@ -11,6 +11,7 @@ pub mod export;
 pub mod fonts;
 pub mod history;
 pub mod jobs;
+pub mod libraries;
 pub mod markers;
 pub mod media;
 pub mod overlays;

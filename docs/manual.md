@@ -140,8 +140,12 @@ kuma -p video.kuma.json library list                 # every library the project
 kuma -p video.kuma.json library remove ../my-library # stop using it; nothing is deleted
 ```
 
-Adding or removing one is an ordinary edit, undone like any other, and an agent can make it
-as a patch to `/libraries`. A project's libraries come after the user library (or the
+Adding or removing one is an ordinary edit, undone like any other. An agent does the same
+with `add_library` and `remove_library`, and finds out what a library holds with
+`list_libraries` (its blueprints, effect presets, design systems, fonts, and the docs it
+carries about itself), `list_design_systems`, `apply_design_system` and
+`list_effect_presets`: told “use the library in `/path/to/house-style`”, it adds the library,
+reads its docs, copies in its design system and builds from its blueprints. A project's libraries come after the user library (or the
 starter set standing in for it) and before `KUMA_LIBRARY`'s. Each library's
 `blueprints/_vendor/` adds its files to every other's, name by name, so a library ships only
 its own helpers and never a copy of kuma's. The Blueprints panel shows a folder per library;

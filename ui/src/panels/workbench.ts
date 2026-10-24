@@ -22,7 +22,7 @@
 // necessarily in.
 
 import { api } from "../api";
-import { Cmd, command } from "../commands";
+import { Cmd, command, type Step, stepSeconds } from "../commands";
 import { button, el, selectInput } from "../dom";
 import { duplicateOverlay, manifestOf, overlayDuration, overlayError, placeBinItem } from "../edits";
 import { icon } from "../icons";
@@ -91,7 +91,7 @@ export class Workbench {
     store.select((s) => [s.playhead], () => { if (this.backdropKind === "frame" && this.active()) this.loadShot(); });
     new ResizeObserver(() => this.layout()).observe(this.stageHost);
     command(Cmd.overlayTogglePlay, "Play/Pause Overlay", () => this.togglePlay());
-    command(Cmd.overlayStep, "Step Overlay", (frames) => this.step(Number(frames)));
+    command(Cmd.overlayStep, "Step Overlay", (by) => this.step(by as Step));
   }
 
   // ---- chrome ------------------------------------------------------------------
@@ -307,9 +307,9 @@ export class Workbench {
     if (this.iframe && this.ready) seekOverlay(this.iframe, at);
   }
 
-  step(frames: number) {
+  step(by: Step) {
     this.pause();
-    this.setTime(this.time() + frames / store.fps);
+    this.setTime(this.time() + stepSeconds(by, store.fps));
   }
 
   togglePlay() {

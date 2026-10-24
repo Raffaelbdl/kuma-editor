@@ -397,8 +397,7 @@ async fn a_media_entry_is_served_for_the_viewer_in_ranges() {
     assert_eq!(state.project.read().unwrap().revision, revision, "looking is not an edit");
 
     // A proxy stands in for the file here as it does in the preview compile.
-    let rev = state.project.read().unwrap().revision;
-    let (status, reply) = post(&addr, "/api/project/patch", &format!(r#"{{ "patch": [{{ "op": "add", "path": "/bin/take/source/proxy", "value": "take-proxy.wav" }}], "base_revision": {rev} }}"#));
+    let (status, reply) = post(&addr, "/api/project/patch", &format!(r#"{{ "patch": [{{ "op": "add", "path": "/bin/take/source/proxy", "value": "take-proxy.wav" }}], "base_revision": {revision} }}"#));
     assert!(status.contains("200"), "{status}: {reply}");
     assert_eq!(get_body(&addr, "/api/bin/take/source").1, "proxy");
 

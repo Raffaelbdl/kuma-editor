@@ -58,6 +58,12 @@ export function run(id: string, arg?: unknown): void {
   }
 }
 
+/** What a step command takes: frames of the surface's own rate, or seconds. */
+export type Step = { frames: number } | { seconds: number };
+
+/** `by` in seconds, at `fps` frames a second. */
+export const stepSeconds = (by: Step, fps: number) => ("frames" in by ? by.frames / fps : by.seconds);
+
 /** Ids used in more than one place, so a typo is a compile error rather than a dead key. */
 export const Cmd = {
   undo: "project.undo",

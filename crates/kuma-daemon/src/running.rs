@@ -76,13 +76,8 @@ fn remove_if_mine(path: &Path) {
 /// Leave a note in [`dir`] that this process serves `project` at `addr`. Best effort: a
 /// directory that cannot be written is logged and the daemon serves regardless.
 pub fn register(addr: SocketAddr, project: &Path) -> Option<Registered> {
-    match register_in(&dir(), addr, project) {
-        Ok(r) => Some(r),
-        Err(e) => {
-            tracing::warn!("cannot note this daemon in {} (`kuma servers` will not list it): {e:#}", dir().display());
-            None
-        }
-    }
+    let dir = dir();
+    register_in(&dir, addr, project).inspect_err(|e| tracing::warn!("cannot note this daemon in {} (`kuma servers` will not list it): {e:#}", dir.display())).ok()
 }
 
 fn register_in(dir: &Path, addr: SocketAddr, project: &Path) -> anyhow::Result<Registered> {
@@ -113,13 +108,7 @@ pub fn notes() -> Vec<(PathBuf, Running)> {
     let live = |r: &Running| r.url.trim_start_matches("http://").parse::<SocketAddr>().is_ok_and(|a| std::net::TcpStream::connect_timeout(&a, std::time::Duration::from_millis(500)).is_ok());
     notes_in(&dir())
         .into_iter()
-        .filter(|(path, r)| {
-            let up = live(r);
-            if !up {
-                let _ = std::fs::remove_file(path);
-            }
-            up
-        })
+        .filter(|(path, r)| live(r) || { let _ = std::fs::remove_file(path); false })
         .collect()
 }
 

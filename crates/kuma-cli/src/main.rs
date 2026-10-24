@@ -1036,18 +1036,11 @@ struct Server {
 /// daemon is still a daemon. A daemon on `--bind` with no note is listed too.
 async fn servers(cli: &Cli, as_json: bool) -> anyhow::Result<()> {
     let notes = tokio::task::spawn_blocking(kuma_daemon::running::notes).await?;
-    let mut probes = tokio::task::JoinSet::new();
-    for (i, (_, note)) in notes.iter().enumerate() {
-        let url = note.url.clone();
-        probes.spawn(async move { (i, kuma_mcp::client::health(&url).await) });
-    }
-    let mut health = vec![None; notes.len()];
-    while let Some(r) = probes.join_next().await {
-        let (i, h) = r?;
-        health[i] = h;
-    }
+    // Every probe is spawned before any is awaited, so they run at once.
+    let probes: Vec<_> = notes.iter().map(|(_, n)| { let url = n.url.clone(); tokio::spawn(async move { kuma_mcp::client::health(&url).await }) }).collect();
     let mut found: Vec<Server> = Vec::new();
-    for ((file, note), health) in notes.into_iter().zip(health) {
+    for ((file, note), probe) in notes.into_iter().zip(probes) {
+        let health = probe.await?;
         if health.as_ref().is_some_and(|h| !serves(h, &note.project)) {
             let _ = std::fs::remove_file(&file);
             continue;
@@ -1073,16 +1066,7 @@ async fn servers(cli: &Cli, as_json: bool) -> anyhow::Result<()> {
     let now = kuma_daemon::history::now_ms() / 1000;
     let width = found.iter().map(|s| s.url.len()).max().unwrap_or(0);
     for s in &found {
-        let mut about = Vec::new();
-        if let Some(pid) = s.pid {
-            about.push(format!("pid {pid}"));
-        }
-        if let Some(t) = s.started {
-            about.push(format!("up {}", since(now.saturating_sub(t))));
-        }
-        if !s.answering {
-            about.push("not answering".into());
-        }
+        let about: Vec<String> = [s.pid.map(|p| format!("pid {p}")), s.started.map(|t| format!("up {}", since(now.saturating_sub(t)))), (!s.answering).then(|| "not answering".into())].into_iter().flatten().collect();
         let about = if about.is_empty() { String::new() } else { format!("  ({})", about.join(", ")) };
         println!("{:width$}  {}{about}", s.url, s.project.display());
     }
@@ -1108,9 +1092,8 @@ async fn resolve_daemon(cli: &Cli) -> anyhow::Result<(String, Option<String>)> {
     let mut cfg = config(cli)?;
     let url = format!("http://{}", cfg.bind);
     let wanted = cfg.project_file.clone();
-    let serves_us = |h: &serde_json::Value| serves(h, &wanted);
     let note = match kuma_mcp::client::health(&url).await {
-        Some(h) if serves_us(&h) => return Ok((url, None)),
+        Some(h) if serves(&h, &wanted) => return Ok((url, None)),
         Some(h) => {
             let theirs = h["project"].as_str().unwrap_or("?");
             format!("This MCP server is connected to a PRIVATE daemon for {} because the daemon at {url} (the one behind the browser UI) serves a different project, {theirs}. Edits here will not show in that UI. To unify: run `kuma mcp-config --project {theirs}` and reconnect, or restart `kuma serve -p {}`.", wanted.display(), wanted.display())
@@ -1126,7 +1109,7 @@ async fn resolve_daemon(cli: &Cli) -> anyhow::Result<(String, Option<String>)> {
                     for _ in 0..10 {
                         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
                         if let Some(h) = kuma_mcp::client::health(&url).await {
-                            if serves_us(&h) {
+                            if serves(&h, &wanted) {
                                 return Ok((url, None));
                             }
                             break;

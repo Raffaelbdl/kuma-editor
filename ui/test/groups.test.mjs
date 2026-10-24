@@ -250,7 +250,7 @@ describe("clip groups", { skip: why ? `skipping: ${why}` : false }, () => {
     assert.ok(rows.some((r) => r.startsWith("Space ")), "and so is the transport");
     // The gestures too: half of what the editor does is done with the mouse.
     assert.ok(rows.some((r) => r.startsWith("Drag a clip =")), `and the gestures: ${rows.join(" | ")}`);
-    assert.deepEqual(await page.eval(`[...document.querySelectorAll("dialog.modal h4")].map(h => h.textContent)`), ["Panels", "Transport", "Editing", "Overlay workbench", "Viewer"]);
+    assert.deepEqual(await page.eval(`[...document.querySelectorAll("dialog.modal h4")].map(h => h.textContent)`), ["Panels", "Transport", "Editing", "Workbench and viewer"]);
     await page.eval(`document.querySelector("dialog.modal .modal-actions button").click()`);
     await page.until(`!document.querySelector("dialog.modal")`);
     // ⌘K names the same list.

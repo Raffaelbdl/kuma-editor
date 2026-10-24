@@ -46,7 +46,10 @@ describe("the viewer", { skip: why ? `skipping: ${why}` : false }, () => {
   const SHOWN = `["preview", "workbench", "viewer"].filter(id => !document.getElementById(id).hidden).join()`;
   const open = (id) => `document.querySelector('#library .bin-row[data-sel="bin:${id}"]').dispatchEvent(new MouseEvent("dblclick", { bubbles: true }))`;
   const closeTab = (name) => `[...document.querySelectorAll("#editor-tabs .etab")].find(t => t.textContent.includes(${JSON.stringify(name)})).querySelector(".x").click()`;
-  const REVISION = `fetch("/api/project").then(r => r.json()).then(p => p.revision)`;
+  const PROJECT = `fetch("/api/project").then(r => r.json())`;
+  const REVISION = `${PROJECT}.then(p => p.revision)`;
+  const AUDIO = `document.querySelector("#viewer audio")`;
+  const VIDEO = `document.querySelector("#viewer video")`;
 
   before(async () => {
     tmp = fs.mkdtempSync(path.join(os.tmpdir(), "kuma-viewer-"));
@@ -97,7 +100,7 @@ describe("the viewer", { skip: why ? `skipping: ${why}` : false }, () => {
   it("plays a sound on its own clock, which the keys drive", async () => {
     await page.eval(open("tone"));
     await page.until(`${TABS} === "Main | Still | Tone*"`);
-    const duration = await page.until(`(() => { const a = document.querySelector("#viewer audio"); return a && a.readyState >= 1 && a.duration; })()`);
+    const duration = await page.until(`${AUDIO}?.readyState >= 1 && ${AUDIO}.duration`);
     assert.ok(Math.abs(duration - 2) < 0.05, `the file's own length, not ${duration}`);
     // Its waveform is drawn: the daemon's peaks, across the whole file.
     assert.ok(await page.eval(`!!document.querySelector("#viewer .vw-wave canvas")`));
@@ -105,25 +108,25 @@ describe("the viewer", { skip: why ? `skipping: ${why}` : false }, () => {
     await page.press("ArrowRight");
     await page.press("ArrowRight");
     // Two frames at the project's rate, since a sound has none of its own.
-    await page.until(`Math.abs(document.querySelector("#viewer audio").currentTime - 2 / 30) < 1e-3`);
+    await page.until(`Math.abs(${AUDIO}.currentTime - 2 / 30) < 1e-3`);
     assert.match(await page.eval(`document.querySelector("#viewer .wb-foot .time").textContent`), /^00:00\.02 \/ 00:02\.00$/);
     // Space is the viewer's play here, not the sequence's: the playhead does not move.
     const playhead = await page.eval(`document.querySelector("#transport .time")?.textContent`);
     await page.press(" ", "Space");
-    await page.until(`(() => { const a = document.querySelector("#viewer audio"); return !a.paused || a.ended || a.currentTime > 0.2; })()`);
+    await page.until(`!${AUDIO}.paused || ${AUDIO}.ended || ${AUDIO}.currentTime > 0.2`);
     await page.press(" ", "Space");
-    await page.until(`document.querySelector("#viewer audio").paused`);
+    await page.until(`${AUDIO}.paused`);
     assert.equal(await page.eval(`document.querySelector("#transport .time")?.textContent`), playhead);
   });
 
   it("keeps where each entry was left, and lets go of a file it is not showing", async () => {
-    const t = await page.eval(`document.querySelector("#viewer audio").currentTime`);
+    const t = await page.eval(`${AUDIO}.currentTime`);
     await page.eval(open("still"));
     await page.until(`${TABS} === "Main | Still* | Tone"`);
     assert.equal(await page.eval(`document.querySelectorAll("#viewer audio").length`), 0);
     await page.eval(open("tone"));
-    await page.until(`(() => { const a = document.querySelector("#viewer audio"); return a && a.readyState >= 1; })()`);
-    const back = await page.eval(`document.querySelector("#viewer audio").currentTime`);
+    await page.until(`${AUDIO}?.readyState >= 1`);
+    const back = await page.eval(`${AUDIO}.currentTime`);
     assert.ok(Math.abs(back - t) < 0.05, `back at ${t}, not ${back}`);
   });
 
@@ -138,12 +141,12 @@ describe("the viewer", { skip: why ? `skipping: ${why}` : false }, () => {
 
   it("plays a video the browser can decode, stepping its own frames", { skip: !vp9 && "no ffmpeg with libvpx-vp9" }, async () => {
     await page.eval(open("clip"));
-    await page.until(`(() => { const v = document.querySelector("#viewer video"); return v && v.readyState >= 2 && v.videoWidth === 160; })()`);
+    await page.until(`${VIDEO}?.readyState >= 2 && ${VIDEO}.videoWidth === 160`);
     assert.equal(await page.eval(`document.querySelector("#viewer .wb-hint").textContent`), "");
     await page.press("ArrowRight");
     // Shift is a second; a frame is a tenth of one, at the file's own rate.
     await page.press("ArrowRight", "ArrowRight", { shift: true });
-    await page.until(`Math.abs(document.querySelector("#viewer video").currentTime - 1.1) < 1e-3`);
+    await page.until(`Math.abs(${VIDEO}.currentTime - 1.1) < 1e-3`);
     await page.eval(closeTab("Clip"));
   });
 
@@ -152,8 +155,8 @@ describe("the viewer", { skip: why ? `skipping: ${why}` : false }, () => {
     await page.until(`${TABS}.includes("Tone*")`);
     const revision = await page.eval(REVISION);
     await page.eval(`[...document.querySelectorAll("#viewer .wb-head button")].find(b => b.textContent === "Place at playhead").click()`);
-    await page.until(`fetch("/api/project").then(r => r.json()).then(p => p.revision > ${revision})`);
-    const clips = await page.eval(`fetch("/api/project").then(r => r.json()).then(p => p.bin.main.source.tracks.flatMap(t => t.clips.map(c => [t.kind, c.bin, c.start, c.end])))`);
+    await page.until(`${REVISION}.then(r => r > ${revision})`);
+    const clips = await page.eval(`${PROJECT}.then(p => p.bin.main.source.tracks.flatMap(t => t.clips.map(c => [t.kind, c.bin, c.start, c.end])))`);
     assert.deepEqual(clips, [["audio", "tone", 0, 2]]);
     assert.equal(await page.eval(SHOWN), "viewer", "placing does not change what you are looking at");
   });

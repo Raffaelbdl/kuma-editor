@@ -15,17 +15,14 @@
 // shows the filmstrip the timeline draws; the timeline, the preview and renders read the
 // file through MLT and are not affected.
 
-import { Cmd, command } from "../commands";
-import { button, dragPointer, el } from "../dom";
+import { Cmd, command, type Step, stepSeconds } from "../commands";
+import { button, dragPointer, el, row } from "../dom";
 import { placeBinItem } from "../edits";
 import { icon } from "../icons";
 import { drawWave, hasStrip, stripUrl } from "./clipmedia";
 import { fmtTime, isMediaEntry, store, toast } from "../store";
 import type { BinItem, FileSource } from "../types";
 import { fpsValue, isFileSource, mediaFacts } from "../types";
-
-/** A step in the viewer: frames of the file, or seconds of it. */
-export type ViewerStep = { frames: number } | { seconds: number };
 
 export class Viewer {
   private title = el("span", "wb-title");
@@ -34,7 +31,7 @@ export class Viewer {
   private foot = el("div", "wb-foot");
   private play = button(icon("play"), () => this.togglePlay(), "Play it on its own (Space)", "icon");
   private clock = el("span", "time mono");
-  private scrub = el("input");
+  private scrub: HTMLInputElement = Object.assign(el("input", "wb-scrub"), { type: "range", min: "0", step: "0.001", oninput: () => this.seek(Number(this.scrub.value)) });
   private hint = el("div", "muted wb-hint");
   /** The sound, drawn: the waveform the timeline draws, the whole file across. */
   private waveBox = el("div", "vw-wave");
@@ -55,20 +52,12 @@ export class Viewer {
     store.select((s) => [s.project, s.tab, s.entries], () => this.update());
     new ResizeObserver(() => this.drawWave()).observe(this.waveBox);
     command(Cmd.viewerTogglePlay, "Play/Pause in the Viewer", () => this.togglePlay());
-    command(Cmd.viewerStep, "Step in the Viewer", (by) => this.step(by as ViewerStep));
+    command(Cmd.viewerStep, "Step in the Viewer", (by) => this.step(by as Step));
   }
 
   private build() {
-    const head = el("div", "wb-head");
-    head.append(
-      this.title, this.sub, el("span", "spacer"),
-      button("Place at playhead", () => void this.place(), "Add a clip of this entry to the open sequence, at the playhead", "primary"),
-    );
-    this.scrub.type = "range";
-    this.scrub.min = "0";
-    this.scrub.step = "0.001";
-    this.scrub.className = "wb-scrub";
-    this.scrub.oninput = () => this.seek(Number(this.scrub.value));
+    const head = row("wb-head", this.title, this.sub, el("span", "spacer"),
+      button("Place at playhead", () => void this.place(), "Add a clip of this entry to the open sequence, at the playhead", "primary"));
     this.foot.append(this.play, this.clock, this.scrub);
 
     this.waveBox.append(this.wave, this.cursor);
@@ -94,7 +83,7 @@ export class Viewer {
     const e = this.entry();
     // Hidden by the tab strip, not by us: this only lets go of a file nobody can see.
     if (!e) {
-      this.unmount();
+      if (this.key) this.unmount();
       this.key = "";
       return;
     }
@@ -114,11 +103,8 @@ export class Viewer {
     // The file the entry names, in its URL, so pointing the entry elsewhere is a new URL.
     const url = `/api/bin/${encodeURIComponent(id)}/source?v=${encodeURIComponent(source.proxy ?? source.path)}`;
     if (source.kind === "image") {
-      const img = el("img", "vw-picture image");
-      img.alt = "";
-      img.onerror = () => this.say(`This window cannot show ${source.path}. The timeline, the preview and renders read it through MLT and are not affected.`);
-      img.src = url;
-      this.stageHost.append(img);
+      // `onerror` before `src`: `Object.assign` sets them in order.
+      this.stageHost.append(Object.assign(el("img", "vw-picture image"), { alt: "", onerror: () => this.say(`This window cannot show ${source.path}. The timeline, the preview and renders read it through MLT and are not affected.`), src: url }));
       this.foot.hidden = true;
       return;
     }
@@ -130,7 +116,6 @@ export class Viewer {
       this.sync();
       this.drawWave();
     };
-    m.ontimeupdate = () => this.sync();
     m.onplay = () => { this.play.replaceChildren(icon("pause")); this.tick(); };
     m.onpause = () => { this.play.replaceChildren(icon("play")); cancelAnimationFrame(this.raf); this.sync(); };
     m.onerror = () => this.failed(id, source);
@@ -144,16 +129,16 @@ export class Viewer {
   }
 
   /** Let go of the file: a hidden `<video>` would keep its decoder, and its sound. Its
-   *  handlers go first — emptying it fires events, and a late `timeupdate` at 0 would
-   *  overwrite where it was left. */
+   *  handlers go first — emptying it fires events, and a late one would sync a clock that
+   *  is no longer its own. */
   private unmount() {
     cancelAnimationFrame(this.raf);
-    if (this.media) {
-      const m = this.media;
-      m.onloadedmetadata = m.ontimeupdate = m.onplay = m.onpause = m.onerror = null;
-      this.media.pause();
-      this.media.removeAttribute("src");
-      this.media.load();
+    const m = this.media;
+    if (m) {
+      m.onloadedmetadata = m.onplay = m.onpause = m.onerror = null;
+      m.pause();
+      m.removeAttribute("src");
+      m.load();
     }
     this.media = null;
     this.stageHost.replaceChildren();
@@ -173,11 +158,7 @@ export class Viewer {
     if (source.kind !== "video") return;
     void hasStrip(id, source.path).then((made) => {
       if (!made || this.entry()?.id !== id) return;
-      const strip = el("img", "vw-picture");
-      strip.alt = "";
-      strip.title = "Frames across the file, as the timeline draws them";
-      strip.src = stripUrl(id, source.path);
-      this.stageHost.append(strip);
+      this.stageHost.append(Object.assign(el("img", "vw-picture"), { alt: "", title: "Frames across the file, as the timeline draws them", src: stripUrl(id, source.path) }));
     });
   }
 
@@ -244,10 +225,10 @@ export class Viewer {
     else this.media.pause();
   }
 
-  step(by: ViewerStep) {
+  step(by: Step) {
     if (!this.media) return;
     this.media.pause();
-    this.seek(this.media.currentTime + ("frames" in by ? by.frames / this.fps() : by.seconds));
+    this.seek(this.media.currentTime + stepSeconds(by, this.fps()));
   }
 
   private async place() {

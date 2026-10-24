@@ -261,7 +261,7 @@ function binRow(p: Project, id: string, item: BinItem, caret: HTMLElement | unde
   const kind = itemKind(item);
   const entry = el("div", "bin-row");
   entry.dataset.sel = `bin:${id}`;
-  // The row of whatever the centre is showing, timeline or workbench, is marked open.
+  // The row of whatever the centre is showing, timeline, workbench or viewer, is marked open.
   if (id === store.state.sequence || id === store.state.tab) entry.classList.add("open");
   entry.draggable = true;
   entry.title = item.name || id;
@@ -272,9 +272,10 @@ function binRow(p: Project, id: string, item: BinItem, caret: HTMLElement | unde
   entry.append(caret ?? el("span", "caret"), square, el("span", "bin-name", item.name || id), el("span", "bin-open", entry.classList.contains("open") ? "open" : ""));
   entry.onclick = () => store.selectItem("bin", id);
   // Double-clicking opens the thing in its own editor, whatever kind of thing it is: a
-  // sequence is a timeline, an overlay is a composition on the workbench.
+  // sequence is a timeline, an overlay is a composition on the workbench, and a picture,
+  // a video or a sound plays in the viewer.
   if (isSequenceSource(item.source)) entry.ondblclick = () => store.openSequence(id);
-  if (isOverlaySource(item.source)) entry.ondblclick = () => store.openOverlay(id);
+  if (isOverlaySource(item.source) || isFileSource(item.source)) entry.ondblclick = () => store.openEntry(id);
   entry.ondragstart = (e) => setDragPayload(e, { bin: id });
   // A drop on the row's upper or lower part reorders around it; the middle of a folder
   // row drops into the folder. Any entry can be a parent, but only a folder is offered

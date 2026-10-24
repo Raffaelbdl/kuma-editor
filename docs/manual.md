@@ -155,6 +155,7 @@ mkdir myvideo && cd myvideo
 kuma init --project myvideo.kuma.json --fps 30          # or 29.97, 30000/1001; --width 1080 --height 1920 for a Short
 kuma add-media media/screen.mp4
 kuma serve                                               # open http://127.0.0.1:7455 (--bind / KUMA_BIND to change)
+kuma servers                                             # the daemons running here, and the URL of each one's editor
 ```
 
 Drag bin entries onto the timeline, scrub, edit vars in the inspector, press **Render**.
@@ -250,7 +251,8 @@ axes at once. With the playhead outside the clip there is no
 overlays live on top, driven by the timeline below; double-clicking one in the bin (or ⌘K's
 *Open sequence*) opens it and gives it a tab, and clicking between them switches which sequence is being edited (a round trip:
 the daemon holds that choice, so switching recompiles, and the last tab stays put because
-something is always open). Every other tab is one **overlay entry**, open on its own. `+ overlay` (or the
+something is always open). Every other tab is one bin entry open on its own: an **overlay**
+on the workbench, or a picture, video or sound in the **viewer** (below). `+ overlay` (or the
 Blueprints tab's *Workbench*, or **New Overlay…** in the Project menu) copies a
 blueprint into the project, adds it to the bin and opens it there **without placing it**
 — double-clicking an overlay in the bin opens it the same way: creating an overlay and
@@ -273,6 +275,18 @@ backdrop, with `t0`/`t1` counted from the start of the overlay — so an animati
 checked frame by frame before anything is placed. Nothing is added to the document to make
 that possible: the frames come from a throwaway one-clip timeline through the real MLT
 graph, so they are the composite the render would produce.
+
+**The viewer.** Double-clicking a picture, a video or a sound in the bin (or *Open* in its
+inspector) opens it in a tab of its own, Kdenlive's clip monitor: the file on its own,
+before any clip says when it plays. A video or a sound runs on the file's own clock —
+`Space` plays it, the arrows step one of its frames (`Shift`: a second), the scrub below
+seeks — with no relation to the timeline's playhead; a sound is drawn as its waveform,
+which you press on to seek; a still is shown at its size over a checkerboard. **Place at
+playhead** puts a clip of it on the open sequence; nothing else there is an edit. It is
+the browser playing the file the daemon serves (`/api/bin/<id>/source`, or the entry's
+proxy when it has one), not MLT, so it needs no engine — and a file Chromium cannot decode
+(ProRes, say) says so and shows its filmstrip instead; the timeline, the preview and
+renders read it through MLT and are not affected.
 
 **Vertical.** Landscape or portrait is nothing but the project's `width`/`height`: the
 size button in the top bar (`1920×1080 ⇄`) swaps them, undoably, and the preview, the
@@ -398,6 +412,14 @@ The one daemon the app does *not* stop is one that was already serving that proj
 when you opened it. Two daemons writing one `.kuma.json` would each think they own it, and
 the one already there is usually a `kuma mcp` with a Claude Code session behind it, so the
 app shares it instead and leaves it running.
+
+Any project open in the app can also be opened in a browser: **`kuma servers`** (or `kuma
+ps`) lists every daemon running on the machine with its address and project — the app's,
+on whatever port each window got, a `kuma mcp`'s private one, and any `kuma serve` — and
+`--json` prints the same for a script. Each daemon leaves a note in
+`$XDG_RUNTIME_DIR/kuma/daemons` (`~/.local/state/kuma/daemons` without one) while it
+serves; a killed one cannot take its note away, so the listing checks every note against
+its address and forgets the ones nothing answers for.
 
 The shell needs to find the `kuma` binary and the checkout. It looks for `KUMA_BIN`, then
 `target/release/kuma`, then `target/debug/kuma`, then `PATH`; and for the repository the
@@ -767,7 +789,7 @@ and the values live with the rest of the project's decisions.
   about the first two and refuses to open a window against a stale `ui/dist`.
 - **Start with `kuma doctor --project <file>`** — it reports the binary, repo root, tools,
   engine, display, whether a daemon answers on the port (and for which project), and the
-  MCP config.
+  MCP config. `kuma servers` lists every daemon on the machine, whatever its port.
 - **Claude Code says `kuma … Failed to connect ("Connection closed")`** — the `kuma mcp`
   process exited at startup. Run the exact command from `.mcp.json` by hand
   (`kuma mcp --project <file>`); the reason is printed on stderr. `kuma mcp` reuses a

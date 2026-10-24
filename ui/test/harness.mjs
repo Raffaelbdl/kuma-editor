@@ -64,7 +64,9 @@ export async function startDaemon(projectFile, library) {
   const proc = spawn(findKuma(), ["serve", "--project", projectFile, "--bind", `127.0.0.1:${port}`], {
     // A test that names its library reads that one alone: an empty user library of its own,
     // or the one on this machine (and whatever libraries were added to it) would join in.
-    env: { ...process.env, KUMA_REPO: REPO, ...(library ? { KUMA_LIBRARY: library, XDG_DATA_HOME: fs.mkdtempSync(path.join(os.tmpdir(), "kuma-data-")) } : {}) },
+    // A runtime directory of its own, so the note it leaves for `kuma servers` — which the
+    // SIGTERM that ends a test never takes away — is not left in this machine's.
+    env: { ...process.env, KUMA_REPO: REPO, XDG_RUNTIME_DIR: fs.mkdtempSync(path.join(os.tmpdir(), "kuma-run-")), ...(library ? { KUMA_LIBRARY: library, XDG_DATA_HOME: fs.mkdtempSync(path.join(os.tmpdir(), "kuma-data-")) } : {}) },
     stdio: "ignore",
   });
   const deadline = Date.now() + 30_000;
@@ -154,6 +156,14 @@ export async function driver(url) {
      *  cannot prove: a drag, or a double-click the page's pointer handlers might swallow. */
     mouse(type, x, y, opts = {}) {
       return send("Input.dispatchMouseEvent", { type, x, y, button: type === "mouseMoved" && !opts.held ? "none" : "left", buttons: opts.held || type === "mousePressed" ? 1 : 0, clickCount: opts.clickCount ?? 1 });
+    },
+    /** A real key press through the browser's input pipeline — what a page sees as the
+     *  person's gesture, which a synthetic `KeyboardEvent` is not (`play()` refuses one). */
+    async press(key, code = key, opts = {}) {
+      const vk = { " ": 32, ArrowLeft: 37, ArrowRight: 39 }[key] ?? key.toUpperCase().charCodeAt(0);
+      const base = { key, code, windowsVirtualKeyCode: vk, modifiers: opts.shift ? 8 : 0 };
+      await send("Input.dispatchKeyEvent", { type: "keyDown", ...base, ...(key.length === 1 ? { text: key } : {}) });
+      await send("Input.dispatchKeyEvent", { type: "keyUp", ...base });
     },
     /** A PNG of the viewport, written to `file` — for looking at a page while writing a
      *  test, not for asserting on. */

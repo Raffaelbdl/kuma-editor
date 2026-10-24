@@ -70,10 +70,15 @@ async fn daemon() -> (Arc<AppState>, String, tempfile::TempDir) {
 /// `content-length`, exactly — reading to EOF would wait on a close the server need not
 /// do, and hang instead of failing.
 fn request(addr: &str, method: &str, path: &str, body: &str) -> (String, std::collections::HashMap<String, String>, String) {
+    request_with(addr, method, path, body, "")
+}
+
+/// [`request`] with `extra` headers, each ending in `\r\n`.
+fn request_with(addr: &str, method: &str, path: &str, body: &str, extra: &str) -> (String, std::collections::HashMap<String, String>, String) {
     use std::io::Read as _;
     let mut s = std::net::TcpStream::connect(addr).unwrap();
     s.set_read_timeout(Some(std::time::Duration::from_secs(10))).unwrap();
-    write!(s, "{method} {path} HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}", body.len()).unwrap();
+    write!(s, "{method} {path} HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\nContent-Type: application/json\r\n{extra}Content-Length: {}\r\n\r\n{body}", body.len()).unwrap();
     let mut raw = Vec::new();
     let mut byte = [0u8; 1];
     while !raw.ends_with(b"\r\n\r\n") {
@@ -363,6 +368,45 @@ async fn a_media_entry_has_a_waveform_and_a_filmstrip() {
     // Not every entry has them: an overlay has neither.
     let (status, _) = get_body(&addr, "/api/bin/tag/peaks.json");
     assert!(status.starts_with("HTTP/1.1 404"), "{status}");
+}
+
+/// The viewer plays a media entry's own file: served whole, or in the ranges a `<video>`
+/// asks for to seek, and from the proxy when the entry has one. Nothing else is a file to
+/// serve, and looking is not an edit.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_media_entry_is_served_for_the_viewer_in_ranges() {
+    let (state, addr, dir) = daemon().await;
+    std::fs::write(dir.path().join("take.wav"), b"0123456789").unwrap();
+    std::fs::write(dir.path().join("take-proxy.wav"), b"proxy").unwrap();
+    let rev = state.project.read().unwrap().revision;
+    let entry = r#"{ "name": "Take", "source": { "path": "take.wav", "kind": "audio" }, "meta": { "duration": 1, "has_audio": true } }"#;
+    let (status, reply) = post(&addr, "/api/project/patch", &format!(r#"{{ "patch": [{{ "op": "add", "path": "/bin/take", "value": {entry} }}], "base_revision": {rev} }}"#));
+    assert!(status.contains("200"), "{status}: {reply}");
+    let revision = state.project.read().unwrap().revision;
+
+    let (status, headers, body) = request(&addr, "GET", "/api/bin/take/source", "");
+    assert!(status.contains("200"), "{status}");
+    assert_eq!(body, "0123456789");
+    assert_eq!(headers.get("accept-ranges").map(String::as_str), Some("bytes"), "a browser seeks only what says it can");
+    assert!(headers.get("content-type").is_some_and(|t| t.starts_with("audio/")), "{headers:?}");
+
+    let (status, headers, body) = request_with(&addr, "GET", "/api/bin/take/source", "", "Range: bytes=2-5\r\n");
+    assert!(status.contains("206"), "{status}");
+    assert_eq!(body, "2345");
+    assert_eq!(headers.get("content-range").map(String::as_str), Some("bytes 2-5/10"));
+    assert_eq!(state.project.read().unwrap().revision, revision, "looking is not an edit");
+
+    // A proxy stands in for the file here as it does in the preview compile.
+    let rev = state.project.read().unwrap().revision;
+    let (status, reply) = post(&addr, "/api/project/patch", &format!(r#"{{ "patch": [{{ "op": "add", "path": "/bin/take/source/proxy", "value": "take-proxy.wav" }}], "base_revision": {rev} }}"#));
+    assert!(status.contains("200"), "{status}: {reply}");
+    assert_eq!(get_body(&addr, "/api/bin/take/source").1, "proxy");
+
+    // An overlay has no file of its own to play, and an entry that is not there has nothing.
+    for id in ["tag", "nope"] {
+        let (status, _) = get_body(&addr, &format!("/api/bin/{id}/source"));
+        assert!(status.starts_with("HTTP/1.1 404"), "{id}: {status}");
+    }
 }
 
 /// The queue's routes: a listing a fresh window can rebuild from, and a cancel that tells

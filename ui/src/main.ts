@@ -27,6 +27,7 @@ import { installTheme } from "./theme";
 import { Timeline } from "./panels/timeline";
 import { initTitlebar } from "./panels/titlebar";
 import { installViewSync } from "./viewsync";
+import { Viewer } from "./panels/viewer";
 import { Workbench } from "./panels/workbench";
 import type { TrackKind } from "./types";
 
@@ -129,6 +130,7 @@ async function main() {
     // `Preview` registers the transport and reload commands as it mounts.
     new Preview(document.getElementById("preview")!);
     new Workbench(document.getElementById("workbench")!);
+    new Viewer(document.getElementById("viewer")!);
     mountTopbar(document.getElementById("topbar")!);
     mountTransport(document.getElementById("transport")!);
     mountStatusline(document.getElementById("statusline")!);

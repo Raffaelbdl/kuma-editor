@@ -85,7 +85,7 @@ export class Workbench {
 
   constructor(private host: HTMLElement) {
     this.build();
-    store.select((s) => [s.project, s.tab, s.manifests, s.overlays], () => this.update());
+    store.select((s) => [s.project, s.tab, s.manifests, s.entries], () => this.update());
     // The backdrop is a frame of the sequence, so it follows the playhead — but only when
     // it is the one being shown, and never while something is being dragged over it.
     store.select((s) => [s.playhead], () => { if (this.backdropKind === "frame" && this.active()) this.loadShot(); });

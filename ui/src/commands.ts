@@ -88,6 +88,8 @@ export const Cmd = {
   previewScale: "preview.scale",
   overlayTogglePlay: "overlay.toggle-play",
   overlayStep: "overlay.step",
+  viewerTogglePlay: "viewer.toggle-play",
+  viewerStep: "viewer.step",
   palette: "view.palette",
   modeDen: "view.den",
   modePower: "view.power",

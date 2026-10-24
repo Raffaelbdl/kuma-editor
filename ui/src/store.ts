@@ -1,6 +1,6 @@
 import { api, subscribeEvents } from "./api";
 import type { Activity, BlueprintInfo, LibraryInfo, Clip, HistoryEntry, MarkerInfo, DaemonEvent, FontFamily, Job, Marker, OverlayInfo, PatchOp, Project, Track, TrackKind, Transition } from "./types";
-import { allClips, clipPathOf, fpsValue, freeId, isOverlaySource, nearest, seqDuration, seqPath, sequenceIds, sequenceOf } from "./types";
+import { allClips, clipPathOf, fpsValue, freeId, isFileSource, isOverlaySource, nearest, seqDuration, seqPath, sequenceIds, sequenceOf } from "./types";
 
 /** A clip found in the project: where it is, as the record every edit of it starts from. */
 export interface Found { seq: string; track: Track; ti: number; clip: Clip; ci: number }
@@ -62,13 +62,14 @@ export interface State {
   /** pixels per second */
   zoom: number;
   /** Which editor the centre shows: `SEQUENCE_TAB` for the sequence monitor, else the bin
-   *  id of an overlay entry open in the workbench. View state, like the selection. */
+   *  id of an entry open in its own tab — an overlay on the workbench, a picture, video or
+   *  sound in the viewer. View state, like the selection. */
   tab: string;
   /** Sequences open as tabs, oldest first. Only one is *being edited* — `sequence`, which
    *  the daemon owns — so these are the ones a click away rather than several at once. */
   sequences: string[];
-  /** Overlay entries open as tabs, oldest first. */
-  overlays: string[];
+  /** Bin entries open as tabs, oldest first: overlays and media (`isEntryTab`). */
+  entries: string[];
   connected: boolean;
   jobs: Record<number, Job>;
   /** Power (panels docked round the frame) or den (the frame, panels summoned over it).
@@ -87,7 +88,7 @@ export interface State {
 type Listener = (s: State) => void;
 
 class Store {
-  state: State = { project: null, blueprints: [], libraries: [], manifests: {}, fonts: [], previewStamp: 0, sequence: "", selection: null, track: null, clipboard: null, autoKey: false, reloading: false, playhead: 0, playing: false, zoom: 60, tab: SEQUENCE_TAB, sequences: [], overlays: [], connected: false, jobs: {}, mode: "power", activity: [], history: [], markerList: [] };
+  state: State = { project: null, blueprints: [], libraries: [], manifests: {}, fonts: [], previewStamp: 0, sequence: "", selection: null, track: null, clipboard: null, autoKey: false, reloading: false, playhead: 0, playing: false, zoom: 60, tab: SEQUENCE_TAB, sequences: [], entries: [], connected: false, jobs: {}, mode: "power", activity: [], history: [], markerList: [] };
   private listeners = new Set<Listener>();
   private refreshing: Promise<void> | null = null;
   private refreshAgain = false;
@@ -242,9 +243,9 @@ class Store {
           // Kept as they were when nothing went: a new array is a change to everything that
           // follows it, and an edit rarely touches them.
           const sequences = same(this.state.sequences, withId(this.state.sequences.filter((id) => sequenceOf(project, id)), sequence));
-          const overlays = same(this.state.overlays, this.state.overlays.filter((id) => isOverlayEntry(project, id)));
-          const tab = overlays.includes(this.state.tab) ? this.state.tab : SEQUENCE_TAB;
-          this.set({ project, manifests, sequence, sequences, selection, track, overlays, tab });
+          const entries = same(this.state.entries, this.state.entries.filter((id) => isEntryTab(project, id)));
+          const tab = entries.includes(this.state.tab) ? this.state.tab : SEQUENCE_TAB;
+          this.set({ project, manifests, sequence, sequences, selection, track, entries, tab });
         } while (this.refreshAgain);
       } catch (e) {
         toast(`Cannot reload the project: ${(e as Error).message}`, "err");
@@ -290,26 +291,26 @@ class Store {
   }
 
   /**
-   * Open an overlay entry in the workbench and bring its tab forward — from the bin, the
-   * inspector, or its own tab, which is the same act whether or not the tab is already
-   * there. Selecting it too is the point rather than a courtesy: the inspector is where a
-   * bin entry's vars are edited, and the workbench deliberately does not grow a second
-   * copy of them.
+   * Open a bin entry in its own tab and bring it forward — an overlay on the workbench, a
+   * picture, video or sound in the viewer — from the bin, the inspector, or its own tab,
+   * which is the same act whether or not the tab is already there. Selecting it too is the
+   * point rather than a courtesy: the inspector is where a bin entry is edited, and neither
+   * panel grows a second copy of it.
    */
-  openOverlay(id: string) {
-    if (!isOverlayEntry(this.state.project, id)) {
-      toast(`${id} is not an overlay entry`, "err");
+  openEntry(id: string) {
+    if (!isEntryTab(this.state.project, id)) {
+      toast(`${id} has no tab of its own: only overlays and media open on their own`, "err");
       return;
     }
-    this.set({ overlays: withId(this.state.overlays, id), tab: id, selection: { kind: "bin", id } });
+    this.set({ entries: withId(this.state.entries, id), tab: id, selection: { kind: "bin", id } });
   }
 
-  /** Close a workbench tab. Only the tab: the entry stays in the bin, where it is the
-   *  thing every clip plays. */
-  closeOverlay(id: string) {
-    const overlays = this.state.overlays.filter((x) => x !== id);
-    const tab = this.state.tab === id ? overlays.at(-1) ?? SEQUENCE_TAB : this.state.tab;
-    this.set({ overlays, tab });
+  /** Close an entry's tab. Only the tab: the entry stays in the bin, where it is the thing
+   *  every clip plays. */
+  closeEntry(id: string) {
+    const entries = this.state.entries.filter((x) => x !== id);
+    const tab = this.state.tab === id ? entries.at(-1) ?? SEQUENCE_TAB : this.state.tab;
+    this.set({ entries, tab });
   }
 
   /** Point the inspector at a clip, a bin entry or a blueprint, and at nothing else.
@@ -536,6 +537,13 @@ const withId = (ids: string[], id: string): string[] => (ids.includes(id) ? ids 
 /** An entry the workbench can open: one that exists and is an overlay. */
 export const isOverlayEntry = (p: Project | null, id: string): boolean =>
   !!p && !!p.bin[id] && isOverlaySource(p.bin[id].source);
+
+/** An entry the viewer can open: one that exists and is a file — picture, video or sound. */
+export const isMediaEntry = (p: Project | null, id: string): boolean =>
+  !!p && !!p.bin[id] && isFileSource(p.bin[id].source);
+
+/** An entry that opens in a tab of its own (a sequence's tab is its timeline instead). */
+export const isEntryTab = (p: Project | null, id: string): boolean => isOverlayEntry(p, id) || isMediaEntry(p, id);
 
 // ---- toasts ------------------------------------------------------------------
 

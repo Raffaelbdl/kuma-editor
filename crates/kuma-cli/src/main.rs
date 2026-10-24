@@ -39,6 +39,14 @@ enum LibraryCmd {
 enum Cmd {
     /// Run the daemon (HTTP API, UI, preview) in the foreground.
     Serve,
+    /// List the daemons running on this machine: the URL to open each one's editor in a
+    /// browser, and the project it serves. Ones that have died are forgotten as they are found.
+    #[command(visible_alias = "ps")]
+    Servers {
+        /// Print them as JSON, for a script.
+        #[arg(long)]
+        json: bool,
+    },
     /// Run as an MCP server on stdio (starts the daemon in-process unless one is running).
     Mcp {
         /// Use an already-running daemon at this URL instead of starting one.
@@ -447,6 +455,7 @@ async fn main() -> anyhow::Result<()> {
             kuma_mcp::run_stdio(url, note).await?;
         }
         Cmd::Doctor => doctor(&cli).await?,
+        Cmd::Servers { json } => servers(&cli, *json).await?,
         Cmd::Render { preset, output, sequence } => {
             let req = kuma_daemon::jobs::RenderRequest { preset: preset.clone(), output: output.as_deref().map(absolute).transpose()?, sequence: sequence.clone(), ..Default::default() };
             let out = match on_daemon(&cli, "/api/render", "render", serde_json::to_value(&req)?).await? {
@@ -908,6 +917,10 @@ async fn doctor(cli: &Cli) -> anyhow::Result<()> {
         None if port_busy(cfg.bind) => println!("daemon        port {} is busy but not answering /api/health", cfg.bind),
         None => println!("daemon        not running (kuma serve, or kuma mcp starts one)"),
     }
+    let others = kuma_daemon::running::notes().into_iter().filter(|(_, r)| r.url != kuma_daemon::running::url_for(cfg.bind)).count();
+    if others > 0 {
+        println!("other daemons {others} noted on other ports — `kuma servers` lists the live ones");
+    }
     let mcp = cfg.project_root().join(".mcp.json");
     println!("mcp config    {}", if mcp.is_file() { mcp.display().to_string() } else { "none — run `kuma mcp-config`".into() });
     let skill_dir = skill::dir(&cfg.project_root());
@@ -984,6 +997,86 @@ fn write_mcp_config(out: &Path, json: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// One running daemon as `kuma servers` reports it.
+#[derive(serde::Serialize)]
+struct Server {
+    url: String,
+    project: PathBuf,
+    /// Absent for a daemon found on `--bind` that left no note (a kuma from before notes).
+    pid: Option<u32>,
+    started: Option<u64>,
+    revision: Option<u64>,
+    /// False when something holds the port but `/api/health` did not answer in time.
+    answering: bool,
+}
+
+/// `kuma servers`: every daemon's note, checked against its address. A note whose address
+/// refuses connections, or answers for another project, is a daemon that was killed: its
+/// note is deleted. One that accepts and does not answer is listed as such and kept, since
+/// a busy daemon is still a daemon. A daemon on `--bind` with no note is listed too.
+async fn servers(cli: &Cli, as_json: bool) -> anyhow::Result<()> {
+    let same = |a: &Path, b: &Path| a.canonicalize().unwrap_or_else(|_| a.to_path_buf()) == b.canonicalize().unwrap_or_else(|_| b.to_path_buf());
+    let mut found: Vec<Server> = Vec::new();
+    for (file, note) in kuma_daemon::running::notes() {
+        let addr = note.url.trim_start_matches("http://").parse::<SocketAddr>().ok();
+        if !addr.is_some_and(port_busy) {
+            let _ = std::fs::remove_file(&file);
+            continue;
+        }
+        let health = kuma_mcp::client::health(&note.url).await;
+        if let Some(h) = &health {
+            if !h["project"].as_str().is_some_and(|p| same(Path::new(p), &note.project)) {
+                let _ = std::fs::remove_file(&file);
+                continue;
+            }
+        }
+        let revision = health.as_ref().and_then(|h| h["revision"].as_u64());
+        found.push(Server { url: note.url, project: note.project, pid: Some(note.pid), started: Some(note.started), revision, answering: health.is_some() });
+    }
+    let url = kuma_daemon::running::url_for(cli.bind);
+    if !found.iter().any(|s| s.url == url) {
+        if let Some(h) = kuma_mcp::client::health(&url).await {
+            let project = PathBuf::from(h["project"].as_str().unwrap_or("?"));
+            found.push(Server { url, project, pid: None, started: None, revision: h["revision"].as_u64(), answering: true });
+        }
+    }
+    if as_json {
+        println!("{}", serde_json::to_string_pretty(&found)?);
+        return Ok(());
+    }
+    if found.is_empty() {
+        println!("no kuma daemon is running (kuma serve -p <project>, or open one in the app)");
+        return Ok(());
+    }
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    let width = found.iter().map(|s| s.url.len()).max().unwrap_or(0);
+    for s in &found {
+        let mut about = Vec::new();
+        if let Some(pid) = s.pid {
+            about.push(format!("pid {pid}"));
+        }
+        if let Some(t) = s.started {
+            about.push(format!("up {}", since(now.saturating_sub(t))));
+        }
+        if !s.answering {
+            about.push("not answering".into());
+        }
+        let about = if about.is_empty() { String::new() } else { format!("  ({})", about.join(", ")) };
+        println!("{:width$}  {}{about}", s.url, s.project.display());
+    }
+    Ok(())
+}
+
+/// `secs` as the largest unit that fits: `40s`, `12m`, `3h`, `2d`.
+fn since(secs: u64) -> String {
+    match secs {
+        s if s < 60 => format!("{s}s"),
+        s if s < 3600 => format!("{}m", s / 60),
+        s if s < 86400 => format!("{}h", s / 3600),
+        s => format!("{}d", s / 86400),
+    }
+}
+
 /// Decide which daemon the MCP server talks to:
 /// 1. a running daemon on `--bind` that serves *this* project → use it;
 /// 2. a daemon serving another project, a busy port, or a lost bind race → a private
@@ -1036,6 +1129,11 @@ fn port_busy(addr: SocketAddr) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn uptime_reads_in_one_unit() {
+        assert_eq!([since(5), since(61), since(7200), since(3 * 86400)], ["5s", "1m", "2h", "3d"]);
+    }
 
     /// `--no-overlays` is the MCP tool's `overlays: false`: footage only, nothing baked.
     #[test]

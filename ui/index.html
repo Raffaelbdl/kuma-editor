@@ -21,13 +21,14 @@
         <!-- Power's dock (`dock.ts`): splits and tab groups of panels round the frame, which
              is the one part of it that is not a panel. -->
         <div id="dock">
-          <!-- The centre is tabbed (the tabs are in the top bar): the sequence monitor, and
-               an overlay workbench per overlay entry being iterated on. One is shown at a
-               time; both stay mounted. -->
+          <!-- The centre is tabbed (the tabs are in the top bar): the sequence monitor, an
+               overlay workbench per overlay entry being iterated on, and the viewer for a
+               picture, video or sound. One is shown at a time; all stay mounted. -->
           <section id="center">
             <div id="stages">
               <section id="preview"></section>
               <section id="workbench"></section>
+              <section id="viewer"></section>
             </div>
             <div id="transport"></div>
           </section>

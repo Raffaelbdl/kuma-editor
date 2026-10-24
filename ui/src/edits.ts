@@ -198,7 +198,7 @@ export async function createFromBlueprint(blueprintId: string, parent: string | 
   let name = label;
   for (let n = 2; names.has(name); n++) name = `${label} ${n}`;
   const id = binIdFor(name, blueprintId);
-  if (await addBlueprint(blueprintId, id, name, [], parent)) store.openOverlay(id);
+  if (await addBlueprint(blueprintId, id, name, [], parent)) store.openEntry(id);
 }
 
 /** What the bin's New menu and right-click offer, creating under `parent`. */
@@ -265,7 +265,7 @@ export async function promptNewOverlay(blueprint?: string, parent: string | null
   if (!ok) return;
   const label = name.value.trim() || blueprintName(pick.value);
   const id = binIdFor(label, pick.value);
-  if (await addBlueprint(pick.value, id, label, [], parent)) store.openOverlay(id);
+  if (await addBlueprint(pick.value, id, label, [], parent)) store.openEntry(id);
 }
 
 /** A second entry on the same folder, vars and all, opened in the workbench. */
@@ -278,7 +278,7 @@ export async function duplicateOverlay(id: string) {
   const value: BinItem = { name, source: { overlay: item.source.overlay, vars: { ...(item.source.vars ?? {}) } } };
   // Listed where the original is, so a variant does not turn up at the other end of the bin.
   if (item.parent) value.parent = item.parent;
-  if (await store.patch([{ op: "add", path: binPath(copyId), value }], `duplicate ${id}`)) store.openOverlay(copyId);
+  if (await store.patch([{ op: "add", path: binPath(copyId), value }], `duplicate ${id}`)) store.openEntry(copyId);
 }
 
 /** Give an overlay entry its own copy of the folder it shares. */

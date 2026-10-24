@@ -601,9 +601,14 @@ export class Inspector {
       (open as HTMLButtonElement).disabled = id === store.state.sequence;
       actions.appendChild(open);
     }
-    // The same gesture for the other kind of entry that has an editor of its own.
+    // The same gesture for the other kinds of entry that open on their own.
+    if (isFileSource(item.source)) {
+      const open = button("Open", () => store.openEntry(id), `${item.source.kind === "image" ? "Look at it" : "Play it"} in the viewer, on its own`);
+      (open as HTMLButtonElement).disabled = id === store.state.tab;
+      actions.appendChild(open);
+    }
     if (isOverlaySource(item.source)) {
-      const open = button("Open", () => store.openOverlay(id), "Iterate on it in the overlay workbench");
+      const open = button("Open", () => store.openEntry(id), "Iterate on it in the overlay workbench");
       (open as HTMLButtonElement).disabled = id === store.state.tab;
       actions.appendChild(open);
       actions.appendChild(button("Preview", () => void renderPreview({ bins: [id] }), "Render its animated preview with these vars"));

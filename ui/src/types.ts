@@ -9,6 +9,9 @@ export interface MediaMeta {
   duration?: number; width?: number; height?: number; fps?: Fps; variable_fps?: boolean; has_audio: boolean; alpha?: boolean;
 }
 
+/** A media file on disk: what a picture, video or sound bin entry is. */
+export interface FileSource { path: string; kind: MediaKind; proxy?: string | null }
+
 /** A timeline: what a sequence bin entry holds, master included. `effects` act on its mix
  *  (`SEQUENCE_EFFECTS`), keyed in its own seconds; the master's are the master stage. */
 export interface Sequence { tracks: Track[]; markers?: Marker[]; effects?: Effect[] }
@@ -18,7 +21,7 @@ export interface OverlaySource { overlay: string; vars?: Record<string, unknown>
 
 /** What a bin entry is. Exactly one shape. */
 export type BinSource =
-  | { path: string; kind: MediaKind; proxy?: string | null }
+  | FileSource
   | OverlaySource
   | { color: string }
   | { folder: true }
@@ -374,8 +377,14 @@ export type DaemonEvent =
 
 export const fpsValue = (f: Fps) => f.num / f.den;
 
+/** What probing found in a file, as one line: `4.00s · 1920×1080 · 30 fps · audio`. */
+export function mediaFacts(m: MediaMeta | null | undefined): string {
+  const rate = m?.fps ? `${+fpsValue(m.fps).toFixed(3)} fps${m.variable_fps ? " (variable)" : ""}` : "";
+  return [m?.duration ? `${m.duration.toFixed(2)}s` : "", m?.width ? `${m.width}×${m.height}` : "", rate, m?.alpha ? "alpha" : "", m?.has_audio ? "audio" : ""].filter(Boolean).join(" · ");
+}
+
 export const isOverlaySource = (s: BinSource): s is OverlaySource => "overlay" in s;
-export const isFileSource = (s: BinSource): s is { path: string; kind: MediaKind; proxy?: string | null } => "path" in s;
+export const isFileSource = (s: BinSource): s is FileSource => "path" in s;
 export const isSequenceSource = (s: BinSource): s is Sequence => "tracks" in s;
 export const isColorSource = (s: BinSource): s is { color: string } => "color" in s;
 export const isFolderSource = (s: BinSource): s is { folder: true } => "folder" in s;

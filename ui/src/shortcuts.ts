@@ -11,7 +11,6 @@ import { el, row } from "./dom";
 import { showInfo } from "./modal";
 import { panels } from "./panelhost";
 import { isMediaEntry, isOverlayEntry, SEQUENCE_TAB, store } from "./store";
-import { fpsValue } from "./types";
 
 /** Which part of the shortcut list a binding belongs to, in the order they are shown. */
 const SECTIONS = ["Panels", "Transport", "Editing", "Overlay workbench", "Viewer"] as const;
@@ -41,11 +40,6 @@ const panelBindings = (): Binding[] => panels.all.filter((s) => s.key).map((s) =
 const PANELS: Binding = { when: () => false, action: "" };
 const bindings = (): Binding[] => BINDINGS.flatMap((b) => (b === PANELS ? panelBindings() : [b]));
 const frame = () => 1 / store.fps;
-/** The rate of the file in the viewer: a second of it is this many of its frames. */
-const mediaFps = () => {
-  const f = store.state.project?.bin[store.state.tab]?.meta?.fps;
-  return f ? fpsValue(f) : store.fps;
-};
 /** An entry's own tab is on screen — the workbench or the viewer — so there is no timeline
  *  for a timeline key to act on. */
 const onEntry = () => store.state.tab !== SEQUENCE_TAB;
@@ -74,9 +68,9 @@ const BINDINGS: Binding[] = [
   // In the viewer, the file's own time: a frame is one of its frames, at its own rate.
   { when: (e) => e.code === "Space" && onMedia(), action: Cmd.viewerTogglePlay, preventDefault: true,
     list: { where: "Viewer", keys: "Space", what: "Play or pause this video or sound on its own" } },
-  { when: (e) => e.key === "ArrowLeft" && onMedia(), action: (e) => run(Cmd.viewerStep, e.shiftKey ? -mediaFps() : -1), preventDefault: true,
+  { when: (e) => e.key === "ArrowLeft" && onMedia(), action: (e) => run(Cmd.viewerStep, e.shiftKey ? { seconds: -1 } : { frames: -1 }), preventDefault: true,
     list: { where: "Viewer", keys: "← →", what: "Step a frame in the file's own time (Shift: a second)" } },
-  { when: (e) => e.key === "ArrowRight" && onMedia(), action: (e) => run(Cmd.viewerStep, e.shiftKey ? mediaFps() : 1), preventDefault: true },
+  { when: (e) => e.key === "ArrowRight" && onMedia(), action: (e) => run(Cmd.viewerStep, e.shiftKey ? { seconds: 1 } : { frames: 1 }), preventDefault: true },
   { when: (e) => e.code === "Space", action: Cmd.togglePlay, preventDefault: true,
     list: { where: "Transport", keys: "Space", what: "Play or pause" } },
   // Alt is the coarse jump: to the next place something starts or ends. Before the plain

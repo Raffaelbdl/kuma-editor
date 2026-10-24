@@ -6,11 +6,11 @@
 //! one small JSON file per address in a directory of this user's — and anyone wanting the
 //! editor of a project in a browser reads them.
 //!
-//! A note is a claim, not a fact. It is removed when the daemon stops cleanly, which a
-//! killed process never does, so a reader checks each one against the address it names
-//! (`kuma servers` does) and deletes the ones nothing answers for. Nothing here is ever
-//! trusted to be current on its own, and failing to write a note costs that listing only:
-//! serving never depends on it.
+//! A note is a claim, not a fact. It is removed when the daemon stops — on Ctrl-C, on the
+//! `SIGTERM` the desktop shell sends — which a killed process never does, so [`notes`]
+//! checks each one against the address it names and deletes the ones nothing answers for.
+//! Nothing here is ever trusted to be current on its own, and failing to write a note costs
+//! that listing only: serving never depends on it.
 
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 /// One daemon's note: where it answers, and what it serves.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Running {
     /// Where a browser reaches its editor: `http://<ip>:<port>`, loopback for a daemon
     /// bound to every interface.
@@ -32,7 +32,7 @@ pub struct Running {
 
 /// Where the notes are: `$XDG_RUNTIME_DIR/kuma/daemons`, which is this user's and is
 /// emptied at logout, else `$XDG_STATE_HOME/kuma/daemons` (`~/.local/state`).
-pub fn dir() -> PathBuf {
+fn dir() -> PathBuf {
     let base = std::env::var_os("XDG_RUNTIME_DIR")
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("XDG_STATE_HOME").map(PathBuf::from))
@@ -59,17 +59,17 @@ fn file_name(addr: SocketAddr) -> String {
 
 /// While held, the note saying this daemon serves; dropping it removes the note, unless
 /// another daemon has taken the address and written its own since.
-#[derive(Debug)]
-pub struct Registered {
-    path: PathBuf,
-    pid: u32,
-}
+pub struct Registered(PathBuf);
 
 impl Drop for Registered {
     fn drop(&mut self) {
-        if read(&self.path).is_some_and(|r| r.pid == self.pid) {
-            let _ = std::fs::remove_file(&self.path);
-        }
+        remove_if_mine(&self.0);
+    }
+}
+
+fn remove_if_mine(path: &Path) {
+    if read(path).is_some_and(|r| r.pid == std::process::id()) {
+        let _ = std::fs::remove_file(path);
     }
 }
 
@@ -85,35 +85,51 @@ pub fn register(addr: SocketAddr, project: &Path) -> Option<Registered> {
     }
 }
 
-/// [`register`] into `dir`.
-pub fn register_in(dir: &Path, addr: SocketAddr, project: &Path) -> anyhow::Result<Registered> {
-    std::fs::create_dir_all(dir)?;
-    let started = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
-    let note = Running { url: url_for(addr), project: project.to_path_buf(), pid: std::process::id(), started };
+fn register_in(dir: &Path, addr: SocketAddr, project: &Path) -> anyhow::Result<Registered> {
+    let note = Running { url: url_for(addr), project: project.to_path_buf(), pid: std::process::id(), started: crate::history::now_ms() / 1000 };
     let path = dir.join(file_name(addr));
     // Written whole and renamed, so a reader never sees half a note.
-    let tmp = tempfile::Builder::new().prefix(".tmp-").suffix(".json").tempfile_in(dir)?;
-    std::fs::write(tmp.path(), serde_json::to_vec_pretty(&note)?)?;
-    tmp.persist(&path)?;
-    Ok(Registered { path, pid: note.pid })
+    crate::jobs::write_atomic(&path, &serde_json::to_vec_pretty(&note)?)?;
+    Ok(Registered(path))
+}
+
+/// Remove every note this process left, for a daemon about to exit without unwinding (a
+/// signal handler), where no [`Registered`] will be dropped.
+pub fn forget_mine() {
+    for (path, _) in notes_in(&dir()) {
+        remove_if_mine(&path);
+    }
 }
 
 fn read(path: &Path) -> Option<Running> {
     serde_json::from_slice(&std::fs::read(path).ok()?).ok()
 }
 
-/// Every note in [`dir`], with its file — unchecked: see the module comment.
+/// Every note in [`dir`] whose address still accepts connections, oldest first. A note
+/// whose address refuses them is a daemon that was killed: it is deleted here, so every
+/// reader agrees on that much. Whether what answers is still that daemon is the reader's
+/// to ask (`/api/health`), since that takes an HTTP client this crate does not have.
 pub fn notes() -> Vec<(PathBuf, Running)> {
+    let live = |r: &Running| r.url.trim_start_matches("http://").parse::<SocketAddr>().is_ok_and(|a| std::net::TcpStream::connect_timeout(&a, std::time::Duration::from_millis(500)).is_ok());
     notes_in(&dir())
+        .into_iter()
+        .filter(|(path, r)| {
+            let up = live(r);
+            if !up {
+                let _ = std::fs::remove_file(path);
+            }
+            up
+        })
+        .collect()
 }
 
-/// [`notes`] in `dir`, oldest first. A file that is not a note is skipped.
-pub fn notes_in(dir: &Path) -> Vec<(PathBuf, Running)> {
+/// The notes in `dir`, unchecked, oldest first. A file that is not a note is skipped.
+fn notes_in(dir: &Path) -> Vec<(PathBuf, Running)> {
     let Ok(entries) = std::fs::read_dir(dir) else { return Vec::new() };
     let mut out: Vec<_> = entries
         .flatten()
         .map(|e| e.path())
-        .filter(|p| p.extension().is_some_and(|x| x == "json") && !p.file_name().is_some_and(|n| n.to_string_lossy().starts_with(".tmp-")))
+        .filter(|p| p.extension().is_some_and(|x| x == "json") && !p.file_name().is_some_and(|n| kuma_overlay::is_in_flight(&n.to_string_lossy())))
         .filter_map(|p| read(&p).map(|r| (p, r)))
         .collect();
     out.sort_by(|a, b| (a.1.started, &a.1.url).cmp(&(b.1.started, &b.1.url)));

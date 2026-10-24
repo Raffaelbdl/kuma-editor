@@ -381,12 +381,16 @@ fn open(cli: &Cli) -> anyhow::Result<std::sync::Arc<kuma_daemon::AppState>> {
     Ok(std::sync::Arc::new(kuma_daemon::AppState::load(config(cli)?)?))
 }
 
+/// Whether a daemon's `/api/health` names `project` (canonical, as `absolute` makes it).
+fn serves(health: &serde_json::Value, project: &Path) -> bool {
+    health["project"].as_str().and_then(|p| Path::new(p).canonicalize().ok()).is_some_and(|p| p == project)
+}
+
 /// The running daemon for *this* project at `--bind`, if any.
 async fn running_daemon(cli: &Cli) -> Option<String> {
     let url = format!("http://{}", cli.bind);
     let h = kuma_mcp::client::health(&url).await?;
-    let theirs = h["project"].as_str().map(PathBuf::from).and_then(|p| p.canonicalize().ok())?;
-    (theirs == absolute(&cli.project).ok()?).then_some(url)
+    serves(&h, &absolute(&cli.project).ok()?).then_some(url)
 }
 
 /// Run a job on the daemon serving this project, when one does, so it shows in the editor's
@@ -437,6 +441,21 @@ async fn main() -> anyhow::Result<()> {
         Cmd::Serve => {
             let (state, addr) = kuma_daemon::serve(config(&cli)?).await?;
             println!("kuma: http://{addr}  project={}", state.config.project_file.display());
+            #[cfg(unix)]
+            {
+                // The desktop shell stops its daemons with SIGTERM. Exiting from here rather
+                // than returning skips the runtime's wait on blocking work (a render), as the
+                // signal's default did; only the note for `kuma servers` is taken first.
+                let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+                tokio::select! {
+                    r = tokio::signal::ctrl_c() => r?,
+                    _ = term.recv() => {
+                        kuma_daemon::running::forget_mine();
+                        std::process::exit(0);
+                    }
+                }
+            }
+            #[cfg(not(unix))]
             tokio::signal::ctrl_c().await?;
         }
         Cmd::Mcp { daemon } => {
@@ -919,7 +938,7 @@ async fn doctor(cli: &Cli) -> anyhow::Result<()> {
     }
     let others = kuma_daemon::running::notes().into_iter().filter(|(_, r)| r.url != kuma_daemon::running::url_for(cfg.bind)).count();
     if others > 0 {
-        println!("other daemons {others} noted on other ports — `kuma servers` lists the live ones");
+        println!("other daemons {others} on other ports — `kuma servers` lists them");
     }
     let mcp = cfg.project_root().join(".mcp.json");
     println!("mcp config    {}", if mcp.is_file() { mcp.display().to_string() } else { "none — run `kuma mcp-config`".into() });
@@ -1010,25 +1029,28 @@ struct Server {
     answering: bool,
 }
 
-/// `kuma servers`: every daemon's note, checked against its address. A note whose address
-/// refuses connections, or answers for another project, is a daemon that was killed: its
-/// note is deleted. One that accepts and does not answer is listed as such and kept, since
-/// a busy daemon is still a daemon. A daemon on `--bind` with no note is listed too.
+/// `kuma servers`: every daemon's note that still has something on its port, asked what it
+/// serves — all at once, so a busy one costs one timeout rather than one each. A note whose
+/// address answers for another project is a daemon that was killed, its port since reused:
+/// its note is deleted. One that does not answer is listed as such and kept, since a busy
+/// daemon is still a daemon. A daemon on `--bind` with no note is listed too.
 async fn servers(cli: &Cli, as_json: bool) -> anyhow::Result<()> {
-    let same = |a: &Path, b: &Path| a.canonicalize().unwrap_or_else(|_| a.to_path_buf()) == b.canonicalize().unwrap_or_else(|_| b.to_path_buf());
+    let notes = tokio::task::spawn_blocking(kuma_daemon::running::notes).await?;
+    let mut probes = tokio::task::JoinSet::new();
+    for (i, (_, note)) in notes.iter().enumerate() {
+        let url = note.url.clone();
+        probes.spawn(async move { (i, kuma_mcp::client::health(&url).await) });
+    }
+    let mut health = vec![None; notes.len()];
+    while let Some(r) = probes.join_next().await {
+        let (i, h) = r?;
+        health[i] = h;
+    }
     let mut found: Vec<Server> = Vec::new();
-    for (file, note) in kuma_daemon::running::notes() {
-        let addr = note.url.trim_start_matches("http://").parse::<SocketAddr>().ok();
-        if !addr.is_some_and(port_busy) {
+    for ((file, note), health) in notes.into_iter().zip(health) {
+        if health.as_ref().is_some_and(|h| !serves(h, &note.project)) {
             let _ = std::fs::remove_file(&file);
             continue;
-        }
-        let health = kuma_mcp::client::health(&note.url).await;
-        if let Some(h) = &health {
-            if !h["project"].as_str().is_some_and(|p| same(Path::new(p), &note.project)) {
-                let _ = std::fs::remove_file(&file);
-                continue;
-            }
         }
         let revision = health.as_ref().and_then(|h| h["revision"].as_u64());
         found.push(Server { url: note.url, project: note.project, pid: Some(note.pid), started: Some(note.started), revision, answering: health.is_some() });
@@ -1048,7 +1070,7 @@ async fn servers(cli: &Cli, as_json: bool) -> anyhow::Result<()> {
         println!("no kuma daemon is running (kuma serve -p <project>, or open one in the app)");
         return Ok(());
     }
-    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    let now = kuma_daemon::history::now_ms() / 1000;
     let width = found.iter().map(|s| s.url.len()).max().unwrap_or(0);
     for s in &found {
         let mut about = Vec::new();
@@ -1086,7 +1108,7 @@ async fn resolve_daemon(cli: &Cli) -> anyhow::Result<(String, Option<String>)> {
     let mut cfg = config(cli)?;
     let url = format!("http://{}", cfg.bind);
     let wanted = cfg.project_file.clone();
-    let serves_us = |h: &serde_json::Value| h["project"].as_str().map(PathBuf::from).and_then(|p| p.canonicalize().ok()).as_ref() == Some(&wanted);
+    let serves_us = |h: &serde_json::Value| serves(h, &wanted);
     let note = match kuma_mcp::client::health(&url).await {
         Some(h) if serves_us(&h) => return Ok((url, None)),
         Some(h) => {

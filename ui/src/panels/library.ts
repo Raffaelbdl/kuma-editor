@@ -14,12 +14,12 @@ import { api } from "../api";
 import { desktop, dropMedia, pickAndAddMedia } from "../desktop";
 import { button, dragPayload, el, isFileDrag, row, setDragPayload } from "../dom";
 import { icon, type IconName } from "../icons";
-import { store, toast } from "../store";
+import { isEntryTab, store, toast } from "../store";
 import { addLibrary, blueprintActions, moveBinItem, newItems, promptNewFolder, removeLibrary, rescanLibraries } from "../edits";
 import { menuBelow, showMenu, type MenuItem } from "../menu";
 import { panels } from "../panelhost";
 import type { BinItem, BlueprintInfo, LibraryInfo, Project } from "../types";
-import { childrenMap, isFileSource, isFolderSource, isOverlaySource, isSequenceSource, itemKind, parentOf } from "../types";
+import { childrenMap, isFileSource, isFolderSource, isSequenceSource, itemKind, parentOf } from "../types";
 
 export class Library {
   /** The head's tools — + new, a folder, import — rebuilt for whichever list is showing. */
@@ -275,7 +275,7 @@ function binRow(p: Project, id: string, item: BinItem, caret: HTMLElement | unde
   // sequence is a timeline, an overlay is a composition on the workbench, and a picture,
   // a video or a sound plays in the viewer.
   if (isSequenceSource(item.source)) entry.ondblclick = () => store.openSequence(id);
-  if (isOverlaySource(item.source) || isFileSource(item.source)) entry.ondblclick = () => store.openEntry(id);
+  if (isEntryTab(p, id)) entry.ondblclick = () => store.openEntry(id);
   entry.ondragstart = (e) => setDragPayload(e, { bin: id });
   // A drop on the row's upper or lower part reorders around it; the middle of a folder
   // row drops into the folder. Any entry can be a parent, but only a folder is offered

@@ -501,14 +501,14 @@ browser was reading the shell's log. So `kuma_daemon::serve` writes
 for as long as its server task lives, and `kuma servers` (`ps`) lists them, `--json` for a
 script.
 
-A note is a claim, not a fact: a process killed with `SIGKILL` — or `SIGTERM`, which
-`kuma serve` does not catch — cannot take its note away, and the shell stops its daemons
-with `SIGTERM`. Catching it was weighed and left alone: returning from `main` drops the
-runtime, which waits for blocking tasks such as a render, so a signal that stops a daemon
-now would stop it only once the render finished. So readers check: a note whose port
-refuses connections, or answers `/api/health` for another project, is deleted as it is
-found; one whose port accepts and does not answer is listed as *not answering* and kept,
-because a busy daemon is still a daemon. Notes are keyed by address, so a daemon that
+The shell stops its daemons with `SIGTERM`, so `kuma serve` catches it, removes its note
+and calls `process::exit` — not a return from `main`, which drops the runtime and so waits
+for blocking work such as a render, where the signal's default stopped at once. A note is
+still a claim, not a fact: a process killed with `SIGKILL`, or crashed, cannot take its note
+away. So readers check. `running::notes` deletes a note whose port refuses connections, so
+every reader agrees on that much; `kuma servers` then asks the rest what they serve, all at
+once, deletes a note whose port answers for another project, and lists one that does not
+answer as *not answering* and keeps it, because a busy daemon is still a daemon. Notes are keyed by address, so a daemon that
 takes over a killed one's port replaces its note, and the old guard, if it ever drops,
 removes only a note that still carries its own pid. A daemon on `--bind` that left no note
 — a kuma from before notes — is still listed, found the old way.

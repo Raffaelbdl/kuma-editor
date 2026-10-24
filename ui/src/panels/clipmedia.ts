@@ -35,19 +35,22 @@ function whenLoaded<T>(l: Loaded<T>, node: Element, draw: (v: T) => void) {
   void l.wait.then((v) => { if (v && node.isConnected) draw(v); });
 }
 
+/** What of a clip decides which part of the source is under a pixel. */
+type Span = Pick<Clip, "in" | "speed">;
+
 /** Source seconds at `x` pixels into the clip. */
-const sourceAt = (c: Clip, zoom: number, x: number) => (c.in ?? 0) + (x / zoom) * Math.abs(c.speed || 1);
+const sourceAt = (c: Span, zoom: number, x: number) => (c.in ?? 0) + (x / zoom) * Math.abs(c.speed || 1);
 
 /**
  * Frames across `band`, `width`×`height` pixels of clip: one per slot, each the frame at
  * that moment of the source. Zoomed in far, slots are spaced out rather than multiplied —
  * a few hundred divs per clip is the ceiling, and a gap shows the clip's colour.
  */
-export function drawStrip(band: HTMLElement, bin: string, path: string, c: Clip, zoom: number, width: number, height: number) {
-  whenLoaded(load(strips, `${bin}\n${path}`, () => api.strip(bin).then((r) => r.strip)), band, (s) => {
+export function drawStrip(band: HTMLElement, bin: string, path: string, c: Span, zoom: number, width: number, height: number) {
+  whenLoaded(loadStrip(bin, path), band, (s) => {
     const tile = (s.width * height) / s.height;
     const slot = Math.max(tile, width / 200);
-    const url = `url("/api/bin/${encodeURIComponent(bin)}/strip.jpg?v=${encodeURIComponent(path)}")`;
+    const url = `url("${stripUrl(bin, path)}")`;
     for (let x = 0; x < width; x += slot) {
       const i = s.step ? Math.min(s.count - 1, Math.max(0, Math.floor(sourceAt(c, zoom, x + tile / 2) / s.step))) : 0;
       const f = el("div");
@@ -60,12 +63,21 @@ export function drawStrip(band: HTMLElement, bin: string, path: string, c: Clip,
   });
 }
 
+const loadStrip = (bin: string, path: string) => load(strips, `${bin}\n${path}`, () => api.strip(bin).then((r) => r.strip));
+
+/** The filmstrip image of `bin` made from `path`; it exists once its index (`strip.json`) has
+ *  been asked for. */
+export const stripUrl = (bin: string, path: string) => `/api/bin/${encodeURIComponent(bin)}/strip.jpg?v=${encodeURIComponent(path)}`;
+
+/** Whether `bin`'s filmstrip could be made, waiting for it the first time. */
+export const hasStrip = (bin: string, path: string): Promise<boolean> => loadStrip(bin, path).wait.then((s) => !!s);
+
 /** The waveform on `canvas`: the loudest moment under each pixel column, mirrored. */
-export function drawWave(canvas: HTMLCanvasElement, bin: string, path: string, c: Clip, zoom: number, width: number, height: number, color: string) {
+export function drawWave(canvas: HTMLCanvasElement, bin: string, path: string, c: Span, zoom: number, width: number, height: number, color: string) {
   whenLoaded(load(waves, `${bin}\n${path}`, () => api.peaks(bin)), canvas, (w) => paint(canvas, w, c, zoom, width, height, color));
 }
 
-function paint(canvas: HTMLCanvasElement, w: Peaks, c: Clip, zoom: number, width: number, height: number, color: string) {
+function paint(canvas: HTMLCanvasElement, w: Peaks, c: Span, zoom: number, width: number, height: number, color: string) {
   // A canvas has a size limit; past it the wave is stretched, which a wave survives.
   const dpr = window.devicePixelRatio || 1;
   const cw = Math.max(1, Math.min(8192, Math.round(width * dpr)));

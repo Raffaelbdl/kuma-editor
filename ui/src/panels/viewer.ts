@@ -15,17 +15,17 @@
 // shows the filmstrip the timeline draws; the timeline, the preview and renders read the
 // file through MLT and are not affected.
 
-import { api } from "../api";
 import { Cmd, command } from "../commands";
-import { button, el } from "../dom";
+import { button, dragPointer, el } from "../dom";
 import { placeBinItem } from "../edits";
 import { icon } from "../icons";
-import { drawWave } from "./clipmedia";
+import { drawWave, hasStrip, stripUrl } from "./clipmedia";
 import { fmtTime, isMediaEntry, store, toast } from "../store";
-import type { BinItem, Clip } from "../types";
-import { fpsValue, isFileSource } from "../types";
+import type { BinItem, FileSource } from "../types";
+import { fpsValue, isFileSource, mediaFacts } from "../types";
 
-type FileSource = { path: string; kind: "video" | "audio" | "image"; proxy?: string | null };
+/** A step in the viewer: frames of the file, or seconds of it. */
+export type ViewerStep = { frames: number } | { seconds: number };
 
 export class Viewer {
   private title = el("span", "wb-title");
@@ -47,13 +47,15 @@ export class Viewer {
   /** Everything the loaded file is a function of; when it changes, load it again. */
   private key = "";
   private raf = 0;
+  /** What the waveform was last painted for; a resize that changes neither paints nothing. */
+  private waveKey = "";
 
   constructor(private host: HTMLElement) {
     this.build();
     store.select((s) => [s.project, s.tab, s.entries], () => this.update());
-    new ResizeObserver(() => this.drawWave()).observe(this.stageHost);
+    new ResizeObserver(() => this.drawWave()).observe(this.waveBox);
     command(Cmd.viewerTogglePlay, "Play/Pause in the Viewer", () => this.togglePlay());
-    command(Cmd.viewerStep, "Step in the Viewer", (frames) => this.step(Number(frames)));
+    command(Cmd.viewerStep, "Step in the Viewer", (by) => this.step(by as ViewerStep));
   }
 
   private build() {
@@ -70,25 +72,18 @@ export class Viewer {
     this.foot.append(this.play, this.clock, this.scrub);
 
     this.waveBox.append(this.wave, this.cursor);
-    // Pressing on the sound is scrubbing it, as on the timeline's ruler.
-    this.waveBox.onpointerdown = (e) => {
-      const at = (ev: PointerEvent) => {
-        const box = this.waveBox.getBoundingClientRect();
-        this.seek(((ev.clientX - box.left) / box.width) * this.duration());
-      };
-      at(e);
-      this.waveBox.setPointerCapture(e.pointerId);
-      this.waveBox.onpointermove = at;
-      this.waveBox.onpointerup = () => { this.waveBox.onpointermove = null; };
-    };
+    // Pressing on the sound is scrubbing it, as on den's bar.
+    this.waveBox.addEventListener("pointerdown", (e) => {
+      if (e.button !== 0) return;
+      const box = this.waveBox.getBoundingClientRect();
+      const at = (cx: number) => this.seek(((cx - box.left) / box.width) * this.duration());
+      at(e.clientX);
+      dragPointer(e, { axes: "x", move: (_dx, _dy, ev) => at(ev.clientX), end: () => {} });
+    });
     this.host.append(head, this.stageHost, this.foot, this.hint);
   }
 
-  /** True when a media entry is the tab on screen — the only time this panel works. */
-  private active(): boolean {
-    return isMediaEntry(store.state.project, store.state.tab);
-  }
-
+  /** The media entry that is the tab on screen — the only time this panel works. */
   private entry(): { id: string; item: BinItem; source: FileSource } | null {
     const id = store.state.tab;
     const item = store.state.project?.bin[id];
@@ -96,7 +91,7 @@ export class Viewer {
   }
 
   private update() {
-    const e = this.active() ? this.entry() : null;
+    const e = this.entry();
     // Hidden by the tab strip, not by us: this only lets go of a file nobody can see.
     if (!e) {
       this.unmount();
@@ -105,10 +100,7 @@ export class Viewer {
     }
     const { id, item, source } = e;
     this.title.textContent = item.name || id;
-    const m = item.meta;
-    const rate = m?.fps ? `${+fpsValue(m.fps).toFixed(3)} fps` : "";
-    const facts = [m?.width ? `${m.width}×${m.height}` : "", rate, m?.duration ? `${m.duration.toFixed(2)}s` : ""].filter(Boolean);
-    this.sub.textContent = [source.proxy ? `${source.path} (playing its proxy)` : source.path, ...facts].join(" · ");
+    this.sub.textContent = [source.proxy ? `${source.path} (playing its proxy)` : source.path, mediaFacts(item.meta)].filter(Boolean).join(" · ");
     const key = JSON.stringify([id, source.path, source.proxy ?? null, source.kind]);
     if (key !== this.key) {
       this.key = key;
@@ -179,14 +171,14 @@ export class Viewer {
     this.foot.hidden = true;
     this.say(`This window cannot play ${source.proxy ?? source.path} (${why}). The timeline, the preview and renders read it through MLT and are not affected.`);
     if (source.kind !== "video") return;
-    void api.strip(id).then(() => {
-      if (!this.active() || store.state.tab !== id) return;
+    void hasStrip(id, source.path).then((made) => {
+      if (!made || this.entry()?.id !== id) return;
       const strip = el("img", "vw-picture");
       strip.alt = "";
       strip.title = "Frames across the file, as the timeline draws them";
-      strip.src = `/api/bin/${encodeURIComponent(id)}/strip.jpg?v=${encodeURIComponent(source.path)}`;
+      strip.src = stripUrl(id, source.path);
       this.stageHost.append(strip);
-    }).catch(() => {});
+    });
   }
 
   private duration(): number {
@@ -235,13 +227,15 @@ export class Viewer {
     if (!e || e.source.kind !== "audio" || !this.waveBox.isConnected || !len) return;
     const w = this.waveBox.clientWidth;
     const h = this.waveBox.clientHeight;
-    if (w <= 0 || h <= 0) return;
+    const key = `${e.id}\n${e.source.path}\n${len}\n${w}x${h}`;
+    if (w <= 0 || h <= 0 || key === this.waveKey) return;
+    this.waveKey = key;
+    // Read before the size is written, so reading it forces no second style pass.
+    const color = getComputedStyle(document.documentElement).getPropertyValue("--audio").trim() || "#4a9";
     this.wave.style.width = `${w}px`;
     this.wave.style.height = `${h}px`;
-    // The whole file across the box: a placement from its start at the speed that fits.
-    const whole = { in: 0, speed: 1 } as Clip;
-    const color = getComputedStyle(document.documentElement).getPropertyValue("--audio").trim() || "#4a9";
-    drawWave(this.wave, e.id, e.source.path, whole, w / len, w, h, color);
+    // The whole file across the box: a placement from its start, at the zoom that fits it.
+    drawWave(this.wave, e.id, e.source.path, { in: 0, speed: 1 }, w / len, w, h, color);
   }
 
   togglePlay() {
@@ -250,10 +244,10 @@ export class Viewer {
     else this.media.pause();
   }
 
-  step(frames: number) {
+  step(by: ViewerStep) {
     if (!this.media) return;
     this.media.pause();
-    this.seek(this.media.currentTime + frames / this.fps());
+    this.seek(this.media.currentTime + ("frames" in by ? by.frames / this.fps() : by.seconds));
   }
 
   private async place() {

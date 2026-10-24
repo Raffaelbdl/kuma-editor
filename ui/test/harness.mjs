@@ -64,9 +64,7 @@ export async function startDaemon(projectFile, library) {
   const proc = spawn(findKuma(), ["serve", "--project", projectFile, "--bind", `127.0.0.1:${port}`], {
     // A test that names its library reads that one alone: an empty user library of its own,
     // or the one on this machine (and whatever libraries were added to it) would join in.
-    // A runtime directory of its own, so the note it leaves for `kuma servers` — which the
-    // SIGTERM that ends a test never takes away — is not left in this machine's.
-    env: { ...process.env, KUMA_REPO: REPO, XDG_RUNTIME_DIR: fs.mkdtempSync(path.join(os.tmpdir(), "kuma-run-")), ...(library ? { KUMA_LIBRARY: library, XDG_DATA_HOME: fs.mkdtempSync(path.join(os.tmpdir(), "kuma-data-")) } : {}) },
+    env: { ...process.env, KUMA_REPO: REPO, ...(library ? { KUMA_LIBRARY: library, XDG_DATA_HOME: fs.mkdtempSync(path.join(os.tmpdir(), "kuma-data-")) } : {}) },
     stdio: "ignore",
   });
   const deadline = Date.now() + 30_000;

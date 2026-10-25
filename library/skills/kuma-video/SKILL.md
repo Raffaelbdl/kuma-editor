@@ -101,6 +101,7 @@ difference: `references/storyboard-as-code.md`. In short:
 | A map or a sketch is unreadable | transparency shows the master's black where nothing is below | a white colour clip under it → `references/footage.md` |
 | A graphic must sit under a picture | overlays always draw over video | draw the picture in the overlay → `references/overlays.md` |
 | A music bed swells and sinks under the voice | the track's own loudness drifts | `auto_level` on the bed, or keys from `measure_media`'s curve → `references/audio.md` |
+| Cut together, two shots look like different days | each camera's white balance and exposure | a `grade` per clip: `temperature`/`tint` and `exposure` first, matched on something neutral in both → `references/footage.md` |
 | Every shot is fine but the video drags | an even rhythm with no beats | a hook, a beat on each change, trimmed holds → `references/pacing.md` |
 
 ## Review loop
@@ -165,7 +166,7 @@ a venv: `python3 -m venv .venv && .venv/bin/pip install numpy pillow fonttools`.
 
 ## References
 
-- `references/footage.md`: bringing footage in, finding moments, cutting, speed, movement, stills, transitions, portrait, generating it
+- `references/footage.md`: bringing footage in, finding moments, cutting, speed, movement, colour grading, stills, transitions, portrait, generating it
 - `references/narration.md`: a video carried by a voice: a sequence per paragraph, timing from the voice, takes to camera, levelling the voice
 - `references/overlays.md`: authoring overlays beyond the contract
 - `references/audio.md`: loudness with gains only, voice and music, measuring the mix

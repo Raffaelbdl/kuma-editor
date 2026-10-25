@@ -42,6 +42,13 @@ impl Config {
     pub fn thumbs_dir(&self) -> PathBuf {
         self.cache_dir().join("thumbs")
     }
+    /// Where compiles write what they generate: wipe lumas, and grades' LUTs.
+    pub fn compile_cache_dir(&self) -> PathBuf {
+        self.cache_dir().join("cache")
+    }
+    pub fn luts_dir(&self) -> PathBuf {
+        kuma_mlt::luts::dir(&self.compile_cache_dir())
+    }
     /// Where a bin entry's generated files live: its still (`png`), moving preview
     /// (`webp`), or a media entry's waveform and filmstrip (`peaks.json`, `strip.…`).
     pub fn thumb_path(&self, bin_id: &str, ext: &str) -> PathBuf {

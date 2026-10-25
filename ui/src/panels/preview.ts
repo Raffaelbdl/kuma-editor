@@ -514,6 +514,10 @@ function applyEffects(iframe: HTMLIFrameElement, c: Clip, local: number, W: numb
     // `compile.rs`): `blur(r)` drew every overlay blur twice as strong as the export.
     else if (e.type === "blur") filter += ` blur(${paramAt(e, "radius", local) / 2}px)`;
     else if (e.type === "color") filter += ` brightness(${1 + paramAt(e, "brightness", local)}) contrast(${paramAt(e, "contrast", local)}) saturate(${paramAt(e, "saturation", local)})`;
+    // A grade's three whole-picture numbers; its white balance, wheels, curve and LUTs only
+    // the render draws. Exposure is stops of light, which brightens the encoded value by
+    // 2^(EV / 2.4).
+    else if (e.type === "grade") filter += ` brightness(${2 ** ((e.exposure ?? 0) / 2.4)}) contrast(${e.contrast ?? 1}) saturate(${e.saturation ?? 1})`;
     else if (e.type === "crop") {
       const at = (p: string) => paramAt(e, p, local);
       clip = `inset(${at("top") * 100}% ${at("right") * 100}% ${at("bottom") * 100}% ${at("left") * 100}% round ${at("radius") * Math.min(W, H) * 0.5}px)`;

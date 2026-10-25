@@ -914,6 +914,9 @@ pub enum Effect {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         keyframes: Vec<Keyframe>,
     },
+    /// A colour grade: white balance, exposure, lift/gamma/gain, contrast, a curve and
+    /// saturation, between an optional input LUT and an optional look. See [`Grade`].
+    Grade(Grade),
     /// Picture fade in/out (opacity), durations in seconds. The sound's is `audio_fade`.
     Fade {
         #[serde(default, rename = "in")]
@@ -988,6 +991,109 @@ pub enum Effect {
     },
 }
 
+/// A colour grade, the `grade` effect. Every field defaults to neutral, and a grade that is
+/// neutral throughout does nothing. What each one does to a colour, and in which order, is
+/// [`crate::grade`]; the compiler bakes the whole grade into one 3D LUT, so the steps cost
+/// one filter between them and round once.
+///
+/// It works on the picture as it is displayed (Rec. 709 / sRGB-encoded values from 0 to 1),
+/// except white balance and exposure, which act on the light those values stand for.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Grade {
+    /// A `.cube` LUT under the project, applied first: the technical step that turns the
+    /// footage into the picture the grade starts from (a camera's log into Rec. 709).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_lut: Option<String>,
+    /// White balance, -1..1: warmer (towards amber) above 0, cooler (towards blue) below.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub temperature: f64,
+    /// -1..1: towards magenta above 0, towards green below.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub tint: f64,
+    /// Stops of light, -5..5: 1 doubles it.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub exposure: f64,
+    /// Raises (or lowers) the shadows per channel, leaving white where it is; -1..1.
+    #[serde(default, skip_serializing_if = "Rgb::is_zero")]
+    pub lift: Rgb,
+    /// Bends the midtones per channel, leaving black and white where they are: above 0
+    /// brightens them; -1..1.
+    #[serde(default, skip_serializing_if = "Rgb::is_zero")]
+    pub gamma: Rgb,
+    /// Scales the highlights per channel, leaving black where it is: 0.1 is 10% more; -1..1.
+    #[serde(default, skip_serializing_if = "Rgb::is_zero")]
+    pub gain: Rgb,
+    /// About mid grey, 0..3: 1 leaves it, 0 is flat grey.
+    #[serde(default = "one", skip_serializing_if = "is_one")]
+    pub contrast: f64,
+    /// A tone curve on all three channels, as `[in, out]` points in 0..1 with `in` rising.
+    /// It passes through `[0, 0]` and `[1, 1]` unless points there say otherwise, and is a
+    /// monotone cubic between points, so it never overshoots them. Empty is a straight line.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub curve: Vec<[f64; 2]>,
+    /// 0..3: 1 leaves it, 0 is black and white.
+    #[serde(default = "one", skip_serializing_if = "is_one")]
+    pub saturation: f64,
+    /// A `.cube` LUT under the project, applied last: a creative look.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub look: Option<String>,
+    /// How much of the look, 0..1.
+    #[serde(default = "one", skip_serializing_if = "is_one")]
+    pub look_amount: f64,
+}
+
+impl Default for Grade {
+    fn default() -> Self {
+        Grade {
+            input_lut: None,
+            temperature: 0.0,
+            tint: 0.0,
+            exposure: 0.0,
+            lift: Rgb::default(),
+            gamma: Rgb::default(),
+            gain: Rgb::default(),
+            contrast: 1.0,
+            curve: Vec::new(),
+            saturation: 1.0,
+            look: None,
+            look_amount: 1.0,
+        }
+    }
+}
+
+impl Grade {
+    /// The LUT files it reads, input first: `(field, path)`.
+    pub fn luts(&self) -> impl Iterator<Item = (&'static str, &str)> {
+        [("input_lut", self.input_lut.as_deref()), ("look", self.look.as_deref())].into_iter().filter_map(|(f, p)| Some((f, p?)))
+    }
+}
+
+/// One number per channel, each defaulting to 0.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Rgb {
+    #[serde(default)]
+    pub r: f64,
+    #[serde(default)]
+    pub g: f64,
+    #[serde(default)]
+    pub b: f64,
+}
+
+impl Rgb {
+    pub fn is_zero(&self) -> bool {
+        *self == Rgb::default()
+    }
+    pub fn channels(&self) -> [f64; 3] {
+        [self.r, self.g, self.b]
+    }
+}
+
+fn is_zero(v: &f64) -> bool {
+    *v == 0.0
+}
+
 /// Picture, sound, or both: what an effect acts on, and what a compiled graph carries. A
 /// render is always both; the preview compiles the picture and the sound as two graphs,
 /// so that an edit to one reloads only that one.
@@ -1032,6 +1138,7 @@ impl Effect {
             | Effect::Crop { .. }
             | Effect::Blur { .. }
             | Effect::Color { .. }
+            | Effect::Grade(_)
             | Effect::Fade { .. }
             | Effect::Blend { .. }
             | Effect::Freeze { .. } => Streams::Video,
@@ -1055,6 +1162,7 @@ impl Effect {
             Effect::Blend { .. } => "blend",
             Effect::Blur { .. } => "blur",
             Effect::Color { .. } => "color",
+            Effect::Grade(_) => "grade",
             Effect::Fade { .. } => "fade",
             Effect::AudioFade { .. } => "audio_fade",
             Effect::Volume { .. } => "volume",
@@ -1080,8 +1188,9 @@ impl Effect {
     /// time, so it is an animation already; a blend mode is a choice, and changing it
     /// mid-clip is a cut; `mlt` properties are strings MLT reads, where an animation
     /// string can be written directly; a limiter's and an auto-level's settings say how
-    /// they follow the sound, which moves already; and a freeze's `t` says which frame,
-    /// where a moving one is the clip playing.
+    /// they follow the sound, which moves already; a freeze's `t` says which frame,
+    /// where a moving one is the clip playing; and a grade is one LUT for the whole clip
+    /// (split the clip to grade its halves differently).
     pub fn animatable(&self) -> &'static [&'static str] {
         match self {
             Effect::Transform { .. } => &["x", "y", "scale", "rotation", "opacity"],
@@ -1090,6 +1199,7 @@ impl Effect {
             Effect::Color { .. } => &["brightness", "contrast", "saturation", "gamma"],
             Effect::Volume { .. } => &["gain"],
             Effect::Blend { .. }
+            | Effect::Grade(_)
             | Effect::Fade { .. }
             | Effect::AudioFade { .. }
             | Effect::Mlt { .. }
@@ -1108,6 +1218,7 @@ impl Effect {
             | Effect::Color { keyframes, .. }
             | Effect::Volume { keyframes, .. } => keyframes,
             Effect::Blend { .. }
+            | Effect::Grade(_)
             | Effect::Fade { .. }
             | Effect::AudioFade { .. }
             | Effect::Mlt { .. }

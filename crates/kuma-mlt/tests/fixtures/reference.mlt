@@ -134,6 +134,11 @@
       <property name="av.saturation">1.2</property>
       <property name="av.gamma">1</property>
     </filter>
+    <filter id="clip_c2_grade3" in="45" out="179">
+      <property name="mlt_service">avfilter.lut3d</property>
+      <property name="av.file">$CACHE/luts/28d933781bb6bd8fda49728f3500d262.cube</property>
+      <property name="av.interp">tetrahedral</property>
+    </filter>
   </producer>
   <producer id="clip_c3" in="0" out="29">
     <property name="mlt_service">color</property>

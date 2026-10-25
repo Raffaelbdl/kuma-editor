@@ -599,12 +599,34 @@ describe("the effects a clip is offered", { skip: why ? `skipping: ${why}` : fal
   it("offers a colour the picture's effects (nothing to freeze), and says a volume on it does nothing", async () => {
     await selectClip(page, "c1");
     await page.until(`!!document.querySelector(".effect")`);
-    assert.equal(await offered(), "transform crop blend blur color fade mlt");
+    assert.equal(await offered(), "transform crop blend blur color grade fade mlt");
     // Placed anyway (by patch), it stays — dimmed, and saying why.
     assert.equal(await page.eval(`document.querySelector(".effect").classList.contains("inert")`), true);
     assert.match(await page.eval(`document.querySelector(".effect .disclose").title`), /has no sound/);
     // A colour has no level to set, so the clip's own Volume and Muted are not offered either.
     assert.doesNotMatch(await labels(), /Volume|Muted/);
+  });
+
+  it("adds a grade, writes one channel of a wheel, and leaves an emptied LUT out", async () => {
+    const GRADE = `fetch("/api/project").then(r => r.json()).then(p => p.bin.main.source.tracks[0].clips[0].effects[1])`;
+    const settled = () => page.until(`fetch("/api/project").then(r => r.json()).then(p => p.revision).then(rev => document.querySelector("#statusline .rev").textContent.startsWith("r" + rev))`);
+    const type = (sel, value) => page.eval(`(() => { const i = document.querySelector(${JSON.stringify(sel)}); i.value = ${JSON.stringify(value)}; i.dispatchEvent(new Event("change", { bubbles: true })); return true; })()`);
+    fs.writeFileSync(path.join(tmp, "look.cube"), "LUT_1D_SIZE 2\n0 0 0\n1 1 1\n");
+    await page.eval(`(() => { const s = ${ADD}; s.value = "grade"; s.dispatchEvent(new Event("change", { bubbles: true })); return true; })()`);
+    await page.until(`!!document.querySelector('.effect [data-prop="lift"]')`);
+    await settled();
+    // The wheel's green is its second field, and writing it keeps the other two.
+    await type('.effect [data-prop="lift"] .num.axis-y input', "0.1");
+    await page.until(`${GRADE}.then(e => e.lift?.g === 0.1)`);
+    assert.deepEqual(await page.eval(`${GRADE}.then(e => e.lift)`), { r: 0, g: 0.1, b: 0 });
+    await settled();
+    await type('.effect [data-prop="look"] input', "look.cube");
+    await page.until(`${GRADE}.then(e => e.look === "look.cube")`);
+    await settled();
+    // Emptied, the field is left out rather than naming a file called "".
+    await type('.effect [data-prop="look"] input', "");
+    await page.until(`${GRADE}.then(e => !("look" in e))`);
+    assert.equal(await page.eval(`${GRADE}.then(e => e.lift.g)`), 0.1);
   });
 
   it("offers a song the sound's effects, muted or not", async () => {

@@ -27,7 +27,7 @@ nothing is: a drawing made for a white page needs a white colour entry under it.
 rasterise it to a PNG, or show it from an overlay.
 
 An effect acts on the picture or the sound (`mlt` on either): `transform`, `crop`, `blur`, `color`,
-`blend`, `fade` and `freeze` on what a clip shows, `volume`, `audio_fade`, `limiter` and
+`grade`, `blend`, `fade` and `freeze` on what a clip shows, `volume`, `audio_fade`, `limiter` and
 `auto_level` on what it sounds. A colour, a
 still and an overlay never sound; nothing on an audio track shows. Put only what can act on the clip:
 anything else renders as nothing and comes back as a warning. Every effect with a quantity to move
@@ -38,6 +38,14 @@ leaves (1 on a square is a circle), and the crop is of the whole frame: crop a l
 to its own edges first. `freeze` `{t}` holds the frame the clip shows `t` s in (anything it
 places, sequences too) for the whole clip; its sound runs on (mute the clip to silence it), its
 other effects act on the held frame and still move. Split the clip to play, then hold.
+`grade` is a colour grade, every field neutral when left out, applied in this order:
+`input_lut` (a `.cube` under the project: a camera's log into Rec. 709), `temperature` and
+`tint` (-1..1: warmer/cooler, magenta/green), `exposure` (stops, -5..5), `lift`, `gamma` and
+`gain` (`{r, g, b}`, each -1..1: shadows, midtones, highlights; equal channels move brightness,
+unequal ones colour), `contrast` (0..3, 1 neutral), `curve` (`[[in, out], …]` in 0..1, a
+monotone cubic through `[0,0]` and `[1,1]`), `saturation` (0..3, 1 neutral), then `look` (a
+`.cube`) mixed by `look_amount` (0..1). It is one LUT for the whole clip and takes no keyframes:
+split the clip to grade its halves differently. Check a grade with `sample_frames`.
 `auto_level` `{target (LUFS, -23), window (s, 3), max_gain, min_gain (dB, ±15)}` rides a
 drifting source's gain toward `target`, measured over the last `window`: no keyframes needed for
 a bed that swells and falls; it lags a sudden change by about a window, and after a seek it

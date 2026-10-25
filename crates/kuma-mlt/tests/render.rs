@@ -608,3 +608,44 @@ fn an_auto_level_keeps_a_drifting_source_level() {
     assert!(raw > 10.0, "the source must drift: {raw} dB");
     assert!(level < 2.0, "levelled, it still moves by {level} dB (from {raw})");
 }
+
+/// A grade renders as kuma computes it: the LUT the compiler wrote, applied by MLT, gives
+/// the colour `kuma_core::grade` says, both on its own and after an input LUT read from the
+/// project. Opaque colours, so nothing but the grade moves them.
+#[test]
+fn a_grade_renders_the_colour_kuma_computes() {
+    if !have("ffmpeg") || !have("melt") {
+        eprintln!("ffmpeg/melt not available; skipping");
+        return;
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    // An input LUT that inverts, so a wrong order or a LUT left unread both show.
+    std::fs::create_dir_all(root.join("luts")).unwrap();
+    std::fs::write(root.join("luts/invert.cube"), "LUT_1D_SIZE 2\n1 1 1\n0 0 0\n").unwrap();
+    let grades = [
+        serde_json::json!({ "type": "grade", "temperature": 0.5, "gain": { "r": 0.1 }, "curve": [[0.5, 0.56]], "saturation": 0.6 }),
+        serde_json::json!({ "type": "grade", "input_lut": "luts/invert.cube", "exposure": 0.5, "lift": { "b": 0.05 } }),
+    ];
+    let blue = [0x40, 0x60, 0xc0];
+    for (n, grade) in grades.into_iter().enumerate() {
+        let p = small_project(serde_json::json!({
+            "blue": { "name": "Blue", "source": { "color": "#4060c0" } },
+            "main": { "name": "Main", "source": { "tracks": [
+                { "id": "v1", "kind": "video", "clips": [ { "id": "a", "start": 0, "end": 1, "bin": "blue", "effects": [grade] } ] }
+            ], "markers": [] } }
+        }));
+        let kuma_core::Effect::Grade(g) = &p.seq("main").unwrap().tracks[0].clips[0].effects[0] else { unreachable!() };
+        let input = g.input_lut.as_ref().map(|l| kuma_core::grade::Lut::parse(&std::fs::read_to_string(root.join(l)).unwrap()).unwrap());
+        let want = kuma_core::grade::Grading::new(g, input, None).apply(blue.map(|v| v as f64 / 255.0)).map(|v| (v * 255.0).round() as i32);
+        let mlt = root.join(format!("grade{n}.mlt"));
+        let xml = compile(&p, &CompileOptions::new(root)).unwrap();
+        assert!(xml.contains("avfilter.lut3d"), "{xml}");
+        std::fs::write(&mlt, xml).unwrap();
+        let png = root.join(format!("grade{n}.png"));
+        snapshot(&mlt, 15, &png).expect("snapshot");
+        let got = pixel(&png, 32, 18);
+        assert!(got.iter().zip(want).all(|(g, w)| (*g as i32 - w).abs() <= 3), "grade {n}: {got:?}, expected ≈{want:?}");
+        assert!(got.iter().zip(blue).any(|(g, b)| (*g as i32 - b).abs() > 10), "grade {n} left the colour as it was: {got:?}");
+    }
+}

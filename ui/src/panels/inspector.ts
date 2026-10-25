@@ -33,7 +33,7 @@ type PropSpec =
   | ({ kind: "slider"; key: string; label?: string; min: number; max: number; /** The range is a suggestion, not a limit: the field may be typed past it. */ soft?: boolean } & NumberOpts)
   | { kind: "vec"; label: string; parts: ({ key: string } & NumberOpts)[] }
   | { kind: "enum"; key: string; label?: string; options: string[] }
-  | { kind: "text"; key: string; label?: string }
+  | { kind: "text"; key: string; label?: string; /** Empty means the field is left out, not an empty string. */ optional?: boolean }
   | { kind: "json"; key: string; label?: string };
 
 /** Per effect kind: the value `+ add effect` inserts, and the properties it shows, in
@@ -49,6 +49,10 @@ const fadeProps = (into: string, outOf: string): PropSpec[] => [{ kind: "vec", l
   { key: "in", tag: "In", step: 0.1, min: 0, suffix: "s", title: `Seconds to ${into}` },
   { key: "out", tag: "Out", step: 0.1, min: 0, suffix: "s", title: `Seconds to ${outOf}` },
 ] }];
+/** A grade's per-channel wheel: a row of R, G and B, neutral at 0, addressed as `lift.r`. */
+const wheel = (key: string, what: string): PropSpec => ({ kind: "vec", label: capitalize(key), parts: (["r", "g", "b"] as const).map((ch, i) => (
+  { key: `${key}.${ch}`, tag: ch.toUpperCase(), axis: (["x", "y", "z"] as const)[i], step: 0.01, min: -1, max: 1, title: `${what}, on ${["red", "green", "blue"][i]}` }
+)) });
 const BLEND_MODES = ["normal", "multiply", "screen", "overlay", "darken", "lighten", "color_dodge", "color_burn", "hard_light", "soft_light", "difference", "exclusion"];
 const EFFECTS: Partial<Record<Effect["type"], EffectSpec>> = {
   transform: {
@@ -87,6 +91,26 @@ const EFFECTS: Partial<Record<Effect["type"], EffectSpec>> = {
       { kind: "slider", key: "contrast", min: 0, max: 3, step: 0.01, soft: true },
       { kind: "slider", key: "saturation", min: 0, max: 3, step: 0.01, soft: true },
       { kind: "slider", key: "gamma", min: 0.1, max: 4, step: 0.01, soft: true },
+    ],
+  },
+  // Compiled as one LUT, in this order (`kuma_core::grade`), so the rows read top to bottom
+  // the way a colour goes through it. Nothing here animates: a grade is the clip's, and
+  // grading two halves differently is a split.
+  grade: {
+    add: { type: "grade", temperature: 0, tint: 0, exposure: 0, contrast: 1, curve: [], saturation: 1, look_amount: 1 },
+    props: [
+      { kind: "text", key: "input_lut", label: "Input LUT", optional: true },
+      { kind: "slider", key: "temperature", min: -1, max: 1, step: 0.01, title: "Warmer above 0, cooler below: red and blue a stop apart at ±1" },
+      { kind: "slider", key: "tint", min: -1, max: 1, step: 0.01, title: "Towards magenta above 0, green below" },
+      { kind: "slider", key: "exposure", min: -5, max: 5, step: 0.05, suffix: "EV", title: "Stops of light: 1 doubles it" },
+      wheel("lift", "Raises the shadows, white stays"),
+      wheel("gamma", "Bends the midtones, black and white stay"),
+      wheel("gain", "Scales the highlights, black stays"),
+      { kind: "slider", key: "contrast", min: 0, max: 3, step: 0.01, title: "About mid grey: 1 leaves it" },
+      { kind: "json", key: "curve", label: "Curve" },
+      { kind: "slider", key: "saturation", min: 0, max: 3, step: 0.01, title: "1 leaves it, 0 is black and white" },
+      { kind: "text", key: "look", label: "Look LUT", optional: true },
+      { kind: "slider", key: "look_amount", label: "Look amount", min: 0, max: 1, step: 0.01 },
     ],
   },
   // The picture's fade and the sound's are two kinds, so each clip is offered the one it
@@ -275,7 +299,7 @@ function propRow(p: PropSpec, ctx: PropCtx): HTMLElement {
       input = selectInput(p.options.map((value) => ({ value })), String(read(p.key)), (v) => write(p.key, v));
       break;
     case "text":
-      input = textInput(String(read(p.key) ?? ""), (v) => write(p.key, v));
+      input = textInput(String(read(p.key) ?? ""), (v) => write(p.key, v === "" && p.optional ? undefined : v));
       break;
     case "json":
       input = jsonInput(read(p.key) ?? null, (v) => write(p.key, v));
@@ -763,9 +787,18 @@ export class Inspector {
       box.append(head, body);
       const rec = e as unknown as Record<string, unknown>;
       const defaults = spec.add as unknown as Record<string, unknown>;
-      const cur = (key: string) => rec[key] ?? defaults[key];
+      // A key may name one part of an object field — a grade's `lift.r` — which reads and
+      // writes that part, keeping the rest of the object.
+      const cur = (key: string): unknown => {
+        const [k, part] = key.split(".");
+        const v = rec[k] ?? defaults[k];
+        return part === undefined ? v : (v as Record<string, unknown> | undefined)?.[part];
+      };
       const replace = (value: unknown, note: string) => void store.patch([{ op: "replace", path: `${owner.path}/${ei}`, value }], `${e.type} ${note}`);
-      const set = (key: string, v: unknown) => replace({ ...e, [key]: v }, `${key}`);
+      const set = (key: string, v: unknown) => {
+        const [k, part] = key.split(".");
+        replace({ ...e, [k]: part === undefined ? v : { ...(cur(k) as object | undefined), [part]: v } }, `${key}`);
+      };
 
       // Keyframes, when this kind takes them: an animatable field reads through the one
       // sampler (which is the static value until there are keys), and once there are keys

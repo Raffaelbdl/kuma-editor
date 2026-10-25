@@ -222,7 +222,7 @@ one table in `ui/src/panels/inspector.ts`, and the bounds there are the model's 
 panel cannot offer a value the daemon would refuse.
 
 **Effects are offered where they can act.** Each effect acts on the picture (transform,
-crop, blur, colour, blend, fade, freeze) or the sound (volume, audio fade, limiter, auto
+crop, blur, colour, grade, blend, fade, freeze) or the sound (volume, audio fade, limiter, auto
 level), so `+ add effect` lists
 only what the selected clip can use: a colour or a still is not offered a volume, a song is not
 offered a picture fade. An effect that got there anyway — by an agent's patch, or on a clip
@@ -675,6 +675,20 @@ sequences included; the picture holds and the sound runs on. It is a tractor of 
 sound and that frame repeated, because MLT's `freeze` filter fetches its frame from the
 wrong producer for a sequence and deadlocks on a still.
 
+**A grade is one LUT kuma computes.** The `grade` effect holds a colour grade — an input
+LUT, white balance, exposure, lift/gamma/gain wheels, contrast, a curve, saturation and a
+look LUT — and `kuma_core::grade` says what each does to a colour, in that order. The
+compiler samples the whole grade on a 33³ grid, writes it as one `.cube` under the cache
+(`.kuma/cache/luts/<hash>.cube`, named by a hash of the settings and of the bytes of the
+LUTs it reads) and applies it with one `avfilter.lut3d`, tetrahedral, which is also what
+Kdenlive uses to apply a LUT. So a grade is one filter and one rounding whatever it holds,
+the maths is kuma's rather than whichever filters an MLT build ships, and a changed grade
+is a new path, which is what reloads the preview. The cost: a LUT changes every pixel the
+same way, so a grade cannot vary across the frame (a vignette is an `mlt` filter after it)
+or over time (no keyframes — split the clip). The editor shows its fields in the order the
+colour goes through them; the live overlay preview approximates only its exposure,
+contrast and saturation. LUT files are `.cube` (1D or 3D, any domain) under the project.
+
 A clip that reads past the end of its source is padded with nothing for the frames the
 source lacks, which show the tracks below and are silent. MLT would otherwise cut the
 entry to what the source has, and every later clip on the track would slide earlier. The
@@ -764,7 +778,7 @@ and the values live with the rest of the project's decisions.
   4K supersampling; byte-identical repeat bakes with one worker.
 - Compiler: dissolves (A/B lanes + luma), wipes (generated PGM lumas), timewarp speed,
   crop, transform, blur, colour correction and volume — each static or keyframed, linear,
-  held or smooth per key — picture and sound fades, blend modes (discrete keyframes on `qtblend`),
+  held or smooth per key — a colour grade as one generated 3D LUT, picture and sound fades, blend modes (discrete keyframes on `qtblend`),
   solid-colour clips, PiP stills, overlay PNG sequences, a sequence's own gain, limiter and
   auto-level, freeze frames; golden-file + DTD + real `melt` render tests.
 - Daemon + MCP end to end: patch/undo/409 on stale revisions, `sample_frames` returning
@@ -811,9 +825,10 @@ and the values live with the rest of the project's decisions.
   `~/.local/share/kuma/models` (`KUMA_WHISPER_MODEL`). `GET /api/health` has the same under
   `whisper`, and the models `model` can name under `whisper_models`; a `model` that is not
   there is refused with the list.
-- **`.kuma/` keeps growing** — superseded bakes and sampled frames are never deleted on
-  their own. `kuma cache prune` (or the job queue's button, or `prune_cache`) removes what
-  the project no longer uses; `--all` empties bakes and frames.
+- **`.kuma/` keeps growing** — superseded bakes, sampled frames and the LUTs of grades
+  since changed (about 1 MB each) are never deleted on their own. `kuma cache prune` (or
+  the job queue's button, or `prune_cache`) removes what the project no longer uses;
+  `--all` empties bakes and frames, and keeps the LUTs of the project's grades.
 - **Bakes or renders load the machine, or you want them faster** — overlay clips bake side
   by side, each in its own hyperframes process with its own Chrome (about 250 MB).
   `KUMA_BAKE_JOBS` sets how many run at once, across everything the daemon bakes; the

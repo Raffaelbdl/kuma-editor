@@ -94,6 +94,11 @@ fn upgrade(v: &mut Value) -> Result<(), String> {
         // so that an older kuma refuses a v10 file rather than drop its libraries on save.
         version = 10;
     }
+    if version == 10 {
+        // 10 → 11: `grade` is a new effect kind, so no older document has one. A stamp, so
+        // that an older kuma refuses a v11 file rather than fail on its first grade.
+        version = 11;
+    }
     v["version"] = Value::from(version);
     Ok(())
 }

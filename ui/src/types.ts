@@ -73,6 +73,7 @@ const EFFECT_STREAMS: Record<Effect["type"], Streams> = {
   blend: { video: true, audio: false },
   blur: { video: true, audio: false },
   color: { video: true, audio: false },
+  grade: { video: true, audio: false },
   fade: { video: true, audio: false },
   audio_fade: { video: false, audio: true },
   volume: { video: false, audio: true },
@@ -133,6 +134,7 @@ export type Effect =
   | { type: "blend"; mode: string }
   | { type: "blur"; radius: number; keyframes?: Keyframe[] }
   | { type: "color"; brightness?: number; contrast?: number; saturation?: number; gamma?: number; keyframes?: Keyframe[] }
+  | ({ type: "grade" } & Grade)
   | { type: "fade"; in?: number; out?: number }
   | { type: "audio_fade"; in?: number; out?: number }
   | { type: "volume"; gain?: number; keyframes?: Keyframe[] }
@@ -140,6 +142,17 @@ export type Effect =
   | { type: "auto_level"; target?: number; window?: number; max_gain?: number; min_gain?: number }
   | { type: "freeze"; t?: number }
   | { type: "mlt"; service: string; properties?: Record<string, string> };
+
+/** A colour grade's settings, every one neutral when absent. Mirrors `Grade` in `model.rs`,
+ *  which says what each does; the compiler bakes them into one LUT. */
+export interface Grade {
+  input_lut?: string; temperature?: number; tint?: number; exposure?: number;
+  lift?: Rgb; gamma?: Rgb; gain?: Rgb; contrast?: number;
+  curve?: [number, number][]; saturation?: number; look?: string; look_amount?: number;
+}
+
+/** One number per channel, each 0 when absent. */
+export interface Rgb { r?: number; g?: number; b?: number }
 
 /** A placement of a bin entry: when it plays, not what it is. */
 export interface Clip {
@@ -309,7 +322,7 @@ export interface Job {
 /** One part of the project's `.kuma/` cache: entries (a bake is one) and their bytes. */
 export interface CachePart { entries: number; bytes: number }
 /** How big the cache is, by part. */
-export interface CacheUsage { bakes: CachePart; samples: CachePart; thumbs: CachePart; bytes: number }
+export interface CacheUsage { bakes: CachePart; samples: CachePart; thumbs: CachePart; luts: CachePart; bytes: number }
 
 /** One tool call an agent made over MCP (`/api/activity`). A call that started a job is
  *  that job's record — running while it runs, ended with it, cancelled with it — and its

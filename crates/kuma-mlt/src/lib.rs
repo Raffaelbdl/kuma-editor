@@ -10,6 +10,7 @@
 
 pub mod compile;
 pub mod lumas;
+pub mod luts;
 pub mod melt;
 pub mod presets;
 pub mod xml;

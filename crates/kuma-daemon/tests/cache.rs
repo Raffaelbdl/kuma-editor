@@ -158,3 +158,32 @@ fn a_prune_waits_for_readers_without_blocking_new_ones() {
     drop(render);
     assert_eq!(rx.recv_timeout(Duration::from_secs(10)).unwrap(), 1);
 }
+
+/// A grade's LUT is kept while a grade in the project compiles to it — even by a prune of
+/// everything, since the preview engine may have it loaded — and goes once nothing does.
+#[test]
+fn a_prune_keeps_the_luts_the_projects_grades_compile_to() {
+    let (state, dir) = fixture();
+    let warm = kuma_core::Grade { temperature: 0.3, ..Default::default() };
+    let cool = kuma_core::Grade { temperature: -0.3, ..Default::default() };
+    {
+        let mut p = state.project.write().unwrap();
+        let Some(kuma_core::BinSource::Sequence(main)) = p.bin.get_mut("main").map(|i| &mut i.source) else { unreachable!() };
+        main.tracks[0].clips[0].effects.push(kuma_core::Effect::Grade(warm.clone()));
+    }
+    // What the compiles wrote: the grade the project has, and one it had before an edit.
+    let cache = state.config.compile_cache_dir();
+    let used = kuma_mlt::luts::resolve(&warm, dir.path(), &cache).unwrap().unwrap();
+    let superseded = kuma_mlt::luts::resolve(&cool, dir.path(), &cache).unwrap().unwrap();
+    assert_eq!(used.parent(), Some(state.config.luts_dir().as_path()));
+    file(&state.config.luts_dir().join("0123.cube.tmp-42"), 3, Duration::ZERO); // being written
+
+    let before = usage(&state).unwrap();
+    assert_eq!(before.luts.entries, 3);
+    let pruned = prune(&state, true, &|_, _| {}).unwrap();
+    assert!(used.is_file(), "the project's grade");
+    assert!(!superseded.exists(), "a grade nothing has any more");
+    assert_eq!(names(&state.config.luts_dir()), vec!["0123.cube.tmp-42".to_string(), used.file_name().unwrap().to_string_lossy().into_owned()]);
+    assert_eq!(pruned.freed.luts.entries, 1);
+    assert_eq!(pruned.kept.bytes + pruned.freed.bytes, before.bytes);
+}

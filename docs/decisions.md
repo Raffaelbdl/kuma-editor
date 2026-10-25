@@ -3319,6 +3319,55 @@ kuma's and are fixed here, the rest is listed as open.
   file the daemon saves on every edit. Array changes are sent index by index, so a clip
   inserted mid-track rewrites those after it: larger than it need be, never wrong.
 
+## Colour grading: one LUT kuma computes
+
+**A grade is one `avfilter.lut3d` over a LUT kuma writes** — adopted, format version 11.
+The `grade` effect (`Grade` in `model.rs`) holds an input LUT, white balance, exposure,
+lift/gamma/gain, contrast, a curve, saturation and a look; `kuma_core::grade` says what each
+does to a colour; the compiler samples the whole thing on a 33³ grid into
+`<cache>/luts/<hash>.cube` and applies that (`luts.rs`, beside the generated lumas).
+
+Three ways were weighed, after reading two editors that grade:
+
+- *Stock MLT filters, one per control* — Kdenlive's way (`lift_gamma_gain`,
+  `avfilter.colortemperature`, `avfilter.curves`, `avfilter.lut3d`, frei0r's). Turned down
+  as the model: each filter rounds to 8 bits and may convert YUV↔RGB on the way, so a grade
+  of five controls rounds five times and bands; what "temperature" or a curve means is
+  whichever filter was picked, and frei0r is not in every MLT build; and every new service
+  is one more to check for thread-safety in parallel renders.
+- *A colour engine of kuma's own* — FilmCraft's way (storytold/filmcraft, MIT/Apache: Rust
+  decoders, a wgpu compositor, float grading in linear light, HDR and log). Turned down:
+  it is a second renderer, and "what you sample is what renders" holds because there is one.
+  A native MLT module would keep one renderer but has to be found by every melt at run time,
+  and its frames still arrive in MLT's 8-bit formats.
+- *Kuma's maths, MLT's filter* — this. Everything in a grade that is a function of the
+  colour alone becomes one table, so the maths is kuma's (in f64, tested, the same on every
+  machine), the picture is rounded once, MLT applies it with a filter Kdenlive already uses,
+  and preview, `sample_frames` and render stay one path. The file is named by a hash of the
+  settings and of the bytes of the LUTs it reads, so equal grades share a file, an edited
+  `.cube` is a new grade, and a changed grade changes the compiled document — which is what
+  `preview::reload` compares, so nothing on the client had to learn about grades.
+
+What it costs, on purpose: a LUT treats every pixel alike, so nothing spatial is in a grade
+(a vignette, a sharpen, a keyed secondary with a blurred matte — those are filters after
+it), and it is one table per clip, so a grade takes no keyframes; grading two halves of a
+shot differently is a split. Exposure and white balance act on light (BT.1886's 2.4 gamma
+decoded and re-encoded), the rest on the displayed signal, and everything is clamped to
+0..1 — this is SDR grading. Log footage goes through its maker's `.cube` as `input_lut`;
+grading log or HDR in float is what a native module would buy, and nothing has asked for it.
+
+The maths is **append-only in behaviour**, like `_vendor/`: a grade is recomputed on every
+compile, so a step that starts returning something else re-grades finished videos. The
+tests pin values computed independently of the code (`grade.rs`); a new behaviour is a new
+field. The render test checks melt's pixels against the maths (within 3 of 255 after the
+YUV round trip, measured within 1), and the reference project carries a grade, so the golden
+file and the parallel-frames check cover it.
+
+Still open here: a curve editor (the inspector edits the curve as JSON points), numeric
+scopes for agents (`measure_color`: levels, balance, clipping — FilmCraft's `scopes.read`
+is the model) and a scopes panel, and grading on a bin entry rather than a placement, which
+is the *one pipeline for every bin entry* item below.
+
 ## Still open
 
 Nested sequences are done and the editor is an application now, so this list is the whole

@@ -46,7 +46,7 @@ use std::path::{Path, PathBuf};
 
 use kuma_core::*;
 
-use crate::lumas;
+use crate::{lumas, luts};
 use crate::xml::{num, XmlWriter};
 
 /// A baked overlay instance, produced by `kuma-overlay`.
@@ -135,7 +135,8 @@ pub fn compile(project: &Project, opts: &CompileOptions) -> Result<String, Compi
 
     let (pw, ph) = opts.size.unwrap_or((project.width, project.height));
     let scale = pw as f64 / project.width as f64;
-    let ctx = Ctx { project, opts, fps, pw, ph, scale };
+    let luts = grade_luts(project, &order, opts)?;
+    let ctx = Ctx { project, opts, fps, pw, ph, scale, luts };
 
     let mut w = XmlWriter::new();
     w.open(
@@ -263,6 +264,32 @@ struct Ctx<'a> {
     pw: u32,
     ph: u32,
     scale: f64,
+    /// Every grade this graph applies, by [`grade_key`], and the LUT it compiled to —
+    /// `None` for one that changes nothing. Written before anything is emitted, so a LUT
+    /// that will not read fails the compile rather than a filter.
+    luts: HashMap<String, Option<PathBuf>>,
+}
+
+/// What names a grade among the others in one compile: its settings.
+fn grade_key(g: &Grade) -> String {
+    serde_json::to_string(g).unwrap_or_default()
+}
+
+/// The LUT files of every grade on a clip of the sequences in `order`, written to the cache.
+fn grade_luts(project: &Project, order: &[BinId], opts: &CompileOptions) -> Result<HashMap<String, Option<PathBuf>>, CompileError> {
+    let mut luts = HashMap::new();
+    if !opts.streams.video() {
+        return Ok(luts);
+    }
+    let clips = order.iter().filter_map(|id| project.seq(id)).flat_map(|s| s.tracks.iter()).flat_map(|t| t.clips.iter());
+    for e in clips.flat_map(|c| c.effects.iter()) {
+        if let Effect::Grade(g) = e {
+            if let std::collections::hash_map::Entry::Vacant(slot) = luts.entry(grade_key(g)) {
+                slot.insert(luts::resolve(g, &opts.root, &opts.cache_dir).map_err(|e| CompileError::Internal(format!("grade: {e}")))?);
+            }
+        }
+    }
+    Ok(luts)
 }
 
 impl Ctx<'_> {
@@ -781,6 +808,16 @@ fn emit_effects(ctx: &Ctx, w: &mut XmlWriter, span: &Span, effects: &[Effect], f
                 }
                 w.close("filter");
             }
+            Effect::Grade(g) => {
+                // The whole grade is one LUT, computed by kuma (`luts.rs`); a grade that
+                // changes nothing is no filter at all.
+                if let Some(Some(path)) = ctx.luts.get(&grade_key(g)) {
+                    open(w, "grade", "avfilter.lut3d");
+                    w.property("av.file", path.to_string_lossy());
+                    w.property("av.interp", "tetrahedral");
+                    w.close("filter");
+                }
+            }
             Effect::Fade { fade_in, fade_out } | Effect::AudioFade { fade_in, fade_out } => {
                 // Fades span the clip's own range, not the dissolve handles. The picture
                 // ramps its alpha. The sound ramps MLT's `volume` from `gain` to `end`
@@ -1044,6 +1081,36 @@ mod tests {
         // Color: the keyed parameter animates, the others stay static.
         assert!(xml.contains(r#"<property name="av.brightness">0=-0.5;60=0.5</property>"#), "{xml}");
         assert!(xml.contains(r#"<property name="av.contrast">0=1.5;60=1.5</property>"#), "{xml}");
+    }
+
+    /// A grade is one `lut3d` over a LUT in the cache, shared by the clips that grade alike;
+    /// a neutral grade is no filter, and the sound's half graph writes no LUT at all.
+    #[test]
+    fn a_grade_is_one_lut_and_a_neutral_one_is_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let warm = json!({ "type": "grade", "temperature": 0.4, "saturation": 0.8 });
+        let p = project(json!({
+            "fps": 30, "bin": { "x": { "source": { "path": "x.mp4" } } },
+            "tracks": [{ "id": "v1", "clips": [
+                { "id": "a", "start": 0, "end": 2, "bin": "x", "effects": [warm] },
+                { "id": "b", "start": 2, "end": 4, "bin": "x", "effects": [warm] },
+                { "id": "c", "start": 4, "end": 6, "bin": "x", "effects": [{ "type": "grade" }] }
+            ]}]
+        }));
+        let mut opts = CompileOptions::new(dir.path());
+        opts.cache_dir = dir.path().join("cache");
+        let xml = compile(&p, &opts).unwrap();
+        assert_eq!(xml.matches("avfilter.lut3d").count(), 2, "{xml}");
+        let written: Vec<_> = std::fs::read_dir(dir.path().join("cache/luts")).unwrap().collect();
+        assert_eq!(written.len(), 1, "two clips graded alike share one file");
+        assert!(xml.contains(r#"<property name="av.interp">tetrahedral</property>"#), "{xml}");
+
+        let sound = tempfile::tempdir().unwrap();
+        let mut opts = CompileOptions::new(sound.path());
+        opts.cache_dir = sound.path().join("cache");
+        opts.streams = Streams::Audio;
+        let xml = compile(&p, &opts).unwrap();
+        assert!(!xml.contains("lut3d") && !sound.path().join("cache").exists(), "{xml}");
     }
 
     /// A sound fade is a gain ramp over the clip's own first and last frames, from and to

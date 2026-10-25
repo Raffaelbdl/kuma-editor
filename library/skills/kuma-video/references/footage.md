@@ -71,8 +71,17 @@ is also what makes it cheap: nothing is baked.
   way round, the crop's window stays put and cuts whatever the transform moved into it. A
   picture that moves inside a circle that stays (a push within a round frame) is the
   clip with its transform in a sequence, and the crop on the clip placing it.
-- `color` (brightness, contrast, saturation, gamma) to match clips shot
-  in different light.
+- `grade` to match clips shot in different light, and to give a video one look. Fix before
+  you style: white balance (`temperature`, `tint`) and `exposure` first, so skin and greys
+  look right shot to shot; then the wheels — `lift` for the shadows, `gain` for the
+  highlights, `gamma` for the middle, as `{r, g, b}` (warm shadows: `lift {r: 0.02, b: -0.02}`)
+  — and `contrast`, a gentle S `curve` (`[[0.25, 0.22], [0.75, 0.8]]`) or `saturation` last.
+  Small numbers: 0.05 on a wheel is already visible. Log footage (S-Log, V-Log, LogC) wants
+  its maker's `.cube` as `input_lut` before anything else; a creative `.cube` goes in `look`,
+  softened by `look_amount`. Sample a frame of each clip side by side after grading, and
+  compare a neutral in each (a white wall, a grey shirt) rather than the whole picture.
+  `color` (brightness, contrast, saturation, gamma) still works and can be keyframed; a
+  grade cannot — split the clip where the light changes.
 
 ## Stills
 

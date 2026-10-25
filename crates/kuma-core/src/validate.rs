@@ -334,6 +334,7 @@ fn check_sequence<'a>(
                             issues.push(Issue::warn(ep.clone(), "fade in + out exceed the clip duration"));
                         }
                     }
+                    Effect::Grade(g) => check_grade_luts(issues, &ep, g, ctx),
                     Effect::Freeze { t } => {
                         // Outside the source the compiler holds the nearest frame: a warning,
                         // not a refusal of whatever edit moved the clip's `in`.
@@ -424,10 +425,9 @@ fn check_sequence<'a>(
                 }
                 if let Some(l) = &x.luma {
                     if !LUMAS.contains(&l.as_str()) {
-                        let lp = std::path::Path::new(l);
-                        if lp.is_absolute() || lp.components().any(|c| !matches!(c, std::path::Component::Normal(_))) {
+                        if !stays_inside(l) {
                             issues.push(Issue::error(format!("{xp}/luma"), "luma path must stay inside the project"));
-                        } else if ctx.check_files && !ctx.root.join(lp).is_file() {
+                        } else if ctx.check_files && !ctx.root.join(l).is_file() {
                             issues.push(Issue::error(format!("{xp}/luma"), format!("unknown luma `{l}`: use one of {LUMAS:?} or a file under the project")));
                         }
                     }
@@ -516,8 +516,73 @@ fn check_effect(issues: &mut Vec<Issue>, ep: &str, e: &Effect, kind: &str, owner
                 issues.push(Issue::error(ep, "mlt effect needs a service name"));
             }
         }
+        Effect::Grade(g) => check_grade(issues, ep, g),
         Effect::Blend { .. } | Effect::Color { .. } | Effect::Fade { .. } | Effect::AudioFade { .. } | Effect::Freeze { .. } => {}
     }
+}
+
+/// A grade's numbers: within the ranges its fields document, and a curve the compiler can
+/// draw. Its LUT files are checked where the project's root is known, with the clip.
+fn check_grade(issues: &mut Vec<Issue>, ep: &str, g: &Grade) {
+    let scalars = [
+        ("temperature", g.temperature, -1.0, 1.0),
+        ("tint", g.tint, -1.0, 1.0),
+        ("exposure", g.exposure, -5.0, 5.0),
+        ("contrast", g.contrast, 0.0, 3.0),
+        ("saturation", g.saturation, 0.0, 3.0),
+        ("look_amount", g.look_amount, 0.0, 1.0),
+    ];
+    for (name, v, lo, hi) in scalars {
+        if !(lo..=hi).contains(&v) {
+            issues.push(Issue::error(format!("{ep}/{name}"), format!("grade {name} must be within {lo}..{hi}")));
+        }
+    }
+    for (name, rgb) in [("lift", g.lift), ("gamma", g.gamma), ("gain", g.gain)] {
+        for (ch, v) in ["r", "g", "b"].into_iter().zip(rgb.channels()) {
+            if !(-1.0..=1.0).contains(&v) {
+                issues.push(Issue::error(format!("{ep}/{name}/{ch}"), format!("grade {name} must be within -1..1 on each channel")));
+            }
+        }
+    }
+    if g.curve.len() > 32 {
+        issues.push(Issue::error(format!("{ep}/curve"), "a grade's curve takes at most 32 points"));
+    }
+    let mut last = f64::NEG_INFINITY;
+    for (i, [x, y]) in g.curve.iter().enumerate() {
+        if !(0.0..=1.0).contains(x) || !(0.0..=1.0).contains(y) {
+            issues.push(Issue::error(format!("{ep}/curve/{i}"), "curve points are [in, out], each within 0..1"));
+        } else if *x <= last {
+            issues.push(Issue::error(format!("{ep}/curve/{i}"), "curve points must be in order of `in`, no two at the same `in`"));
+        }
+        last = *x;
+    }
+}
+
+/// A grade's LUT files: `.cube`s under the project that parse. Read only when files are.
+fn check_grade_luts(issues: &mut Vec<Issue>, ep: &str, g: &Grade, ctx: &ValidationContext) {
+    for (field, path) in g.luts() {
+        let fp = format!("{ep}/{field}");
+        if !stays_inside(path) {
+            issues.push(Issue::error(fp, "a LUT path must be relative and stay inside the project"));
+        } else if !path.to_ascii_lowercase().ends_with(".cube") {
+            issues.push(Issue::error(fp, "a LUT must be a `.cube` file"));
+        } else if ctx.check_files {
+            match std::fs::read_to_string(ctx.root.join(path)) {
+                Err(e) => issues.push(Issue::error(fp, format!("cannot read LUT `{path}`: {e}"))),
+                Ok(text) => {
+                    if let Err(e) = crate::grade::Lut::parse(&text) {
+                        issues.push(Issue::error(fp, format!("LUT `{path}`: {e}")));
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Whether `path` is relative and never climbs out of the directory it is read from.
+fn stays_inside(path: &str) -> bool {
+    let p = std::path::Path::new(path);
+    !p.is_absolute() && p.components().all(|c| matches!(c, std::path::Component::Normal(_))) && !path.is_empty()
 }
 
 /// A sequence's own effects, which act on its mix: only the kinds that can, once each, and
@@ -836,6 +901,41 @@ mod tests {
         let issues = validate(&p, &ValidationContext::default());
         let warned = |ci: usize| issues.iter().any(|i| i.path == format!("{}/effects/0/t", clip_path("main", 0, ci)) && i.severity == Severity::Warning);
         assert_eq!((warned(0), warned(1), warned(2), warned(3)), (false, true, true, true), "{issues:?}");
+    }
+
+    /// A grade's numbers stay in their ranges, its curve rises, and its LUTs are `.cube`s
+    /// inside the project that parse — read only when files are.
+    #[test]
+    fn a_grade_is_held_to_its_ranges_and_its_luts_to_the_project() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("good.cube"), "LUT_1D_SIZE 2\n0 0 0\n1 1 1\n").unwrap();
+        std::fs::write(dir.path().join("short.cube"), "LUT_3D_SIZE 2\n0 0 0\n").unwrap();
+        let grades = json!([
+            { "type": "grade", "temperature": 0.5, "gain": { "r": 0.2 }, "curve": [[0.2, 0.1], [0.8, 0.9]], "input_lut": "good.cube" },
+            { "type": "grade", "exposure": 6, "saturation": -1, "lift": { "g": 1.5 } },
+            { "type": "grade", "curve": [[0.5, 0.5], [0.4, 0.6], [0.9, 1.2]] },
+            { "type": "grade", "input_lut": "../elsewhere.cube", "look": "look.png" },
+            { "type": "grade", "input_lut": "missing.cube", "look": "short.cube" }
+        ]);
+        let tracks: Vec<_> = (0..5).map(|i| json!({ "id": format!("v{i}"), "clips": [
+            { "id": format!("c{i}"), "start": 0, "end": 1, "bin": "x", "effects": [grades[i].clone()] }
+        ] })).collect();
+        let p = project(json!({ "bin": { "x": { "source": { "path": "x.mp4" } } }, "tracks": tracks }));
+        let ctx = ValidationContext { root: dir.path().to_path_buf(), check_files: true };
+        let issues = validate(&p, &ctx);
+        let on = |ti: usize| -> Vec<String> {
+            let prefix = format!("{}/effects/0/", clip_path("main", ti, 0));
+            issues.iter().filter(|i| i.path.starts_with(&prefix) && i.severity == Severity::Error).map(|i| format!("{} {}", &i.path[prefix.len()..], i.message)).collect()
+        };
+        assert!(on(0).is_empty(), "{:?}", on(0));
+        let paths = |ti: usize| on(ti).into_iter().map(|m| m.split(' ').next().unwrap().to_string()).collect::<Vec<_>>();
+        assert_eq!(paths(1), ["exposure", "saturation", "lift/g"], "{:?}", on(1));
+        assert_eq!(paths(2), ["curve/1", "curve/2"], "{:?}", on(2));
+        assert!(on(3).iter().any(|m| m.starts_with("input_lut") && m.contains("inside the project")) && on(3).iter().any(|m| m.starts_with("look") && m.contains(".cube")), "{:?}", on(3));
+        assert!(on(4).iter().any(|m| m.starts_with("input_lut") && m.contains("cannot read")) && on(4).iter().any(|m| m.starts_with("look") && m.contains("needs 8 rows")), "{:?}", on(4));
+        // The compiler's check reads no files, so what is on disk cannot fail it.
+        let unread = validate(&p, &ValidationContext { check_files: false, ..ctx });
+        assert!(!unread.iter().any(|i| i.path.contains("/tracks/4/")), "{unread:?}");
     }
 
     /// A keyframe's parameters are its unknown fields, so the validator is what says a

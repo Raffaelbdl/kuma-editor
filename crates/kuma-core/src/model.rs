@@ -1001,6 +1001,11 @@ pub enum Effect {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Grade {
+    /// The camera log the footage was shot in, converted to Rec. 709 before anything else
+    /// (`kuma_core::camera`): what the maker's `.cube` would do, without the file. Instead of
+    /// `input_lut`, not as well as it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub log: Option<crate::camera::CameraLog>,
     /// A `.cube` LUT under the project, applied first: the technical step that turns the
     /// footage into the picture the grade starts from (a camera's log into Rec. 709).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1089,6 +1094,7 @@ pub struct Grade {
 impl Default for Grade {
     fn default() -> Self {
         Grade {
+            log: None,
             input_lut: None,
             temperature: 0.0,
             tint: 0.0,

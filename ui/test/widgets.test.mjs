@@ -106,6 +106,18 @@ describe("the inspector's curve, wheels and colour picker", { skip: why ? `skipp
     await page.eval(`${tab("curve")}.click(), true`);
   });
 
+  it("names the camera log from a list, and none leaves the field out", async () => {
+    const pick = (v) => `(() => { const s = document.querySelector('#inspector [data-prop="log"] select'); s.value = ${JSON.stringify(v)}; s.dispatchEvent(new Event("change")); return true; })()`;
+    assert.equal(await page.eval(`document.querySelector('#inspector [data-prop="log"] select').value`), "");
+    await page.eval(pick("v-log"));
+    await page.until(`${GRADE}.then(e => e.log === "v-log")`);
+    await settled(page);
+    await page.until(`!!document.querySelector('#inspector [data-prop="log"] select')`);
+    await page.eval(pick(""));
+    await page.until(`${GRADE}.then(e => !("log" in e))`);
+    await settled(page);
+  });
+
   it("turns a wheel's colour without moving its brightness, and a double-click takes the colour out", async () => {
     // The lift wheel, dragged from its centre to the right: towards red.
     await page.eval(drag("#inspector .wheel-disc", [0.5, 0.5], [0.8, 0.5], 0));

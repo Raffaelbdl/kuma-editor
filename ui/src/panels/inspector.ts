@@ -37,7 +37,7 @@ type PropSpec =
   | ({ kind: "num"; key: string; label?: string } & NumberOpts)
   | ({ kind: "slider"; key: string; label?: string; min: number; max: number; /** The range is a suggestion, not a limit: the field may be typed past it. */ soft?: boolean } & NumberOpts)
   | { kind: "vec"; label: string; parts: ({ key: string } & NumberOpts)[] }
-  | { kind: "enum"; key: string; label?: string; options: string[] }
+  | { kind: "enum"; key: string; label?: string; options: string[]; /** What each option is called, when not its value. */ labels?: Record<string, string>; /** Offer none, which leaves the field out. */ optional?: string; title?: string }
   | { kind: "text"; key: string; label?: string; /** Empty means the field is left out, not an empty string. */ optional?: boolean }
   | { kind: "json"; key: string; label?: string }
   /** A tone curve's points, edited on the curve (`curvefield.ts`). */
@@ -89,6 +89,12 @@ const GRADE_CURVES: CurveTab[] = [
   { key: "luma_sat", tab: "Luma·Sat", kind: "amount", axes: ["luma", "sat"], title: `Saturation by luma, black on the left: up for more, down to grey (say, the shadows). ${capitalize(ADD_POINTS)}` },
   { key: "sat_sat", tab: "Sat·Sat", kind: "amount", axes: ["sat", "sat"], title: `Saturation by saturation, grey on the left: lift the dull colours, calm the loud ones. ${capitalize(ADD_POINTS)}` },
 ];
+/** The camera logs a grade converts from (`kuma_core::camera::CameraLog`). */
+const CAMERA_LOGS: Record<string, string> = {
+  "s-log3-cine": "Sony S-Log3 / S-Gamut3.Cine", "s-log3": "Sony S-Log3 / S-Gamut3", "v-log": "Panasonic V-Log",
+  "c-log2": "Canon Log 2", "c-log3": "Canon Log 3", "logc3": "ARRI LogC3", "logc4": "ARRI LogC4", "apple-log": "Apple Log",
+  "d-log": "DJI D-Log", "f-log": "Fujifilm F-Log", "f-log2": "Fujifilm F-Log2", "f-log2c": "Fujifilm F-Log2 C",
+};
 /** Which curve tab is open: view state, kept across the rebuild every edit causes. */
 let curveTab = GRADE_CURVES[0].key;
 const tone = (key: string, what: string): PropSpec => ({ kind: "slider", key, min: -1, max: 1, step: 0.01, title: `${what}: up raises it, by a quarter of white at 1, on every channel alike` });
@@ -139,6 +145,8 @@ const EFFECTS: Partial<Record<Effect["type"], EffectSpec>> = {
     live: true,
     add: { type: "grade", temperature: 0, tint: 0, exposure: 0, contrast: 1, curve: [], saturation: 1, look_amount: 1 },
     props: [
+      { kind: "enum", key: "log", label: "Camera log", options: Object.keys(CAMERA_LOGS), labels: CAMERA_LOGS, optional: "none (not log footage)",
+        title: "The log the footage was shot in, converted to Rec. 709 first: what the maker's LUT does, without the file. Use this or an input LUT" },
       { kind: "text", key: "input_lut", label: "Input LUT", optional: true },
       { kind: "slider", key: "temperature", min: -2, max: 2, step: 0.01, title: "Warmer above 0, cooler below: red and blue a stop apart at ±1, and tungsten against daylight is about 1.5" },
       { kind: "slider", key: "tint", min: -1, max: 1, step: 0.01, title: "Towards magenta above 0, green below" },
@@ -358,7 +366,9 @@ function propRow(p: PropSpec, ctx: PropCtx): HTMLElement {
       control = sliderField(num(p.key), (v) => write(p.key, v), { ...p, ...timed(p.key), ...input(p.key) });
       break;
     case "enum":
-      control = selectInput(p.options.map((value) => ({ value })), String(read(p.key)), (v) => write(p.key, v));
+      control = selectInput([...(p.optional ? [{ value: "", label: p.optional }] : []), ...p.options.map((value) => ({ value, label: p.labels?.[value] }))],
+        String(read(p.key) ?? ""), (v) => write(p.key, v === "" && p.optional ? undefined : v));
+      if (p.title) control.title = p.title;
       break;
     case "text":
       control = textInput(String(read(p.key) ?? ""), (v) => write(p.key, v === "" && p.optional ? undefined : v));

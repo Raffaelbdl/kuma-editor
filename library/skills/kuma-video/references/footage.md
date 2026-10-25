@@ -82,8 +82,10 @@ is also what makes it cheap: nothing is baked.
   skin; for one colour only, the hue curves — `hue_sat: [[0.6, -0.4]]` greys that hue,
   `hue_hue` turns it towards its neighbours, `hue_luma` darkens it (a sky) — with hue in
   turns round the vectorscope (skin near 0.34). `luma_sat: [[0.1, -0.5]]` takes colour out of
-  the shadows, where noise lives. Log footage (S-Log, V-Log, LogC) wants
-  its maker's `.cube` as `input_lut` before anything else; a creative `.cube` goes in `look`,
+  the shadows, where noise lives. Log footage (flat, grey, washed out
+  straight from the camera) wants converting before anything else: `log` names the camera's
+  (`s-log3-cine`, `v-log`, `logc3`, `apple-log`, `d-log`, … — kuma does the maker's maths, mid
+  grey to mid grey, highlights rolled off), or the maker's `.cube` as `input_lut`; a creative `.cube` goes in `look`,
   softened by `look_amount`. Sample a frame of each clip side by side after grading, and
   compare a neutral in each (a white wall, a grey shirt) rather than the whole picture.
   `color` (brightness, contrast, saturation, gamma) still works and can be keyframed; a

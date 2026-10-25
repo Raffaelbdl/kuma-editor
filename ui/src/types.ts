@@ -146,7 +146,7 @@ export type Effect =
 /** A colour grade's settings, every one neutral when absent. Mirrors `Grade` in `model.rs`,
  *  which says what each does; the compiler bakes them into one LUT. */
 export interface Grade {
-  input_lut?: string; temperature?: number; tint?: number; exposure?: number;
+  log?: string; input_lut?: string; temperature?: number; tint?: number; exposure?: number;
   lift?: Rgb; gamma?: Rgb; gain?: Rgb; contrast?: number;
   curve?: [number, number][]; saturation?: number; look?: string; look_amount?: number;
   blacks?: number; shadows?: number; highlights?: number; whites?: number; vibrance?: number;

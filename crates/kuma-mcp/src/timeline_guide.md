@@ -39,7 +39,9 @@ to its own edges first. `freeze` `{t}` holds the frame the clip shows `t` s in (
 places, sequences too) for the whole clip; its sound runs on (mute the clip to silence it), its
 other effects act on the held frame and still move. Split the clip to play, then hold.
 `grade` is a colour grade, every field neutral when left out, applied in this order:
-`input_lut` (a `.cube` under the project: a camera's log into Rec. 709), `temperature`
+`log` (the camera log the footage was shot in, converted to Rec. 709 by kuma: `s-log3-cine`,
+`s-log3`, `v-log`, `c-log2`, `c-log3`, `logc3`, `logc4`, `apple-log`, `d-log`, `f-log`, `f-log2`,
+`f-log2c`) or instead `input_lut` (a `.cube` under the project, the maker's), `temperature`
 (-2..2, warmer/cooler; tungsten against daylight is about 1.5) and `tint` (-1..1, magenta/green), `exposure` (stops, -5..5), `lift`, `gamma` and
 `gain` (`{r, g, b}`, each -1..1: shadows, midtones, highlights; equal channels move brightness,
 unequal ones colour), `contrast` (0..3, 1 neutral), `blacks`, `shadows`, `highlights` and

@@ -524,6 +524,9 @@ fn check_effect(issues: &mut Vec<Issue>, ep: &str, e: &Effect, kind: &str, owner
 /// A grade's numbers: within the ranges its fields document, and a curve the compiler can
 /// draw. Its LUT files are checked where the project's root is known, with the clip.
 fn check_grade(issues: &mut Vec<Issue>, ep: &str, g: &Grade) {
+    if g.log.is_some() && g.input_lut.is_some() {
+        issues.push(Issue::error(format!("{ep}/log"), "a grade takes one input: a camera `log` or an `input_lut`, not both"));
+    }
     let scalars = [
         ("temperature", g.temperature, Grade::TEMPERATURE),
         ("tint", g.tint, Grade::TINT),
@@ -950,7 +953,7 @@ mod tests {
             { "type": "grade", "curve": [[0.5, 0.5], [0.4, 0.6], [0.9, 1.2]] },
             { "type": "grade", "input_lut": "../elsewhere.cube", "look": "look.png" },
             { "type": "grade", "input_lut": "missing.cube", "look": "short.cube" },
-            { "type": "grade", "shadows": 0.5, "vibrance": -2, "curve_g": [[0.5, 1.5]],
+            { "type": "grade", "log": "s-log3-cine", "input_lut": "good.cube", "shadows": 0.5, "vibrance": -2, "curve_g": [[0.5, 1.5]],
               "hue_sat": [[0.2, 0.5], [1.0, 0.2]], "hue_hue": [[0.0, 1.0], [0.6, -0.4]], "sat_sat": [[0.0, 0.5], [1.0, -1.5]] }
         ]);
         let tracks: Vec<_> = (0..6).map(|i| json!({ "id": format!("v{i}"), "clips": [
@@ -970,7 +973,7 @@ mod tests {
         assert!(on(3).iter().any(|m| m.starts_with("input_lut") && m.contains("inside the project")) && on(3).iter().any(|m| m.starts_with("look") && m.contains(".cube")), "{:?}", on(3));
         assert!(on(4).iter().any(|m| m.starts_with("input_lut") && m.contains("missing.cube")) && on(4).iter().any(|m| m.starts_with("look") && m.contains("needs 8 rows")), "{:?}", on(4));
         // The later steps: a hue curve wraps, so 1 is 0 again; the others reach 1.
-        assert_eq!(paths(5), ["vibrance", "curve_g/0", "hue_sat/1", "sat_sat/1"], "{:?}", on(5));
+        assert_eq!(paths(5), ["log", "vibrance", "curve_g/0", "hue_sat/1", "sat_sat/1"], "{:?}", on(5));
         // The compiler's check reads no files, so what is on disk cannot fail it.
         let unread = validate(&p, &ValidationContext { check_files: false, ..ctx });
         assert!(!unread.iter().any(|i| i.path.contains("/tracks/4/")), "{unread:?}");

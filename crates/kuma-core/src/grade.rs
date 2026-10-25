@@ -9,7 +9,7 @@
 //!
 //! The steps, in order, on display-encoded R'G'B' from 0 to 1:
 //!
-//! 1. the input LUT;
+//! 1. the camera log into Rec. 709 (`log`, [`crate::camera`]), or the input LUT;
 //! 2. white balance and exposure, on the light the values stand for (BT.1886's 2.4 gamma
 //!    decodes, and encodes back after);
 //! 3. lift, gain, then gamma, per channel;
@@ -76,6 +76,7 @@ impl Grade {
     /// no file.
     pub fn is_neutral(&self) -> bool {
         self.input_lut.is_none()
+            && self.log.is_none()
             && (self.look.is_none() || self.look_amount == 0.0)
             && Curve::through(&self.curve).is_none()
             && light_gains(self.temperature, self.tint, self.exposure) == [1.0; 3]
@@ -249,6 +250,7 @@ impl Lut {
 #[derive(Debug, Clone)]
 pub struct Grading<'a> {
     grade: &'a Grade,
+    log: Option<crate::camera::Conversion>,
     input: Option<Lut>,
     look: Option<Lut>,
     curve: Option<Curve>,
@@ -266,7 +268,8 @@ impl<'a> Grading<'a> {
     /// where a path resolves is the project's business.
     pub fn new(grade: &'a Grade, input: Option<Lut>, look: Option<Lut>) -> Self {
         let [curve, r, g, b, hue @ ..] = Grading::curves(grade);
-        Grading { grade, input, look, curve, channels: [r, g, b], hue, light: light_gains(grade.temperature, grade.tint, grade.exposure) }
+        let log = grade.log.map(crate::camera::Conversion::new);
+        Grading { grade, log, input, look, curve, channels: [r, g, b], hue, light: light_gains(grade.temperature, grade.tint, grade.exposure) }
     }
 
     /// Every curve of `grade`, `None` for one that changes nothing: the master curve, red's,
@@ -286,9 +289,10 @@ impl<'a> Grading<'a> {
     /// What the grade makes of the display-encoded colour `c`; see the module's steps.
     pub fn apply(&self, c: [f64; 3]) -> [f64; 3] {
         let g = self.grade;
-        let mut c = match &self.input {
-            Some(lut) => lut.apply(c),
-            None => c,
+        let mut c = match (&self.log, &self.input) {
+            (Some(log), _) => log.apply(c),
+            (None, Some(lut)) => lut.apply(c),
+            (None, None) => c,
         };
         if self.light != [1.0; 3] {
             c = std::array::from_fn(|i| (decode(c[i]) * self.light[i]).powf(1.0 / DISPLAY_GAMMA));
@@ -593,6 +597,18 @@ mod tests {
         // Curves at nought are no curves.
         let flat = Grade { hue_sat: vec![[0.2, 0.0]], luma_sat: vec![[0.5, 0.0]], curve_g: vec![[0.3, 0.3]], ..Grade::default() };
         assert!(flat.is_neutral());
+    }
+
+    #[test]
+    fn a_camera_log_comes_first_and_is_never_neutral() {
+        use crate::camera::{CameraLog, Conversion};
+        let g = Grade { log: Some(CameraLog::SLog3Cine), saturation: 0.0, ..Grade::default() };
+        assert!(!Grade { log: Some(CameraLog::VLog), ..Grade::default() }.is_neutral());
+        // The conversion, then the rest of the grade on what it gave.
+        let c = [0.55, 0.42, 0.33];
+        let converted = Conversion::new(CameraLog::SLog3Cine).apply(c);
+        let y = luma(converted);
+        assert!(close(graded(&g, c), [y; 3]), "{:?}", graded(&g, c));
     }
 
     #[test]

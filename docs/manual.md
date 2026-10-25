@@ -697,8 +697,10 @@ sequences included; the picture holds and the sound runs on. It is a tractor of 
 sound and that frame repeated, because MLT's `freeze` filter fetches its frame from the
 wrong producer for a sequence and deadlocks on a still.
 
-**A grade is one LUT kuma computes.** The `grade` effect holds a colour grade — an input
-LUT, white balance, exposure, lift/gamma/gain wheels, contrast, a curve, saturation and a
+**A grade is one LUT kuma computes.** The `grade` effect holds a colour grade — a camera log
+to convert (`kuma_core::camera`: the makers' curves and gamuts, tone mapped to SDR) or an input
+LUT, white balance, exposure, lift/gamma/gain wheels, contrast, tonal ranges, curves (tone,
+per channel, and against hue, luma and saturation), saturation, vibrance and a
 look LUT — and `kuma_core::grade` says what each does to a colour, in that order. The
 compiler samples the whole grade on a 33³ grid, writes it as one `.cube` under the cache
 (`.kuma/cache/luts/<hash>.cube`, named by a hash of the settings and of the bytes of the

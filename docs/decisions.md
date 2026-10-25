@@ -3478,6 +3478,25 @@ saturated, turned, darker — the hue curves already do, without a second grade 
 first. Worth adding when a range of saturation or luma *within* a hue needs its own grade;
 the matte would be a table the preview asks for, never a field of the document.
 
+## Camera log, converted by kuma
+
+**`log` names the camera; kuma does the maker's maths** — adopted. Log footage was usable
+only with the maker's `.cube` found, downloaded and put under the project, and the agent
+could not do that for a person. The conversion is a function of the colour, so it is one
+more step of the grade's LUT: decode the camera's curve to scene light, turn its gamut into
+Rec. 709's primaries, tone map with BT.2390's EETF on max(R, G, B), pull out-of-gamut colours
+in (ACES's reference gamut compression), encode for BT.1886. The curves, primaries and both
+operators are FilmCraft's (MIT, its notice kept in `camera.rs`), from the makers' published
+specifications; tests check each curve against the makers' reference points and pin the
+whole conversion with values computed apart from the code.
+
+Choices: a grade takes `log` *or* `input_lut`, never both — a maker's input LUT is that same
+conversion, and two of them stacked is always a mistake. The signal is read as the camera's
+limited range expanded (code 64 is 0, 940 is 1), which is what MLT hands the filter. The
+grade's other steps then work on the converted picture as they do on any Rec. 709 clip; an
+exposure that acts on scene light *before* the tone map would recover more highlight, and is
+the open question if log footage turns out to be graded mostly by exposure.
+
 ## Still open
 
 Nested sequences are done and the editor is an application now, so this list is the whole

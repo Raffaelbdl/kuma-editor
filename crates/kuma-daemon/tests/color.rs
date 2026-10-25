@@ -234,3 +234,25 @@ fn a_sampled_version_is_the_before_of_a_comparison() {
     assert_eq!(version["samples"][0]["path"], compared["before"][0]["path"], "the same frame, from the frame cache");
     assert_ne!(version["samples"][0]["path"], compared["samples"][0]["path"]);
 }
+
+/// A grey card shot in S-Log3 (code 420, which is #686868 once the limited range is expanded)
+/// renders as mid grey once the grade names the log: the conversion is in the render, not
+/// only in the grade's maths.
+#[test]
+fn a_log_grey_card_renders_mid_grey() {
+    if !renders() {
+        eprintln!("melt/ffmpeg not available; skipping");
+        return;
+    }
+    let (state, _dir) = fixture();
+    apply(&state, &json!([
+        { "op": "add", "path": "/bin/slog", "value": { "name": "S-Log3 card", "source": { "color": "#686868" } } },
+        { "op": "replace", "path": "/bin/main/source/tracks/0/clips/0/bin", "value": "slog" },
+    ]));
+    let flat = run(&state, json!({ "times": [0.5], "region": centre() })).unwrap();
+    assert!(flat["stats"]["exposure"].as_f64().unwrap() < -0.5, "log grey is darker than mid grey on screen: {}", flat["stats"]);
+    apply(&state, &json!([{ "op": "add", "path": "/bin/main/source/tracks/0/clips/0/effects/-", "value": { "type": "grade", "log": "s-log3-cine" } }]));
+    let s = &run(&state, json!({ "times": [0.5], "region": centre() })).unwrap()["stats"];
+    assert!(s["exposure"].as_f64().unwrap().abs() < 0.1, "converted, it is mid grey: {s}");
+    assert!(s["balance"]["temperature"].as_f64().unwrap().abs() < 0.05 && s["balance"]["tint"].as_f64().unwrap().abs() < 0.05, "and still grey: {s}");
+}

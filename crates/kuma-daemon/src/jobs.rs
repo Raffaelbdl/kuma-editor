@@ -1448,6 +1448,64 @@ pub struct SampleRequest {
     /// The sheet's columns; about square when absent.
     #[serde(default)]
     pub columns: Option<u32>,
+    /// Also sample the same frames of another version of the document, to see what an edit
+    /// did: each moment comes back as a pair, and on the sheet as a row, before then after.
+    #[serde(default)]
+    pub before: Option<Before>,
+}
+
+/// What a sample compares itself with: the same frames of another version of the document,
+/// built as a copy and never stored.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(untagged)]
+pub enum Before {
+    /// The document as it was at `revision` — before an edit, the edit's revision less one.
+    /// The history keeps the last [`crate::history::SNAPSHOTS`].
+    Revision { revision: u64 },
+    /// The document as it is, with effects taken out: see [`Without`].
+    Without { without: Without },
+}
+
+/// Which effects a `before` takes out: those of `kinds` (`grade`, `color`; every effect
+/// that acts on the picture when empty) on `clips` (every clip when empty).
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Without {
+    #[serde(default)]
+    pub clips: Vec<String>,
+    #[serde(default)]
+    pub kinds: Vec<String>,
+}
+
+impl Before {
+    /// The document to sample as the "before" of `now`. Taking out nothing is refused, so a
+    /// misspelt kind or clip is said rather than compared as two identical pictures.
+    pub fn document(&self, state: &AppState, now: &Project) -> anyhow::Result<Project> {
+        match self {
+            Before::Revision { revision } => {
+                let snap = lock(&state.history).snapshot(*revision);
+                let snap = snap.ok_or_else(|| anyhow::anyhow!("revision {revision} is not in the history, which keeps the last {}", crate::history::SNAPSHOTS))?;
+                Ok(crate::history::parse(&snap)?)
+            }
+            Before::Without { without: Without { clips, kinds } } => {
+                if let Some(unknown) = clips.iter().find(|id| now.find_clip(id).is_none()) {
+                    anyhow::bail!("no clip `{unknown}`");
+                }
+                let mut doc = now.clone();
+                let mut taken = 0;
+                for item in doc.bin.values_mut() {
+                    let BinSource::Sequence(seq) = &mut item.source else { continue };
+                    for clip in seq.tracks.iter_mut().flat_map(|t| t.clips.iter_mut()).filter(|c| clips.is_empty() || clips.contains(&c.id)) {
+                        let had = clip.effects.len();
+                        clip.effects.retain(|e| !(if kinds.is_empty() { e.streams().video() } else { kinds.iter().any(|k| k == e.kind()) }));
+                        taken += had - clip.effects.len();
+                    }
+                }
+                anyhow::ensure!(taken > 0, "`without` takes nothing out: no {} carries {}", if clips.is_empty() { "clip".to_string() } else { format!("clip of {clips:?}") }, if kinds.is_empty() { "a picture effect".to_string() } else { format!("an effect of kind {kinds:?}") });
+                Ok(doc)
+            }
+        }
+    }
 }
 /// How many frames a range is sampled at when no count is given.
 pub const RANGE_COUNT: usize = 5;
@@ -1604,33 +1662,45 @@ fn publish(dir: &Path, target: &Path, f: &dyn Fn(&Path) -> anyhow::Result<()>) -
 
 /// What `/api/sample` answers: the frames, and with `tile` the sheet of them.
 pub fn sample(state: &AppState, req: &SampleRequest, progress: &dyn Fn(u8, &str), cancel: Option<&AtomicBool>) -> anyhow::Result<serde_json::Value> {
-    let (samples, warnings) = sample_frames_warned(state, req, progress, cancel)?;
-    let sheet = if req.tile { Some(contact_sheet(state, &samples, req.columns)?) } else { None };
-    Ok(serde_json::json!({ "samples": samples, "sheet": sheet, "warnings": warnings }))
+    let Some(before) = &req.before else {
+        let (samples, warnings) = sample_frames_warned(state, req, progress, cancel)?;
+        let tiles: Vec<_> = samples.iter().map(|s| (s.path.as_path(), format!("{:.2} s", s.t))).collect();
+        let sheet = if req.tile { Some(contact_sheet(state, &tiles, req.columns)?) } else { None };
+        return Ok(serde_json::json!({ "samples": samples, "sheet": sheet, "warnings": warnings }));
+    };
+    anyhow::ensure!(req.overlay.is_none(), "`before` compares versions of a timeline; sample an overlay entry without it");
+    let then = before.document(state, &read(&state.project))?;
+    let (samples, warnings) = sample_frames_warned(state, req, &|p, m| progress(p / 2, m), cancel)?;
+    let (earlier, _) = sample_frames_of(state, then, req, &|p, m| progress(50 + p / 2, m), cancel)?;
+    // Each moment a row: before on the left, after on the right.
+    let tiles: Vec<_> = earlier.iter().zip(&samples).flat_map(|(b, a)| [(b.path.as_path(), format!("{:.2} s before", b.t)), (a.path.as_path(), format!("{:.2} s after", a.t))]).collect();
+    let sheet = if req.tile { Some(contact_sheet(state, &tiles, Some(req.columns.unwrap_or(2)))?) } else { None };
+    Ok(serde_json::json!({ "samples": samples, "before": earlier, "sheet": sheet, "warnings": warnings }))
 }
 
-/// A sample's frames tiled into one image, left to right then down, each captioned with its
-/// time: a contact sheet, so looking at a dozen moments is one image rather than a dozen.
-/// Cached beside the frames, under the frames it holds.
-pub fn contact_sheet(state: &AppState, samples: &[Sample], columns: Option<u32>) -> anyhow::Result<PathBuf> {
-    anyhow::ensure!(!samples.is_empty(), "no frames to tile");
-    let n = samples.len();
+/// Frames tiled into one image, left to right then down, each with its caption (its time,
+/// and in a comparison which side it is): a contact sheet, so looking at a dozen moments is
+/// one image rather than a dozen. Cached beside the frames, under the frames it holds.
+/// Captions are kuma's own text (times and words), so nothing in them needs escaping.
+pub fn contact_sheet(state: &AppState, tiles: &[(&Path, String)], columns: Option<u32>) -> anyhow::Result<PathBuf> {
+    anyhow::ensure!(!tiles.is_empty(), "no frames to tile");
+    let n = tiles.len();
     let cols = columns.map_or_else(|| (n as f64).sqrt().ceil() as usize, |c| c as usize).clamp(1, n);
-    let paths: Vec<String> = samples.iter().map(|s| s.path.to_string_lossy().into_owned()).collect();
+    let paths: Vec<String> = tiles.iter().map(|(p, _)| p.to_string_lossy().into_owned()).collect();
     // Named by the frames and the captions: two times can round to one frame.
-    let named: Vec<String> = samples.iter().zip(&paths).map(|(s, p)| format!("{p}@{:.2}", s.t)).collect();
+    let named: Vec<String> = tiles.iter().zip(&paths).map(|((_, caption), p)| format!("{p}@{caption}")).collect();
     let dir = state.config.samples_dir();
     let out = dir.join(format!("s{}_{cols}.png", hash_str(&named.join("\n"))));
     publish(&dir, &out, &|tmp| {
-        let probe = kuma_overlay::probe(&samples[0].path).map_err(|e| anyhow::anyhow!(e))?;
+        let probe = kuma_overlay::probe(tiles[0].0).map_err(|e| anyhow::anyhow!(e))?;
         let (w, h) = (probe.meta.width.unwrap_or_default(), probe.meta.height.unwrap_or_default());
-        anyhow::ensure!(w > 0 && h > 0, "cannot read the size of {}", samples[0].path.display());
+        anyhow::ensure!(w > 0 && h > 0, "cannot read the size of {}", tiles[0].0.display());
         // Every frame of a sample is the same size, so a tile's place is its column and row.
         let layout: Vec<String> = (0..n).map(|i| format!("{}_{}", (i % cols) as u32 * w, (i / cols) as u32 * h)).collect();
         let run = |captions: bool| {
             let mut graph = String::new();
-            for (i, s) in samples.iter().enumerate() {
-                let caption = format!("drawtext=text='{:.2} s':x=8:y=8:fontsize={}:fontcolor=white:box=1:boxcolor=black@0.6:boxborderw=5", s.t, (h / 14).max(10));
+            for (i, (_, text)) in tiles.iter().enumerate() {
+                let caption = format!("drawtext=text='{text}':x=8:y=8:fontsize={}:fontcolor=white:box=1:boxcolor=black@0.6:boxborderw=5", (h / 14).max(10));
                 graph.push_str(&format!("[{i}:v]{}[t{i}];", if captions { caption.as_str() } else { "null" }));
             }
             let tiles: String = (0..n).map(|i| format!("[t{i}]")).collect();

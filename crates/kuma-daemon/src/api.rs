@@ -1025,7 +1025,7 @@ async fn sample_job(State(st): S, Json(asked): Json<Asked<SampleRequest>>) -> Js
     // The sequence it samples, the master unless named, so the queue can say so; and the
     // moments and region, which the agent's activity shows.
     let sequence = req.overlay.is_none().then(|| req.sequence.clone().unwrap_or_else(|| read(&st.project).master.clone()));
-    let params = json!({ "sequence": sequence, "overlay": req.overlay, "times": req.times, "t0": req.t0, "t1": req.t1, "rect": req.rect });
+    let params = json!({ "sequence": sequence, "overlay": req.overlay, "times": req.times, "t0": req.t0, "t1": req.t1, "rect": req.rect, "before": req.before });
     let id = jobs::spawn_cancellable(st, "sample", params, by, move |progress, cancel| {
         progress(0, "starting");
         jobs::sample(&s2, &req, progress, Some(cancel))

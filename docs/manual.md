@@ -492,7 +492,11 @@ baking anything; `solo` and `mute` (track ids, nested ones too) hear one part al
 measurement, on the copy that is compiled and never on the project. `measure_media` meters
 one source instead, a media entry or a file in the project: loudness, range and true peak, a
 loudness curve over time and its quiet stretches (pauses, gaps between takes, the onset of a
-sound), in the file's own seconds; nothing is stored. `measure_color` reads a region of the
+sound), in the file's own seconds; nothing is stored. `sample_frames` and `measure_color`
+take `before` to compare: the same moments of the document at an earlier `revision` (the
+history keeps 200), or as it is `without` some effects (by kind, by clip), sampled as a copy
+that is never stored; frames come back as before/after pairs, and a sheet as a row a moment,
+before on the left. `measure_color` reads a region of the
 picture (overlays left out unless asked) as numbers in the grade's own terms — luma levels,
 `exposure` in stops from mid grey, the cast as the `temperature` and `tint` that would make
 it, what is clipped or crushed — and with `match` solves a clip's white balance and exposure

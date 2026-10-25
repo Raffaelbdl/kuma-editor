@@ -126,3 +126,74 @@ fn a_match_applied_renders_like_its_reference() {
     let e = run(&state, json!({ "times": [0.5], "match": { "clip": "c", "reference": { "neutral": true } } })).unwrap_err().to_string();
     assert!(e.contains("from 2.00 to 3.00"), "{e}");
 }
+
+/// What a frame's middle pixel is, read off its PNG.
+fn middle(png: &std::path::Path) -> [u8; 3] {
+    let probe = kuma_overlay::probe(png).unwrap();
+    let (w, h) = (probe.meta.width.unwrap() as usize, probe.meta.height.unwrap() as usize);
+    let bytes = kuma_overlay::media::rgb24(png).unwrap();
+    let i = ((h / 2) * w + w / 2) * 3;
+    [bytes[i], bytes[i + 1], bytes[i + 2]]
+}
+
+fn sample(state: &AppState, mut req: Value) -> anyhow::Result<Value> {
+    req["t0"] = json!(0); // the request's own field; `times` say when
+    kuma_daemon::jobs::sample(state, &serde_json::from_value(req).unwrap(), &|_, _| {}, None)
+}
+
+/// Sampling with `before` pairs each moment with the same moment of another version: what
+/// a grade does (`without`), and what an edit did (`revision`) — the sheet a row a moment,
+/// before on the left. Neither version is ever the document.
+#[test]
+fn a_sample_compares_before_and_after() {
+    if !renders() {
+        eprintln!("melt/ffmpeg not available; skipping");
+        return;
+    }
+    let (state, _dir) = fixture();
+    let doc = serde_json::to_string(&*state.project.read().unwrap()).unwrap();
+
+    // Without its grade, the cool clip at two moments: a 2×2 sheet of 480-wide frames.
+    let out = sample(&state, json!({ "times": [2.2, 2.8], "tile": true, "before": { "without": { "kinds": ["grade"] } } })).unwrap();
+    let (before, after) = (out["before"].as_array().unwrap(), out["samples"].as_array().unwrap());
+    assert_eq!((before.len(), after.len()), (2, 2));
+    let px = |s: &Value| middle(std::path::Path::new(s["path"].as_str().unwrap()));
+    // The grade takes a tenth of the saturation: the after is greyer, not the same picture.
+    let (b, a) = (px(&before[0]), px(&after[0]));
+    assert!(b[2] as i32 - b[0] as i32 > a[2] as i32 - a[0] as i32, "before {b:?} should be bluer than after {a:?}");
+    let sheet = kuma_overlay::probe(std::path::Path::new(out["sheet"].as_str().unwrap())).unwrap();
+    assert_eq!((sheet.meta.width, sheet.meta.height), (Some(960), Some(540)), "two columns, two rows");
+    assert_eq!(serde_json::to_string(&*state.project.read().unwrap()).unwrap(), doc, "a comparison is not an edit");
+
+    // After an edit, the revision before it is what the picture was.
+    let r = state.project.read().unwrap().revision;
+    apply(&state, &json!([{ "op": "replace", "path": "/bin/grey/source/color", "value": "#ff0000" }]));
+    let out = sample(&state, json!({ "times": [0.5], "before": { "revision": r } })).unwrap();
+    let (b, a) = (px(&out["before"][0]), px(&out["samples"][0]));
+    assert!(b[0].abs_diff(b[1]) < 4 && a[0] > 240 && a[1] < 15, "before grey {b:?}, after red {a:?}");
+
+    // Asking for nothing to compare with is said, not answered with two identical pictures.
+    for (before, says) in [
+        (json!({ "without": { "kinds": ["grad"] } }), "takes nothing out"),
+        (json!({ "without": { "clips": ["nope"] } }), "no clip `nope`"),
+        (json!({ "revision": 99999 }), "not in the history"),
+    ] {
+        let e = sample(&state, json!({ "times": [0.5], "before": before })).unwrap_err().to_string();
+        assert!(e.contains(says), "{e}");
+    }
+}
+
+/// `measure_color` with `before` answers the same measurement of the other version, so what
+/// an edit did to a region is numbers as well as pictures.
+#[test]
+fn a_measurement_compares_before_and_after() {
+    if !renders() {
+        eprintln!("melt/ffmpeg not available; skipping");
+        return;
+    }
+    let (state, _dir) = fixture();
+    let out = run(&state, json!({ "times": [2.5], "region": centre(), "before": { "without": { "clips": ["c"] } } })).unwrap();
+    let (before, after) = (&out["before"]["stats"], &out["stats"]);
+    assert!(before["saturation"].as_f64().unwrap() > after["saturation"].as_f64().unwrap(), "the grade desaturates: {before} vs {after}");
+    assert_eq!(out["before"]["samples"].as_array().unwrap().len(), 1);
+}

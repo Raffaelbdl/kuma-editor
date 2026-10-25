@@ -16,7 +16,7 @@ use kuma_core::{BinSource, Effect, Grade, Project};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use crate::jobs::{sample_frames_of, OverlayScope, SampleRequest};
+use crate::jobs::{sample_frames_of, Before, OverlayScope, SampleRequest};
 use crate::state::{read, AppState};
 
 /// The most pixels a match pushes through the grade on each try: an even spread over the
@@ -47,6 +47,10 @@ pub struct ColorRequest {
     /// reference.
     #[serde(default, rename = "match")]
     pub matching: Option<Match>,
+    /// Also measure the same frames of another version of the document — before an edit,
+    /// or without some effects (`sample_frames` takes the same) — to say what the edit did.
+    #[serde(default)]
+    pub before: Option<Before>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -185,12 +189,17 @@ pub fn measure(state: &AppState, req: &ColorRequest, progress: &dyn Fn(u8, &str)
         overlays: if req.overlays { OverlayScope::All } else { OverlayScope::None },
         ..Default::default()
     };
-    // Without a match, all of it is the one measurement.
-    let share = if target.is_some() { 3 } else { 1 };
+    // The measurements in turn: these frames, the `before` ones, then a match's two.
+    let b = u8::from(req.before.is_some());
+    let share = 1 + b + if target.is_some() { 2 } else { 0 };
     let part = |n: u8| move |p: u8, m: &str| progress(n * (100 / share) + p / share, m);
     let frames = measure_frames(state, doc.clone(), &sample, region, &part(0), cancel)?;
-    let shown: Vec<Value> = frames.iter().map(|f| json!({ "t": f.t, "frame": f.frame, "stats": ColorStats::of(f.pixels.iter().map(unit)) })).collect();
-    let mut out = json!({ "sequence": sequence, "region": region, "samples": shown, "stats": ColorStats::of(pooled(&frames)) });
+    let per_frame = |frames: &[Measured]| -> Vec<Value> { frames.iter().map(|f| json!({ "t": f.t, "frame": f.frame, "stats": ColorStats::of(f.pixels.iter().map(unit)) })).collect() };
+    let mut out = json!({ "sequence": sequence, "region": region, "samples": per_frame(&frames), "stats": ColorStats::of(pooled(&frames)) });
+    if let Some(before) = &req.before {
+        let earlier = measure_frames(state, before.document(state, &doc)?, &sample, region, &part(1), cancel)?;
+        out["before"] = json!({ "samples": per_frame(&earlier), "stats": ColorStats::of(pooled(&earlier)) });
+    }
     let Some((m, at)) = target else { return Ok(out) };
 
     if let Some(off) = frames.iter().find(|f| f.t < at.start - 1e-9 || f.t >= at.end) {
@@ -206,7 +215,7 @@ pub fn measure(state: &AppState, req: &ColorRequest, progress: &dyn Fn(u8, &str)
             if let Some(BinSource::Sequence(seq)) = bare.bin.get_mut(&at.sequence).map(|i| &mut i.source) {
                 seq.tracks[at.track].clips[at.clip].effects.remove(ei);
             }
-            bare_frames = measure_frames(state, bare, &sample, region, &part(1), cancel)?;
+            bare_frames = measure_frames(state, bare, &sample, region, &part(1 + b), cancel)?;
             &bare_frames
         }
     };
@@ -220,7 +229,7 @@ pub fn measure(state: &AppState, req: &ColorRequest, progress: &dyn Fn(u8, &str)
             let seq = doc.sequence_or_master(Some(s.as_deref().unwrap_or(&sequence))).map_err(|e| anyhow::anyhow!(e))?.clone();
             let r = region_in(&doc, Some(r.unwrap_or(region)))?;
             let at_ref = SampleRequest { times: Some(vec![*t]), rect: Some(r), sequence: Some(seq.clone()), ..sample.clone() };
-            let px: Vec<[f64; 3]> = pooled(&measure_frames(state, doc.clone(), &at_ref, r, &part(2), cancel)?).collect();
+            let px: Vec<[f64; 3]> = pooled(&measure_frames(state, doc.clone(), &at_ref, r, &part(2 + b), cancel)?).collect();
             let stats = ColorStats::of(&px);
             (Target::like(&px).ok_or_else(|| anyhow::anyhow!("the reference region is empty"))?, json!({ "t": t, "sequence": seq, "region": r, "stats": stats }))
         }

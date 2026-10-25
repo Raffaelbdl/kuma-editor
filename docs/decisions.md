@@ -3412,6 +3412,18 @@ pixels, Escape to cancel) at the playhead, runs the job and writes the grade's l
 reference is view state, kept until another is set, so one hero shot can be matched from
 every clip's grade in turn.
 
+## Before and after, for an agent
+
+**`sample_frames` and `measure_color` take `before`** — adopted. An agent that grades (or
+edits anything) needs to see what the edit did, at more than the one moment it aimed at. The
+"before" is a document, built the way a match builds its ungraded copy and never stored:
+either the document at an earlier revision — the history already keeps the last 200 whole
+documents for restore — or the current one `without` some effects, by kind and by clip. The
+same frames of both go through the same path (compile, melt, the frame cache), so the pair
+differs only by the edit. A sheet lays them out a row per moment, before on the left, and the
+MCP tool says which is which. Asking for a `before` that takes nothing out (a misspelt kind,
+a clip that is not there) is refused rather than answered with two identical pictures.
+
 ## Still open
 
 Nested sequences are done and the editor is an application now, so this list is the whole

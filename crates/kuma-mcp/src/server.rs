@@ -419,6 +419,13 @@ pub struct SampleFrames {
     /// Bin id of the sequence to sample. The project's `master` when omitted.
     #[serde(default)]
     pub sequence: Option<String>,
+    /// Compare with another version of the document, to see what an edit did: each moment
+    /// comes back as a pair, before then after (with `tile`, one row each). `{"revision": N}`
+    /// is the document at revision N — before an edit, its revision less one; `{"without":
+    /// {"kinds"?: ["grade", "color"], "clips"?: ["c1"]}}` is the document now with those
+    /// effects taken out (every picture effect, on every clip, when a list is omitted).
+    #[serde(default)]
+    pub before: Option<Value>,
     /// Bin id of an overlay **entry** to sample on its own, with no placement — the way to
     /// check an animation you are authoring before it is in the cut. `t0`/`t1` are then
     /// seconds into the overlay. Not combinable with `sequence`.
@@ -600,6 +607,11 @@ pub struct MeasureColor {
     /// this one and the sequence to the clip's).
     #[serde(default, rename = "match")]
     pub matching: Option<Value>,
+    /// Also measure the same frames of another version, as `sample_frames` takes it:
+    /// `{"revision": N}` or `{"without": {"kinds"?, "clips"?}}`. Answers `before` beside the
+    /// measurement, so what an edit did to a region is numbers too.
+    #[serde(default)]
+    pub before: Option<Value>,
     /// Seconds to wait before returning the job id instead (default 600).
     #[serde(default)]
     pub wait_seconds: Option<u64>,
@@ -912,7 +924,7 @@ impl KumaServer {
         self.post("/api/overlays/save-blueprint", &json!({ "bin": p.bin, "id": p.id, "force": p.force.unwrap_or(false) })).await
     }
 
-    #[tool(description = "Render exact composited frames (through the real MLT graph, overlays included) and return them as images: evenly over `t0`..`t1`, or at exactly the `times` given, and with `tile` as one captioned contact sheet (every cut ±0.3 s in one image). Use a rect to zoom into a region. Pass `sequence` to look at a nested sequence instead of the master, or `overlay` to look at one overlay bin entry on its own — no placement needed, times counted from the start of the overlay, which is how to check an animation you are authoring before it is in the cut. One frame comes back 960 px wide and several 480 px each unless `width` says. Frames are also written as PNGs whose paths are returned. An overlay changed since it was last baked is baked for its whole clip first, which can take a minute or more per overlay: after `wait_seconds` a sample still baking returns its job id and progress, and calling again with `job` set to that id picks it up.")]
+    #[tool(description = "Render exact composited frames (through the real MLT graph, overlays included) and return them as images: evenly over `t0`..`t1`, or at exactly the `times` given, and with `tile` as one captioned contact sheet (every cut ±0.3 s in one image). Use a rect to zoom into a region. Pass `sequence` to look at a nested sequence instead of the master, or `overlay` to look at one overlay bin entry on its own — no placement needed, times counted from the start of the overlay, which is how to check an animation you are authoring before it is in the cut. One frame comes back 960 px wide and several 480 px each unless `width` says. `before` compares: the same moments of the document at an earlier `revision` (to see what an edit did) or `without` some effects (to see what a grade does), as before/after pairs — with `tile`, one sheet of rows, before on the left. Frames are also written as PNGs whose paths are returned. An overlay changed since it was last baked is baked for its whole clip first, which can take a minute or more per overlay: after `wait_seconds` a sample still baking returns its job id and progress, and calling again with `job` set to that id picks it up.")]
     async fn sample_frames(&self, Parameters(p): Parameters<SampleFrames>, ctx: RequestContext<RoleServer>) -> Result<CallToolResult, McpError> {
         let id = match p.job {
             Some(id) => id,
@@ -926,6 +938,7 @@ impl KumaServer {
                     "sequence": p.sequence,
                     "overlay": p.overlay, "duration": p.duration, "backdrop": p.backdrop,
                     "frame_width": p.frame.map(|f| f.0), "frame_height": p.frame.map(|f| f.1),
+                    "before": p.before,
                 });
                 self.start_job("/api/sample/job", body, &ctx).await?
             }
@@ -950,10 +963,11 @@ impl KumaServer {
         }
         let mut content = Vec::new();
         let samples = j["result"]["samples"].as_array().cloned().unwrap_or_default();
-        let listing: Vec<Value> = samples.iter().map(|s| json!({ "t": s["t"], "frame": s["frame"], "path": s["path"] })).collect();
+        let earlier = j["result"]["before"].as_array().cloned();
+        let list = |frames: &[Value]| -> Vec<Value> { frames.iter().map(|s| json!({ "t": s["t"], "frame": s["frame"], "path": s["path"] })).collect() };
         let sheet = j["result"]["sheet"].as_str();
         // `warnings`: an overlay that baked blank is why a frame is empty, and nothing else says so.
-        content.push(ContentBlock::text(serde_json::to_string_pretty(&json!({ "samples": listing, "sheet": sheet, "warnings": j["result"]["warnings"] })).unwrap()));
+        content.push(ContentBlock::text(serde_json::to_string_pretty(&json!({ "samples": list(&samples), "before": earlier.as_deref().map(list), "sheet": sheet, "warnings": j["result"]["warnings"] })).unwrap()));
         // The PNGs live on the daemon's disk; say so when this process cannot see them.
         let mut image = |label: String, path: &str| match std::fs::read(path) {
             Ok(bytes) => {
@@ -962,11 +976,19 @@ impl KumaServer {
             }
             Err(e) => content.push(ContentBlock::text(format!("{label}: cannot read {path}: {e}"))),
         };
-        match sheet {
-            Some(path) => image(format!("contact sheet, {} frames in the order listed, left to right then down", samples.len()), path),
-            None => {
+        let at = |s: &Value| s["t"].as_f64().unwrap_or(0.0);
+        match (sheet, &earlier) {
+            (Some(path), Some(_)) => image(format!("before and after, one row per moment ({}), before on the left", samples.len()), path),
+            (Some(path), None) => image(format!("contact sheet, {} frames in the order listed, left to right then down", samples.len()), path),
+            (None, Some(earlier)) => {
+                for (b, a) in earlier.iter().zip(&samples) {
+                    image(format!("t={:.3}s before", at(b)), b["path"].as_str().unwrap_or_default());
+                    image(format!("t={:.3}s after", at(a)), a["path"].as_str().unwrap_or_default());
+                }
+            }
+            (None, None) => {
                 for s in &samples {
-                    image(format!("t={:.3}s", s["t"].as_f64().unwrap_or(0.0)), s["path"].as_str().unwrap_or_default());
+                    image(format!("t={:.3}s", at(s)), s["path"].as_str().unwrap_or_default());
                 }
             }
         }
@@ -1004,7 +1026,7 @@ impl KumaServer {
     #[tool(description = "Measure the colour of a region of the picture (the whole frame by default) at some moments, through the real graph with overlays left out unless asked: `stats` with the mean R'G'B' (0..1), luma levels (min, p5, median, p95, max; ×100 reads as IRE), `exposure` (its light in stops from mid grey), `balance` (its cast as the grade's own `temperature` and `tint`: warm above 0, magenta above 0, so a grade of minus these neutralises it), `saturation`, and the share of pixels `clipped` (a channel at full scale) and `crushed` (black). To compare two shots, measure the same thing in each — a face, a white wall — and grade the difference in `exposure` and `balance`. With `match: {clip, reference}` it also solves the clip's `grade` (its white balance and exposure, the rest kept) so the region looks like the reference: `{\"neutral\": true}`, a `{\"color\"}`, or `{\"t\", \"region\"?}` elsewhere in the video. It measures the clip without its grade, answers `before`, the predicted `after`, `reached` (false when the reference is past the grade's ranges or clipping holds it back) and the `patch` to pass to `apply_edits` as is. Nothing is stored.")]
     async fn measure_color(&self, Parameters(p): Parameters<MeasureColor>, ctx: RequestContext<RoleServer>) -> Result<CallToolResult, McpError> {
         let body = json!({
-            "sequence": p.sequence, "times": p.times, "t0": p.t0, "overlays": p.overlays.unwrap_or(false), "match": p.matching,
+            "sequence": p.sequence, "times": p.times, "t0": p.t0, "overlays": p.overlays.unwrap_or(false), "match": p.matching, "before": p.before,
             "region": p.region,
         });
         self.job("/api/color/measure", body, Duration::from_secs(p.wait_seconds.unwrap_or(600)), &ctx).await

@@ -89,7 +89,12 @@ is also what makes it cheap: nothing is baked.
   `{"t": <a moment of the hero shot>, "region": …}` returns the clip's grade and a `patch`
   for `apply_edits`. `reached: false` means the reference is past the grade's ranges or
   clipped highlights hold it back: say so rather than push. `clipped` above a few percent on
-  a face or sky is lost detail no grade brings back. Then `sample_frames` to look.
+  a face or sky is lost detail no grade brings back.
+- **Look at before and after**, at several moments of every clip you graded:
+  `sample_frames` with `times` across each clip, `tile: true` and `before: {"without":
+  {"kinds": ["grade"]}}` (or `{"revision": <the one before your edit>}`) gives one sheet, a
+  row a moment, before on the left. A grade that fixes the moment you measured and spoils
+  another — a face that leaves the light, a window that comes into shot — shows up there.
 
 ## Stills
 

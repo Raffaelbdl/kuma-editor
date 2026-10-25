@@ -51,7 +51,11 @@ reads a region's `exposure` (stops from mid grey) and `balance` (its cast as `te
 white balance and exposure to make its region neutral (`{"neutral": true}` on something white or
 grey in life) or like a region elsewhere (`{"t", "region"?}`), answering a `patch` for
 `apply_edits`. Pick what should match in life — a face, a wall — not the whole frame, whose
-content differs; then `sample_frames` to see it.
+content differs; then look at what it did. **Before and after**: `sample_frames` and
+`measure_color` take `before` — `{"revision": N}` (the document before an edit: the revision
+`apply_edits` answered, less one) or `{"without": {"kinds": ["grade"], "clips"?: [...]}}` — and
+return each moment as a pair; with `tile` one sheet, a row per moment, before on the left. Check
+a grade at several moments of each clip it is on, not one.
 `auto_level` `{target (LUFS, -23), window (s, 3), max_gain, min_gain (dB, ±15)}` rides a
 drifting source's gain toward `target`, measured over the last `window`: no keyframes needed for
 a bed that swells and falls; it lags a sudden change by about a window, and after a seek it

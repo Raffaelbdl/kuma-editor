@@ -88,16 +88,21 @@ is also what makes it cheap: nothing is baked.
   grey to mid grey, highlights rolled off), or the maker's `.cube` as `input_lut`; a creative `.cube` goes in `look`,
   softened by `look_amount`. Sample a frame of each clip side by side after grading, and
   compare a neutral in each (a white wall, a grey shirt) rather than the whole picture.
-  `color` (brightness, contrast, saturation, gamma) still works and can be keyframed; a
-  grade cannot — split the clip where the light changes.
+  `color` (brightness, contrast, saturation, gamma) still works and can be keyframed. A
+  grade's light can be keyed (`keyframes: [{t, exposure?, temperature?, tint?}]`) for light
+  that changes in the shot; `match` on such a grade answers a key at the moment measured,
+  so measure the start and the end of the change and match each. Anything more than the
+  light changing is a split.
 - **Part of the picture**: a `mask` on `grade`, `color` or `blur` limits it to a shape. Read
   the region off a `sample_frames` frame (composition pixels, top-left and size, as `region`)
   and give it as `mask: {x, y, w, h, feather}` — an ellipse unless `shape: "rectangle"`. A
   face to hide: `blur` `radius: 24` with the face's region and `feather: 20`. A vignette:
   `grade` `exposure: -0.7` with an ellipse a little inside the frame, `invert: true`,
   `feather` a fifth of the height. A sky too bright: a rectangle over it, `exposure` down. Each
-  window is its own effect (a clip takes any number masked), and the mask does not move, so
-  check the first and last frame of the clip: a subject that walks out of it needs a split.
+  window is its own effect (a clip takes any number masked). A subject that moves: sample
+  frames where it turns (`times`), read its region off each, and give the mask a key per
+  frame, `keyframes: [{t, x, y}, …]` (`t` from the clip's start; straight lines between, so
+  a curved path wants more keys). Check frames *between* the keys before rendering.
 - **Grade by measuring.** `measure_color` with a `region` on something that should match in
   life (a face, a white wall, a grey shirt — never the whole frame, whose content differs)
   gives its `exposure` and `balance` as grade numbers; compare shots by those. To fix one,

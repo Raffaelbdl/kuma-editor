@@ -235,7 +235,10 @@ against saturation, each an amount about a level line at none. **Where**, under 
 colour correction or a blur, limits it to a shape: an ellipse or rectangle in composition
 pixels, turned, feathered or inverted, placed by its numbers or by **Draw** (drag it over the
 frame); **+ window** adds another of the same effect inside a shape of its own, since a clip
-takes one of each over the whole picture and any number masked.
+takes one of each over the whole picture and any number masked. **+ key** keys the shape where
+the playhead is; once it has keys its fields (and Draw) write into the key at the playhead, and
+it moves in straight lines between them. A grade's light — temperature, tint, exposure —
+takes keys the way any animated effect's fields do, from the diamond in its head.
 
 **Effects are offered where they can act.** Each effect acts on the picture (transform,
 crop, blur, colour, grade, blend, fade, freeze) or the sound (volume, audio fade, limiter, auto
@@ -712,8 +715,10 @@ LUTs it reads) and applies it with one `avfilter.lut3d`, tetrahedral, which is a
 Kdenlive uses to apply a LUT. So a grade is one filter and one rounding whatever it holds,
 the maths is kuma's rather than whichever filters an MLT build ships, and a changed grade
 is a new path, which is what reloads the preview. The cost: a LUT changes every pixel the
-same way, so a grade cannot vary across the frame (a vignette is an `mlt` filter after it)
-or over time (no keyframes — split the clip). The editor shows its fields in the order the
+same way, so on its own a grade cannot vary across the frame or over time: a `mask` limits
+it to a shape (`mask_start`/`mask_apply` around the LUT), and keys on its light (temperature,
+tint, exposure) compile to a moving gain per channel between its input conversion and the
+rest of it, each a LUT; anything else that changes over time is a split. The editor shows its fields in the order the
 colour goes through them; the live overlay preview approximates only its exposure,
 contrast and saturation. LUT files are `.cube` (1D or 3D, any domain) under the project.
 A grade's **Match** row sets its white balance and exposure by measuring: put the playhead on

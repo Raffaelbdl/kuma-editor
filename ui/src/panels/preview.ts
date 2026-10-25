@@ -522,7 +522,7 @@ function applyEffects(iframe: HTMLIFrameElement, c: Clip, local: number, W: numb
     // A grade's three whole-picture numbers; its white balance, wheels, curve and LUTs only
     // the render draws. Exposure is stops of light, which brightens the encoded value by
     // 2^(EV / 2.4).
-    else if (e.type === "grade") filter += ` brightness(${2 ** ((e.exposure ?? 0) / 2.4)}) contrast(${e.contrast ?? 1}) saturate(${e.saturation ?? 1})`;
+    else if (e.type === "grade") filter += ` brightness(${2 ** (paramAt(e, "exposure", local) / 2.4)}) contrast(${e.contrast ?? 1}) saturate(${e.saturation ?? 1})`;
     else if (e.type === "crop") {
       const at = (p: string) => paramAt(e, p, local);
       clip = `inset(${at("top") * 100}% ${at("right") * 100}% ${at("bottom") * 100}% ${at("left") * 100}% round ${at("radius") * Math.min(W, H) * 0.5}px)`;

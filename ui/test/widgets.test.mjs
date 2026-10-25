@@ -238,6 +238,34 @@ describe("a mask: where an effect acts", { skip: why ? `skipping: ${why}` : fals
     await page.eval(`window.dispatchEvent(new PointerEvent("pointerup", { bubbles: true })), true`);
   });
 
+  it("keys the shape at the playhead, writes into the key, and holds where it was when the last key goes", async () => {
+    const where = `document.querySelector('#inspector [data-prop="where"]')`;
+    const press = (label) => `[...${where}.querySelectorAll("button")].find(b => b.textContent === ${JSON.stringify(label)}).click(), true`;
+    await page.eval(press("+ key"));
+    await page.until(`${EFFECTS}.then(e => e[0].mask.keyframes?.length === 1)`);
+    assert.deepEqual(await page.eval(`${EFFECTS}.then(e => e[0].mask.keyframes[0])`), { t: 0, x: 80, y: 45, w: 160, h: 90, rotation: 0 });
+    await settled(page);
+    await page.until(`${where}.textContent.includes("1 key")`);
+    // X typed with the mask keyed: the key changes, the static shape does not.
+    await page.eval(`(() => { const i = ${where}.querySelector(".axis-x input"); i.focus(); i.value = "200"; i.dispatchEvent(new Event("change", { bubbles: true })); i.blur(); return true; })()`);
+    await page.until(`${EFFECTS}.then(e => e[0].mask.keyframes[0].x === 200)`);
+    assert.equal(await page.eval(`${EFFECTS}.then(e => e[0].mask.x)`), 80);
+    await settled(page);
+    await page.eval(press("− key"));
+    await page.until(`${EFFECTS}.then(e => !e[0].mask.keyframes)`);
+    assert.equal(await page.eval(`${EFFECTS}.then(e => e[0].mask.x)`), 200, "the last key gone, the shape stays where it was");
+    await settled(page);
+  });
+
+  it("offers keys on a grade's light", async () => {
+    await page.until(`!!document.querySelector('#inspector .kf-toggle')`);
+    await page.eval(`document.querySelector('#inspector .kf-toggle').click(), true`);
+    await page.until(`${EFFECTS}.then(e => (e[0].keyframes ?? []).length > 0)`);
+    const key = await page.eval(`${EFFECTS}.then(e => e[0].keyframes[0])`);
+    assert.deepEqual(Object.keys(key).sort(), ["exposure", "t", "temperature", "tint"]);
+    await settled(page);
+  });
+
   it("adds a second window of the same effect, and the whole picture takes the mask away", async () => {
     await page.eval(`[...document.querySelectorAll('#inspector [data-prop="where"] button')].find(b => b.textContent === "+ window").click(), true`);
     await page.until(`${EFFECTS}.then(e => e.length === 2)`);

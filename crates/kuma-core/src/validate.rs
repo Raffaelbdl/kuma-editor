@@ -444,14 +444,25 @@ fn check_sequence<'a>(
 fn check_effect(issues: &mut Vec<Issue>, ep: &str, e: &Effect, kind: &str, owner: (&str, f64)) {
     if let Some(m) = e.mask() {
         let mp = format!("{ep}/mask");
-        if ![m.x, m.y, m.w, m.h, m.rotation, m.feather].iter().all(|v| v.is_finite()) {
-            issues.push(Issue::error(mp.clone(), "a mask's numbers must be finite"));
-        }
-        if !(m.w > 0.0 && m.h > 0.0) {
-            issues.push(Issue::error(mp.clone(), "a mask's `w` and `h` must be above 0: it is the rectangle `region` is, in composition pixels"));
+        let shapes = std::iter::once((mp.clone(), m.clone())).chain(m.keyframes.iter().enumerate().map(|(ki, k)| (format!("{mp}/keyframes/{ki}"), m.at_key(k))));
+        for (sp, s) in shapes {
+            if ![s.x, s.y, s.w, s.h, s.rotation, s.feather].iter().all(|v| v.is_finite()) {
+                issues.push(Issue::error(sp, "a mask's numbers must be finite"));
+            } else if !(s.w > 0.0 && s.h > 0.0) {
+                issues.push(Issue::error(sp, "a mask's `w` and `h` must be above 0: it is the rectangle `region` is, in composition pixels"));
+            }
         }
         if m.feather < 0.0 {
             issues.push(Issue::error(format!("{mp}/feather"), "a mask's feather is pixels of soft edge, 0 or more"));
+        }
+        check_keyframes(issues, &mp, owner, m.keyframes.iter().map(|k| k.t));
+        for (ki, k) in m.keyframes.iter().enumerate() {
+            if let Some(name) = k.values.keys().find(|n| !Mask::KEYED.contains(&n.as_str())) {
+                issues.push(Issue::error(format!("{mp}/keyframes/{ki}/{name}"), format!("a mask's keys may set {}; `{name}` holds still", Mask::KEYED.join(", "))));
+            }
+            if k.ease != Ease::Linear {
+                issues.push(Issue::error(format!("{mp}/keyframes/{ki}/ease"), "a mask moves in straight lines between its keys: leave `ease` out"));
+            }
         }
     }
     // A key naming a parameter the kind does not have is refused here rather than by serde
@@ -556,6 +567,13 @@ fn check_grade(issues: &mut Vec<Issue>, ep: &str, g: &Grade) {
     for (name, v, range) in scalars {
         if !range.contains(&v) {
             issues.push(Issue::error(format!("{ep}/{name}"), format!("grade {name} must be within {}..{}", range.start(), range.end())));
+        }
+    }
+    for (ki, k) in g.keyframes.iter().enumerate() {
+        for (name, range) in [("temperature", Grade::TEMPERATURE), ("tint", Grade::TINT), ("exposure", Grade::EXPOSURE)] {
+            if k.get(name).is_some_and(|v| !range.contains(&v)) {
+                issues.push(Issue::error(format!("{ep}/keyframes/{ki}/{name}"), format!("grade {name} must be within {}..{}", range.start(), range.end())));
+            }
         }
     }
     let wheel = Grade::WHEEL;
@@ -966,7 +984,7 @@ mod tests {
             { "type": "grade", "curve": [[0.5, 0.5], [0.4, 0.6], [0.9, 1.2]] },
             { "type": "grade", "input_lut": "../elsewhere.cube", "look": "look.png" },
             { "type": "grade", "input_lut": "missing.cube", "look": "short.cube" },
-            { "type": "grade", "log": "s-log3-cine", "input_lut": "good.cube", "shadows": 0.5, "vibrance": -2, "curve_g": [[0.5, 1.5]],
+            { "type": "grade", "log": "s-log3-cine", "input_lut": "good.cube", "shadows": 0.5, "keyframes": [{ "t": 0, "exposure": 9 }, { "t": 0.5, "saturation": 1 }], "vibrance": -2, "curve_g": [[0.5, 1.5]],
               "hue_sat": [[0.2, 0.5], [1.0, 0.2]], "hue_hue": [[0.0, 1.0], [0.6, -0.4]], "sat_sat": [[0.0, 0.5], [1.0, -1.5]] }
         ]);
         let tracks: Vec<_> = (0..6).map(|i| json!({ "id": format!("v{i}"), "clips": [
@@ -986,7 +1004,7 @@ mod tests {
         assert!(on(3).iter().any(|m| m.starts_with("input_lut") && m.contains("inside the project")) && on(3).iter().any(|m| m.starts_with("look") && m.contains(".cube")), "{:?}", on(3));
         assert!(on(4).iter().any(|m| m.starts_with("input_lut") && m.contains("missing.cube")) && on(4).iter().any(|m| m.starts_with("look") && m.contains("needs 8 rows")), "{:?}", on(4));
         // The later steps: a hue curve wraps, so 1 is 0 again; the others reach 1.
-        assert_eq!(paths(5), ["log", "vibrance", "curve_g/0", "hue_sat/1", "sat_sat/1"], "{:?}", on(5));
+        assert_eq!(paths(5), ["keyframes/1/saturation", "log", "vibrance", "keyframes/0/exposure", "curve_g/0", "hue_sat/1", "sat_sat/1"], "{:?}", on(5));
         // The compiler's check reads no files, so what is on disk cannot fail it.
         let unread = validate(&p, &ValidationContext { check_files: false, ..ctx });
         assert!(!unread.iter().any(|i| i.path.contains("/tracks/4/")), "{unread:?}");
@@ -1011,11 +1029,17 @@ mod tests {
                     { "type": "color", "brightness": 0.1, "mask": { "x": 0, "y": 0, "w": 0, "h": 50 } },
                     { "type": "blur", "radius": 1, "mask": { "x": 0, "y": 0, "w": 5, "h": 5, "feather": -1 } },
                     { "type": "grade" }, { "type": "grade" }
+                ] },
+                { "id": "c", "start": 2, "end": 3, "bin": "x", "effects": [
+                    { "type": "blur", "radius": 4, "mask": { "x": 0, "y": 0, "w": 50, "h": 50, "keyframes": [
+                        { "t": 0, "x": 10 }, { "t": 0.5, "w": 0, "ease": "smooth" }, { "t": 0.8, "feather": 9 }
+                    ] } }
                 ] }
             ] }]
         }));
         let m = messages(&p);
-        assert_eq!(m.len(), 3, "{m:?}");
+        assert_eq!(m.len(), 6, "{m:?}");
+        assert!(m.iter().any(|m| m.contains("straight lines")) && m.iter().any(|m| m.contains("`feather` holds still")), "{m:?}");
         assert!(m.iter().any(|m| m.contains("`w` and `h` must be above 0")), "{m:?}");
         assert!(m.iter().any(|m| m.contains("feather")), "{m:?}");
         assert!(m.iter().any(|m| m.contains("duplicate `grade`")), "two over the whole picture still clash: {m:?}");

@@ -112,6 +112,21 @@ fn locate(doc: &Project, id: &str) -> anyhow::Result<Located> {
     anyhow::bail!("no clip `{id}`")
 }
 
+/// `grade` with `solved`'s light as a key `t` seconds into the clip: the key on that frame
+/// set, or a new one in its place among the others.
+fn keyed_at(grade: &Grade, solved: &Grade, t: f64, fps: kuma_core::Fps) -> Grade {
+    let mut g = grade.clone();
+    let frame = fps.frame(t);
+    let i = g.keyframes.iter().position(|k| fps.frame(k.t) >= frame).unwrap_or(g.keyframes.len());
+    if g.keyframes.get(i).is_none_or(|k| fps.frame(k.t) != frame) {
+        g.keyframes.insert(i, kuma_core::Keyframe { t, ease: Default::default(), values: Default::default() });
+    }
+    for (name, v) in [("temperature", solved.temperature), ("tint", solved.tint), ("exposure", solved.exposure)] {
+        g.keyframes[i].values.insert(name.into(), v);
+    }
+    g
+}
+
 /// `region`, or the whole frame, checked against it.
 fn region_in(doc: &Project, region: Option<Region>) -> anyhow::Result<Region> {
     let r = region.unwrap_or(Region { x: 0, y: 0, w: doc.width, h: doc.height });
@@ -268,7 +283,14 @@ pub fn measure(state: &AppState, req: &ColorRequest, progress: &dyn Fn(u8, &str)
     let matched = match_light(&at.grade, lut(state, at.grade.input_lut.as_deref())?, lut(state, at.grade.look.as_deref())?, &spread(ungraded, MATCH_PIXELS), aim)
         .ok_or_else(|| anyhow::anyhow!("the region has no pixels"))?;
     let effects = format!("/bin/{}/source/tracks/{}/clips/{}/effects", at.sequence, at.track, at.clip);
-    let value = serde_json::to_value(Effect::Grade(Box::new(matched.grade.clone())))?;
+    // A grade whose light is keyed takes the answer as a key at the moment measured (the
+    // first, when there are several): its static light is what the keys leave out.
+    let written = if at.grade.keyframes.is_empty() {
+        matched.grade.clone()
+    } else {
+        keyed_at(&at.grade, &matched.grade, frames[0].t - at.start, doc.fps)
+    };
+    let value = serde_json::to_value(Effect::Grade(Box::new(written.clone())))?;
     let patch = match at.graded_at {
         Some(ei) => json!([{ "op": "replace", "path": format!("{effects}/{ei}"), "value": value }]),
         None => json!([{ "op": "add", "path": format!("{effects}/-"), "value": value }]),
@@ -279,7 +301,7 @@ pub fn measure(state: &AppState, req: &ColorRequest, progress: &dyn Fn(u8, &str)
         "before": ColorStats::of(pooled(ungraded)),
         "after": matched.after,
         "reached": matched.reached,
-        "grade": matched.grade,
+        "grade": written,
         "patch": patch,
     });
     progress(100, "measured");

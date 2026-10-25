@@ -63,7 +63,9 @@
                 "effects": [
                   { "type": "color", "saturation": 1.2 },
                   { "type": "grade", "temperature": 0.3, "lift": { "b": 0.03 }, "curve": [[0.25, 0.2], [0.75, 0.82]], "saturation": 0.9 },
-                  { "type": "grade", "exposure": -0.5, "mask": { "x": 480, "y": 270, "w": 960, "h": 540, "rotation": 15, "feather": 60 } }
+                  { "type": "grade", "exposure": -0.5, "mask": { "x": 480, "y": 270, "w": 960, "h": 540, "rotation": 15, "feather": 60,
+                    "keyframes": [{ "t": 0.5 }, { "t": 2.5, "x": 700, "rotation": -10 }] },
+                    "keyframes": [{ "t": 0 }, { "t": 3, "exposure": 0.3, "temperature": -0.4 }] }
                 ]
               },
               { "id": "c3", "start": 14.0, "end": 15.0, "bin": "navy" }

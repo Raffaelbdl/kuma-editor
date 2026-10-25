@@ -3351,7 +3351,8 @@ Three ways were weighed, after reading two editors that grade:
 What it costs, on purpose: a LUT treats every pixel alike, so nothing spatial is in a grade
 (a vignette, a sharpen, a keyed secondary with a blurred matte — those are filters after
 it), and it is one table per clip, so a grade takes no keyframes; grading two halves of a
-shot differently is a split. Exposure and white balance act on light (BT.1886's 2.4 gamma
+shot differently is a split. (Since amended: masks limit an effect to a shape, and a grade's
+light takes keys — both below.) Exposure and white balance act on light (BT.1886's 2.4 gamma
 decoded and re-encoded), the rest on the displayed signal, and everything is clamped to
 0..1 — this is SDR grading. Log footage goes through its maker's `.cube` as `input_lut`;
 grading log or HDR in float is what a native module would buy, and nothing has asked for it.
@@ -3533,9 +3534,36 @@ Choices that would be expensive to change:
   The live grade preview (`gradepreview.ts`) draws the table through the same shape, so a
   masked grade previews where it applies.
 
-Open: masks that move. `rotoscoping` takes a spline per keyframe and interpolates linearly;
-a mask keyed like the effects' own keyframes (`t` and the fields that change) fits that,
-but only with linear easing, and it should land with keyframed grades rather than before.
+Masks move (added with keyed grades): `mask.keyframes` are keys like an effect's — `t` from
+the clip's start, the fields that change (`x`, `y`, `w`, `h`, `rotation`), the static ones
+filling in — compiled to the spline-per-frame object `rotoscoping` takes. It moves in straight
+lines between them and nothing else, so a mask's key refuses an `ease` rather than ignore one;
+feather, shape and invert hold still. The editor writes into the key at the playhead once a
+mask has keys, and the live preview draws the shape where it is at the playhead. They are
+the mask's own keys, not the effect's: a blur's radius and its mask's path are two
+animations, and either can be still.
+
+## A grade's light, keyed
+
+**Keys move a grade's temperature, tint and exposure; the rest holds** — adopted. Light that
+changes within a shot (out of shade into sun, an auto-exposure drifting) was a split per
+step, which shows. A LUT is a file and cannot move, but step 2 of the grade is a gain per
+channel on light, and BT.1886 being a power law, a gain on light is a gain on the display
+values (`grade::light_scale`). So a keyed grade compiles to its input conversion (a LUT,
+when it has one), an `avfilter.colorchannelmixer` whose `rr`/`gg`/`bb` are animated like any
+keyed property, then the rest of the grade as a LUT with its light taken out
+(`Grade::keyed_parts`, tested to make what the whole grade makes). An unkeyed grade still
+compiles to one LUT, so no finished video changes.
+
+What it costs: the parts round to the frame's bytes and clip to its range between them, as
+one LUT does not — a highlight pushed past white by the exposure and pulled back by a gain
+comes back flat. And MLT interpolates the gains, not the stops: half way between keys 0 and 2
+EV the light is about 1.1 EV, not 1. A `match` on a keyed grade answers a key at the moment
+it measured rather than static values the keys would override.
+
+Rejected: blending two LUTs over time (MLT has no filter that mixes two `lut3d`s, and the
+`mask_start` trick blends against the ungraded frame, not between two grades), and a LUT per
+frame (a megabyte of `.cube` a frame, for what a gain does exactly).
 
 ## Still open
 

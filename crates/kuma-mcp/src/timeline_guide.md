@@ -45,8 +45,9 @@ composition pixels, so a region read off a sampled frame is a mask as it is — 
 leaves the rest as it was: a face blurred, a sky darkened, a vignette (an inverted ellipse
 with `exposure` down). A clip has one of each effect over its whole picture and any number
 masked, so each window is an effect of its own; `before: {"without": {"clips": [id],
-"effects": [i]}}` compares one of them. Masks do not move yet: split the clip where the
-subject does.
+"effects": [i]}}` compares one of them. A mask moves with `keyframes: [{t, x?, y?, w?, h?,
+rotation?}]` (`t` from the clip's start, straight lines between keys, no `ease`): read the
+subject's region off frames sampled at the moments it turns, a key each.
 `grade` is a colour grade, every field neutral when left out, applied in this order:
 `log` (the camera log the footage was shot in, converted to Rec. 709 by kuma: `s-log3-cine`,
 `s-log3`, `v-log`, `c-log2`, `c-log3`, `logc3`, `logc4`, `apple-log`, `d-log`, `f-log`, `f-log2`,
@@ -61,8 +62,10 @@ quarter of white), `curve` (`[[in, out], …]` in 0..1, a monotone cubic through
 `hue_luma` against hue (x in turns round the vectorscope from +Cb, 0..1 and below 1, wrapping
 round — skin sits near 0.34), `luma_sat` and `sat_sat` against luma and saturation (through
 `[0,0]`, `[1,0]`), then `saturation` (0..3, 1 neutral) and `vibrance` (-1..1, saturation where
-there is little), then `look` (a `.cube`) mixed by `look_amount` (0..1). It is one LUT for the whole clip and takes no keyframes:
-split the clip to grade its halves differently. Grade by measuring, then look: `measure_color`
+there is little), then `look` (a `.cube`) mixed by `look_amount` (0..1). It is one LUT for the
+whole clip, except its light: `keyframes` may set `temperature`, `tint` and `exposure` (a walk
+from shade into sun, a drifting auto-exposure), and the rest holds; for more than the light,
+split the clip. Grade by measuring, then look: `measure_color`
 reads a region's `exposure` (stops from mid grey) and `balance` (its cast as `temperature` and
 `tint`) so two shots compare as numbers, and with `match: {clip, reference}` solves the clip's
 white balance and exposure to make its region neutral (`{"neutral": true}` on something white or

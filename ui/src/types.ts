@@ -60,6 +60,8 @@ export const ANIMATABLE: Partial<Record<Effect["type"], Record<string, number>>>
   blur: { radius: 0 },
   color: { brightness: 0, contrast: 1, saturation: 1, gamma: 1 },
   volume: { gain: 1 },
+  // A grade's light: the rest of it is one LUT for the whole clip.
+  grade: { temperature: 0, tint: 0, exposure: 0 },
 };
 
 /** What a clip can show and sound — what an effect has to act on to do anything. */
@@ -147,7 +149,19 @@ export type Effect =
  *  which says what each does; the compiler bakes them into one LUT. */
 /** Where an effect acts (`kuma_core::Mask`): the rectangle `region` is, in composition
  *  pixels, or the ellipse inscribed in it. */
-export interface Mask { shape?: "ellipse" | "rectangle"; x: number; y: number; w: number; h: number; rotation?: number; feather?: number; invert?: boolean }
+export interface Mask { shape?: "ellipse" | "rectangle"; x: number; y: number; w: number; h: number; rotation?: number; feather?: number; invert?: boolean; keyframes?: Keyframe[] }
+
+/** What a mask's keys may set (`Mask::KEYED`). */
+export const MASK_KEYED = ["x", "y", "w", "h", "rotation"] as const;
+
+/** The shape a mask has `local` seconds into its clip: its keys read as the compiler's
+ *  `rotoscoping` reads them, straight between keys, a field a key leaves out the static one. */
+export function maskAt(m: Mask, local: number): Mask {
+  const keys = m.keyframes ?? [];
+  if (!keys.length) return m;
+  const at = (f: (typeof MASK_KEYED)[number]) => sampleTrack(keys, local, (k) => (k[f] as number | undefined) ?? (m[f] ?? 0));
+  return { ...m, x: at("x"), y: at("y"), w: at("w"), h: at("h"), rotation: at("rotation") };
+}
 
 export interface Grade {
   log?: string; input_lut?: string; mask?: Mask; temperature?: number; tint?: number; exposure?: number;
@@ -156,7 +170,7 @@ export interface Grade {
   blacks?: number; shadows?: number; highlights?: number; whites?: number; vibrance?: number;
   curve_r?: [number, number][]; curve_g?: [number, number][]; curve_b?: [number, number][];
   hue_sat?: [number, number][]; hue_hue?: [number, number][]; hue_luma?: [number, number][];
-  luma_sat?: [number, number][]; sat_sat?: [number, number][];
+  luma_sat?: [number, number][]; sat_sat?: [number, number][]; keyframes?: Keyframe[];
 }
 
 /** A rectangle of the picture in composition pixels, as `sample_frames` and

@@ -87,6 +87,18 @@ impl Grade {
             && self.saturation == 1.0
             && [self.blacks, self.shadows, self.highlights, self.whites, self.vibrance] == [0.0; 5]
             && Grading::curves(self).iter().all(Option::is_none)
+            && self.keyframes.iter().all(|k| light_gains(k.or("temperature", self.temperature), k.or("tint", self.tint), k.or("exposure", self.exposure)) == [1.0; 3])
+    }
+
+    /// A keyed grade as the compiler applies it: its input conversion, when it has one, and
+    /// the rest without its light — each a grade of its own, a LUT apiece — for the light to
+    /// move between them as a gain per channel ([`light_scale`]). Step 2 is a gain on light,
+    /// which is a gain on display values too, so this is the grade's own maths; the parts
+    /// round and clip to the frame's range between them, as one LUT does not.
+    pub fn keyed_parts(&self) -> (Option<Grade>, Grade) {
+        let input = (self.log.is_some() || self.input_lut.is_some()).then(|| Grade { log: self.log, input_lut: self.input_lut.clone(), ..Grade::default() });
+        let rest = Grade { log: None, input_lut: None, temperature: 0.0, tint: 0.0, exposure: 0.0, mask: None, keyframes: Vec::new(), ..self.clone() };
+        (input, rest)
     }
 
     /// The tone curves of red, green and blue, as stored.
@@ -387,6 +399,12 @@ impl<'a> Grading<'a> {
     }
 }
 
+/// Step 2 as a gain per channel on display values: what a keyed grade's light compiles to.
+/// BT.1886 is a power law, so a gain on light is a gain on the values that stand for it.
+pub fn light_scale(temperature: f64, tint: f64, exposure: f64) -> [f64; 3] {
+    light_gains(temperature, tint, exposure).map(|g| g.powf(1.0 / DISPLAY_GAMMA))
+}
+
 /// White balance and exposure as gains on linear light. Temperature moves red and blue
 /// a stop apart at ±1, tint moves green by half a stop, and the three are then scaled so a
 /// white keeps its luminance — white balance is not exposure.
@@ -609,6 +627,23 @@ mod tests {
         let converted = Conversion::new(CameraLog::SLog3Cine).apply(c);
         let y = luma(converted);
         assert!(close(graded(&g, c), [y; 3]), "{:?}", graded(&g, c));
+    }
+
+    /// A keyed grade's parts — input, a gain, the rest — make what the grade makes, for a
+    /// colour none of them clips.
+    #[test]
+    fn a_keyed_grade_in_parts_is_the_grade() {
+        use crate::camera::CameraLog;
+        let g = Grade { log: Some(CameraLog::VLog), temperature: 0.4, tint: -0.2, exposure: 0.3, lift: Rgb { r: 0.02, g: 0.0, b: -0.02 }, contrast: 1.2, saturation: 0.9, ..Grade::default() };
+        let (input, rest) = g.keyed_parts();
+        let (input, rest) = (input.unwrap(), rest);
+        assert!(rest.log.is_none() && rest.temperature == 0.0 && rest.contrast == 1.2);
+        let scale = light_scale(g.temperature, g.tint, g.exposure);
+        for c in [[0.4, 0.42, 0.38], [0.3, 0.35, 0.45]] {
+            let mid = graded(&input, c);
+            let parts = graded(&rest, std::array::from_fn(|i| mid[i] * scale[i]));
+            assert!(close(parts, graded(&g, c)), "{c:?}: {parts:?} vs {:?}", graded(&g, c));
+        }
     }
 
     #[test]

@@ -283,8 +283,17 @@ fn grade_luts(project: &Project, order: &[BinId], opts: &CompileOptions) -> Resu
     }
     let clips = order.iter().filter_map(|id| project.seq(id)).flat_map(|s| s.tracks.iter()).flat_map(|t| t.clips.iter());
     for g in clips.flat_map(|c| c.effects.iter()).filter_map(Effect::as_grade) {
-        if let std::collections::hash_map::Entry::Vacant(slot) = luts.entry(grade_key(g)) {
-            slot.insert(luts::resolve(g, &opts.root, &opts.cache_dir).map_err(|e| CompileError::Internal(format!("grade: {e}")))?);
+        // A keyed grade is its parts, each a LUT, with its light moving between them.
+        let parts = if g.keyframes.is_empty() {
+            vec![g.clone()]
+        } else {
+            let (input, rest) = g.keyed_parts();
+            input.into_iter().chain([rest]).collect()
+        };
+        for g in parts {
+            if let std::collections::hash_map::Entry::Vacant(slot) = luts.entry(grade_key(&g)) {
+                slot.insert(luts::resolve(&g, &opts.root, &opts.cache_dir).map_err(|e| CompileError::Internal(format!("grade: {e}")))?);
+            }
         }
     }
     Ok(luts)
@@ -788,7 +797,7 @@ fn emit_effects(ctx: &Ctx, w: &mut XmlWriter, span: &Span, effects: &[Effect], f
                 w.close("filter");
             }
             Effect::Blur { radius, keyframes, mask } => {
-                mask_start(w, &open, ctx, mask.as_ref());
+                mask_start(w, &open, &at, ctx, mask.as_ref());
                 open(w, "blur", "avfilter.gblur");
                 // σ is half the radius; the live overlay preview's CSS `blur()` says the same.
                 let sigma = |r: f64| num((r * ctx.scale / 2.0).max(0.01));
@@ -802,7 +811,7 @@ fn emit_effects(ctx: &Ctx, w: &mut XmlWriter, span: &Span, effects: &[Effect], f
                 mask_apply(w, &open, mask.as_ref());
             }
             Effect::Color { brightness, contrast, saturation, gamma, keyframes, mask } => {
-                mask_start(w, &open, ctx, mask.as_ref());
+                mask_start(w, &open, &at, ctx, mask.as_ref());
                 open(w, "color", "avfilter.eq");
                 for (name, stat) in [("brightness", *brightness), ("contrast", *contrast), ("saturation", *saturation), ("gamma", *gamma)] {
                     w.property(&format!("av.{name}"), anim(keyframes, &at, num(stat), |k| num(k.or(name, stat))));
@@ -813,12 +822,38 @@ fn emit_effects(ctx: &Ctx, w: &mut XmlWriter, span: &Span, effects: &[Effect], f
             Effect::Grade(g) => {
                 // The whole grade is one LUT, computed by kuma (`luts.rs`); a grade that
                 // changes nothing is no filter at all, and needs no mask.
-                if let Some(Some(path)) = ctx.luts.get(&grade_key(g)) {
-                    mask_start(w, &open, ctx, g.mask.as_ref());
-                    open(w, "grade", "avfilter.lut3d");
-                    w.property("av.file", path.to_string_lossy());
-                    w.property("av.interp", "tetrahedral");
+                let lut = |w: &mut XmlWriter, g: &Grade| {
+                    if let Some(Some(path)) = ctx.luts.get(&grade_key(g)) {
+                        open(w, "grade", "avfilter.lut3d");
+                        w.property("av.file", path.to_string_lossy());
+                        w.property("av.interp", "tetrahedral");
+                        w.close("filter");
+                    }
+                };
+                if g.keyframes.is_empty() {
+                    if let Some(Some(_)) = ctx.luts.get(&grade_key(g)) {
+                        mask_start(w, &open, &at, ctx, g.mask.as_ref());
+                        lut(w, g);
+                        mask_apply(w, &open, g.mask.as_ref());
+                    }
+                } else {
+                    // Keyed: the light moves as a gain per channel between the grade's
+                    // input conversion and the rest of it (`Grade::keyed_parts`).
+                    let (input, rest) = g.keyed_parts();
+                    mask_start(w, &open, &at, ctx, g.mask.as_ref());
+                    if let Some(input) = &input {
+                        lut(w, input);
+                    }
+                    open(w, "light", "avfilter.colorchannelmixer");
+                    let scale = |k: Option<&Keyframe>| {
+                        let at = |name: &str, stat: f64| k.map_or(stat, |k| k.or(name, stat));
+                        grade::light_scale(at("temperature", g.temperature), at("tint", g.tint), at("exposure", g.exposure))
+                    };
+                    for (i, channel) in ["rr", "gg", "bb"].into_iter().enumerate() {
+                        w.property(&format!("av.{channel}"), anim(&g.keyframes, &at, num(scale(None)[i]), |k| num(scale(Some(k))[i])));
+                    }
                     w.close("filter");
+                    lut(w, &rest);
                     mask_apply(w, &open, g.mask.as_ref());
                 }
             }
@@ -923,7 +958,7 @@ fn crop_rect(left: f64, right: f64, top: f64, bottom: f64) -> String {
 
 /// Where a masked effect starts: `mask_start` keeps the frame as it is and cuts the shape
 /// out of a copy with `rotoscoping`, which the effect then works on. Nothing without a mask.
-fn mask_start(w: &mut XmlWriter, open: &dyn Fn(&mut XmlWriter, &str, &str), ctx: &Ctx, mask: Option<&Mask>) {
+fn mask_start(w: &mut XmlWriter, open: &dyn Fn(&mut XmlWriter, &str, &str), at: &dyn Fn(f64) -> i64, ctx: &Ctx, mask: Option<&Mask>) {
     let Some(m) = mask else { return };
     open(w, "mask", "mask_start");
     w.property("filter", "rotoscoping");
@@ -931,7 +966,16 @@ fn mask_start(w: &mut XmlWriter, open: &dyn Fn(&mut XmlWriter, &str, &str), ctx:
     // The shape within the alpha the frame already has, so a masked effect on a picture
     // with holes leaves them.
     w.property("filter.alpha_operation", "min");
-    w.property("filter.spline", mask_spline(m, ctx.project.width as f64, ctx.project.height as f64));
+    let (width, height) = (ctx.project.width as f64, ctx.project.height as f64);
+    // A moving mask is a spline per key, by frame, which `rotoscoping` moves between in
+    // straight lines — as the mask's keys say it does.
+    let spline = if m.keyframes.is_empty() {
+        mask_spline(m, width, height)
+    } else {
+        let keys: Vec<String> = m.keyframes.iter().map(|k| format!("\"{}\":{}", at(k.t), mask_spline(&m.at_key(k), width, height))).collect();
+        format!("{{{}}}", keys.join(","))
+    };
+    w.property("filter.spline", spline);
     if m.invert {
         w.property("filter.invert", "1");
     }
@@ -1206,11 +1250,38 @@ mod tests {
         assert!(xml.contains(r#"<property name="transition">qtblend</property>"#), "{xml}");
     }
 
+    /// A keyed grade's light is a gain that moves, between its input conversion and the rest
+    /// of it, each a LUT; an unkeyed grade stays one LUT.
+    #[test]
+    fn a_keyed_grade_moves_its_light_between_its_luts() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = project(json!({
+            "fps": 30, "bin": { "x": { "source": { "path": "x.mp4" } } },
+            "tracks": [{ "id": "v1", "clips": [
+                { "id": "a", "start": 0, "end": 4, "bin": "x", "effects": [
+                    { "type": "grade", "log": "v-log", "contrast": 1.1, "exposure": 1, "keyframes": [{ "t": 0 }, { "t": 2, "exposure": 0, "temperature": 1 }] }
+                ] }
+            ]}]
+        }));
+        let mut opts = CompileOptions::new(dir.path());
+        opts.cache_dir = dir.path().join("cache");
+        let xml = compile(&p, &opts).unwrap();
+        let (input, light, rest) = (xml.find("lut3d").unwrap(), xml.find("colorchannelmixer").unwrap(), xml.rfind("lut3d").unwrap());
+        assert!(input < light && light < rest, "{xml}");
+        assert_eq!(std::fs::read_dir(dir.path().join("cache/luts")).unwrap().count(), 2, "the conversion and the rest");
+        // The first key leaves the light out, so it is the static stop up: 2^(1/2.4) a
+        // channel; the second is a degree warmer with no exposure.
+        let one = 2f64.powf(1.0 / 2.4);
+        let warm = grade::light_scale(1.0, 0.0, 0.0);
+        assert!(xml.contains(&format!(r#"<property name="av.rr">0={};60={}</property>"#, num(one), num(warm[0]))), "{xml}");
+        assert!(xml.contains(&format!(r#"<property name="av.bb">0={};60={}</property>"#, num(one), num(warm[2]))), "{xml}");
+    }
+
     /// An ellipse is four arcs through the middles of its rectangle's sides, and turning it
     /// turns them about its centre, in pixels — so a circle stays round on a wide frame.
     #[test]
     fn an_ellipse_is_four_arcs_and_turns_about_its_centre() {
-        let circle = Mask { shape: MaskShape::Ellipse, x: 0.0, y: 0.0, w: 100.0, h: 100.0, rotation: 0.0, feather: 0.0, invert: false };
+        let circle = Mask { shape: MaskShape::Ellipse, x: 0.0, y: 0.0, w: 100.0, h: 100.0, rotation: 0.0, feather: 0.0, invert: false, keyframes: vec![] };
         let points = |m: &Mask| -> Vec<Vec<[f64; 2]>> { serde_json::from_str(&mask_spline(m, 200.0, 100.0)).unwrap() };
         let p = points(&circle);
         assert_eq!(p.len(), 4);

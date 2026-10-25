@@ -289,3 +289,45 @@ fn a_masked_grade_renders_inside_its_window_only() {
     let out = run(&state, json!({ "times": [0.5], "region": { "x": 0, "y": 0, "w": 8, "h": 6 }, "match": { "clip": "g", "reference": { "neutral": true } } })).unwrap();
     assert_eq!(out["match"]["patch"][0]["op"], "add", "{}", out["match"]);
 }
+
+/// A grade's light keyed: two stops up over the clip renders two stops up at its end, and a
+/// match on it answers with a key at the moment measured rather than a static value the
+/// keys would override.
+#[test]
+fn a_keyed_grade_moves_its_light_in_the_render() {
+    if !renders() {
+        eprintln!("melt/ffmpeg not available; skipping");
+        return;
+    }
+    let (state, _dir) = fixture();
+    apply(&state, &json!([{ "op": "add", "path": "/bin/main/source/tracks/0/clips/0/effects", "value": [
+        { "type": "grade", "keyframes": [{ "t": 0, "exposure": -1 }, { "t": 0.5, "exposure": 1 }] }
+    ] }]));
+    let ev = |t: f64| run(&state, json!({ "times": [t], "region": centre() })).unwrap()["stats"]["exposure"].as_f64().unwrap();
+    let (start, end) = (ev(0.0), ev(0.9));
+    assert!((end - start - 2.0).abs() < 0.15, "two stops between the keys: {start} → {end}");
+    let out = run(&state, json!({ "times": [0.8], "region": centre(), "match": { "clip": "g", "reference": { "neutral": true } } })).unwrap();
+    let keys = out["match"]["grade"]["keyframes"].as_array().unwrap().clone();
+    assert_eq!(keys.len(), 3, "a key added at 0.8 s: {keys:?}");
+    assert!((keys[2]["t"].as_f64().unwrap() - 0.8).abs() < 0.02 && keys[2]["exposure"].is_number(), "{keys:?}");
+}
+
+/// A mask keyed to move goes where its keys say, counted from its clip's start — on a clip
+/// that starts a second into the sequence, so a key read from the sequence's start would
+/// show here.
+#[test]
+fn a_keyed_mask_moves_with_its_clip() {
+    if !renders() {
+        eprintln!("melt/ffmpeg not available; skipping");
+        return;
+    }
+    let (state, _dir) = fixture();
+    apply(&state, &json!([{ "op": "add", "path": "/bin/main/source/tracks/0/clips/1/effects", "value": [
+        { "type": "grade", "exposure": -3, "mask": { "shape": "rectangle", "x": 0, "y": 0, "w": 16, "h": 36,
+          "keyframes": [{ "t": 0.1 }, { "t": 0.8, "x": 48 }] } }
+    ] }]));
+    let ev = |t: f64, x: u32| run(&state, json!({ "times": [t], "region": { "x": x, "y": 10, "w": 8, "h": 16 } })).unwrap()["stats"]["exposure"].as_f64().unwrap();
+    let (left0, right0, left1, right1) = (ev(1.05, 4), ev(1.05, 52), ev(1.9, 4), ev(1.9, 52));
+    assert!(left0 < right0 - 2.0, "the window on the left at first: {left0} {right0}");
+    assert!(right1 < left1 - 2.0, "and on the right by the end: {left1} {right1}");
+}

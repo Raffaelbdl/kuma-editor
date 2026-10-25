@@ -1018,6 +1018,21 @@ pub struct Mask {
     /// Act outside the shape instead.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub invert: bool,
+    /// Where the shape is over time — `x`, `y`, `w`, `h`, `rotation` — `t` from the clip's
+    /// start, a field a key leaves out being the static one. It moves in straight lines
+    /// between keys (what `rotoscoping` does), so a key's `ease` must be left linear.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub keyframes: Vec<Keyframe>,
+}
+
+impl Mask {
+    /// What a mask's key may set.
+    pub const KEYED: [&'static str; 5] = ["x", "y", "w", "h", "rotation"];
+
+    /// The shape as key `k` has it, the static fields filling in what it leaves out.
+    pub fn at_key(&self, k: &Keyframe) -> Mask {
+        Mask { x: k.or("x", self.x), y: k.or("y", self.y), w: k.or("w", self.w), h: k.or("h", self.h), rotation: k.or("rotation", self.rotation), keyframes: Vec::new(), ..self.clone() }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -1130,6 +1145,11 @@ pub struct Grade {
     /// How much of the look, 0..1.
     #[serde(default = "one", skip_serializing_if = "is_one")]
     pub look_amount: f64,
+    /// Keys for the light — `temperature`, `tint`, `exposure` — when it changes in the shot
+    /// (a walk from shade into sun, a camera's exposure drifting). The rest of the grade
+    /// holds still: what a colour becomes is one LUT, and only the light moves around it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub keyframes: Vec<Keyframe>,
 }
 
 impl Default for Grade {
@@ -1162,6 +1182,7 @@ impl Default for Grade {
             mask: None,
             look: None,
             look_amount: 1.0,
+            keyframes: Vec::new(),
         }
     }
 }
@@ -1310,8 +1331,8 @@ impl Effect {
     /// mid-clip is a cut; `mlt` properties are strings MLT reads, where an animation
     /// string can be written directly; a limiter's and an auto-level's settings say how
     /// they follow the sound, which moves already; a freeze's `t` says which frame,
-    /// where a moving one is the clip playing; and a grade is one LUT for the whole clip
-    /// (split the clip to grade its halves differently).
+    /// where a moving one is the clip playing. A grade's light moves — a gain per channel
+    /// beside its LUT — and the rest of it is one LUT for the whole clip.
     pub fn animatable(&self) -> &'static [&'static str] {
         match self {
             Effect::Transform { .. } => &["x", "y", "scale", "rotation", "opacity"],
@@ -1319,8 +1340,8 @@ impl Effect {
             Effect::Blur { .. } => &["radius"],
             Effect::Color { .. } => &["brightness", "contrast", "saturation", "gamma"],
             Effect::Volume { .. } => &["gain"],
+            Effect::Grade(_) => &["temperature", "tint", "exposure"],
             Effect::Blend { .. }
-            | Effect::Grade(_)
             | Effect::Fade { .. }
             | Effect::AudioFade { .. }
             | Effect::Mlt { .. }
@@ -1338,8 +1359,8 @@ impl Effect {
             | Effect::Blur { keyframes, .. }
             | Effect::Color { keyframes, .. }
             | Effect::Volume { keyframes, .. } => keyframes,
+            Effect::Grade(g) => &g.keyframes,
             Effect::Blend { .. }
-            | Effect::Grade(_)
             | Effect::Fade { .. }
             | Effect::AudioFade { .. }
             | Effect::Mlt { .. }

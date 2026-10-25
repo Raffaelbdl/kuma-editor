@@ -14,7 +14,7 @@ import { desktop } from "../desktop";
 import { askForm } from "../modal";
 import { panels } from "../panelhost";
 import { binName, fmtTime, isEntryTab, store, toast } from "../store";
-import type { BinItem, Clip, ColorReference, Cue, Ease, Effect, FontFamily, Grade, Mask, PatchOp, Project, Streams, Transition, VarSpec } from "../types";
+import type { BinItem, Clip, ColorReference, Cue, Ease, Effect, FontFamily, Grade, Keyframe, Mask, PatchOp, Project, Streams, Transition, VarSpec } from "../types";
 import { pickRegion } from "../regionpick";
 import { previewGrade, settle, showBefore } from "../gradepreview";
 import { blueprintActions, copyEffects, makeOverlayUnique, matchSelectedToReference, removeTransition, setTransitionDuration, setTransitionKind, updateTransition, manifestOf, moveBinItem, overlayError, placeBinItem, previewImg, renderPreview, saveAsBlueprint, sharersOf } from "../edits";
@@ -26,7 +26,7 @@ import { keyStrip, numberField, showNumber, sliderField, vectorField } from "../
 import { colorField, wheelField } from "../colorfield";
 import { curveField } from "../curvefield";
 import type { CurveKind, CurvePoint } from "../curve";
-import { LUMAS, SEQUENCE_EFFECTS, sourceAfter, actsOn, ANIMATABLE, binItem, binPath, canPlace, canTimeWarp, childrenOf, clipStreams, covers, expandPreset, hasAudio, isColorSource, isFileSource, isFolderSource, isOverlaySource, isSequenceSource, isTimedMedia, itemKind, mediaFacts, placementsOf, seqDuration, seqPath, sequenceOf, sequenceStreams, streamsOf, wouldNest } from "../types";
+import { LUMAS, MASK_KEYED, maskAt, SEQUENCE_EFFECTS, sourceAfter, actsOn, ANIMATABLE, binItem, binPath, canPlace, canTimeWarp, childrenOf, clipStreams, covers, expandPreset, hasAudio, isColorSource, isFileSource, isFolderSource, isOverlaySource, isSequenceSource, isTimedMedia, itemKind, mediaFacts, placementsOf, seqDuration, seqPath, sequenceOf, sequenceStreams, streamsOf, wouldNest } from "../types";
 
 const presetsPromise = api.effectPresets().catch(() => []);
 
@@ -352,6 +352,10 @@ interface PropCtx {
   preview?: (key: string, v: unknown) => void;
   /** Add another effect of this kind to the owner, with `fields` over what one starts as. */
   another: (fields: Record<string, unknown>) => void;
+  /** The effect's timing on its clip — the playhead in its time — for a kind that animates. */
+  anim: Animation | null;
+  /** Call `fn` whenever the playhead moves, while the panel shows this effect. */
+  follow: (fn: () => void) => void;
 }
 
 /** One property row, whatever shape it is. What it edits is on the row: the panel styles
@@ -410,7 +414,7 @@ function propRow(p: PropSpec, ctx: PropCtx): HTMLElement {
       break;
     }
     case "mask":
-      control = maskControls(ctx, input);
+      control = maskControls(ctx);
       break;
     case "match":
       // A grade is a clip's: the model offers it to nothing else.
@@ -943,9 +947,15 @@ export class Inspector {
         clip: owner.clip,
         effect: ei,
         merge: (fields) => replace({ ...e, ...fields }, Object.keys(fields).join(", ")),
+        anim,
+        follow: (fn) => mine.push(fn),
         another: (fields) => void store.patch([{ op: "add", path: `${owner.path}/-`, value: { ...spec.add, ...fields } }], `add ${e.type}`),
         preview: spec.live && owner.clip ? (key, v) => {
-          const { type: _, ...grade } = withValue(key, v) as Effect & Grade;
+          const { type: _, keyframes: __, ...grade } = withValue(key, v) as Effect & Grade;
+          // A keyed light previews as it is at the playhead, the field dragged as dragged;
+          // a moving mask where it is at the playhead.
+          if (anim?.animated) for (const p of ["temperature", "tint", "exposure"] as const) if (p !== key) grade[p] = anim.at(p);
+          if (grade.mask?.keyframes?.length && anim) grade.mask = maskAt(grade.mask, anim.local);
           previewGrade(owner.clip!, ei, grade);
         } : undefined,
       };
@@ -1020,7 +1030,7 @@ function startingMask(shape: "ellipse" | "rectangle"): Mask {
 
 /** Where an effect acts: the whole picture, or a shape — placed by its numbers or drawn on
  *  the frame — with another window of the same kind one click away. */
-function maskControls(ctx: PropCtx, input: (key: string) => { input?: (v: unknown) => void }): HTMLElement {
+function maskControls(ctx: PropCtx): HTMLElement {
   const m = ctx.read("mask") as Mask | undefined;
   const wrap = el("div", "mask-field wide");
   const shapes = [{ value: "", label: "the whole picture" }, { value: "ellipse", label: "inside an ellipse" }, { value: "rectangle", label: "inside a rectangle" }];
@@ -1029,22 +1039,77 @@ function maskControls(ctx: PropCtx, input: (key: string) => { input?: (v: unknow
   const more = button("+ window", () => ctx.another({ mask: startingMask("ellipse") }), "Add another of this effect, inside a shape of its own: a second window");
   wrap.appendChild(row("mask-head", shape, more));
   if (!m) return wrap;
-  const num = (key: string) => Number(ctx.read(key) ?? 0);
-  const part = (key: string, tag: string, axis: Axis, title: string) => (
-    { key, tag, axis, step: 1, suffix: "px", title, value: num(key), commit: (v: number) => ctx.write(key, v), ...input(key) });
+
+  // A moving mask: its fields read and write the shape at the playhead, a key there made
+  // when there is none, and outside the clip there is no "now" to write to.
+  const a = ctx.anim;
+  const keys = m.keyframes ?? [];
+  const keyed = keys.length > 0 && !!a;
+  const now = () => maskAt(m, a?.local ?? 0);
+  const keyIndex = () => (a ? keys.findIndex((k) => Math.abs(k.t - a.local) < store.halfFrame) : -1);
+  /** `fields` written: into the key at the playhead when the mask moves, else static. */
+  const setShape = (fields: Partial<Mask>) => {
+    if (!keyed || !a) return ctx.write("mask", { ...m, ...fields });
+    const t = a.clampT(a.local);
+    const ks = keys.map((k) => ({ ...k }));
+    let i = keyIndex();
+    if (i < 0) {
+      const cur = now();
+      const key: Keyframe = { t };
+      for (const f of MASK_KEYED) key[f] = cur[f] ?? 0;
+      i = ks.findIndex((k) => k.t > t);
+      if (i < 0) i = ks.length;
+      ks.splice(i, 0, key);
+    }
+    Object.assign(ks[i], fields);
+    ctx.write("mask", { ...m, keyframes: ks });
+  };
+  const live = (f: (typeof MASK_KEYED)[number]) => ({
+    readOnly: keyed && !a!.inside,
+    live: keyed ? (set: (v: number) => void) => ctx.follow(() => set(now()[f] ?? 0)) : undefined,
+    // Dragged, the shape previews where it would be: at the playhead, with this field moved.
+    input: ctx.preview ? (v: unknown) => ctx.preview!("mask", { ...now(), keyframes: undefined, [f]: Number(v) }) : undefined,
+  });
+  const part = (f: "x" | "y" | "w" | "h", tag: string, axis: Axis, title: string) => (
+    { key: `mask.${f}`, tag, axis, step: 1, suffix: "px", title, value: now()[f], commit: (v: number) => setShape({ [f]: v }), ...live(f) });
   // Two rows: composition pixels run to four digits, and four fields abreast clip them.
-  wrap.appendChild(vectorField([part("mask.x", "X", "x", "The shape's left edge, in composition pixels"), part("mask.y", "Y", "y", "Its top edge")]));
-  wrap.appendChild(vectorField([part("mask.w", "W", "z", "Its width"), part("mask.h", "H", "w", "Its height")]));
-  const turn = numberField(num("mask.rotation"), (v) => ctx.write("mask.rotation", v), { step: 1, suffix: "°", title: "Turned clockwise about its centre", ...input("mask.rotation") });
-  const feather = numberField(num("mask.feather"), (v) => ctx.write("mask.feather", v), { step: 1, min: 0, suffix: "px", title: "Pixels of soft edge, centred on the shape's edge", ...input("mask.feather") });
+  wrap.appendChild(vectorField([part("x", "X", "x", "The shape's left edge, in composition pixels"), part("y", "Y", "y", "Its top edge")]));
+  wrap.appendChild(vectorField([part("w", "W", "z", "Its width"), part("h", "H", "w", "Its height")]));
+  const turn = numberField(now().rotation ?? 0, (v) => setShape({ rotation: v }), { step: 1, suffix: "°", title: "Turned clockwise about its centre", ...live("rotation") });
+  const feather = numberField(m.feather ?? 0, (v) => ctx.write("mask.feather", v), { step: 1, min: 0, suffix: "px", title: "Pixels of soft edge, centred on the shape's edge" });
   const invert = el("label", "mask-invert");
   invert.append(checkbox(!!m.invert, (v) => ctx.write("mask.invert", v || undefined)), document.createTextNode("outside"));
   invert.title = "Act outside the shape instead of inside";
   const draw = button("Draw", async () => {
     const r = await pickRegion("Where the effect acts");
-    if (r) ctx.write("mask", { ...m, ...r });
-  }, "Drag the shape's rectangle over the picture");
+    if (r) setShape(r);
+  }, keyed ? "Drag the shape's rectangle over the picture: a key here" : "Drag the shape's rectangle over the picture");
   wrap.appendChild(row("mask-more", turn, feather, invert, draw));
+
+  // Keys: one where the playhead is, holding the shape it has there, or that one taken out.
+  if (a) {
+    const add = button("+ key", () => {
+      const cur = now();
+      const key: Keyframe = { t: a.clampT(a.local) };
+      for (const f of MASK_KEYED) key[f] = cur[f] ?? 0;
+      const ks = keys.filter((k) => Math.abs(k.t - key.t) >= store.halfFrame);
+      ks.push(key);
+      ks.sort((p, q) => p.t - q.t);
+      ctx.write("mask", { ...m, keyframes: ks });
+    }, "Key the shape where the playhead is: between keys it moves in a straight line");
+    const del = button("− key", () => {
+      const i = keyIndex();
+      if (i < 0) return;
+      const ks = keys.filter((_, j) => j !== i);
+      // The last key gone, the mask holds still where it was.
+      ctx.write("mask", ks.length ? { ...m, keyframes: ks } : { ...m, ...now(), keyframes: undefined });
+    }, "Take out the key at the playhead");
+    add.disabled = !a.inside;
+    del.disabled = keyIndex() < 0;
+    ctx.follow(() => { add.disabled = !a.inside; del.disabled = keyIndex() < 0; });
+    const said = el("span", "muted tiny", keys.length ? plural(keys.length, "key") : "still");
+    wrap.appendChild(row("mask-keys", add, del, said));
+  }
   return wrap;
 }
 

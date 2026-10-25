@@ -3444,6 +3444,13 @@ the sequence are left out of the frame it starts from. Widgets report values whi
 through an `input` callback (`NumberOpts.input`, and the curve and wheel fields), which is a
 preview hook and never an edit.
 
+**Scopes read the preview, not the daemon** — adopted. The four a grade is read with
+(waveform, parade, vectorscope, histogram), counted in the browser from whatever the preview
+shows: the engine's frame, or the grade being dragged. They have to follow a drag, which a
+round trip per frame could not; and they read pixels already on screen, so there is nothing
+to keep in agreement. `measure_color` stays the agent's, in numbers. A panel in a window of
+its own has no preview to read, and says so.
+
 ## Still open
 
 Nested sequences are done and the editor is an application now, so this list is the whole

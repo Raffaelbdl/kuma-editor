@@ -945,3 +945,13 @@ button.mk-remove:hover { color: var(--danger); }
 .wheel-puck { position: absolute; width: 10px; height: 10px; margin: -5px 0 0 -5px; border-radius: 50%; border: 2px solid var(--fg); box-shadow: 0 0 0 1px var(--bg-0); pointer-events: none; z-index: 1; }
 .wheel-field .num { width: 100%; }
 .field:has(> .color-field.open) > label { align-self: start; margin-top: 5px; }
+
+/* The scopes panel (`panels/scopes.ts`): the four scopes in a grid, or one filling it. */
+.scopes-panel { padding: 8px; }
+.scopes-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.scopes-grid.one { grid-template-columns: 1fr; }
+.scope-box { margin: 0; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.scope { width: 100%; height: auto; background: var(--bg-0); border: 1px solid var(--line); border-radius: 3px; image-rendering: auto; }
+.scope-vectorscope { aspect-ratio: 1; border-radius: 50%; }
+.scope-waveform, .scope-parade { aspect-ratio: 16 / 10; }
+.scope-histogram { aspect-ratio: 2; }

@@ -20,10 +20,16 @@ const PROJECT = JSON.stringify({
   bin: {
     grey: { name: "Grey", source: { color: "#808080" } },
     warm: { name: "Warm", source: { color: "#a08060" } },
+    red: { name: "Red", source: { color: "#ff0000" } },
     main: { name: "Main", source: { markers: [], tracks: [
       { id: "v1", kind: "video", name: "Video", muted: false, hidden: false, transitions: [], clips: [
         clip("w", 0, 2, "warm", [{ type: "grade", saturation: 0.9 }]),
         clip("g", 2, 4, "grey", []),
+      ] },
+      // A small red picture in the top-left corner, so the frame is not one colour and the
+      // live preview has a top and a bottom to get the right way round.
+      { id: "v2", kind: "video", name: "PiP", muted: false, hidden: false, transitions: [], clips: [
+        clip("pip", 0, 2, "red", [{ type: "transform", x: -120, y: -60, scale: 0.25 }]),
       ] },
     ] } },
   },
@@ -91,6 +97,11 @@ describe("matching a grade from the inspector", { skip: why ? `skipping: ${why}`
     // A drag the way a range input reports one: input events, and change on release.
     await page.eval(`(() => { const r = document.querySelector('#inspector [data-prop="temperature"] input[type=range]'); r.value = "0.8"; r.dispatchEvent(new Event("input", { bubbles: true })); return true; })()`);
     await page.until(live, 30000);
+    // The right way up: the red corner is at the top left, the warm clip at the bottom right.
+    const at = (x, y) => `(() => { const c = document.querySelector("#preview .grade-live"); const k = document.createElement("canvas"); k.width = c.width; k.height = c.height;
+      const g = k.getContext("2d"); g.drawImage(c, 0, 0); return [...g.getImageData(Math.round(c.width * ${x}), Math.round(c.height * ${y}), 1, 1).data.slice(0, 3)]; })()`;
+    const [corner, rest] = [await page.eval(at(0.06, 0.12)), await page.eval(at(0.9, 0.9))];
+    assert.ok(corner[0] > 150 && corner[1] < 70 && rest[1] > 90, `top left ${corner}, bottom right ${rest}`);
     // Before, held: the frame without the grade; let go, and it is gone.
     await page.eval(`window.dispatchEvent(new PointerEvent("pointerup", { bubbles: true })), true`);
     const before = `document.querySelector("#inspector .grade-before")`;

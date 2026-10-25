@@ -717,7 +717,10 @@ held, shows the clip without its grade (`gradepreview.ts`). The frame without th
 the daemon's render of a version of the document (`sample` with `version`), and the grade is
 the daemon's own maths as a 33³ table (`POST /api/grade/table`) applied with WebGL, so what
 you see while dragging is what renders; it covers the frame, which is exact for a clip that
-fills it, and the render replaces it as soon as the engine shows the edit.
+fills it, and the render replaces it as soon as the engine shows the edit. **Scopes** (`s`,
+on the rail): waveform, RGB parade, vectorscope with the bars' targets and the skin line, and
+histogram, of what the preview shows — the grade being dragged while it is (`panels/scopes.ts`,
+counted by `scopes.ts` from the frame at 320 px wide, at most once an animation frame).
 
 A clip that reads past the end of its source is padded with nothing for the frames the
 source lacks, which show the tracks below and are silent. MLT would otherwise cut the

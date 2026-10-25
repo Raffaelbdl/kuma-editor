@@ -54,7 +54,11 @@ export function settle(): void {
 function hide(): void {
   generation++;
   pending = null;
-  if (view) view.canvas.hidden = true;
+  if (view && !view.canvas.hidden) {
+    view.canvas.hidden = true;
+    // The frame shows the engine's picture again: what reads it reads it again.
+    view.canvas.dispatchEvent(new Event("graded", { bubbles: true }));
+  }
 }
 
 async function pump(): Promise<void> {
@@ -101,7 +105,8 @@ interface View {
 const VERTEX = `#version 300 es
 in vec2 at;
 out vec2 uv;
-void main() { uv = vec2(at.x, 1.0 - at.y) * 0.5 + 0.5; gl_Position = vec4(at, 0.0, 1.0); }`;
+// The frame's first row is its top, and clip space's top is +1.
+void main() { uv = vec2(at.x * 0.5 + 0.5, 0.5 - at.y * 0.5); gl_Position = vec4(at, 0.0, 1.0); }`;
 
 // The table's points sit at the centres of its texels: a colour c reads at c·(n−1)/n + ½/n.
 const FRAGMENT = `#version 300 es
@@ -127,7 +132,8 @@ function ensureView(): View | null {
   canvas.className = "grade-live";
   canvas.hidden = true;
   st.insertBefore(canvas, st.querySelector(".overlay-layer"));
-  const gl = canvas.getContext("webgl2", { premultipliedAlpha: false });
+  // Kept after it is shown, so the scopes can read what the grade being dragged looks like.
+  const gl = canvas.getContext("webgl2", { premultipliedAlpha: false, preserveDrawingBuffer: true });
   if (!gl) return null;
   const shader = (type: number, src: string) => {
     const s = gl.createShader(type)!;
@@ -185,6 +191,7 @@ function paint(frame: ImageBitmap, table: Uint8Array | null): void {
   gl.uniform1i(v.useLut, table ? 1 : 0);
   gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
   canvas.hidden = false;
+  canvas.dispatchEvent(new Event("graded", { bubbles: true }));
 }
 
 // A preview is of one moment: moving, playing or picking something else ends it.

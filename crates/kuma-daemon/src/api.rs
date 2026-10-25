@@ -75,6 +75,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/samples/{*file}", get(sample_file))
         .route("/api/audio/measure", post(measure_audio))
         .route("/api/color/measure", post(measure_color))
+        .route("/api/grade/table", post(grade_table))
         .route("/api/media/measure", post(measure_media))
         .route("/api/snapshot", get(snapshot))
         .route("/api/cache", get(cache_usage))
@@ -1050,6 +1051,22 @@ async fn measure_color(State(st): S, Json(asked): Json<Asked<crate::color::Color
     let s2 = st.clone();
     let params = json!({ "sequence": req.sequence, "times": req.times, "t0": req.t0, "region": req.region, "clip": req.matching.as_ref().map(|m| &m.clip) });
     Json(json!({ "job": jobs::spawn_cancellable(st, "measure-color", params, by, move |progress, cancel| crate::color::measure(&s2, &req, progress, cancel)) }))
+}
+
+#[derive(Deserialize)]
+struct GradeTable {
+    grade: kuma_core::Grade,
+    #[serde(default)]
+    size: Option<usize>,
+}
+
+/// A grade as a table of bytes (`size`³ RGB, red fastest): what the editor applies to the
+/// frame while a grade control is dragged, so the live picture is the compiler's maths and
+/// the client keeps no copy of them.
+async fn grade_table(State(st): S, Json(req): Json<GradeTable>) -> Result<Response, ApiError> {
+    let n = req.size.unwrap_or(crate::color::TABLE_SIZE);
+    let bytes = blocking(move || crate::color::table(&st, &req.grade, n)).await?.map_err(ApiError::bad_request)?;
+    Ok(([(header::CONTENT_TYPE, HeaderValue::from_static("application/octet-stream"))], bytes).into_response())
 }
 
 /// How loud one source is and where it is quiet, as a cancellable job: ffmpeg decodes the

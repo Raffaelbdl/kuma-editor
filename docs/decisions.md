@@ -3424,6 +3424,26 @@ differs only by the edit. A sheet lays them out a row per moment, before on the 
 MCP tool says which is which. Asking for a `before` that takes nothing out (a misspelt kind,
 a clip that is not there) is refused rather than answered with two identical pictures.
 
+## The grade, live
+
+**While a grade control is dragged, the frame shows it; Before, held, shows the clip
+without it** — adopted. Grading by committing and waiting for a reload is grading blind, and
+both reference editors update as you drag. The preview could not keep its own copy of the
+grade maths (the rule that dropped `engineKey`: no client model of what the compiler does), so
+the daemon supplies both halves: the frame without the clip's grade, rendered as a version of
+the document through the ordinary sample path, and the grade being dragged as a 33³ table of
+bytes from `Grading`, the maths the `.cube` comes from (`POST /api/grade/table`, LUT files
+remembered by size and time so a drag does not reparse them). The browser applies the table
+to the frame with WebGL, one request in flight and the latest value winning, over the engine's
+frame and under the live overlays. Measured in a browser: the dragged picture was within one
+level of the render that replaced it.
+
+What it does not do: it covers the whole frame, so a clip that does not fill it (picture in
+picture, a crop) previews its grade on everything until the edit lands; overlays nested in
+the sequence are left out of the frame it starts from. Widgets report values while dragging
+through an `input` callback (`NumberOpts.input`, and the curve and wheel fields), which is a
+preview hook and never an edit.
+
 ## Still open
 
 Nested sequences are done and the editor is an application now, so this list is the whole

@@ -18,7 +18,7 @@ const SAMPLES = 128;
 
 const round = (v: number) => Number(v.toFixed(3));
 
-export function curveField(initial: CurvePoint[], commit: (points: CurvePoint[]) => void, opts: { title?: string } = {}): HTMLElement {
+export function curveField(initial: CurvePoint[], commit: (points: CurvePoint[]) => void, opts: { title?: string; /** The points as they are dragged, before the commit: a preview, never an edit. */ input?: (points: CurvePoint[]) => void } = {}): HTMLElement {
   const wrap = el("div", "curve-field");
   const plot = el("div", "curve-plot");
   if (opts.title) plot.title = opts.title;
@@ -97,6 +97,7 @@ export function curveField(initial: CurvePoint[], commit: (points: CurvePoint[])
         show();
         place(i);
         drawLine();
+        opts.input?.(withoutCorners(pts));
       },
       end: (moved) => {
         plot.classList.remove("dragging");

@@ -32,6 +32,9 @@ export interface NumberOpts {
    *  for: a keyframed field follows the playhead 25 times a second, and re-rendering the
    *  inspector at that rate is exactly what `store.select` exists to avoid. */
   live?: (set: (v: number) => void) => void;
+  /** Called with the value as it is dragged, before it is committed: for a preview of
+   *  what it would do, never an edit. */
+  input?: (v: number) => void;
 }
 
 /** A value with its own field: `{ value, commit }` plus how to show and step it. */
@@ -119,6 +122,7 @@ export function numberField(initial: number, commit: (v: number) => void, opts: 
         const travel = dx - Math.sign(dx) * DEAD_ZONE;
         const q = step * scaleOf(ev);
         show(clamp(quantise(base + travel * q, q)));
+        opts.input?.(shown);
       },
       end: (moved) => {
         wrap.classList.remove("dragging");
@@ -188,7 +192,7 @@ export function sliderField(value: number, commit: (v: number) => void, opts: Nu
   const num = numberField(value, commit, { ...opts, live, ...(opts.soft ? { min: undefined, max: undefined } : {}) });
   const input = num.querySelector("input")!;
   if (opts.readOnly) range.disabled = true;
-  range.oninput = () => { input.value = showNumber(Number(range.value)); };
+  range.oninput = () => { input.value = showNumber(Number(range.value)); opts.input?.(Number(range.value)); };
   range.onchange = () => commit(Number(range.value));
   wrap.append(range, num);
   return wrap;

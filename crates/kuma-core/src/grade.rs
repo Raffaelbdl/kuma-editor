@@ -275,18 +275,25 @@ impl<'a> Grading<'a> {
     /// hands MLT. The same grade always writes the same bytes.
     pub fn cube(&self) -> String {
         let n = GRID;
-        let step = |i: usize| i as f64 / (n - 1) as f64;
         let mut out = format!("# A kuma grade, sampled from its settings: edit those, not this.\nLUT_3D_SIZE {n}\n");
         out.reserve(n * n * n * 27);
-        for b in 0..n {
-            for g in 0..n {
-                for r in 0..n {
-                    let [x, y, z] = self.apply([step(r), step(g), step(b)]);
-                    let _ = writeln!(out, "{x:.6} {y:.6} {z:.6}");
-                }
-            }
+        for [x, y, z] in self.grid(n) {
+            let _ = writeln!(out, "{x:.6} {y:.6} {z:.6}");
         }
         out
+    }
+
+    /// The grade at `n`³ points, red fastest, as a byte a channel: what the editor's live
+    /// preview applies to a frame while a control is dragged — the same maths the render
+    /// gets as a `.cube`, at the precision a frame on screen has.
+    pub fn table_rgb8(&self, n: usize) -> Vec<u8> {
+        self.grid(n).flat_map(|c| c.map(|v| (v * 255.0).round() as u8)).collect()
+    }
+
+    /// The grade at every point of an `n`³ grid of colours, red fastest.
+    fn grid(&self, n: usize) -> impl Iterator<Item = [f64; 3]> + '_ {
+        let step = move |i: usize| i as f64 / (n - 1) as f64;
+        (0..n * n * n).map(move |i| self.apply([step(i % n), step(i / n % n), step(i / (n * n))]))
     }
 }
 

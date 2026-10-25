@@ -16,6 +16,7 @@ import { panels } from "../panelhost";
 import { binName, fmtTime, isEntryTab, store, toast } from "../store";
 import type { BinItem, Clip, ColorReference, Cue, Ease, Effect, FontFamily, Grade, PatchOp, Project, Streams, Transition, VarSpec } from "../types";
 import { pickRegion } from "../regionpick";
+import { previewGrade, settle, showBefore } from "../gradepreview";
 import { blueprintActions, makeOverlayUnique, removeTransition, setTransitionDuration, setTransitionKind, updateTransition, manifestOf, moveBinItem, overlayError, placeBinItem, previewImg, renderPreview, saveAsBlueprint, sharersOf } from "../edits";
 import { Animation, animationOf } from "../keyframes";
 import { historyFor } from "./history";
@@ -53,7 +54,12 @@ type PropSpec =
  *  renders with no fields. A kind in `ANIMATABLE` gets the keyframe toggle in its head, and
  *  the keyframe row once it has keys. Units are the model's, and the tooltips say so where
  *  it is not obvious. */
-interface EffectSpec { add: Effect; props?: PropSpec[] }
+interface EffectSpec {
+  add: Effect;
+  props?: PropSpec[];
+  /** Shown on the frame while a control is dragged, before the edit (`gradepreview.ts`). */
+  live?: boolean;
+}
 const EASES: Ease[] = ["linear", "hold", "smooth"];
 /** A fade's two lengths, whichever stream it fades. */
 const fadeProps = (into: string, outOf: string): PropSpec[] => [{ kind: "vec", label: "Duration", parts: [
@@ -110,6 +116,7 @@ const EFFECTS: Partial<Record<Effect["type"], EffectSpec>> = {
   // the way a colour goes through it. Nothing here animates: a grade is the clip's, and
   // grading two halves differently is a split.
   grade: {
+    live: true,
     add: { type: "grade", temperature: 0, tint: 0, exposure: 0, contrast: 1, curve: [], saturation: 1, look_amount: 1 },
     props: [
       { kind: "text", key: "input_lut", label: "Input LUT", optional: true },
@@ -302,51 +309,54 @@ interface PropCtx {
   clip?: string;
   /** Write several fields of the effect as one edit. */
   merge: (fields: Record<string, unknown>) => void;
+  /** Show what a value would do while it is dragged, for a kind that can (`live`). */
+  preview?: (key: string, v: unknown) => void;
 }
 
 /** One property row, whatever shape it is. What it edits is on the row: the panel styles
  *  by it, and a test can name a property rather than counting divs. */
 function propRow(p: PropSpec, ctx: PropCtx): HTMLElement {
   const { read, write, timed } = ctx;
+  const input = (key: string) => (ctx.preview ? { input: (v: unknown) => ctx.preview!(key, v) } : {});
   const num = (key: string) => Number(read(key) ?? 0);
   // A kind that edits one key is named by it; one that edits several, by its label.
   const label = "key" in p ? p.label ?? title(p.key) : p.label;
-  let input: HTMLElement;
+  let control: HTMLElement;
   switch (p.kind) {
     case "vec":
-      input = vectorField(p.parts.map((part) => ({ ...part, ...timed(part.key), value: num(part.key), commit: (v: number) => write(part.key, v) })));
+      control = vectorField(p.parts.map((part) => ({ ...part, ...timed(part.key), ...input(part.key), value: num(part.key), commit: (v: number) => write(part.key, v) })));
       break;
     case "num":
-      input = numberField(num(p.key), (v) => write(p.key, v), { ...p, ...timed(p.key) });
+      control = numberField(num(p.key), (v) => write(p.key, v), { ...p, ...timed(p.key), ...input(p.key) });
       break;
     case "slider":
-      input = sliderField(num(p.key), (v) => write(p.key, v), { ...p, ...timed(p.key) });
+      control = sliderField(num(p.key), (v) => write(p.key, v), { ...p, ...timed(p.key), ...input(p.key) });
       break;
     case "enum":
-      input = selectInput(p.options.map((value) => ({ value })), String(read(p.key)), (v) => write(p.key, v));
+      control = selectInput(p.options.map((value) => ({ value })), String(read(p.key)), (v) => write(p.key, v));
       break;
     case "text":
-      input = textInput(String(read(p.key) ?? ""), (v) => write(p.key, v === "" && p.optional ? undefined : v));
+      control = textInput(String(read(p.key) ?? ""), (v) => write(p.key, v === "" && p.optional ? undefined : v));
       break;
     case "json":
-      input = jsonInput(read(p.key) ?? null, (v) => write(p.key, v));
+      control = jsonInput(read(p.key) ?? null, (v) => write(p.key, v));
       break;
     case "curve":
-      input = curveField((read(p.key) as CurvePoint[] | undefined) ?? [], (v) => write(p.key, v), { title: p.title });
-      input.classList.add("wide");
+      control = curveField((read(p.key) as CurvePoint[] | undefined) ?? [], (v) => write(p.key, v), { title: p.title, ...input(p.key) });
+      control.classList.add("wide");
       break;
     case "match":
       // A grade is a clip's: the model offers it to nothing else.
-      input = matchControls(ctx.clip!, ctx.merge);
+      control = matchControls(ctx.clip!, ctx.merge);
       break;
     case "wheels":
-      input = row("wheels wide", ...p.keys.map(({ key, title: what }) => {
+      control = row("wheels wide", ...p.keys.map(({ key, title: what }) => {
         const o = (read(key) ?? {}) as { r?: number; g?: number; b?: number };
-        return wheelField(title(key), { r: o.r ?? 0, g: o.g ?? 0, b: o.b ?? 0 }, (v) => write(key, v), { title: what });
+        return wheelField(title(key), { r: o.r ?? 0, g: o.g ?? 0, b: o.b ?? 0 }, (v) => write(key, v), { title: what, ...input(key) });
       }));
       break;
   }
-  const line = field(label, input);
+  const line = field(label, control);
   line.dataset.prop = "key" in p ? p.key : p.label.toLowerCase();
   return line;
 }
@@ -833,11 +843,17 @@ export class Inspector {
         const v = rec[k] ?? defaults[k];
         return part === undefined ? v : (v as Record<string, unknown> | undefined)?.[part];
       };
-      const replace = (value: unknown, note: string) => void store.patch([{ op: "replace", path: `${owner.path}/${ei}`, value }], `${e.type} ${note}`);
-      const set = (key: string, v: unknown) => {
-        const [k, part] = key.split(".");
-        replace({ ...e, [k]: part === undefined ? v : { ...(cur(k) as object | undefined), [part]: v } }, `${key}`);
+      const replace = (value: unknown, note: string) => {
+        // A live kind's preview stays up until the engine shows what was written.
+        if (spec.live) settle();
+        void store.patch([{ op: "replace", path: `${owner.path}/${ei}`, value }], `${e.type} ${note}`);
       };
+      /** The effect with one field (or one part of one) changed. */
+      const withValue = (key: string, v: unknown): Effect => {
+        const [k, part] = key.split(".");
+        return { ...e, [k]: part === undefined ? v : { ...(cur(k) as object | undefined), [part]: v } } as Effect;
+      };
+      const set = (key: string, v: unknown) => replace(withValue(key, v), key);
 
       // Keyframes, when this kind takes them: an animatable field reads through the one
       // sampler (which is the static value until there are keys), and once there are keys
@@ -858,6 +874,10 @@ export class Inspector {
         timed: (key) => (timed(key) ? { readOnly: !anim!.inside, live: (set) => mine.push(() => set(anim!.at(key))) } : {}),
         clip: owner.clip,
         merge: (fields) => replace({ ...e, ...fields }, Object.keys(fields).join(", ")),
+        preview: spec.live && owner.clip ? (key, v) => {
+          const { type: _, ...grade } = withValue(key, v) as Effect & Grade;
+          previewGrade(owner.clip!, grade);
+        } : undefined,
       };
       // The toggle is in the head, so a keyframed effect says so while folded too.
       if (anim) head.append(keyToggle(anim));
@@ -934,9 +954,22 @@ function matchControls(clip: string, write: (light: Light) => void): HTMLElement
   const match = button("Match…", () => ref && void matchColour(clip, ref, "The same thing in this clip", write),
     "Drag over the same thing in this clip: its white balance and exposure are set to look like the reference");
   match.disabled = !ref;
+  // Held, not toggled: comparing is looking back and forth, and letting go is the way back.
+  const before = button("Before", () => {}, "Hold to see this clip without its grade, at the playhead", "grade-before");
+  let held = false;
+  const hold = (on: boolean) => () => {
+    if (on === held) return;
+    const found = store.findClip(clip);
+    if (on && !(found && covers(found.clip, store.state.playhead))) return toast("Put the playhead on this clip to compare it", "err");
+    held = on;
+    before.classList.toggle("on", on);
+    showBefore(clip, on);
+  };
+  before.addEventListener("pointerdown", hold(true));
+  for (const end of ["pointerup", "pointerleave", "pointercancel"]) before.addEventListener(end, hold(false));
   const said = ref ? `Reference: ${ref.region.w}×${ref.region.h} px at ${fmtTime(ref.t, store.fps)} in ${binName(ref.sequence)}` : "No reference yet";
   const wrap = el("div", "match-controls");
-  wrap.append(row("match-row", neutral, pick, match), el("div", "match-note muted tiny", said));
+  wrap.append(row("match-row", before, neutral, pick, match), el("div", "match-note muted tiny", said));
   return wrap;
 }
 

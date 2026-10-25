@@ -86,6 +86,22 @@ describe("matching a grade from the inspector", { skip: why ? `skipping: ${why}`
     assert.deepEqual(params.region, { x: 80, y: 45, w: 160, h: 90 });
   });
 
+  it("shows a slider's grade on the frame while it is dragged, and the frame without the grade while Before is held", async () => {
+    const live = `(() => { const c = document.querySelector("#preview .grade-live"); return c ? !c.hidden : false; })()`;
+    // A drag the way a range input reports one: input events, and change on release.
+    await page.eval(`(() => { const r = document.querySelector('#inspector [data-prop="temperature"] input[type=range]'); r.value = "0.8"; r.dispatchEvent(new Event("input", { bubbles: true })); return true; })()`);
+    await page.until(live, 30000);
+    // Before, held: the frame without the grade; let go, and it is gone.
+    await page.eval(`window.dispatchEvent(new PointerEvent("pointerup", { bubbles: true })), true`);
+    const before = `document.querySelector("#inspector .grade-before")`;
+    await page.eval(`${before}.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true })), true`);
+    await page.until(`${before}.classList.contains("on") && ${live}`, 30000);
+    await page.eval(`${before}.dispatchEvent(new PointerEvent("pointerup", { bubbles: true })), true`);
+    await page.until(`!${live}`);
+    // Previewing is not editing.
+    assert.equal(await page.eval(`fetch("/api/project").then(r => r.json()).then(p => p.bin.main.source.tracks[0].clips[0].effects[0].temperature ?? 0)`) < 0, true, "the dragged value was never written");
+  });
+
   it("sets a reference where the playhead is, and says so on every grade", async () => {
     // The grey clip, at 3 s: the playhead moves by clicking the ruler 3 s in.
     await page.eval(`(() => { const tl = document.querySelector(".tl"), ruler = document.querySelector(".tl-ruler"); const r = tl.getBoundingClientRect();

@@ -350,6 +350,8 @@ export class Preview {
     }
     this.ctx.drawImage(bmp.image, 0, 0);
     bmp.close();
+    // Said for what draws over the frame until the engine catches up (`gradepreview.ts`).
+    this.stage.dispatchEvent(new Event("frame"));
   }
 
   private onState(playhead: number, playing: boolean, revision: number, sequence: string) {

@@ -197,3 +197,40 @@ fn a_measurement_compares_before_and_after() {
     assert!(before["saturation"].as_f64().unwrap() > after["saturation"].as_f64().unwrap(), "the grade desaturates: {before} vs {after}");
     assert_eq!(out["before"]["samples"].as_array().unwrap().len(), 1);
 }
+
+/// The table the editor's live preview applies is the compiler's maths, a byte a channel:
+/// a neutral grade is the identity, and a grade's table is its `.cube` at the same points.
+#[test]
+fn a_grade_table_is_the_grade_at_every_point() {
+    let (state, _dir) = fixture();
+    let n = 5;
+    let identity = kuma_daemon::color::table(&state, &kuma_core::Grade::default(), n).unwrap();
+    assert_eq!(identity.len(), n * n * n * 3);
+    let at = |i: usize| (i as f64 / (n - 1) as f64 * 255.0).round() as u8;
+    for (k, px) in identity.chunks(3).enumerate() {
+        assert_eq!(px, [at(k % n), at(k / n % n), at(k / (n * n))], "point {k}");
+    }
+    let warm = kuma_core::Grade { temperature: 0.5, ..Default::default() };
+    let table = kuma_daemon::color::table(&state, &warm, n).unwrap();
+    let grading = kuma_core::grade::Grading::new(&warm, None, None);
+    let want = grading.apply([0.5, 0.5, 0.5]).map(|v| (v * 255.0).round() as u8);
+    let mid = (2 * n * n + 2 * n + 2) * 3;
+    assert_eq!(&table[mid..mid + 3], &want);
+    assert!(kuma_daemon::color::table(&state, &warm, 1).is_err() && kuma_daemon::color::table(&state, &warm, 999).is_err());
+}
+
+/// `version` samples another version of the document instead of it: the editor's before
+/// view, which is the same frame a comparison's `before` is.
+#[test]
+fn a_sampled_version_is_the_before_of_a_comparison() {
+    if !renders() {
+        eprintln!("melt/ffmpeg not available; skipping");
+        return;
+    }
+    let (state, _dir) = fixture();
+    let without = json!({ "without": { "kinds": ["grade"], "clips": ["c"] } });
+    let version = sample(&state, json!({ "times": [2.5], "version": without })).unwrap();
+    let compared = sample(&state, json!({ "times": [2.5], "before": without })).unwrap();
+    assert_eq!(version["samples"][0]["path"], compared["before"][0]["path"], "the same frame, from the frame cache");
+    assert_ne!(version["samples"][0]["path"], compared["samples"][0]["path"]);
+}

@@ -146,7 +146,7 @@ const RIM = 0.25;
 
 /** A grade's wheel: its offsets' colour as a puck on a disc, and the brightness all three
  *  share as a number under it. Double-click the disc to take the colour out. */
-export function wheelField(label: string, initial: Offsets, commit: (o: Offsets) => void, opts: { title?: string } = {}): HTMLElement {
+export function wheelField(label: string, initial: Offsets, commit: (o: Offsets) => void, opts: { title?: string; /** The offsets as they are dragged, before the commit: a preview, never an edit. */ input?: (o: Offsets) => void } = {}): HTMLElement {
   const wrap = el("div", "wheel-field");
   const disc = el("div", "wheel-disc");
   if (opts.title) disc.title = opts.title;
@@ -178,7 +178,7 @@ export function wheelField(label: string, initial: Offsets, commit: (o: Offsets)
     disc.classList.add("dragging");
     dragPointer(e, {
       axes: "xy",
-      move: (dx, dy) => put(e.clientX + dx, e.clientY + dy),
+      move: (dx, dy) => { put(e.clientX + dx, e.clientY + dy); opts.input?.(o); },
       end: () => {
         disc.classList.remove("dragging");
         if (o.r !== before.r || o.g !== before.g || o.b !== before.b) commit(o);

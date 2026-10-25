@@ -7,7 +7,11 @@
 //! grade, by sampling a copy of the project that lacks it, and answers with the grade and
 //! the patch that writes it; applying it is the caller's edit.
 
+use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, OnceLock};
+use std::time::SystemTime;
 
 use kuma_core::color::{match_light, ColorStats, Target};
 use kuma_core::grade::Lut;
@@ -162,11 +166,37 @@ fn measure_frames(state: &AppState, doc: Project, req: &SampleRequest, region: R
         .collect()
 }
 
-/// A grade's LUT, read from the project.
+/// A grade's LUT, read from the project — remembered by file, size and time, since the
+/// live preview asks for a grade's table at the rate a control is dragged.
 fn lut(state: &AppState, path: Option<&str>) -> anyhow::Result<Option<Lut>> {
+    type Seen = HashMap<PathBuf, (u64, Option<SystemTime>, Lut)>;
+    static SEEN: OnceLock<Mutex<Seen>> = OnceLock::new();
     let Some(path) = path else { return Ok(None) };
-    let (_, lut) = Lut::load(&state.config.project_root().join(path)).map_err(|e| anyhow::anyhow!("LUT `{path}`: {e}"))?;
+    let file = state.config.project_root().join(path);
+    let meta = std::fs::metadata(&file).map_err(|e| anyhow::anyhow!("LUT `{path}`: {e}"))?;
+    let stamp = (meta.len(), meta.modified().ok());
+    let seen = SEEN.get_or_init(Default::default);
+    if let Some((len, time, lut)) = crate::state::lock(seen).get(&file) {
+        if (*len, *time) == stamp {
+            return Ok(Some(lut.clone()));
+        }
+    }
+    let (_, lut) = Lut::load(&file).map_err(|e| anyhow::anyhow!("LUT `{path}`: {e}"))?;
+    crate::state::lock(seen).insert(file, (stamp.0, stamp.1, lut.clone()));
     Ok(Some(lut))
+}
+
+/// The most points a side the editor's preview table may have, and what it gets by default:
+/// 33³ is what the render's `.cube` has.
+pub const TABLE_MOST: usize = 65;
+pub const TABLE_SIZE: usize = 33;
+
+/// `grade` as an `n`³ table of bytes, red fastest — the compiler's maths, for the editor to
+/// apply to a frame while a control is dragged (`Grading::table_rgb8`).
+pub fn table(state: &AppState, grade: &Grade, n: usize) -> anyhow::Result<Vec<u8>> {
+    anyhow::ensure!((2..=TABLE_MOST).contains(&n), "a table has 2 to {TABLE_MOST} points a side");
+    let grading = kuma_core::grade::Grading::new(grade, lut(state, grade.input_lut.as_deref())?, lut(state, grade.look.as_deref())?);
+    Ok(grading.table_rgb8(n))
 }
 
 /// Measure, and with `match` solve; see the module. The result is JSON for the job.

@@ -1452,6 +1452,10 @@ pub struct SampleRequest {
     /// did: each moment comes back as a pair, and on the sheet as a row, before then after.
     #[serde(default)]
     pub before: Option<Before>,
+    /// Sample this version of the document instead of the document: what the editor's
+    /// before view and live grade preview start from (the frame without a clip's grade).
+    #[serde(default)]
+    pub version: Option<Before>,
 }
 
 /// What a sample compares itself with: the same frames of another version of the document,
@@ -1544,7 +1548,11 @@ pub fn sample_frames(state: &AppState, req: &SampleRequest, progress: &dyn Fn(u8
 
 /// [`sample_frames`], with the warnings of the bakes the frames show.
 fn sample_frames_warned(state: &AppState, req: &SampleRequest, progress: &dyn Fn(u8, &str), cancel: Option<&AtomicBool>) -> anyhow::Result<(Vec<Sample>, Vec<Issue>)> {
-    let doc = read(&state.project).clone();
+    let now = read(&state.project).clone();
+    let doc = match &req.version {
+        Some(version) => version.document(state, &now)?,
+        None => now,
+    };
     sample_frames_of(state, doc, req, progress, cancel)
 }
 

@@ -711,7 +711,13 @@ A grade's **Match** row sets its white balance and exposure by measuring: put th
 the clip, press **Neutral…** and drag over something white or grey in life, or **Set
 reference…** on the shot the others should look like and then **Match…** on each other
 clip, dragging over the same thing (a face, a wall). Each runs `measure_color` and writes the
-result as one undoable edit; the rest of the grade is kept.
+result as one undoable edit; the rest of the grade is kept. **The grade shows while you drag**:
+every grade control previews on the frame at the playhead before it commits, and **Before**,
+held, shows the clip without its grade (`gradepreview.ts`). The frame without the grade is
+the daemon's render of a version of the document (`sample` with `version`), and the grade is
+the daemon's own maths as a 33³ table (`POST /api/grade/table`) applied with WebGL, so what
+you see while dragging is what renders; it covers the frame, which is exact for a clip that
+fills it, and the render replaces it as soon as the engine shows the edit.
 
 A clip that reads past the end of its source is padded with nothing for the frames the
 source lacks, which show the tracks below and are silent. MLT would otherwise cut the

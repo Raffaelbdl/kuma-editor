@@ -8,7 +8,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { driver, missing, startDaemon } from "./harness.mjs";
+import { driver, missing, selectClip, settled, startDaemon } from "./harness.mjs";
 
 const why = missing();
 
@@ -27,7 +27,6 @@ const PROJECT = JSON.stringify({
 
 const GRADE = `fetch("/api/project").then(r => r.json()).then(p => p.bin.main.source.tracks[0].clips[0].effects[0])`;
 const CARD = `fetch("/api/project").then(r => r.json()).then(p => p.bin.card.source.color)`;
-const settled = (page) => page.until(`fetch("/api/project").then(r => r.json()).then(p => p.revision).then(rev => document.querySelector("#statusline .rev").textContent.startsWith("r" + rev))`);
 
 /** Press at a fraction of `sel`'s box, drag to another, and let go — a pointer the way
  *  `dragPointer` reads one: down on the element, moves and up on the window. */
@@ -49,9 +48,7 @@ describe("the inspector's curve, wheels and colour picker", { skip: why ? `skipp
     daemon = await startDaemon(projectFile);
     page = await driver(daemon.url);
     await page.until(`!!document.querySelector('.clip[data-id="c1"]')`);
-    await page.eval(`(() => { const c = document.querySelector('.clip[data-id="c1"]'); const r = c.getBoundingClientRect();
-      c.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, clientX: r.left + 20, clientY: r.top + 2 }));
-      window.dispatchEvent(new PointerEvent("pointerup", { bubbles: true })); return true; })()`);
+    await selectClip(page, "c1");
     await page.until(`!!document.querySelector("#inspector .curve-plot") && !!document.querySelector("#inspector .wheel-disc")`);
   });
 

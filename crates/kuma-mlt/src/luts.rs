@@ -2,7 +2,8 @@
 //! written as one `.cube` under the cache, named by a hash of everything it is made of —
 //! its settings and the bytes of the LUTs it reads — so the same grade compiles to the
 //! same path, a changed one to a new path (which is what tells the preview to reload),
-//! and a file is written once however many clips share it.
+//! and a file is written once however many clips share it. Naming a grade reads its LUTs
+//! but parses nothing; they are parsed only to write a file that is not there yet.
 
 use std::path::{Path, PathBuf};
 
@@ -18,42 +19,43 @@ pub fn dir(cache_dir: &Path) -> PathBuf {
 /// The file `grade` compiles to under `cache_dir`, written if it is not there yet; `None`
 /// for a grade that changes nothing. Its LUT paths resolve against `root`.
 pub fn resolve(grade: &Grade, root: &Path, cache_dir: &Path) -> std::io::Result<Option<PathBuf>> {
-    let Some((name, grading)) = plan(grade, root)? else { return Ok(None) };
-    let dir = dir(cache_dir);
-    let out = dir.join(&name);
-    if !out.is_file() {
-        // A preview compile and a render may write the same grade at once; `.tmp-` is
-        // what a prune of the cache leaves alone.
-        std::fs::create_dir_all(&dir)?;
-        let tmp = dir.join(format!("{name}.tmp-{}", std::process::id()));
-        std::fs::write(&tmp, grading.cube())?;
-        std::fs::rename(&tmp, &out)?;
-    }
-    Ok(Some(out))
+    let Some((name, luts)) = read(grade, root)? else { return Ok(None) };
+    let path = crate::generated::write_once(&dir(cache_dir), &name, || {
+        let [input, look] = luts.map(|lut| {
+            lut.map(|(path, bytes)| Lut::from_bytes(&bytes).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, format!("LUT `{path}`: {e}"))))
+                .transpose()
+        });
+        Ok(Grading::new(grade, input?, look?).cube().into_bytes())
+    })?;
+    Ok(Some(path))
 }
 
-/// What `grade` compiles to, without writing it: the file's name in [`dir`] and the grade
-/// ready to sample, or `None` for a grade that changes nothing. A prune asks this to know
-/// which files the project still uses.
-pub fn plan<'g>(grade: &'g Grade, root: &Path) -> std::io::Result<Option<(String, Grading<'g>)>> {
+/// The name of the file `grade` compiles to in [`dir`], or `None` for a grade that changes
+/// nothing: what a prune keeps.
+pub fn name(grade: &Grade, root: &Path) -> std::io::Result<Option<String>> {
+    Ok(read(grade, root)?.map(|(name, _)| name))
+}
+
+/// A grade's LUTs as they are on disk (input, then look), with their paths.
+type Luts<'g> = [Option<(&'g str, Vec<u8>)>; 2];
+
+/// The file name a grade compiles to, and the LUT bytes that went into it.
+fn read<'g>(grade: &'g Grade, root: &Path) -> std::io::Result<Option<(String, Luts<'g>)>> {
+    if grade.is_neutral() {
+        return Ok(None);
+    }
     let mut hash = Sha256::new();
     hash.update(b"kuma grade\n");
     hash.update(serde_json::to_vec(grade).map_err(std::io::Error::other)?);
-    let mut read = |path: &Option<String>| -> std::io::Result<Option<Lut>> {
-        let Some(path) = path else { return Ok(None) };
+    let mut luts: Luts = [None, None];
+    for (slot, path) in luts.iter_mut().zip([&grade.input_lut, &grade.look]) {
+        let Some(path) = path.as_deref() else { continue };
         let bytes = std::fs::read(root.join(path)).map_err(|e| std::io::Error::new(e.kind(), format!("LUT `{path}`: {e}")))?;
         hash.update((bytes.len() as u64).to_le_bytes());
         hash.update(&bytes);
-        let lut = Lut::parse(&String::from_utf8_lossy(&bytes)).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, format!("LUT `{path}`: {e}")))?;
-        Ok(Some(lut))
-    };
-    let (input, look) = (read(&grade.input_lut)?, read(&grade.look)?);
-    let grading = Grading::new(grade, input, look);
-    if grading.is_neutral() {
-        return Ok(None);
+        *slot = Some((path, bytes));
     }
-    let hex: String = hash.finalize()[..16].iter().map(|b| format!("{b:02x}")).collect();
-    Ok(Some((format!("{hex}.cube"), grading)))
+    Ok(Some((format!("{}.cube", hex::encode(&hash.finalize()[..16])), luts)))
 }
 
 #[cfg(test)]
@@ -71,6 +73,7 @@ mod tests {
         let a = resolve(&warm, root, &cache).unwrap().unwrap();
         assert!(a.starts_with(cache.join("luts")) && a.is_file());
         assert_eq!(resolve(&warm, root, &cache).unwrap().unwrap(), a, "the same grade, the same file");
+        assert_eq!(name(&warm, root).unwrap().as_deref(), a.file_name().and_then(|n| n.to_str()), "named without being written");
         let cool = Grade { temperature: -0.4, ..Grade::default() };
         assert_ne!(resolve(&cool, root, &cache).unwrap().unwrap(), a);
 

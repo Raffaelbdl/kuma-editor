@@ -5,15 +5,13 @@
 
 import { strict as assert } from "node:assert";
 import { after, before, describe, it } from "node:test";
-import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { driver, missing, startDaemon } from "./harness.mjs";
+import { driver, have, missing, selectClip, startDaemon } from "./harness.mjs";
 
-const hasMelt = (() => { try { execFileSync("melt", ["-version"], { stdio: "ignore" }); return true; } catch { return false; } })();
-const why = missing() ?? (hasMelt ? null : "no melt");
+const why = missing() ?? (have("melt") ? null : "no melt");
 
 const clip = (id, start, end, bin, effects) => ({ id, start, end, bin, in: 0, speed: 1, volume: 1, muted: false, label: "", effects });
 const PROJECT = JSON.stringify({
@@ -30,11 +28,6 @@ const PROJECT = JSON.stringify({
     ] } },
   },
 }, null, 2);
-
-/** Select a clip the way a click does: press on it, and let go. */
-const selectClip = (page, id) => page.eval(`(() => { const c = document.querySelector('.clip[data-id="${id}"]'); const r = c.getBoundingClientRect();
-  c.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, clientX: r.left + 20, clientY: r.top + 2 }));
-  window.dispatchEvent(new PointerEvent("pointerup", { bubbles: true })); return true; })()`);
 
 /** Drag across the middle of the frame on the pick sheet, from a quarter in to three. */
 const DRAG = `(() => { const s = document.querySelector(".region-pick"); const r = s.getBoundingClientRect();

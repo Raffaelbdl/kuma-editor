@@ -8,13 +8,12 @@
 //! tint that would turn a grey into its colour. Matching is then a difference of those,
 //! refined through the whole grade on the region's own pixels ([`match_light`]).
 
+use std::borrow::Borrow;
+
 use serde::Serialize;
 
-use crate::grade::{Grading, Lut, DISPLAY_GAMMA, LUMA};
+use crate::grade::{decode, luma, Grading, Lut, MID_GREY};
 use crate::model::Grade;
-
-/// Mid grey: 18% of white's light.
-const MID_GREY: f64 = 0.18;
 
 /// The least light a channel is taken to have, so a black region has a balance and an
 /// exposure (about -17.5 stops) rather than infinities.
@@ -64,13 +63,13 @@ pub struct Balance {
 }
 
 impl ColorStats {
-    /// The statistics of `pixels`, or `None` for none.
-    pub fn of(pixels: &[[f64; 3]]) -> Option<ColorStats> {
-        if pixels.is_empty() {
-            return None;
-        }
-        let n = pixels.len() as f64;
+    /// The statistics of `pixels`, or `None` for none. One pass over anything that yields
+    /// them, so several frames' pixels can be measured as one region without being copied
+    /// into one.
+    pub fn of<P: Borrow<[f64; 3]>>(pixels: impl IntoIterator<Item = P>) -> Option<ColorStats> {
+        let mut count = 0usize;
         let mut mean = [0.0; 3];
+        let mut light = [0.0; 3];
         let mut saturation = 0.0;
         let (mut clipped, mut crushed) = (0usize, 0usize);
         // Luma to the nearest 1/1023 for the percentiles: finer than 8-bit pixels hold.
@@ -78,8 +77,11 @@ impl ColorStats {
         let mut hist = [0usize; BINS];
         let (mut lo, mut hi, mut luma_sum) = (f64::INFINITY, f64::NEG_INFINITY, 0.0);
         for p in pixels {
+            let p = *p.borrow();
+            count += 1;
             for i in 0..3 {
                 mean[i] += p[i];
+                light[i] += decode(p[i]);
             }
             let max = p[0].max(p[1]).max(p[2]);
             let min = p[0].min(p[1]).min(p[2]);
@@ -90,14 +92,18 @@ impl ColorStats {
             if max <= 2.0 / 255.0 {
                 crushed += 1;
             }
-            let y = luma(*p);
+            let y = luma(p);
             lo = lo.min(y);
             hi = hi.max(y);
             luma_sum += y;
             hist[((y.clamp(0.0, 1.0) * (BINS - 1) as f64).round()) as usize] += 1;
         }
+        if count == 0 {
+            return None;
+        }
+        let n = count as f64;
         let at = |q: f64| {
-            let want = (q * (pixels.len() - 1) as f64).round() as usize;
+            let want = (q * (count - 1) as f64).round() as usize;
             let mut seen = 0;
             for (b, count) in hist.iter().enumerate() {
                 seen += count;
@@ -107,9 +113,9 @@ impl ColorStats {
             }
             1.0
         };
-        let light = linear_mean(pixels);
+        let light = light.map(|v| v / n);
         Some(ColorStats {
-            pixels: pixels.len(),
+            pixels: count,
             mean: mean.map(|v| v / n),
             luma: Levels { min: lo, p5: at(0.05), median: at(0.5), p95: at(0.95), max: hi, mean: luma_sum / n },
             exposure: exposure_of(light),
@@ -121,25 +127,16 @@ impl ColorStats {
     }
 }
 
-/// Rec. 709 luma of a display-encoded colour.
-fn luma(c: [f64; 3]) -> f64 {
-    (0..3).map(|i| LUMA[i] * c[i]).sum()
-}
-
-/// The light a display value stands for (BT.1886, as the grade decodes it).
-fn decode(v: f64) -> f64 {
-    v.max(0.0).powf(DISPLAY_GAMMA)
-}
-
 /// The mean light of `pixels`, per channel.
-fn linear_mean(pixels: &[[f64; 3]]) -> [f64; 3] {
-    let mut sum = [0.0; 3];
+fn linear_mean(pixels: impl Iterator<Item = [f64; 3]>) -> [f64; 3] {
+    let (mut sum, mut n) = ([0.0; 3], 0usize);
     for p in pixels {
+        n += 1;
         for i in 0..3 {
             sum[i] += decode(p[i]);
         }
     }
-    sum.map(|s| s / pixels.len() as f64)
+    sum.map(|s| s / n.max(1) as f64)
 }
 
 /// Light in stops from mid grey.
@@ -168,18 +165,14 @@ pub enum Target {
 impl Target {
     /// Aim at a region with these statistics: its mean light.
     pub fn like(pixels: &[[f64; 3]]) -> Option<Target> {
-        (!pixels.is_empty()).then(|| Target::Light(linear_mean(pixels)))
+        (!pixels.is_empty()).then(|| Target::Light(linear_mean(pixels.iter().copied())))
     }
 
-    /// Aim at a colour as displayed (`#rrggbb`): the region's mean becomes it.
+    /// Aim at a colour as displayed, in any form a colour entry takes: the region's mean
+    /// becomes it (alpha aside).
     pub fn colour(css: &str) -> Option<Target> {
-        let hex = css.strip_prefix('#')?;
-        let digits: Vec<u8> = match hex.len() {
-            3 => hex.chars().map(|c| c.to_digit(16).map(|d| (d * 17) as u8)).collect::<Option<_>>()?,
-            6 => (0..3).map(|i| u8::from_str_radix(hex.get(2 * i..2 * i + 2)?, 16).ok()).collect::<Option<_>>()?,
-            _ => return None,
-        };
-        Some(Target::Light([0, 1, 2].map(|i| decode(digits[i] as f64 / 255.0))))
+        let [r, g, b, _] = crate::manifest::parse_css_color(css)?;
+        Some(Target::Light([r, g, b].map(|v| decode(v as f64 / 255.0))))
     }
 }
 
@@ -207,23 +200,21 @@ pub fn match_light(grade: &Grade, input: Option<Lut>, look: Option<Lut>, pixels:
         return None;
     }
     let mut grading = Grading::new(grade, input, look);
-    let graded = |g: &Grading| -> Vec<[f64; 3]> { pixels.iter().map(|p| g.apply(*p)).collect() };
     let (mut t, mut m, mut e) = (grade.temperature, grade.tint, grade.exposure);
-    let goal = |now: [f64; 3]| match target {
-        Target::Light(light) => light,
-        Target::Neutral => [luma(now); 3],
-    };
+    let within = |v: f64, r: std::ops::RangeInclusive<f64>| v.clamp(*r.start(), *r.end());
     let mut reached = false;
     for _ in 0..16 {
         grading.set_light(t, m, e);
-        let now = linear_mean(&graded(&grading));
-        let want = goal(now);
+        let now = linear_mean(pixels.iter().map(|p| grading.apply(*p)));
+        let (want, de) = match target {
+            Target::Light(want) => (want, (luma(want).max(FLOOR) / luma(now).max(FLOOR)).log2()),
+            Target::Neutral => ([luma(now); 3], 0.0),
+        };
         reached = (0..3).all(|i| (now[i] - want[i]).abs() <= 0.02 * want[i].max(FLOOR));
         let k: [f64; 3] = std::array::from_fn(|i| want[i].max(FLOOR) / now[i].max(FLOOR));
         let step = balance_of(k);
-        let de = if target == Target::Neutral { 0.0 } else { (luma(want).max(FLOOR) / luma(now).max(FLOOR)).log2() };
-        // The validator's ranges: a grade solved past them could not be written.
-        let next = ((t + step.temperature).clamp(-2.0, 2.0), (m + step.tint).clamp(-1.0, 1.0), (e + de).clamp(-5.0, 5.0));
+        // A grade solved past the ranges could not be written.
+        let next = (within(t + step.temperature, Grade::TEMPERATURE), within(m + step.tint, Grade::TINT), within(e + de, Grade::EXPOSURE));
         let moved = (next.0 - t).abs().max((next.1 - m).abs()).max((next.2 - e).abs());
         (t, m, e) = next;
         if moved < 1e-5 {
@@ -234,13 +225,14 @@ pub fn match_light(grade: &Grade, input: Option<Lut>, look: Option<Lut>, pixels:
     let round = |v: f64| (v * 1000.0).round() / 1000.0;
     let solved = Grade { temperature: round(t), tint: round(m), exposure: round(e), ..grade.clone() };
     grading.set_light(solved.temperature, solved.tint, solved.exposure);
-    let after = ColorStats::of(&graded(&grading))?;
+    let after = ColorStats::of(pixels.iter().map(|p| grading.apply(*p)))?;
     Some(Matched { grade: solved, after, reached })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::grade::DISPLAY_GAMMA;
     use crate::model::Rgb;
 
     fn encode(light: f64) -> f64 {
@@ -259,7 +251,7 @@ mod tests {
         let split: Vec<_> = (0..100).map(|i| if i < 50 { [1.0; 3] } else { [0.0; 3] }).collect();
         let s = ColorStats::of(&split).unwrap();
         assert_eq!((s.clipped, s.crushed, s.luma.min, s.luma.max), (0.5, 0.5, 0.0, 1.0));
-        assert!(ColorStats::of(&[]).is_none());
+        assert!(ColorStats::of(std::iter::empty::<[f64; 3]>()).is_none());
     }
 
     /// The balance is the grade's own: a grey through a white balance reads back as it.
@@ -268,12 +260,12 @@ mod tests {
         for (t, m) in [(0.4, 0.0), (-0.3, 0.2), (0.7, -0.5)] {
             let g = Grade { temperature: t, tint: m, ..Grade::default() };
             let px = Grading::new(&g, None, None).apply([encode(MID_GREY); 3]);
-            let b = ColorStats::of(&[px]).unwrap().balance;
+            let b = ColorStats::of([px]).unwrap().balance;
             assert!((b.temperature - t).abs() < 1e-9 && (b.tint - m).abs() < 1e-9, "({t}, {m}) read as {b:?}");
         }
         // Exposure: a stop more light is a stop up.
         let lit = Grading::new(&Grade { exposure: 1.0, ..Grade::default() }, None, None).apply([encode(MID_GREY); 3]);
-        assert!((ColorStats::of(&[lit]).unwrap().exposure - 1.0).abs() < 1e-9);
+        assert!((ColorStats::of([lit]).unwrap().exposure - 1.0).abs() < 1e-9);
     }
 
     /// A shot that came out too blue and too dark, matched to the same grey shot right.
@@ -323,5 +315,6 @@ mod tests {
         assert!((l[0] - decode(128.0 / 255.0)).abs() < 1e-12);
         assert_eq!(Target::colour("808080"), None);
         assert_eq!(Target::colour("#80808"), None);
+        assert_eq!(Target::colour("#ffffff80"), Target::colour("#fff"), "alpha is not light");
     }
 }

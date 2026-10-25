@@ -282,11 +282,9 @@ fn grade_luts(project: &Project, order: &[BinId], opts: &CompileOptions) -> Resu
         return Ok(luts);
     }
     let clips = order.iter().filter_map(|id| project.seq(id)).flat_map(|s| s.tracks.iter()).flat_map(|t| t.clips.iter());
-    for e in clips.flat_map(|c| c.effects.iter()) {
-        if let Effect::Grade(g) = e {
-            if let std::collections::hash_map::Entry::Vacant(slot) = luts.entry(grade_key(g)) {
-                slot.insert(luts::resolve(g, &opts.root, &opts.cache_dir).map_err(|e| CompileError::Internal(format!("grade: {e}")))?);
-            }
+    for g in clips.flat_map(|c| c.effects.iter()).filter_map(Effect::as_grade) {
+        if let std::collections::hash_map::Entry::Vacant(slot) = luts.entry(grade_key(g)) {
+            slot.insert(luts::resolve(g, &opts.root, &opts.cache_dir).map_err(|e| CompileError::Internal(format!("grade: {e}")))?);
         }
     }
     Ok(luts)

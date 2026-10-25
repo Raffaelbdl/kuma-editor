@@ -78,25 +78,25 @@ pub enum Reference {
     },
 }
 
-/// Where a clip is in the document, and its grade if it has one.
+/// Where a clip is in the document, and its grade (a neutral one when it has none).
 struct Located {
     sequence: String,
     track: usize,
     clip: usize,
     start: f64,
     end: f64,
-    grade: Option<(usize, Grade)>,
+    grade: Grade,
+    /// Which of its effects the grade is, when it has one.
+    graded_at: Option<usize>,
 }
 
 fn locate(doc: &Project, id: &str) -> anyhow::Result<Located> {
     for (seq_id, seq) in doc.sequences() {
         for (ti, track) in seq.tracks.iter().enumerate() {
             if let Some((ci, c)) = track.clips.iter().enumerate().find(|(_, c)| c.id == id) {
-                let grade = c.effects.iter().enumerate().find_map(|(ei, e)| match e {
-                    Effect::Grade(g) => Some((ei, g.clone())),
-                    _ => None,
-                });
-                return Ok(Located { sequence: seq_id.clone(), track: ti, clip: ci, start: c.start, end: c.end, grade });
+                let graded_at = c.effects.iter().position(|e| e.as_grade().is_some());
+                let grade = graded_at.and_then(|ei| c.effects[ei].as_grade()).cloned().unwrap_or_default();
+                return Ok(Located { sequence: seq_id.clone(), track: ti, clip: ci, start: c.start, end: c.end, grade, graded_at });
             }
         }
     }
@@ -120,11 +120,29 @@ fn region_in(doc: &Project, region: Option<Region>) -> anyhow::Result<Region> {
     Ok(r)
 }
 
-/// One measured moment: its time, its frame, and the region's pixels.
+/// One measured moment: its time, its frame, and the region's pixels as the frame holds
+/// them, a byte a channel — a full 1080p region is 6 MB this way, and 50 MB as floats.
 struct Measured {
     t: f64,
     frame: i64,
-    pixels: Vec<[f64; 3]>,
+    pixels: Vec<[u8; 3]>,
+}
+
+/// A pixel as the colour maths takes one.
+fn unit(p: &[u8; 3]) -> [f64; 3] {
+    p.map(|v| v as f64 / 255.0)
+}
+
+/// Every pixel of every moment, as one region, read in place.
+fn pooled(frames: &[Measured]) -> impl Iterator<Item = [f64; 3]> + '_ {
+    frames.iter().flat_map(|f| f.pixels.iter().map(unit))
+}
+
+/// At most `most` of `frames`' pixels, evenly spread: what a match pushes through the
+/// grade on each try.
+fn spread(frames: &[Measured], most: usize) -> Vec<[f64; 3]> {
+    let total: usize = frames.iter().map(|f| f.pixels.len()).sum();
+    pooled(frames).step_by(total.div_ceil(most).max(1)).collect()
 }
 
 /// Sample `doc` as `req` asks and read the region's pixels of each frame.
@@ -135,37 +153,25 @@ fn measure_frames(state: &AppState, doc: Project, req: &SampleRequest, region: R
         .map(|s| {
             let bytes = kuma_overlay::media::rgb24(&s.path).map_err(|e| anyhow::anyhow!("reading frame {}: {e}", s.frame))?;
             anyhow::ensure!(bytes.len() == region.w as usize * region.h as usize * 3, "frame {} is not the region's size", s.frame);
-            let pixels = bytes.chunks_exact(3).map(|p| [p[0], p[1], p[2]].map(|v| v as f64 / 255.0)).collect();
-            Ok(Measured { t: s.t, frame: s.frame, pixels })
+            Ok(Measured { t: s.t, frame: s.frame, pixels: bytes.chunks_exact(3).map(|p| [p[0], p[1], p[2]]).collect() })
         })
         .collect()
-}
-
-/// Every pixel of every moment, as one region.
-fn pooled(frames: &[Measured]) -> Vec<[f64; 3]> {
-    frames.iter().flat_map(|f| f.pixels.iter().copied()).collect()
-}
-
-/// At most `most` of `pixels`, evenly spread.
-fn spread(pixels: &[[f64; 3]], most: usize) -> Vec<[f64; 3]> {
-    let stride = pixels.len().div_ceil(most).max(1);
-    pixels.iter().step_by(stride).copied().collect()
 }
 
 /// A grade's LUT, read from the project.
 fn lut(state: &AppState, path: Option<&str>) -> anyhow::Result<Option<Lut>> {
     let Some(path) = path else { return Ok(None) };
-    let text = std::fs::read_to_string(state.config.project_root().join(path)).map_err(|e| anyhow::anyhow!("LUT `{path}`: {e}"))?;
-    Ok(Some(Lut::parse(&text).map_err(|e| anyhow::anyhow!("LUT `{path}`: {e}"))?))
+    let (_, lut) = Lut::load(&state.config.project_root().join(path)).map_err(|e| anyhow::anyhow!("LUT `{path}`: {e}"))?;
+    Ok(Some(lut))
 }
 
 /// Measure, and with `match` solve; see the module. The result is JSON for the job.
 pub fn measure(state: &AppState, req: &ColorRequest, progress: &dyn Fn(u8, &str), cancel: &AtomicBool) -> anyhow::Result<Value> {
     let doc = read(&state.project).clone();
-    let target = req.matching.as_ref().map(|m| locate(&doc, &m.clip)).transpose()?;
+    let target = req.matching.as_ref().map(|m| locate(&doc, &m.clip).map(|at| (m, at))).transpose()?;
     let sequence = match (&target, &req.sequence) {
-        (Some(at), Some(s)) if *s != at.sequence => anyhow::bail!("clip `{}` is in sequence `{}`, not `{s}`", req.matching.as_ref().unwrap().clip, at.sequence),
-        (Some(at), _) => at.sequence.clone(),
+        (Some((m, at)), Some(s)) if *s != at.sequence => anyhow::bail!("clip `{}` is in sequence `{}`, not `{s}`", m.clip, at.sequence),
+        (Some((_, at)), _) => at.sequence.clone(),
         (None, s) => doc.sequence_or_master(s.as_deref()).map_err(|e| anyhow::anyhow!(e))?.clone(),
     };
     let region = region_in(&doc, req.region)?;
@@ -183,48 +189,54 @@ pub fn measure(state: &AppState, req: &ColorRequest, progress: &dyn Fn(u8, &str)
     let share = if target.is_some() { 3 } else { 1 };
     let part = |n: u8| move |p: u8, m: &str| progress(n * (100 / share) + p / share, m);
     let frames = measure_frames(state, doc.clone(), &sample, region, &part(0), cancel)?;
-    let shown: Vec<Value> = frames.iter().map(|f| json!({ "t": f.t, "frame": f.frame, "stats": ColorStats::of(&f.pixels) })).collect();
-    let mut out = json!({ "sequence": sequence, "region": region, "samples": shown, "stats": ColorStats::of(&pooled(&frames)) });
-    let (Some(m), Some(at)) = (&req.matching, target) else { return Ok(out) };
+    let shown: Vec<Value> = frames.iter().map(|f| json!({ "t": f.t, "frame": f.frame, "stats": ColorStats::of(f.pixels.iter().map(unit)) })).collect();
+    let mut out = json!({ "sequence": sequence, "region": region, "samples": shown, "stats": ColorStats::of(pooled(&frames)) });
+    let Some((m, at)) = target else { return Ok(out) };
 
     if let Some(off) = frames.iter().find(|f| f.t < at.start - 1e-9 || f.t >= at.end) {
         anyhow::bail!("clip `{}` is on screen from {:.2} to {:.2} s in `{}`; {:.2} s is outside it", m.clip, at.start, at.end, sequence, off.t);
     }
-    // The clip as it is before its grade: the same project with the grade taken out. A copy,
-    // so the document never holds it.
-    let mut bare = doc.clone();
-    if let Some(BinSource::Sequence(seq)) = bare.bin.get_mut(&at.sequence).map(|i| &mut i.source) {
-        seq.tracks[at.track].clips[at.clip].effects.retain(|e| !matches!(e, Effect::Grade(_)));
-    }
-    let ungraded = pooled(&measure_frames(state, bare, &sample, region, &part(1), cancel)?);
+    // The clip as it is before its grade: the same project with the grade taken out — a
+    // copy, so the document never holds it. A clip with no grade already is that.
+    let bare_frames;
+    let ungraded = match at.graded_at {
+        None => &frames,
+        Some(ei) => {
+            let mut bare = doc.clone();
+            if let Some(BinSource::Sequence(seq)) = bare.bin.get_mut(&at.sequence).map(|i| &mut i.source) {
+                seq.tracks[at.track].clips[at.clip].effects.remove(ei);
+            }
+            bare_frames = measure_frames(state, bare, &sample, region, &part(1), cancel)?;
+            &bare_frames
+        }
+    };
     anyhow::ensure!(!cancel.load(Ordering::SeqCst), "cancelled");
 
     let (aim, reference) = match &m.reference {
         Reference::Neutral { neutral: true } => (Target::Neutral, json!({ "neutral": true })),
         Reference::Neutral { neutral: false } => anyhow::bail!("`reference` is `{{\"neutral\": true}}`, a colour or a moment"),
-        Reference::Colour { color } => (Target::colour(color).ok_or_else(|| anyhow::anyhow!("`{color}` is not a `#rrggbb` colour"))?, json!({ "color": color })),
+        Reference::Colour { color } => (Target::colour(color).ok_or_else(|| anyhow::anyhow!("`{color}` is not a CSS hex colour"))?, json!({ "color": color })),
         Reference::At { t, region: r, sequence: s } => {
             let seq = doc.sequence_or_master(Some(s.as_deref().unwrap_or(&sequence))).map_err(|e| anyhow::anyhow!(e))?.clone();
             let r = region_in(&doc, Some(r.unwrap_or(region)))?;
             let at_ref = SampleRequest { times: Some(vec![*t]), rect: Some(r), sequence: Some(seq.clone()), ..sample.clone() };
-            let px = pooled(&measure_frames(state, doc.clone(), &at_ref, r, &part(2), cancel)?);
+            let px: Vec<[f64; 3]> = pooled(&measure_frames(state, doc.clone(), &at_ref, r, &part(2), cancel)?).collect();
             let stats = ColorStats::of(&px);
             (Target::like(&px).ok_or_else(|| anyhow::anyhow!("the reference region is empty"))?, json!({ "t": t, "sequence": seq, "region": r, "stats": stats }))
         }
     };
-    let base = at.grade.as_ref().map(|(_, g)| g.clone()).unwrap_or_default();
-    let matched = match_light(&base, lut(state, base.input_lut.as_deref())?, lut(state, base.look.as_deref())?, &spread(&ungraded, MATCH_PIXELS), aim)
+    let matched = match_light(&at.grade, lut(state, at.grade.input_lut.as_deref())?, lut(state, at.grade.look.as_deref())?, &spread(ungraded, MATCH_PIXELS), aim)
         .ok_or_else(|| anyhow::anyhow!("the region has no pixels"))?;
     let effects = format!("/bin/{}/source/tracks/{}/clips/{}/effects", at.sequence, at.track, at.clip);
     let value = serde_json::to_value(Effect::Grade(matched.grade.clone()))?;
-    let patch = match at.grade {
-        Some((ei, _)) => json!([{ "op": "replace", "path": format!("{effects}/{ei}"), "value": value }]),
+    let patch = match at.graded_at {
+        Some(ei) => json!([{ "op": "replace", "path": format!("{effects}/{ei}"), "value": value }]),
         None => json!([{ "op": "add", "path": format!("{effects}/-"), "value": value }]),
     };
     out["match"] = json!({
         "clip": m.clip,
         "reference": reference,
-        "before": ColorStats::of(&ungraded),
+        "before": ColorStats::of(pooled(ungraded)),
         "after": matched.after,
         "reached": matched.reached,
         "grade": matched.grade,

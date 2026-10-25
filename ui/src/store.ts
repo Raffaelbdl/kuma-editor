@@ -1,6 +1,6 @@
 import { api, subscribeEvents } from "./api";
-import type { Activity, BlueprintInfo, LibraryInfo, Clip, HistoryEntry, MarkerInfo, DaemonEvent, FontFamily, Job, Marker, OverlayInfo, PatchOp, Project, Track, TrackKind, Transition } from "./types";
-import { allClips, clipPathOf, fpsValue, freeId, isFileSource, isOverlaySource, nearest, seqDuration, seqPath, sequenceIds, sequenceOf } from "./types";
+import type { Activity, BlueprintInfo, LibraryInfo, Clip, HistoryEntry, MarkerInfo, DaemonEvent, FontFamily, Job, Marker, OverlayInfo, PatchOp, Project, Region, Track, TrackKind, Transition } from "./types";
+import { allClips, clipPathOf, fpsValue, freeId, isFinal, isFileSource, isOverlaySource, nearest, seqDuration, seqPath, sequenceIds, sequenceOf } from "./types";
 
 /** A clip found in the project: where it is, as the record every edit of it starts from. */
 export interface Found { seq: string; track: Track; ti: number; clip: Clip; ci: number }
@@ -83,12 +83,15 @@ export interface State {
   /** Every sequence's markers as the daemon lists them: who left each, and whether it is
    *  waiting for the agent. The open sequence's own are also `store.markers`, the document's. */
   markerList: MarkerInfo[];
+  /** The region a grade is matched to (the reference shot), picked once and matched from
+   *  any clip's grade. View state; nothing saves it. */
+  colorReference: { sequence: string; t: number; region: Region } | null;
 }
 
 type Listener = (s: State) => void;
 
 class Store {
-  state: State = { project: null, blueprints: [], libraries: [], manifests: {}, fonts: [], previewStamp: 0, sequence: "", selection: null, track: null, clipboard: null, autoKey: false, reloading: false, playhead: 0, playing: false, zoom: 60, tab: SEQUENCE_TAB, sequences: [], entries: [], connected: false, jobs: {}, mode: "power", activity: [], history: [], markerList: [] };
+  state: State = { project: null, blueprints: [], libraries: [], manifests: {}, fonts: [], previewStamp: 0, sequence: "", selection: null, track: null, clipboard: null, autoKey: false, reloading: false, playhead: 0, playing: false, zoom: 60, tab: SEQUENCE_TAB, sequences: [], entries: [], connected: false, jobs: {}, mode: "power", activity: [], history: [], markerList: [], colorReference: null };
   private listeners = new Set<Listener>();
   private refreshing: Promise<void> | null = null;
   private refreshAgain = false;
@@ -111,6 +114,24 @@ class Store {
       if (last && now.length === last.length && now.every((v, i) => v === last![i])) return;
       last = now;
       fn(s);
+    });
+  }
+
+  /** Job `id` once it has ended, from the events the daemon sends about it — which carry
+   *  its result, so there is nothing to ask for. */
+  awaitJob(id: number): Promise<Job> {
+    return new Promise((resolve) => {
+      let ended = false;
+      // `select` calls back at once with what the store has, before `stop` is assigned: a
+      // job already over is caught by `ended`.
+      const stop = this.select((s) => [s.jobs[id]], (s) => {
+        const job = s.jobs[id];
+        if (ended || !job || !isFinal(job)) return;
+        ended = true;
+        stop?.();
+        resolve(job);
+      });
+      if (ended) stop();
     });
   }
 

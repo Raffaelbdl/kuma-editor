@@ -1156,6 +1156,14 @@ impl Effect {
         matches!(self, Effect::Volume { .. } | Effect::Limiter { .. } | Effect::AutoLevel { .. })
     }
 
+    /// The grade, when this is one.
+    pub fn as_grade(&self) -> Option<&Grade> {
+        match self {
+            Effect::Grade(g) => Some(g),
+            _ => None,
+        }
+    }
+
     /// The `type` this effect is written with — `audio_fade`, `limiter` — for messages.
     pub fn kind(&self) -> &'static str {
         match self {

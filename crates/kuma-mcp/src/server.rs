@@ -13,7 +13,7 @@ use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, ProgressNotificationParam, ProgressToken, ServerCapabilities, ServerInfo};
 use rmcp::service::RequestContext;
 use rmcp::{schemars, tool, tool_handler, tool_router, ErrorData as McpError, Peer, RoleServer, ServerHandler};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::activity;
@@ -448,7 +448,7 @@ pub struct SampleFrames {
 }
 
 
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct Rect {
     pub x: u32,
     pub y: u32,
@@ -920,7 +920,7 @@ impl KumaServer {
                 let tile = p.tile.unwrap_or(false);
                 let body = json!({
                     "t0": p.t0, "t1": p.t1, "count": p.count, "times": p.times, "tile": tile, "columns": p.columns,
-                    "rect": p.rect.as_ref().map(|r| json!({ "x": r.x, "y": r.y, "w": r.w, "h": r.h })),
+                    "rect": p.rect,
                     "width": p.width,
                     "overlays": p.overlays.unwrap_or(true),
                     "sequence": p.sequence,
@@ -1005,7 +1005,7 @@ impl KumaServer {
     async fn measure_color(&self, Parameters(p): Parameters<MeasureColor>, ctx: RequestContext<RoleServer>) -> Result<CallToolResult, McpError> {
         let body = json!({
             "sequence": p.sequence, "times": p.times, "t0": p.t0, "overlays": p.overlays.unwrap_or(false), "match": p.matching,
-            "region": p.region.as_ref().map(|r| json!({ "x": r.x, "y": r.y, "w": r.w, "h": r.h })),
+            "region": p.region,
         });
         self.job("/api/color/measure", body, Duration::from_secs(p.wait_seconds.unwrap_or(600)), &ctx).await
     }

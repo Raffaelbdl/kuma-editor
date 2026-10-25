@@ -45,45 +45,48 @@ export function colorField(initial: string, commit: (css: string) => void, opts:
 
   /** What the document says; an edit is measured against it, so no change sends nothing. */
   let value = initial;
-  let a = parseHex(initial)?.a ?? 255;
-  let hsv: Hsv = rgbToHsv(parseHex(initial) ?? { r: 0, g: 0, b: 0, a: 255 });
+  const first = parseHex(initial) ?? { r: 0, g: 0, b: 0, a: 255 };
+  let a = first.a;
+  let hsv: Hsv = rgbToHsv(first);
   const current = () => toHex(hsvToRgb(hsv, a));
   const accept = () => {
     const next = current();
     if (next !== value) { value = next; commit(next); }
   };
 
-  let pop: HTMLElement | null = null;
-  let paint = () => {};
+  /** The picker, while it is open, and how it shows the colour. */
+  let open: { el: HTMLElement; paint: () => void } | null = null;
   const show = () => {
     const c = current();
     chip.style.background = c;
     if (document.activeElement !== hex) hex.value = c;
-    paint();
+    open?.paint();
   };
-
-  hex.onchange = () => {
-    const c = parseHex(hex.value);
-    if (!c) { hex.value = value; return; }
+  /** Take a colour typed or picked off the screen — with its alpha, when it says one. */
+  const take = (css: string, keepAlpha: boolean) => {
+    const c = parseHex(css);
+    if (!c) return false;
     hsv = rgbToHsv(c);
-    a = c.a;
+    if (!keepAlpha) a = c.a;
     show();
     accept();
+    return true;
   };
+
+  hex.onchange = () => { if (!take(hex.value, false)) hex.value = value; };
   hex.onkeydown = (e) => { if (e.key === "Enter") hex.blur(); else if (e.key === "Escape") { hex.value = value; hex.blur(); } };
 
   const toggle = () => {
-    if (pop) {
-      pop.remove();
-      pop = null;
-      paint = () => {};
+    if (open) {
+      open.el.remove();
+      open = null;
       wrap.classList.remove("open");
       if (opts.key) openPickers.delete(opts.key);
       return;
     }
     if (opts.key) openPickers.add(opts.key);
-    pop = picker();
-    wrap.appendChild(pop);
+    open = picker();
+    wrap.appendChild(open.el);
     wrap.classList.add("open");
     show();
   };
@@ -117,26 +120,19 @@ export function colorField(initial: string, commit: (css: string) => void, opts:
     const drop = eyeDropper();
     if (drop) {
       p.appendChild(button("Pick from screen", async () => {
-        try {
-          const { sRGBHex } = await eyeDropper()!.open();
-          const c = parseHex(sRGBHex);
-          if (!c) return;
-          hsv = rgbToHsv(c);
-          show();
-          accept();
-        } catch { /* Escape: nothing picked */ }
+        // The screen has no alpha: a picked colour keeps the one this has.
+        try { take((await drop.open()).sRGBHex, true); } catch { /* Escape: nothing picked */ }
       }, "Take a colour from anywhere on screen — the frame, a reference image", "color-drop"));
     }
-    paint = () => {
+    const paint = () => {
       const pure = toHex(hsvToRgb({ h: hsv.h, s: 1, v: 1 }));
       sv.box.style.background = `linear-gradient(to top, #000, transparent), linear-gradient(to right, #fff, ${pure})`;
       Object.assign(sv.knob.style, { left: `${hsv.s * 100}%`, top: `${(1 - hsv.v) * 100}%` });
       hue.knob.style.left = `${(hsv.h / 360) * 100}%`;
-      const solid = toHex(hsvToRgb(hsv));
-      alpha.box.style.setProperty("--alpha-to", solid);
+      alpha.box.style.setProperty("--alpha-to", toHex(hsvToRgb(hsv)));
       alpha.knob.style.left = `${(a / 255) * 100}%`;
     };
-    return p;
+    return { el: p, paint };
   };
 
   show();

@@ -308,8 +308,19 @@ pub fn check_overlay_path(rel: &str) -> Option<String> {
 }
 
 pub(crate) fn is_css_color(s: &str) -> bool {
-    let Some(hex) = s.strip_prefix('#') else { return false };
-    matches!(hex.len(), 3 | 4 | 6 | 8) && hex.chars().all(|c| c.is_ascii_hexdigit())
+    parse_css_color(s).is_some()
+}
+
+/// `#rgb`, `#rgba`, `#rrggbb` or `#rrggbbaa` as RGBA bytes (alpha 255 when it has none),
+/// or `None` for anything else: the colours a var and a colour entry take.
+pub fn parse_css_color(s: &str) -> Option<[u8; 4]> {
+    let hex = s.strip_prefix('#')?;
+    if !matches!(hex.len(), 3 | 4 | 6 | 8) || !hex.chars().all(|c| c.is_ascii_hexdigit()) {
+        return None;
+    }
+    let short = hex.len() <= 4;
+    let at = |i: usize| if short { u8::from_str_radix(&hex[i..=i], 16).ok().map(|d| d * 17) } else { u8::from_str_radix(&hex[2 * i..2 * i + 2], 16).ok() };
+    Some([at(0)?, at(1)?, at(2)?, if hex.len() == 4 || hex.len() == 8 { at(3)? } else { 255 }])
 }
 
 /// A manifest that could not be loaded: which file, and why.

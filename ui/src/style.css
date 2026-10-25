@@ -905,8 +905,8 @@ button.mk-remove:hover { color: var(--danger); }
 .region-pick { position: fixed; z-index: 2500; cursor: crosshair; background: color-mix(in srgb, var(--bg) 18%, transparent); touch-action: none; }
 .region-pick-band { position: absolute; outline: 2px solid var(--accent); background: color-mix(in srgb, var(--accent) 14%, transparent); pointer-events: none; }
 .region-pick-hint { position: absolute; left: 50%; top: 10px; transform: translateX(-50%); padding: 4px 10px; border-radius: 4px; background: var(--bg-2); color: var(--fg); font-size: 12px; white-space: nowrap; pointer-events: none; }
+.match-controls { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .match-row { display: flex; gap: 4px; flex-wrap: wrap; }
-.match-note { grid-column: 2; }
 
 /* The curve field (`curvefield.ts`): a square plot of in against out, its points as dots. */
 .curve-field { display: flex; flex-direction: column; gap: 4px; }

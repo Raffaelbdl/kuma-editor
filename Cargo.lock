@@ -937,6 +937,7 @@ dependencies = [
 name = "kuma-mlt"
 version = "0.1.0"
 dependencies = [
+ "hex",
  "kuma-core",
  "serde",
  "serde_json",

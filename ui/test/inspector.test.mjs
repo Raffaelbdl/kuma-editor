@@ -13,7 +13,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { driver, missing, startDaemon } from "./harness.mjs";
+import { driver, missing, selectClip, settled as caughtUp, startDaemon } from "./harness.mjs";
 
 const clip = (effects) => ({ id: "c1", start: 0, end: 8, bin: "red", in: 0, speed: 1, volume: 1, muted: false, label: "", effects });
 
@@ -32,10 +32,6 @@ const PROJECT = JSON.stringify({
 
 const why = missing();
 
-/** Select a clip the way a click does: press on it, and let go. */
-const selectClip = (page, id) => page.eval(`(() => { const c = document.querySelector('.clip[data-id="${id}"]'); const r = c.getBoundingClientRect();
-  c.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, clientX: r.left + 20, clientY: r.top + 2 }));
-  window.dispatchEvent(new PointerEvent("pointerup", { bubbles: true })); return true; })()`);
 
 describe("the inspector's property fields", { skip: why ? `skipping: ${why}` : false }, () => {
   let tmp, daemon, page;
@@ -609,7 +605,7 @@ describe("the effects a clip is offered", { skip: why ? `skipping: ${why}` : fal
 
   it("adds a grade, writes one channel of a wheel, and leaves an emptied LUT out", async () => {
     const GRADE = `fetch("/api/project").then(r => r.json()).then(p => p.bin.main.source.tracks[0].clips[0].effects[1])`;
-    const settled = () => page.until(`fetch("/api/project").then(r => r.json()).then(p => p.revision).then(rev => document.querySelector("#statusline .rev").textContent.startsWith("r" + rev))`);
+    const settled = () => caughtUp(page);
     const type = (sel, value) => page.eval(`(() => { const i = document.querySelector(${JSON.stringify(sel)}); i.value = ${JSON.stringify(value)}; i.dispatchEvent(new Event("change", { bubbles: true })); return true; })()`);
     fs.writeFileSync(path.join(tmp, "look.cube"), "LUT_1D_SIZE 2\n0 0 0\n1 1 1\n");
     await page.eval(`(() => { const s = ${ADD}; s.value = "grade"; s.dispatchEvent(new Event("change", { bubbles: true })); return true; })()`);

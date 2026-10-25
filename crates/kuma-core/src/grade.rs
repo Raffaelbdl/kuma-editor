@@ -19,6 +19,8 @@
 //! 7. the look, mixed in by `look_amount`;
 //! 8. clamped to 0..1, which is all a LUT can hold.
 
+use std::fmt::Write;
+
 use crate::model::Grade;
 
 /// The edge of the grid a grade is written as: 33³ is what grading tools exchange, and
@@ -30,6 +32,47 @@ pub(crate) const DISPLAY_GAMMA: f64 = 2.4;
 
 /// Rec. 709 luma weights.
 pub(crate) const LUMA: [f64; 3] = [0.2126, 0.7152, 0.0722];
+
+/// Mid grey: 18% of white's light.
+pub(crate) const MID_GREY: f64 = 0.18;
+
+/// Rec. 709 luma of a display-encoded colour (or of light, weighted the same).
+pub(crate) fn luma(c: [f64; 3]) -> f64 {
+    (0..3).map(|i| LUMA[i] * c[i]).sum()
+}
+
+/// The light a display value stands for (BT.1886).
+pub(crate) fn decode(v: f64) -> f64 {
+    v.max(0.0).powf(DISPLAY_GAMMA)
+}
+
+/// The ranges a grade's settings take: the validator holds a grade to them, and a match
+/// solves within them, so a grade it answers can always be written.
+impl Grade {
+    pub const TEMPERATURE: std::ops::RangeInclusive<f64> = -2.0..=2.0;
+    pub const TINT: std::ops::RangeInclusive<f64> = -1.0..=1.0;
+    pub const EXPOSURE: std::ops::RangeInclusive<f64> = -5.0..=5.0;
+    pub const CONTRAST: std::ops::RangeInclusive<f64> = 0.0..=3.0;
+    pub const SATURATION: std::ops::RangeInclusive<f64> = 0.0..=3.0;
+    pub const LOOK_AMOUNT: std::ops::RangeInclusive<f64> = 0.0..=1.0;
+    /// Each channel of lift, gamma and gain.
+    pub const WHEEL: std::ops::RangeInclusive<f64> = -1.0..=1.0;
+
+    /// Whether it leaves every colour as it is — nothing set, which the compiler leaves
+    /// out. Read off the settings alone: a grade with a LUT is never neutral, so this needs
+    /// no file.
+    pub fn is_neutral(&self) -> bool {
+        self.input_lut.is_none()
+            && (self.look.is_none() || self.look_amount == 0.0)
+            && Curve::through(&self.curve).is_none()
+            && light_gains(self.temperature, self.tint, self.exposure) == [1.0; 3]
+            && self.lift.is_zero()
+            && self.gamma.is_zero()
+            && self.gain.is_zero()
+            && self.contrast == 1.0
+            && self.saturation == 1.0
+    }
+}
 
 /// A parsed `.cube`: Adobe's format, which Resolve, ffmpeg and the cameras' vendors write.
 #[derive(Debug, Clone, PartialEq)]
@@ -50,6 +93,20 @@ enum Table {
 
 impl Lut {
     /// Parse a `.cube`'s text. Keywords it does not know are skipped, as the format says.
+    /// Read and parse a `.cube` file, its bytes alongside (what the compiler hashes): the
+    /// one way every reader of a grade's LUTs reads one, so they agree on what reads.
+    pub fn load(path: &std::path::Path) -> Result<(Vec<u8>, Lut), String> {
+        let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
+        let lut = Lut::from_bytes(&bytes)?;
+        Ok((bytes, lut))
+    }
+
+    /// Parse a `.cube` file's bytes, which are text (stray non-UTF-8 bytes are in comments
+    /// or titles at worst, and do not stop the table reading).
+    pub fn from_bytes(bytes: &[u8]) -> Result<Lut, String> {
+        Lut::parse(&String::from_utf8_lossy(bytes))
+    }
+
     pub fn parse(text: &str) -> Result<Lut, String> {
         let (mut size1, mut size3) = (None, None);
         let (mut min, mut max) = ([0.0; 3], [1.0; 3]);
@@ -181,14 +238,6 @@ impl<'a> Grading<'a> {
         self.light = light_gains(temperature, tint, exposure);
     }
 
-    /// Whether it leaves every colour as it is — a grade with nothing set, which the
-    /// compiler then leaves out.
-    pub fn is_neutral(&self) -> bool {
-        let g = self.grade;
-        self.input.is_none() && (self.look.is_none() || g.look_amount == 0.0) && self.curve.is_none() && self.light == [1.0; 3]
-            && g.lift.is_zero() && g.gamma.is_zero() && g.gain.is_zero() && g.contrast == 1.0 && g.saturation == 1.0
-    }
-
     /// What the grade makes of the display-encoded colour `c`; see the module's steps.
     pub fn apply(&self, c: [f64; 3]) -> [f64; 3] {
         let g = self.grade;
@@ -197,7 +246,7 @@ impl<'a> Grading<'a> {
             None => c,
         };
         if self.light != [1.0; 3] {
-            c = std::array::from_fn(|i| (c[i].max(0.0).powf(DISPLAY_GAMMA) * self.light[i]).powf(1.0 / DISPLAY_GAMMA));
+            c = std::array::from_fn(|i| (decode(c[i]) * self.light[i]).powf(1.0 / DISPLAY_GAMMA));
         }
         let (lift, gain, gamma) = (g.lift.channels(), g.gain.channels(), g.gamma.channels());
         c = std::array::from_fn(|i| {
@@ -205,14 +254,14 @@ impl<'a> Grading<'a> {
             if gamma[i] == 0.0 { v } else { v.max(0.0).powf(2f64.powf(-gamma[i])) }
         });
         if g.contrast != 1.0 {
-            let pivot = 0.18f64.powf(1.0 / DISPLAY_GAMMA);
+            let pivot = MID_GREY.powf(1.0 / DISPLAY_GAMMA);
             c = c.map(|v| pivot + (v - pivot) * g.contrast);
         }
         if let Some(curve) = &self.curve {
             c = c.map(|v| curve.at(v));
         }
         if g.saturation != 1.0 {
-            let y: f64 = (0..3).map(|i| LUMA[i] * c[i]).sum();
+            let y = luma(c);
             c = c.map(|v| y + (v - y) * g.saturation);
         }
         if let Some(look) = self.look.as_ref().filter(|_| g.look_amount != 0.0) {
@@ -233,7 +282,7 @@ impl<'a> Grading<'a> {
             for g in 0..n {
                 for r in 0..n {
                     let [x, y, z] = self.apply([step(r), step(g), step(b)]);
-                    out.push_str(&format!("{x:.6} {y:.6} {z:.6}\n"));
+                    let _ = writeln!(out, "{x:.6} {y:.6} {z:.6}");
                 }
             }
         }
@@ -249,7 +298,7 @@ fn light_gains(temperature: f64, tint: f64, exposure: f64) -> [f64; 3] {
         return [1.0; 3];
     }
     let wb = [2f64.powf(temperature / 2.0), 2f64.powf(-tint / 2.0), 2f64.powf(-temperature / 2.0)];
-    let y: f64 = (0..3).map(|i| LUMA[i] * wb[i]).sum();
+    let y = luma(wb);
     let ev = 2f64.powf(exposure);
     wb.map(|w| w / y * ev)
 }
@@ -341,13 +390,12 @@ mod tests {
     fn a_default_grade_is_neutral_and_changes_nothing() {
         let g = Grade::default();
         let grading = Grading::new(&g, None, None);
-        assert!(grading.is_neutral());
+        assert!(g.is_neutral());
         for c in [[0.0, 0.0, 0.0], [0.25, 0.5, 0.75], [1.0, 1.0, 1.0]] {
             assert!(close(grading.apply(c), c));
         }
         // A curve along the diagonal is no curve.
-        let g = Grade { curve: vec![[0.5, 0.5]], ..Grade::default() };
-        assert!(Grading::new(&g, None, None).is_neutral());
+        assert!(Grade { curve: vec![[0.5, 0.5]], ..Grade::default() }.is_neutral());
     }
 
     /// The values a finished video's grade comes out at. These are the module's contract:
@@ -452,10 +500,10 @@ mod tests {
 
     #[test]
     fn the_grid_is_the_grade_sampled() {
-        let lut_text = Grading::new(&Grade { saturation: 0.5, gain: Rgb { r: 0.1, g: 0.0, b: -0.1 }, ..Grade::default() }, None, None).cube();
+        let g = Grade { saturation: 0.5, gain: Rgb { r: 0.1, g: 0.0, b: -0.1 }, ..Grade::default() };
+        let lut_text = Grading::new(&g, None, None).cube();
         assert!(lut_text.contains("LUT_3D_SIZE 33\n"));
         let back = Lut::parse(&lut_text).unwrap();
-        let g = Grade { saturation: 0.5, gain: Rgb { r: 0.1, g: 0.0, b: -0.1 }, ..Grade::default() };
         // On a grid point the file says exactly what the grade does, to its six places.
         let p = [4.0 / 32.0, 16.0 / 32.0, 30.0 / 32.0];
         assert!((0..3).all(|i| (back.apply(p)[i] - graded(&g, p)[i]).abs() < 1e-6));
@@ -469,8 +517,9 @@ mod tests {
         assert!(close(Grading::new(&g, Some(invert.clone()), None).apply([0.0; 3]), [0.5; 3]));
         // The look last, and by its amount: half of an inverted grey is that grey.
         let g = Grade { look_amount: 0.5, ..Grade::default() };
-        assert!(close(Grading::new(&g, None, Some(invert.clone())).apply([0.2; 3]), [0.5; 3]));
-        let off = Grade { look_amount: 0.0, ..Grade::default() };
-        assert!(Grading::new(&off, None, Some(invert)).is_neutral());
+        assert!(close(Grading::new(&g, None, Some(invert)).apply([0.2; 3]), [0.5; 3]));
+        // Whether a grade with a look changes anything is in its settings, not its file.
+        assert!(Grade { look: Some("off.cube".into()), look_amount: 0.0, ..Grade::default() }.is_neutral());
+        assert!(!Grade { look: Some("on.cube".into()), ..Grade::default() }.is_neutral());
     }
 }

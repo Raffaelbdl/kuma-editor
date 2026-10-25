@@ -525,22 +525,23 @@ fn check_effect(issues: &mut Vec<Issue>, ep: &str, e: &Effect, kind: &str, owner
 /// draw. Its LUT files are checked where the project's root is known, with the clip.
 fn check_grade(issues: &mut Vec<Issue>, ep: &str, g: &Grade) {
     let scalars = [
-        ("temperature", g.temperature, -2.0, 2.0),
-        ("tint", g.tint, -1.0, 1.0),
-        ("exposure", g.exposure, -5.0, 5.0),
-        ("contrast", g.contrast, 0.0, 3.0),
-        ("saturation", g.saturation, 0.0, 3.0),
-        ("look_amount", g.look_amount, 0.0, 1.0),
+        ("temperature", g.temperature, Grade::TEMPERATURE),
+        ("tint", g.tint, Grade::TINT),
+        ("exposure", g.exposure, Grade::EXPOSURE),
+        ("contrast", g.contrast, Grade::CONTRAST),
+        ("saturation", g.saturation, Grade::SATURATION),
+        ("look_amount", g.look_amount, Grade::LOOK_AMOUNT),
     ];
-    for (name, v, lo, hi) in scalars {
-        if !(lo..=hi).contains(&v) {
-            issues.push(Issue::error(format!("{ep}/{name}"), format!("grade {name} must be within {lo}..{hi}")));
+    for (name, v, range) in scalars {
+        if !range.contains(&v) {
+            issues.push(Issue::error(format!("{ep}/{name}"), format!("grade {name} must be within {}..{}", range.start(), range.end())));
         }
     }
+    let wheel = Grade::WHEEL;
     for (name, rgb) in [("lift", g.lift), ("gamma", g.gamma), ("gain", g.gain)] {
         for (ch, v) in ["r", "g", "b"].into_iter().zip(rgb.channels()) {
-            if !(-1.0..=1.0).contains(&v) {
-                issues.push(Issue::error(format!("{ep}/{name}/{ch}"), format!("grade {name} must be within -1..1 on each channel")));
+            if !wheel.contains(&v) {
+                issues.push(Issue::error(format!("{ep}/{name}/{ch}"), format!("grade {name} must be within {}..{} on each channel", wheel.start(), wheel.end())));
             }
         }
     }
@@ -567,20 +568,35 @@ fn check_grade_luts(issues: &mut Vec<Issue>, ep: &str, g: &Grade, ctx: &Validati
         } else if !path.to_ascii_lowercase().ends_with(".cube") {
             issues.push(Issue::error(fp, "a LUT must be a `.cube` file"));
         } else if ctx.check_files {
-            match std::fs::read_to_string(ctx.root.join(path)) {
-                Err(e) => issues.push(Issue::error(fp, format!("cannot read LUT `{path}`: {e}"))),
-                Ok(text) => {
-                    if let Err(e) = crate::grade::Lut::parse(&text) {
-                        issues.push(Issue::error(fp, format!("LUT `{path}`: {e}")));
-                    }
-                }
+            if let Err(e) = lut_reads(&ctx.root.join(path)) {
+                issues.push(Issue::error(fp, format!("LUT `{path}`: {e}")));
             }
         }
     }
 }
 
-/// Whether `path` is relative and never climbs out of the directory it is read from.
-fn stays_inside(path: &str) -> bool {
+/// Whether the LUT at `path` reads, remembered per file as long as its size and time do
+/// not change: every edit validates the whole project, and a 65³ `.cube` takes tens of
+/// milliseconds to parse — per clip that names it, on every edit, unremembered.
+fn lut_reads(path: &std::path::Path) -> Result<(), String> {
+    type Seen = HashMap<PathBuf, (u64, Option<std::time::SystemTime>, Result<(), String>)>;
+    static SEEN: std::sync::OnceLock<std::sync::Mutex<Seen>> = std::sync::OnceLock::new();
+    let meta = std::fs::metadata(path).map_err(|e| e.to_string())?;
+    let stamp = (meta.len(), meta.modified().ok());
+    let seen = SEEN.get_or_init(Default::default);
+    if let Some((len, time, read)) = seen.lock().unwrap_or_else(|p| p.into_inner()).get(path) {
+        if (*len, *time) == stamp {
+            return read.clone();
+        }
+    }
+    let read = crate::grade::Lut::load(path).map(drop);
+    seen.lock().unwrap_or_else(|p| p.into_inner()).insert(path.to_path_buf(), (stamp.0, stamp.1, read.clone()));
+    read
+}
+
+/// Whether `path` is relative and never climbs out of the directory it is read from — the
+/// test for a file the project names that must be the project's own (a LUT, a luma).
+pub fn stays_inside(path: &str) -> bool {
     let p = std::path::Path::new(path);
     !p.is_absolute() && p.components().all(|c| matches!(c, std::path::Component::Normal(_))) && !path.is_empty()
 }
@@ -932,7 +948,7 @@ mod tests {
         assert_eq!(paths(1), ["exposure", "saturation", "lift/g"], "{:?}", on(1));
         assert_eq!(paths(2), ["curve/1", "curve/2"], "{:?}", on(2));
         assert!(on(3).iter().any(|m| m.starts_with("input_lut") && m.contains("inside the project")) && on(3).iter().any(|m| m.starts_with("look") && m.contains(".cube")), "{:?}", on(3));
-        assert!(on(4).iter().any(|m| m.starts_with("input_lut") && m.contains("cannot read")) && on(4).iter().any(|m| m.starts_with("look") && m.contains("needs 8 rows")), "{:?}", on(4));
+        assert!(on(4).iter().any(|m| m.starts_with("input_lut") && m.contains("missing.cube")) && on(4).iter().any(|m| m.starts_with("look") && m.contains("needs 8 rows")), "{:?}", on(4));
         // The compiler's check reads no files, so what is on disk cannot fail it.
         let unread = validate(&p, &ValidationContext { check_files: false, ..ctx });
         assert!(!unread.iter().any(|i| i.path.contains("/tracks/4/")), "{unread:?}");

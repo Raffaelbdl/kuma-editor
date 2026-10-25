@@ -14,7 +14,7 @@ import { desktop } from "../desktop";
 import { askForm } from "../modal";
 import { panels } from "../panelhost";
 import { binName, fmtTime, isEntryTab, store, toast } from "../store";
-import type { BinItem, Clip, ColorReference, Cue, Ease, Effect, FontFamily, Grade, PatchOp, Project, Region, Streams, Transition, VarSpec } from "../types";
+import type { BinItem, Clip, ColorReference, Cue, Ease, Effect, FontFamily, Grade, PatchOp, Project, Streams, Transition, VarSpec } from "../types";
 import { pickRegion } from "../regionpick";
 import { blueprintActions, makeOverlayUnique, removeTransition, setTransitionDuration, setTransitionKind, updateTransition, manifestOf, moveBinItem, overlayError, placeBinItem, previewImg, renderPreview, saveAsBlueprint, sharersOf } from "../edits";
 import { Animation, animationOf } from "../keyframes";
@@ -25,7 +25,7 @@ import { keyStrip, numberField, showNumber, sliderField, vectorField } from "../
 import { colorField, wheelField } from "../colorfield";
 import { curveField } from "../curvefield";
 import type { CurvePoint } from "../curve";
-import { LUMAS, SEQUENCE_EFFECTS, isFinal, sourceAfter, actsOn, ANIMATABLE, binItem, binPath, canPlace, canTimeWarp, childrenOf, clipStreams, covers, expandPreset, hasAudio, isColorSource, isFileSource, isFolderSource, isOverlaySource, isSequenceSource, isTimedMedia, itemKind, mediaFacts, placementsOf, seqDuration, seqPath, sequenceOf, sequenceStreams, streamsOf, wouldNest } from "../types";
+import { LUMAS, SEQUENCE_EFFECTS, sourceAfter, actsOn, ANIMATABLE, binItem, binPath, canPlace, canTimeWarp, childrenOf, clipStreams, covers, expandPreset, hasAudio, isColorSource, isFileSource, isFolderSource, isOverlaySource, isSequenceSource, isTimedMedia, itemKind, mediaFacts, placementsOf, seqDuration, seqPath, sequenceOf, sequenceStreams, streamsOf, wouldNest } from "../types";
 
 const presetsPromise = api.effectPresets().catch(() => []);
 
@@ -42,7 +42,10 @@ type PropSpec =
   /** A tone curve's points, edited on the curve (`curvefield.ts`). */
   | { kind: "curve"; key: string; label?: string; title?: string }
   /** Per-channel offsets as colour wheels side by side (`colorfield.ts`), one per key. */
-  | { kind: "wheels"; label: string; keys: { key: string; title: string }[] };
+  | { kind: "wheels"; label: string; keys: { key: string; title: string }[] }
+  /** A grade's white balance and exposure, measured into place from the picture: a clip's
+   *  only, since it measures the clip (a grade never sits on a sequence). */
+  | { kind: "match"; label: string };
 
 /** Per effect kind: the value `+ add effect` inserts, and the properties it shows, in
  *  order. Its name is its type, spaced (`title`). Adding a kind is one row here plus the
@@ -57,9 +60,11 @@ const fadeProps = (into: string, outOf: string): PropSpec[] => [{ kind: "vec", l
   { key: "in", tag: "In", step: 0.1, min: 0, suffix: "s", title: `Seconds to ${into}` },
   { key: "out", tag: "Out", step: 0.1, min: 0, suffix: "s", title: `Seconds to ${outOf}` },
 ] }];
-/** A grade's per-channel wheel: a row of R, G and B, neutral at 0, addressed as `lift.r`. */
-const wheel = (key: string, what: string): PropSpec => ({ kind: "vec", label: capitalize(key), parts: (["r", "g", "b"] as const).map((ch, i) => (
-  { key: `${key}.${ch}`, tag: ch.toUpperCase(), axis: (["x", "y", "z"] as const)[i], step: 0.01, min: -1, max: 1, title: `${what}, on ${["red", "green", "blue"][i]}` }
+/** One row of a grade's per-channel numbers — R, G and B, neutral at 0, addressed as
+ *  `lift.r` — under its wheel. */
+const CHANNELS = [["r", "x", "red"], ["g", "y", "green"], ["b", "z", "blue"]] as const;
+const channels = (key: string, what: string): PropSpec => ({ kind: "vec", label: capitalize(key), parts: CHANNELS.map(([ch, axis, name]) => (
+  { key: `${key}.${ch}`, tag: ch.toUpperCase(), axis, step: 0.01, min: -1, max: 1, title: `${what}, on ${name}` }
 )) });
 const BLEND_MODES = ["normal", "multiply", "screen", "overlay", "darken", "lighten", "color_dodge", "color_burn", "hard_light", "soft_light", "difference", "exclusion"];
 const EFFECTS: Partial<Record<Effect["type"], EffectSpec>> = {
@@ -117,14 +122,15 @@ const EFFECTS: Partial<Record<Effect["type"], EffectSpec>> = {
         { key: "gamma", title: "Gamma: drag towards a colour to tint the midtones; black and white stay" },
         { key: "gain", title: "Gain: drag towards a colour to tint the highlights; black stays" },
       ] },
-      wheel("lift", "Raises the shadows, white stays"),
-      wheel("gamma", "Bends the midtones, black and white stay"),
-      wheel("gain", "Scales the highlights, black stays"),
+      channels("lift", "Raises the shadows, white stays"),
+      channels("gamma", "Bends the midtones, black and white stay"),
+      channels("gain", "Scales the highlights, black stays"),
       { kind: "slider", key: "contrast", min: 0, max: 3, step: 0.01, title: "About mid grey: 1 leaves it" },
       { kind: "curve", key: "curve", label: "Curve", title: "Press to add a point, drag to move it, double-click to take it out" },
       { kind: "slider", key: "saturation", min: 0, max: 3, step: 0.01, title: "1 leaves it, 0 is black and white" },
       { kind: "text", key: "look", label: "Look LUT", optional: true },
       { kind: "slider", key: "look_amount", label: "Look amount", min: 0, max: 1, step: 0.01 },
+      { kind: "match", label: "Match" },
     ],
   },
   // The picture's fade and the sound's are two kinds, so each clip is offered the one it
@@ -169,6 +175,8 @@ const EFFECTS: Partial<Record<Effect["type"], EffectSpec>> = {
 interface EffectOwner {
   /** Names it in view state (folds, curves): a clip id, or `seq:<id>`. */
   key: string;
+  /** The clip, when the owner is one. */
+  clip?: string;
   /** How a note says it: "the clip". */
   what: string;
   effects: Effect[];
@@ -290,6 +298,10 @@ interface PropCtx {
    *  read-only while the playhead is outside the clip (there is no "now" to write to),
    *  and it follows the playhead. Empty for a field that is not keyed. */
   timed: (key: string) => Pick<NumberOpts, "readOnly" | "live">;
+  /** The clip the effect is on, when it is on one: what a match measures. */
+  clip?: string;
+  /** Write several fields of the effect as one edit. */
+  merge: (fields: Record<string, unknown>) => void;
 }
 
 /** One property row, whatever shape it is. What it edits is on the row: the panel styles
@@ -297,7 +309,8 @@ interface PropCtx {
 function propRow(p: PropSpec, ctx: PropCtx): HTMLElement {
   const { read, write, timed } = ctx;
   const num = (key: string) => Number(read(key) ?? 0);
-  const label = p.kind === "vec" || p.kind === "wheels" ? p.label : p.label ?? title(p.key);
+  // A kind that edits one key is named by it; one that edits several, by its label.
+  const label = "key" in p ? p.label ?? title(p.key) : p.label;
   let input: HTMLElement;
   switch (p.kind) {
     case "vec":
@@ -322,6 +335,10 @@ function propRow(p: PropSpec, ctx: PropCtx): HTMLElement {
       input = curveField((read(p.key) as CurvePoint[] | undefined) ?? [], (v) => write(p.key, v), { title: p.title });
       input.classList.add("wide");
       break;
+    case "match":
+      // A grade is a clip's: the model offers it to nothing else.
+      input = matchControls(ctx.clip!, ctx.merge);
+      break;
     case "wheels":
       input = row("wheels wide", ...p.keys.map(({ key, title: what }) => {
         const o = (read(key) ?? {}) as { r?: number; g?: number; b?: number };
@@ -330,7 +347,7 @@ function propRow(p: PropSpec, ctx: PropCtx): HTMLElement {
       break;
   }
   const line = field(label, input);
-  line.dataset.prop = p.kind === "vec" || p.kind === "wheels" ? p.label.toLowerCase() : p.key;
+  line.dataset.prop = "key" in p ? p.key : p.label.toLowerCase();
   return line;
 }
 
@@ -445,7 +462,7 @@ export class Inspector {
     // write to from outside it — and that flips rarely. The values themselves follow the
     // playhead without a re-render; see `renderEffects`.
     // Rebuilt while it is on screen; in den, unsummoned, it waits to be.
-    store.select((s) => [s.project, s.selection, s.manifests, s.fonts, s.blueprints, s.sequence, playheadInClip(), s.previewStamp], panels.lazily("inspector", () => this.render()).run);
+    store.select((s) => [s.project, s.selection, s.manifests, s.fonts, s.blueprints, s.sequence, playheadInClip(), s.previewStamp, s.colorReference], panels.lazily("inspector", () => this.render()).run);
   }
 
   private render() {
@@ -513,6 +530,7 @@ export class Inspector {
     }
     this.renderEffects({
       key: clip.id,
+      clip: clip.id,
       what: "the clip",
       effects: clip.effects,
       path: `${path}/effects`,
@@ -838,13 +856,13 @@ export class Inspector {
         // values in place, because re-rendering this panel 25 times a second is what
         // `store.select` exists to prevent.
         timed: (key) => (timed(key) ? { readOnly: !anim!.inside, live: (set) => mine.push(() => set(anim!.at(key))) } : {}),
+        clip: owner.clip,
+        merge: (fields) => replace({ ...e, ...fields }, Object.keys(fields).join(", ")),
       };
       // The toggle is in the head, so a keyframed effect says so while folded too.
       if (anim) head.append(keyToggle(anim));
       head.append(remove);
       for (const p of spec.props ?? []) body.appendChild(propRow(p, ctx));
-      // A clip's grade can be measured into place; a sequence never carries one.
-      if (e.type === "grade" && !owner.key.startsWith("seq:")) body.appendChild(matchRow(owner.key, (light) => replace({ ...e, ...light }, "match")));
       if (anim?.animated) body.appendChild(keyRow(anim, id, (fn) => mine.push(fn)));
       if (mine.length) followers.push(() => { if (!closedEffects.has(id)) for (const f of mine) f(); });
       this.host.appendChild(box);
@@ -903,52 +921,36 @@ export class Inspector {
 /** A button that reads as a link: it navigates the panel rather than changing anything. */
 const linkButton = (label: string, onClick: () => void, title = "") => button(label, onClick, title, "linkish");
 
-/** The region a grade is matched to, picked once at a moment of the open sequence and
- *  matched from any clip's grade: the reference shot. View state; nothing saves it. */
-let colourReference: { sequence: string; t: number; region: Region } | null = null;
-
 /** What a match writes: the grade's white balance and exposure, the rest of it kept. */
 type Light = Pick<Grade, "temperature" | "tint" | "exposure">;
 
-/** A grade's match buttons: make a region of this clip neutral, pick the reference, or
+/** A grade's match controls: make a region of this clip neutral, pick the reference, or
  *  match a region of this clip to it. Each is measured where the playhead is. */
-function matchRow(clip: string, write: (light: Light) => void): HTMLElement {
+function matchControls(clip: string, write: (light: Light) => void): HTMLElement {
+  const ref = store.state.colorReference;
   const neutral = button("Neutral…", () => void matchColour(clip, { neutral: true }, "Something white or grey in life", write),
     "Drag over something in this clip that is white or grey in life: its white balance is set to make it so");
   const pick = button("Set reference…", () => void setReference(), "Drag over what the other shots should look like — a face, a wall — at the playhead. Kept until you set another");
-  const match = button("Match…", () => {
-    const ref = colourReference;
-    if (ref) void matchColour(clip, { t: ref.t, region: ref.region, sequence: ref.sequence }, "The same thing in this clip", write);
-  }, "Drag over the same thing in this clip: its white balance and exposure are set to look like the reference", "match-ref");
-  const wrap = field("Match", row("match-row", neutral, pick, match));
-  wrap.appendChild(el("div", "match-note muted tiny"));
-  wrap.dataset.prop = "match";
-  showReference(wrap);
+  const match = button("Match…", () => ref && void matchColour(clip, ref, "The same thing in this clip", write),
+    "Drag over the same thing in this clip: its white balance and exposure are set to look like the reference");
+  match.disabled = !ref;
+  const said = ref ? `Reference: ${ref.region.w}×${ref.region.h} px at ${fmtTime(ref.t, store.fps)} in ${binName(ref.sequence)}` : "No reference yet";
+  const wrap = el("div", "match-controls");
+  wrap.append(row("match-row", neutral, pick, match), el("div", "match-note muted tiny", said));
   return wrap;
-}
-
-/** Say what the reference is, and offer matching to it only once there is one, in `within`. */
-function showReference(within: ParentNode) {
-  const ref = colourReference;
-  const p = store.state.project;
-  const fps = p ? p.fps.num / p.fps.den : 30;
-  for (const b of within.querySelectorAll<HTMLButtonElement>(".match-ref")) b.disabled = !ref;
-  for (const n of within.querySelectorAll(".match-note")) {
-    n.textContent = ref ? `Reference: ${ref.region.w}×${ref.region.h} px at ${fmtTime(ref.t, fps)} in ${binName(ref.sequence)}` : "No reference yet";
-  }
 }
 
 /** Pick the reference region at the playhead of the open sequence. */
 async function setReference() {
   const region = await pickRegion("The reference: what the other shots should look like");
   if (!region) return;
-  colourReference = { sequence: store.state.sequence, t: store.state.playhead, region };
-  showReference(document);
+  store.set({ colorReference: { sequence: store.state.sequence, t: store.state.playhead, region } });
   toast("Reference set: match other clips to it from their grade", "ok");
 }
 
 /** Measure `clip` at the playhead over a region the user picks, solve its grade's light to
- *  look like `reference`, and write it. */
+ *  look like `reference`, and write it. A job that fails says so itself (the store toasts
+ *  every job's end). */
 async function matchColour(clip: string, reference: ColorReference, what: string, write: (light: Light) => void) {
   const found = store.findClip(clip);
   if (!found || !covers(found.clip, store.state.playhead)) {
@@ -960,11 +962,8 @@ async function matchColour(clip: string, reference: ColorReference, what: string
   if (!region) return;
   try {
     const { job } = await api.measureColor({ times: [t], region, match: { clip, reference } });
-    const done = await finished(job);
-    if (done.state !== "done") {
-      toast(done.message || `Measuring failed (${done.state})`, "err");
-      return;
-    }
+    const done = await store.awaitJob(job);
+    if (done.state !== "done") return;
     const m = (done.result as { match: { grade: Grade; reached: boolean } }).match;
     const light: Light = { temperature: m.grade.temperature ?? 0, tint: m.grade.tint ?? 0, exposure: m.grade.exposure ?? 0 };
     write(light);
@@ -972,15 +971,6 @@ async function matchColour(clip: string, reference: ColorReference, what: string
     toast(m.reached ? `Matched: ${said}` : `As near as the grade reaches: ${said}`, m.reached ? "ok" : "err");
   } catch (e) {
     toast((e as Error).message, "err");
-  }
-}
-
-/** The job, once it has ended. */
-async function finished(id: number) {
-  for (;;) {
-    const j = await api.job(id);
-    if (isFinal(j)) return j;
-    await new Promise((r) => setTimeout(r, 250));
   }
 }
 

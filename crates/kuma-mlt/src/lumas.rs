@@ -3,27 +3,17 @@
 
 use std::path::{Path, PathBuf};
 
-use kuma_core::LUMAS;
+use kuma_core::{stays_inside, LUMAS};
 
 /// Resolve a luma name or project-relative path to a file, generating built-ins under
 /// `cache_dir`. Paths may not leave the project (the validator checks this too).
 pub fn resolve(name: &str, root: &Path, cache_dir: &Path) -> std::io::Result<PathBuf> {
-    let rel = Path::new(name);
-    let inside = !rel.is_absolute() && rel.components().all(|c| matches!(c, std::path::Component::Normal(_)));
-    let p = root.join(rel);
-    if inside && p.is_file() {
+    let p = root.join(name);
+    if stays_inside(name) && p.is_file() {
         return Ok(p);
     }
     if LUMAS.contains(&name) {
-        let out = cache_dir.join(format!("{name}.pgm"));
-        if !out.is_file() {
-            // A preview compile and a render may generate the same luma at once.
-            std::fs::create_dir_all(cache_dir)?;
-            let tmp = cache_dir.join(format!("{name}.pgm.tmp{}", std::process::id()));
-            std::fs::write(&tmp, generate(name, 512, 288))?;
-            std::fs::rename(&tmp, &out)?;
-        }
-        return Ok(out);
+        return crate::generated::write_once(cache_dir, &format!("{name}.pgm"), || Ok(generate(name, 512, 288)));
     }
     Err(std::io::Error::new(std::io::ErrorKind::NotFound, format!("unknown luma `{name}`")))
 }

@@ -279,3 +279,40 @@ describe("a mask: where an effect acts", { skip: why ? `skipping: ${why}` : fals
     await settled(page);
   });
 });
+
+describe("a grade on the source: every placement's", { skip: why ? `skipping: ${why}` : false }, () => {
+  let tmp, daemon, page;
+  // A one-pixel grey PNG: an image entry to grade.
+  const PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAAAAAA6fptVAAAACklEQVR4nGNoAAAAggCBd81ytgAAAABJRU5ErkJggg==", "base64");
+  const ENTRY = `fetch("/api/project").then(r => r.json()).then(p => p.bin.still)`;
+
+  before(async () => {
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), "kuma-entry-"));
+    fs.writeFileSync(path.join(tmp, "still.png"), PNG);
+    const projectFile = path.join(tmp, "entry.kuma.json");
+    const p = JSON.parse(PROJECT);
+    p.bin.still = { name: "Still", source: { path: "still.png", kind: "image" } };
+    fs.writeFileSync(projectFile, JSON.stringify(p));
+    daemon = await startDaemon(projectFile);
+    page = await driver(daemon.url);
+    await page.until(`!!document.querySelector('.bin-row[data-sel="bin:still"]')`);
+  });
+
+  after(() => {
+    page?.close();
+    daemon?.proc.kill("SIGTERM");
+    if (tmp) fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it("adds a grade to an image entry, with no shape or match of its own", async () => {
+    await page.eval(`document.querySelector('.bin-row[data-sel="bin:still"]').click(), true`);
+    await page.until(`[...document.querySelectorAll("#inspector h3")].some(h => h.textContent === "On the source")`);
+    await page.eval(`(() => { const s = [...document.querySelectorAll("#inspector select")].find(s => s.options[0]?.textContent === "+ add effect…"); s.value = "grade"; s.dispatchEvent(new Event("change", { bubbles: true })); return true; })()`);
+    await page.until(`${ENTRY}.then(e => e.effects?.[0]?.type === "grade")`);
+    await settled(page);
+    await page.until(`!!document.querySelector('#inspector [data-prop="where"]')`);
+    assert.match(await page.eval(`document.querySelector('#inspector [data-prop="where"]').textContent`), /a shape goes on a clip's own grade/);
+    assert.match(await page.eval(`document.querySelector('#inspector [data-prop="match"]').textContent`), /match there/);
+    assert.equal(await page.eval(`!!document.querySelector('#inspector .kf-toggle')`), false, "an entry's grade holds still");
+  });
+});

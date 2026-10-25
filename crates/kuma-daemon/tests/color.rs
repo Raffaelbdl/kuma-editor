@@ -331,3 +331,31 @@ fn a_keyed_mask_moves_with_its_clip() {
     assert!(left0 < right0 - 2.0, "the window on the left at first: {left0} {right0}");
     assert!(right1 < left1 - 2.0, "and on the right by the end: {left1} {right1}");
 }
+
+/// An entry's own grade is what every placement starts from: an S-Log3 grey card as a file,
+/// its entry naming the log, renders mid grey wherever it is placed — and a clip's grade
+/// then acts on that.
+#[test]
+fn an_entrys_grade_is_what_its_clips_start_from() {
+    if !renders() {
+        eprintln!("melt/ffmpeg not available; skipping");
+        return;
+    }
+    let (state, dir) = fixture();
+    let card = dir.path().join("card.png");
+    let made = std::process::Command::new("ffmpeg")
+        .args(["-v", "error", "-f", "lavfi", "-i", "color=c=0x686868:s=64x36", "-frames:v", "1", "-y"])
+        .arg(&card)
+        .status()
+        .unwrap();
+    assert!(made.success());
+    apply(&state, &json!([
+        { "op": "add", "path": "/bin/card", "value": { "name": "S-Log3 card", "source": { "path": "card.png", "kind": "image" },
+          "effects": [{ "type": "grade", "log": "s-log3-cine" }] } },
+        { "op": "replace", "path": "/bin/main/source/tracks/0/clips/0/bin", "value": "card" },
+    ]));
+    let ev = || run(&state, json!({ "times": [0.5], "region": centre() })).unwrap()["stats"]["exposure"].as_f64().unwrap();
+    assert!(ev().abs() < 0.1, "the entry's log converted: {}", ev());
+    apply(&state, &json!([{ "op": "add", "path": "/bin/main/source/tracks/0/clips/0/effects", "value": [{ "type": "grade", "exposure": 1 }] }]));
+    assert!((ev() - 1.0).abs() < 0.15, "and the clip's grade on that: {}", ev());
+}

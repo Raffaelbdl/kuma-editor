@@ -270,21 +270,22 @@ fn clips_by_id<'a>(p: &'a Project, only: Option<&BTreeSet<&str>>) -> Clips<'a> {
 /// diffed one by one, and would otherwise make every sequence "changed" by any clip edit.
 /// Borrowed, so comparing two costs no copy and no JSON.
 fn entry_parts(e: &BinItem) -> impl PartialEq + '_ {
-    let BinItem { name, source, meta, parent, order, volume } = e;
+    let BinItem { name, source, meta, parent, order, volume, effects: own } = e;
     let source = match source {
         BinSource::Sequence(Sequence { tracks: _, markers, effects }) => Err((markers, effects)),
         other => Ok(other),
     };
-    (name, source, meta, parent, order, volume)
+    (name, source, meta, parent, order, volume, own)
 }
 
 /// What a bin entry's fields are as JSON for [`changes`], its source left out: that is
 /// never a scalar field, and a sequence's is all its tracks. Serialised as the entry is,
 /// so a field written only when it is not its default is absent here too.
 fn entry_value(e: &BinItem) -> Option<Value> {
-    let BinItem { name, source: _, meta, parent, order, volume } = e;
+    let BinItem { name, source: _, meta, parent, order, volume, effects } = e;
     let stand_in = BinSource::Folder { folder: true };
-    let mut v = serde_json::to_value(BinItem { name: name.clone(), source: stand_in, meta: meta.clone(), parent: parent.clone(), order: *order, volume: *volume }).ok()?;
+    let entry = BinItem { name: name.clone(), source: stand_in, meta: meta.clone(), parent: parent.clone(), order: *order, volume: *volume, effects: effects.clone() };
+    let mut v = serde_json::to_value(entry).ok()?;
     v.as_object_mut()?.remove("source");
     Some(v)
 }

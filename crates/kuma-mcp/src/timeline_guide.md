@@ -65,7 +65,10 @@ round — skin sits near 0.34), `luma_sat` and `sat_sat` against luma and satura
 there is little), then `look` (a `.cube`) mixed by `look_amount` (0..1). It is one LUT for the
 whole clip, except its light: `keyframes` may set `temperature`, `tint` and `exposure` (a walk
 from shade into sun, a drifting auto-exposure), and the rest holds; for more than the light,
-split the clip. Grade by measuring, then look: `measure_color`
+split the clip. A video or image **bin entry** takes `effects: [{"type": "grade", …}]` too —
+still, over the whole picture — applied before every clip that places it: the camera `log`
+belongs there, and so does the grade that matches one camera to the rest; a clip's own grade
+then acts on that. Grade by measuring, then look: `measure_color`
 reads a region's `exposure` (stops from mid grey) and `balance` (its cast as `temperature` and
 `tint`) so two shots compare as numbers, and with `match: {clip, reference}` solves the clip's
 white balance and exposure to make its region neutral (`{"neutral": true}` on something white or

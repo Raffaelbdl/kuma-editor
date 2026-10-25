@@ -238,7 +238,10 @@ frame); **+ window** adds another of the same effect inside a shape of its own, 
 takes one of each over the whole picture and any number masked. **+ key** keys the shape where
 the playhead is; once it has keys its fields (and Draw) write into the key at the playhead, and
 it moves in straight lines between them. A grade's light — temperature, tint, exposure —
-takes keys the way any animated effect's fields do, from the diamond in its head.
+takes keys the way any animated effect's fields do, from the diamond in its head. A video
+or image **bin entry** has **On the source** in its inspector: a grade there (its camera log,
+the grade that matches it to the rest) applies to every clip that places it, before the
+clip's own effects.
 
 **Effects are offered where they can act.** Each effect acts on the picture (transform,
 crop, blur, colour, grade, blend, fade, freeze) or the sound (volume, audio fade, limiter, auto

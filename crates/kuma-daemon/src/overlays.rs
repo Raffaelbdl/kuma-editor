@@ -120,6 +120,7 @@ pub fn import_overlay(state: &AppState, path: &str, how: Import, base_revision: 
         parent,
         order: None,
         volume: 1.0,
+        effects: Vec::new(),
     };
     let (id, rev, warnings) = state.apply_built(origin, base_revision, |p| {
         let id = match id {

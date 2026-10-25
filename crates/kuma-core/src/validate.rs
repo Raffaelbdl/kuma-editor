@@ -127,6 +127,27 @@ pub fn validate(p: &Project, ctx: &ValidationContext) -> Vec<Issue> {
             // A sequence's own contents are checked below, with every other timeline.
             BinSource::Sequence(_) | BinSource::Folder { .. } => {}
         }
+        let shows_a_file = matches!(&item.source, BinSource::File { kind, .. } if *kind != MediaKind::Audio);
+        let mut kinds = HashSet::new();
+        for (ei, e) in item.effects.iter().enumerate() {
+            let ep = format!("{ip}/effects/{ei}");
+            let Effect::Grade(g) = e else {
+                issues.push(Issue::error(ep, format!("a bin entry's effects are a `grade` for now; put `{}` on the clips that place it", e.kind())));
+                continue;
+            };
+            if !shows_a_file {
+                issues.push(Issue::error(ep, "only a video or image file takes a grade of its own; grade the clips that place anything else"));
+                continue;
+            }
+            if !kinds.insert(e.kind()) {
+                issues.push(Issue::error(ep.clone(), "duplicate `grade` on this entry"));
+            }
+            if g.mask.is_some() || !g.keyframes.is_empty() {
+                issues.push(Issue::error(ep.clone(), "an entry's grade is over the whole picture and holds still: a mask or keys go on a clip's grade"));
+            }
+            check_grade(&mut issues, &ep, g);
+            check_grade_luts(&mut issues, &ep, g, ctx);
+        }
         if item.volume != 1.0 && !item.is_timed_media() {
             issues.push(Issue::error(format!("{ip}/volume"), "only a sound or video file, or a sequence, has a volume"));
         } else if !(item.volume >= 0.0 && item.volume.is_finite()) {
@@ -1043,6 +1064,27 @@ mod tests {
         assert!(m.iter().any(|m| m.contains("`w` and `h` must be above 0")), "{m:?}");
         assert!(m.iter().any(|m| m.contains("feather")), "{m:?}");
         assert!(m.iter().any(|m| m.contains("duplicate `grade`")), "two over the whole picture still clash: {m:?}");
+    }
+
+    /// A picture file's entry takes a grade of its own — once, still, over the whole frame —
+    /// and nothing else does.
+    #[test]
+    fn an_entry_takes_a_still_grade_of_its_own() {
+        let p = project(json!({
+            "bin": {
+                "x": { "source": { "path": "x.mp4" }, "effects": [{ "type": "grade", "log": "s-log3-cine" }] },
+                "y": { "source": { "path": "y.png", "kind": "image" }, "effects": [{ "type": "grade", "exposure": 9 }, { "type": "grade" }] },
+                "z": { "source": { "path": "z.wav", "kind": "audio" }, "effects": [{ "type": "grade" }] },
+                "w": { "source": { "path": "w.mp4" }, "effects": [{ "type": "blur", "radius": 2 }, { "type": "grade", "mask": { "x": 0, "y": 0, "w": 4, "h": 4 } }] },
+                "c": { "source": { "color": "#000" }, "effects": [{ "type": "grade" }] }
+            },
+            "tracks": []
+        }));
+        let m = messages(&p);
+        assert_eq!(m.len(), 6, "{m:?}");
+        for says in ["must be within -5..5", "duplicate `grade` on this entry", "only a video or image file", "put `blur` on the clips", "a mask or keys go on a clip's grade"] {
+            assert!(m.iter().any(|m| m.contains(says)), "{says}: {m:?}");
+        }
     }
 
     /// A keyframe's parameters are its unknown fields, so the validator is what says a

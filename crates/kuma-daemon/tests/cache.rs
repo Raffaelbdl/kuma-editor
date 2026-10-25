@@ -171,19 +171,36 @@ fn a_prune_keeps_the_luts_the_projects_grades_compile_to() {
         let Some(kuma_core::BinSource::Sequence(main)) = p.bin.get_mut("main").map(|i| &mut i.source) else { unreachable!() };
         main.tracks[0].clips[0].effects.push(kuma_core::Effect::Grade(Box::new(warm.clone())));
     }
+    // A keyed grade compiles to its parts, and an entry's own grade applies wherever the
+    // entry goes: both are the project's too.
+    let keyed = kuma_core::Grade { saturation: 0.5, keyframes: vec![serde_json::from_value(serde_json::json!({ "t": 0, "exposure": 1 })).unwrap()], ..Default::default() };
+    let entry = kuma_core::Grade { exposure: 0.5, ..Default::default() };
+    {
+        let mut p = state.project.write().unwrap();
+        let Some(kuma_core::BinSource::Sequence(main)) = p.bin.get_mut("main").map(|i| &mut i.source) else { unreachable!() };
+        main.tracks[0].clips[0].effects.push(kuma_core::Effect::Grade(Box::new(keyed.clone())));
+        let mut film: kuma_core::BinItem = serde_json::from_value(serde_json::json!({ "name": "Film", "source": { "path": "film.mp4" } })).unwrap();
+        film.effects.push(kuma_core::Effect::Grade(Box::new(entry.clone())));
+        p.bin.insert("film".into(), film);
+    }
     // What the compiles wrote: the grade the project has, and one it had before an edit.
     let cache = state.config.compile_cache_dir();
     let used = kuma_mlt::luts::resolve(&warm, dir.path(), &cache).unwrap().unwrap();
     let superseded = kuma_mlt::luts::resolve(&cool, dir.path(), &cache).unwrap().unwrap();
+    let rest = kuma_mlt::luts::resolve(&keyed.keyed_parts().1, dir.path(), &cache).unwrap().unwrap();
+    let own = kuma_mlt::luts::resolve(&entry, dir.path(), &cache).unwrap().unwrap();
     assert_eq!(used.parent(), Some(state.config.luts_dir().as_path()));
     file(&state.config.luts_dir().join("0123.cube.tmp-42"), 3, Duration::ZERO); // being written
 
     let before = usage(&state).unwrap();
-    assert_eq!(before.luts.entries, 3);
+    assert_eq!(before.luts.entries, 5);
     let pruned = prune(&state, true, &|_, _| {}).unwrap();
-    assert!(used.is_file(), "the project's grade");
+    assert!(used.is_file() && rest.is_file() && own.is_file(), "the project's grades");
     assert!(!superseded.exists(), "a grade nothing has any more");
-    assert_eq!(names(&state.config.luts_dir()), vec!["0123.cube.tmp-42".to_string(), used.file_name().unwrap().to_string_lossy().into_owned()]);
+    let mut kept: Vec<String> = [&used, &rest, &own].iter().map(|p| p.file_name().unwrap().to_string_lossy().into_owned()).collect();
+    kept.push("0123.cube.tmp-42".into());
+    kept.sort();
+    assert_eq!(names(&state.config.luts_dir()), kept);
     assert_eq!(pruned.freed.luts.entries, 1);
     assert_eq!(pruned.kept.bytes + pruned.freed.bytes, before.bytes);
 }

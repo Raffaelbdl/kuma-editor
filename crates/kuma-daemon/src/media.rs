@@ -139,6 +139,7 @@ pub fn add(state: &AppState, paths: &[PathBuf], how: AddHow, base_revision: Opti
                 parent: how.parent.clone(),
                 order: None,
                 volume: 1.0,
+                effects: Vec::new(),
             };
             ops.push(bin_op(&id, "", serde_json::to_value(item)?)?);
             ids.push(id);

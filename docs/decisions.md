@@ -3565,6 +3565,28 @@ Rejected: blending two LUTs over time (MLT has no filter that mixes two `lut3d`s
 `mask_start` trick blends against the ungraded frame, not between two grades), and a LUT per
 frame (a megabyte of `.cube` a frame, for what a gain does exactly).
 
+## A grade on the source
+
+**A video or image entry carries `effects` of its own — a `grade`, for now — applied before
+every placement's** — adopted. A camera log is a fact about the file, not about where it is
+cut: every clip of S-Log3 footage needs the same conversion, and the grade that matches one
+camera to the others is the same on every shot from it. On the clip, that was one edit per
+placement and a split that copies it; on the entry it is set once, and the model already
+said so ("what is shown lives on the entry"), with `volume` the precedent — a source
+levelled once for every placement. The compiler puts the entry's effects before the clip's
+own on each placement (`emit_filters`); the LUT pre-pass and the cache's prune read them as
+they read the clips'.
+
+Narrow on purpose: a `grade` only, over the whole picture and holding still. A mask is
+*where* in the frame and keys are *when* in the cut, and both are a placement's. Other kinds
+can join when one needs to — the list is a list so that adding one is not a format change.
+A match measures a clip and writes the clip's grade, which acts on what the entry's made.
+
+What it does not do: look at the entry on its own. Grading a source is still seen through a
+clip that places it, at the playhead. That is the subject pipeline in the list below, which
+this does not need and does not start — but it is the feature that list item was waiting
+for, and the next thing a colourist working source by source will ask for.
+
 ## Still open
 
 Nested sequences are done and the editor is an application now, so this list is the whole
@@ -3573,7 +3595,8 @@ end of its section above. The item this list gained from the sequence work comes
 because it is the part deliberately left out.
 
 - **One pipeline for every bin entry, not just sequences** — agreed direction,
-  **postponed until a feature needs it**, and the largest thing on this list.
+  **postponed until a feature needs it**, and the largest thing on this list. (A grade on the
+  source, above, landed without it; looking at that source on its own is what would need it.)
 
   Today `sample_frames` takes a *sequence* or an *overlay entry*, and the overlay case
   builds a throwaway one-clip project and runs the ordinary path — same bake, same

@@ -282,15 +282,10 @@ fn grade_luts(project: &Project, order: &[BinId], opts: &CompileOptions) -> Resu
         return Ok(luts);
     }
     let clips = order.iter().filter_map(|id| project.seq(id)).flat_map(|s| s.tracks.iter()).flat_map(|t| t.clips.iter());
-    for g in clips.flat_map(|c| c.effects.iter()).filter_map(Effect::as_grade) {
-        // A keyed grade is its parts, each a LUT, with its light moving between them.
-        let parts = if g.keyframes.is_empty() {
-            vec![g.clone()]
-        } else {
-            let (input, rest) = g.keyed_parts();
-            input.into_iter().chain([rest]).collect()
-        };
-        for g in parts {
+    // A clip's grades and its entry's, which apply wherever the entry is placed.
+    let effects = clips.flat_map(|c| c.effects.iter().chain(project.item(c).map_or(&[][..], |i| &i.effects[..])));
+    for g in effects.filter_map(Effect::as_grade) {
+        for g in luts::parts(g) {
             if let std::collections::hash_map::Entry::Vacant(slot) = luts.entry(grade_key(&g)) {
                 slot.insert(luts::resolve(&g, &opts.root, &opts.cache_dir).map_err(|e| CompileError::Internal(format!("grade: {e}")))?);
             }
@@ -738,8 +733,14 @@ fn emit_filters(ctx: &Ctx, p: &Plan, w: &mut XmlWriter) {
     }
 
     // Clip-level volume times the entry's (static).
-    let fader = clip.volume * ctx.project.item(clip).map_or(1.0, |i| i.volume);
-    emit_effects(ctx, w, &span, &clip.effects, fader);
+    let item = ctx.project.item(clip);
+    let fader = clip.volume * item.map_or(1.0, |i| i.volume);
+    // The entry's own effects first: they are what the source is, before what this
+    // placement does with it.
+    match item.map(|i| &i.effects[..]).filter(|e| !e.is_empty()) {
+        None => emit_effects(ctx, w, &span, &clip.effects, fader),
+        Some(entry) => emit_effects(ctx, w, &span, &entry.iter().chain(&clip.effects).cloned().collect::<Vec<_>>(), fader),
+    }
 }
 
 /// `effects` as filters over `span`, those of them this graph carries, after a static
@@ -1248,6 +1249,25 @@ mod tests {
         assert!(xml.contains(r#"<property name="filter.spline">[[[0.25,0.25],[0.25,0.25],[0.25,0.25]],[[0.75,0.25],[0.75,0.25],[0.75,0.25]],[[0.75,0.75],[0.75,0.75],[0.75,0.75]],[[0.25,0.75],[0.25,0.75],[0.25,0.75]]]</property>"#), "{xml}");
         assert!(xml.contains(r#"<property name="filter.invert">1</property>"#) && xml.contains(r#"<property name="filter.feather">10</property>"#), "{xml}");
         assert!(xml.contains(r#"<property name="transition">qtblend</property>"#), "{xml}");
+    }
+
+    /// An entry's grade comes before every placement's own effects, on each placement.
+    #[test]
+    fn an_entrys_grade_comes_first_on_every_placement() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = project(json!({
+            "fps": 30, "bin": { "x": { "source": { "path": "x.mp4" }, "effects": [{ "type": "grade", "log": "s-log3-cine" }] } },
+            "tracks": [{ "id": "v1", "clips": [
+                { "id": "a", "start": 0, "end": 2, "bin": "x", "effects": [{ "type": "blur", "radius": 2 }] },
+                { "id": "b", "start": 2, "end": 4, "bin": "x" }
+            ]}]
+        }));
+        let mut opts = CompileOptions::new(dir.path());
+        opts.cache_dir = dir.path().join("cache");
+        let xml = compile(&p, &opts).unwrap();
+        assert_eq!(xml.matches("lut3d").count(), 2, "{xml}");
+        assert!(xml.find("clip_a_grade").unwrap() < xml.find("clip_a_blur").unwrap(), "{xml}");
+        assert!(xml.contains("clip_b_grade"), "{xml}");
     }
 
     /// A keyed grade's light is a gain that moves, between its input conversion and the rest

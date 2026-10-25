@@ -139,6 +139,7 @@ impl Project {
             parent: None,
             order: None,
             volume: 1.0,
+            effects: Vec::new(),
         };
         Project {
             name: name.into(),
@@ -491,6 +492,12 @@ pub struct BinItem {
     /// levelled once. Timed media only; absent at 1.
     #[serde(default = "one", skip_serializing_if = "is_one")]
     pub volume: f64,
+    /// Effects on the source itself, before every placement's own: what the footage *is*
+    /// — the camera log it was shot in, the grade that makes it match the rest — set once
+    /// for every clip that places it. A video or image file's, and only a `grade` for now,
+    /// over the whole picture and holding still: where and when are the clip's.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub effects: Vec<Effect>,
 }
 
 /// What a bin entry actually is. Exactly one variant.

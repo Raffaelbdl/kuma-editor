@@ -30,6 +30,17 @@ pub fn resolve(grade: &Grade, root: &Path, cache_dir: &Path) -> std::io::Result<
     Ok(Some(path))
 }
 
+/// The grades whose LUTs `grade` compiles to: itself, or a keyed grade's parts — its input
+/// conversion and the rest of it, with its light moving between them as a filter
+/// ([`Grade::keyed_parts`]). What the compiler writes and what a prune keeps, alike.
+pub fn parts(grade: &Grade) -> Vec<Grade> {
+    if grade.keyframes.is_empty() {
+        return vec![grade.clone()];
+    }
+    let (input, rest) = grade.keyed_parts();
+    input.into_iter().chain([rest]).collect()
+}
+
 /// The name of the file `grade` compiles to in [`dir`], or `None` for a grade that changes
 /// nothing: what a prune keeps.
 pub fn name(grade: &Grade, root: &Path) -> std::io::Result<Option<String>> {

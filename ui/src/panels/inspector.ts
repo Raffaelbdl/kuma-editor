@@ -414,11 +414,12 @@ function propRow(p: PropSpec, ctx: PropCtx): HTMLElement {
       break;
     }
     case "mask":
-      control = maskControls(ctx);
+      // Where and when are a placement's: an entry's effects are over its whole picture.
+      control = ctx.clip ? maskControls(ctx) : el("span", "muted tiny", "The whole picture: a shape goes on a clip's own grade");
       break;
     case "match":
       // A grade is a clip's: the model offers it to nothing else.
-      control = matchControls(ctx.clip!, ctx.effect, ctx.merge);
+      control = ctx.clip ? matchControls(ctx.clip, ctx.effect, ctx.merge) : el("span", "muted tiny", "Measured from a clip that places it: match there");
       break;
     case "wheels":
       control = row("wheels wide", ...p.keys.map(({ key, title: what }) => {
@@ -732,6 +733,21 @@ export class Inspector {
 
     this.host.appendChild(field("Name", textInput(item.name, (v) => store.patch([{ op: "replace", path: `${bp}/name`, value: v }], `name ${id}`))));
     this.renderSource(p, id, item, bp);
+    // What the footage is — its camera log, the grade that makes it match the rest — set
+    // once for every clip that places it.
+    const kind = itemKind(item);
+    if (kind === "video" || kind === "image") {
+      this.renderEffects({
+        key: `bin:${id}`,
+        what: "this entry",
+        effects: item.effects ?? [],
+        path: `${bp}/effects`,
+        carries: { video: true, audio: false },
+        offers: (type) => type === "grade",
+        anim: () => null,
+        add: (type) => EFFECTS[type]!.add,
+      }, "On the source");
+    }
     if (isTimedMedia(item)) {
       this.host.appendChild(field("Volume", sliderField(item.volume ?? 1, (v) => void store.patch([{ op: "add", path: `${bp}/volume`, value: v }], `volume ${id}`), { min: 0, max: 2, step: 0.01, soft: true, title: "Gain for every placement of this entry: 1 is the source as recorded" })));
     }
@@ -975,7 +991,11 @@ export class Inspector {
     add.onchange = () => {
       const kind = add.value as Effect["type"] | "";
       add.value = "";
-      if (kind) store.patch([{ op: "add", path: `${owner.path}/-`, value: owner.add(kind) }], `add ${kind}`);
+      // An owner with no effects may have no list yet (an entry writes none): the first is
+      // the list.
+      if (!kind) return;
+      const value = owner.add(kind);
+      void store.patch([owner.effects.length ? { op: "add", path: `${owner.path}/-`, value } : { op: "add", path: owner.path, value: [value] }], `add ${kind}`);
     };
     this.host.appendChild(add);
     if (followers.length) {

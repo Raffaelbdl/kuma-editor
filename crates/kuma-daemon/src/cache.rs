@@ -63,14 +63,17 @@ pub fn usage(state: &AppState) -> std::io::Result<Usage> {
 pub fn live_luts(state: &AppState, project: &Project) -> HashSet<String> {
     let root = state.config.project_root();
     // Each distinct grade once: clips graded alike share a file. A grade is floats, so
-    // this is a list, not a set.
+    // this is a list, not a set. The clips' grades, and the entries' own, which every
+    // placement applies; each as the files it compiles to.
+    let clips = project.all_clips().flat_map(|(_, _, c)| c.effects.iter());
+    let entries = project.bin.values().flat_map(|i| i.effects.iter());
     let mut seen = Vec::new();
-    for g in project.all_clips().flat_map(|(_, _, c)| c.effects.iter()).filter_map(Effect::as_grade) {
+    for g in clips.chain(entries).filter_map(Effect::as_grade).flat_map(kuma_mlt::luts::parts) {
         if !seen.contains(&g) {
             seen.push(g);
         }
     }
-    seen.into_iter().filter_map(|g| kuma_mlt::luts::name(g, &root).ok().flatten()).collect()
+    seen.iter().filter_map(|g| kuma_mlt::luts::name(g, &root).ok().flatten()).collect()
 }
 
 /// Keys of the bakes the project still wants: every overlay clip in every sequence (the

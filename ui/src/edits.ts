@@ -10,8 +10,8 @@ import { desktop } from "./desktop";
 import { startJob, store, toast } from "./store";
 import type { ClipboardEntry, Found } from "./store";
 import type { MenuItem } from "./menu";
-import type { BinItem, BinSource, Clip, Marker, OverlayManifest, OverlaySource, PatchOp, Project, Track, TrackKind, Transition } from "./types";
-import { LUMAS, binItem, binPath, childrenOf, clipPathOf, hasAudio, isFileSource, isOverlaySource, isTimedMedia, itemKind, orientation, parentOf, seqDuration, shiftEffect, trackFor, trackPathOf, trimEffect, wouldNest, wouldRecurse } from "./types";
+import type { BinItem, BinSource, Clip, ColorReference, Effect, Grade, Marker, OverlayManifest, OverlaySource, PatchOp, Project, Track, TrackKind, Transition } from "./types";
+import { LUMAS, actsOn, binItem, binPath, childrenOf, clipPathOf, clipStreams, covers, hasAudio, isFileSource, isOverlaySource, isTimedMedia, itemKind, orientation, parentOf, seqDuration, shiftEffect, trackFor, trackPathOf, trimEffect, wouldNest, wouldRecurse } from "./types";
 
 /** Clip ids are minted by kind: `o1` for an overlay, `c1` for anything else. */
 const clipPrefix = (kind: TrackKind) => (kind === "overlay" ? "o" : "c");
@@ -527,6 +527,61 @@ export async function ungroupSelection() {
 
 /** Copy the selection, deeply: the clipboard has to outlive the project object it came
  *  from, which every refresh replaces and a cut empties. */
+/** Copy effects off a clip to paste onto others; `what` says what, in the note. */
+export function copyEffects(effects: Effect[], what: string): void {
+  store.set({ effectClipboard: structuredClone(effects) });
+  toast(`Copied ${what}: select clips, then Paste Effects (Ctrl + Alt + V)`, "ok", 3000);
+}
+
+/** Paste the copied effects onto every selected clip that can take them, as one edit. A clip
+ *  carries one effect of a kind (`mlt` aside), so a kind it has already is replaced, and the
+ *  rest are added after its own. */
+export async function pasteEffects(): Promise<void> {
+  const effects = store.state.effectClipboard;
+  const p = store.state.project;
+  if (!effects?.length || !p) return void toast("Copy an effect first: the copy button in its head", "");
+  const targets = store.selectedFound;
+  if (!targets.length) return void toast("Select the clips to paste onto", "");
+  const ops: PatchOp[] = [];
+  for (const { track, clip } of targets) {
+    const path = store.clipPath(clip.id);
+    const carries = clipStreams(p, track, clip);
+    if (!path) continue;
+    for (const e of effects.filter((x) => actsOn(x.type, carries))) {
+      const at = e.type === "mlt" ? -1 : clip.effects.findIndex((x) => x.type === e.type);
+      ops.push(at >= 0 ? { op: "replace", path: `${path}/effects/${at}`, value: e } : { op: "add", path: `${path}/effects/-`, value: e });
+    }
+  }
+  if (!ops.length) return void toast("None of the selected clips can take these effects", "err");
+  await store.patch(ops, `paste ${effects.map((e) => e.type).join(", ")} onto ${plural(targets.length, "clip")}`);
+}
+
+/** Match every selected clip to the colour reference: each measured at the reference's
+ *  region, in its middle (or where the playhead is, when it is on the clip), and every grade
+ *  written as one edit. For shots framed alike — the same interview, the same setup — since
+ *  the region is the reference's. */
+export async function matchSelectedToReference(): Promise<void> {
+  const ref = store.state.colorReference;
+  if (!ref) return void toast("Set a reference first: Set reference… in a clip's grade", "");
+  const targets = store.selectedFound.filter((f) => store.findClip(f.clip.id));
+  if (!targets.length) return void toast("Select the clips to match", "");
+  const reference: ColorReference = { t: ref.t, region: ref.region, sequence: ref.sequence };
+  const ops: PatchOp[] = [];
+  let short = 0;
+  for (const [i, { clip }] of targets.entries()) {
+    toast(`Matching ${i + 1} of ${targets.length}: ${clip.label || clip.id}`, "", 4000);
+    const t = covers(clip, store.state.playhead) ? store.state.playhead : (clip.start + clip.end) / 2;
+    const { job } = await api.measureColor({ times: [t], region: ref.region, match: { clip: clip.id, reference } });
+    const done = await store.awaitJob(job);
+    if (done.state !== "done") return;
+    const m = (done.result as { match: { patch: PatchOp[]; reached: boolean; grade: Grade } }).match;
+    ops.push(...m.patch);
+    if (!m.reached) short++;
+  }
+  await store.patch(ops, `match ${plural(targets.length, "clip")} to the reference`);
+  toast(short ? `Matched ${targets.length - short} of ${targets.length}; ${short} as near as the grade reaches` : `Matched ${plural(targets.length, "clip")}`, short ? "err" : "ok");
+}
+
 export function copySelection(): boolean {
   const entries: ClipboardEntry[] = store.selectedFound.map((f) => ({ clip: structuredClone(f.clip), track: f.track.id, kind: f.track.kind }));
   if (!entries.length) { toast("Select a clip to copy", ""); return false; }

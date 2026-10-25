@@ -711,7 +711,12 @@ A grade's **Match** row sets its white balance and exposure by measuring: put th
 the clip, press **Neutral…** and drag over something white or grey in life, or **Set
 reference…** on the shot the others should look like and then **Match…** on each other
 clip, dragging over the same thing (a face, a wall). Each runs `measure_color` and writes the
-result as one undoable edit; the rest of the grade is kept. **The grade shows while you drag**:
+result as one undoable edit; the rest of the grade is kept. With several clips selected and a
+reference set, **Match N selected** (or ⌘K *Match Selected Clips to the Colour Reference*)
+matches them all at the reference's region, for shots framed alike, as one edit. **Copying
+an effect**: the copy button in an effect's head, then **Ctrl + Alt + V** (⌘K *Paste Effects
+onto Selected Clips*) puts it on every selected clip that can take it, as one edit — replacing
+the clip's own effect of that kind, since a clip has one of each, and adding it otherwise. **The grade shows while you drag**:
 every grade control previews on the frame at the playhead before it commits, and **Before**,
 held, shows the clip without its grade (`gradepreview.ts`). The frame without the grade is
 the daemon's render of a version of the document (`sample` with `version`), and the grade is

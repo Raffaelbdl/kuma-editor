@@ -90,6 +90,8 @@ is also what makes it cheap: nothing is baked.
   for `apply_edits`. `reached: false` means the reference is past the grade's ranges or
   clipped highlights hold it back: say so rather than push. `clipped` above a few percent on
   a face or sky is lost detail no grade brings back.
+- **One grade on many clips** (a look over the whole video, one camera's correction): the
+  same `grade` patched onto each, in one `apply_edits`; then match the shots that still differ.
 - **Look at before and after**, at several moments of every clip you graded:
   `sample_frames` with `times` across each clip, `tile: true` and `before: {"without":
   {"kinds": ["grade"]}}` (or `{"revision": <the one before your edit>}`) gives one sheet, a

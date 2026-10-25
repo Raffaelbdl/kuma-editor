@@ -629,6 +629,8 @@ body.scrubbing, body.scrubbing * { cursor: ew-resize !important; user-select: no
 .effect .head button { padding: 0 4px; }
 button.fx-remove { border: 0; background: none; color: var(--fg-3); font: 13px/1 var(--sans); }
 button.fx-remove:hover { color: var(--danger); }
+button.fx-copy { border: 0; background: none; color: var(--fg-3); padding: 0 4px; display: inline-flex; align-items: center; }
+button.fx-copy:hover { color: var(--fg); }
 /* An effect folds away, because a clip with four of them is longer than the panel. The
    head is the disclosure — it reads as the heading it replaced, not as a button — and the
    chevron turns to point at what it opens. */

@@ -124,4 +124,22 @@ describe("matching a grade from the inspector", { skip: why ? `skipping: ${why}`
     await page.until(`!${button("Match…")}.disabled`);
     assert.match(await page.eval(`document.querySelector('#inspector .match-note').textContent`), /^Reference: 160×90 px at 00:03\.00 in Main$/);
   });
+
+  it("matches every selected clip to the reference as one edit", async () => {
+    // The reference is the grey clip's middle, set just above. Select the grey clip, then add
+    // the warm one: the inspector shows the last clicked, and it is the one with a grade.
+    await selectClip(page, "g");
+    await page.eval(`(() => { const c = document.querySelector('.clip[data-id="w"]'); const r = c.getBoundingClientRect();
+      c.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, shiftKey: true, clientX: r.left + 20, clientY: r.top + 2 }));
+      window.dispatchEvent(new PointerEvent("pointerup", { bubbles: true })); return true; })()`);
+    await page.until(`!!${button("Match 2 selected")}`);
+    const before = await page.eval(`fetch("/api/project").then(r => r.json()).then(p => p.revision)`);
+    await page.eval(`${button("Match 2 selected")}.click(), true`);
+    await page.until(`fetch("/api/project").then(r => r.json()).then(p => p.revision > ${before})`, 60000);
+    const doc = await page.eval(`fetch("/api/project").then(r => r.json())`);
+    const [w, g] = doc.bin.main.source.tracks[0].clips.map((c) => c.effects.find((e) => e.type === "grade"));
+    assert.equal(doc.revision, before + 1, "one edit for both");
+    assert.ok(w && g, "both graded");
+    assert.equal(w.saturation, 0.9, "the rest of a grade is kept");
+  });
 });

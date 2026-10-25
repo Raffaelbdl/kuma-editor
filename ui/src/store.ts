@@ -1,5 +1,5 @@
 import { api, subscribeEvents } from "./api";
-import type { Activity, BlueprintInfo, LibraryInfo, Clip, HistoryEntry, MarkerInfo, DaemonEvent, FontFamily, Job, Marker, OverlayInfo, PatchOp, Project, Region, Track, TrackKind, Transition } from "./types";
+import type { Activity, BlueprintInfo, LibraryInfo, Clip, Effect, HistoryEntry, MarkerInfo, DaemonEvent, FontFamily, Job, Marker, OverlayInfo, PatchOp, Project, Region, Track, TrackKind, Transition } from "./types";
 import { allClips, clipPathOf, fpsValue, freeId, isFinal, isFileSource, isOverlaySource, nearest, seqDuration, seqPath, sequenceIds, sequenceOf } from "./types";
 
 /** A clip found in the project: where it is, as the record every edit of it starts from. */
@@ -52,6 +52,9 @@ export interface State {
   /** What was last copied or cut. Held here, not in the document: copying is not an edit,
    *  so it costs no revision and survives switching sequences. The paste is the edit. */
   clipboard: Clipboard | null;
+  /** Effects copied off a clip, to paste onto others — a grade matched on one shot, onto
+   *  the rest. View state, like the clip clipboard. */
+  effectClipboard: Effect[] | null;
   /** Record mode: while on, changing an animatable parameter writes a key at the playhead
    *  instead of the static value. View state — it is about how the next edit is made. */
   autoKey: boolean;
@@ -91,7 +94,7 @@ export interface State {
 type Listener = (s: State) => void;
 
 class Store {
-  state: State = { project: null, blueprints: [], libraries: [], manifests: {}, fonts: [], previewStamp: 0, sequence: "", selection: null, track: null, clipboard: null, autoKey: false, reloading: false, playhead: 0, playing: false, zoom: 60, tab: SEQUENCE_TAB, sequences: [], entries: [], connected: false, jobs: {}, mode: "power", activity: [], history: [], markerList: [], colorReference: null };
+  state: State = { project: null, blueprints: [], libraries: [], manifests: {}, fonts: [], previewStamp: 0, sequence: "", selection: null, track: null, clipboard: null, effectClipboard: null, autoKey: false, reloading: false, playhead: 0, playing: false, zoom: 60, tab: SEQUENCE_TAB, sequences: [], entries: [], connected: false, jobs: {}, mode: "power", activity: [], history: [], markerList: [], colorReference: null };
   private listeners = new Set<Listener>();
   private refreshing: Promise<void> | null = null;
   private refreshAgain = false;

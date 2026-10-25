@@ -17,7 +17,7 @@ import { binName, fmtTime, isEntryTab, store, toast } from "../store";
 import type { BinItem, Clip, ColorReference, Cue, Ease, Effect, FontFamily, Grade, PatchOp, Project, Streams, Transition, VarSpec } from "../types";
 import { pickRegion } from "../regionpick";
 import { previewGrade, settle, showBefore } from "../gradepreview";
-import { blueprintActions, makeOverlayUnique, removeTransition, setTransitionDuration, setTransitionKind, updateTransition, manifestOf, moveBinItem, overlayError, placeBinItem, previewImg, renderPreview, saveAsBlueprint, sharersOf } from "../edits";
+import { blueprintActions, copyEffects, makeOverlayUnique, matchSelectedToReference, removeTransition, setTransitionDuration, setTransitionKind, updateTransition, manifestOf, moveBinItem, overlayError, placeBinItem, previewImg, renderPreview, saveAsBlueprint, sharersOf } from "../edits";
 import { Animation, animationOf } from "../keyframes";
 import { historyFor } from "./history";
 import { icon, svgEl } from "../icons";
@@ -833,6 +833,7 @@ export class Inspector {
       }
       head.append(disclose);
       const remove = button("×", () => store.patch([{ op: "remove", path: `${owner.path}/${ei}` }], `remove ${e.type}`), `Remove this ${lower}`, "fx-remove");
+      const copy = button(icon("copy", 11), () => copyEffects([e], `the ${lower}`), `Copy this ${lower}, to paste onto other clips (${keysFor(Cmd.pasteEffects) ?? "Ctrl + Alt + V"})`, "fx-copy");
       box.append(head, body);
       const rec = e as unknown as Record<string, unknown>;
       const defaults = spec.add as unknown as Record<string, unknown>;
@@ -881,7 +882,7 @@ export class Inspector {
       };
       // The toggle is in the head, so a keyframed effect says so while folded too.
       if (anim) head.append(keyToggle(anim));
-      head.append(remove);
+      head.append(copy, remove);
       for (const p of spec.props ?? []) body.appendChild(propRow(p, ctx));
       if (anim?.animated) body.appendChild(keyRow(anim, id, (fn) => mine.push(fn)));
       if (mine.length) followers.push(() => { if (!closedEffects.has(id)) for (const f of mine) f(); });
@@ -969,7 +970,12 @@ function matchControls(clip: string, write: (light: Light) => void): HTMLElement
   for (const end of ["pointerup", "pointerleave", "pointercancel"]) before.addEventListener(end, hold(false));
   const said = ref ? `Reference: ${ref.region.w}×${ref.region.h} px at ${fmtTime(ref.t, store.fps)} in ${binName(ref.sequence)}` : "No reference yet";
   const wrap = el("div", "match-controls");
-  wrap.append(row("match-row", before, neutral, pick, match), el("div", "match-note muted tiny", said));
+  wrap.append(row("match-row", before, neutral, pick, match));
+  // Several clips selected, and a reference: match them all at once, at its region.
+  const n = store.selectedClips.length;
+  if (ref && n > 1) wrap.append(row("match-row", button(`Match ${n} selected`, () => void matchSelectedToReference(),
+    "Match every selected clip to the reference, each measured at the reference's region: for shots framed alike")));
+  wrap.append(el("div", "match-note muted tiny", said));
   return wrap;
 }
 

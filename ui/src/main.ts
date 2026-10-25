@@ -5,7 +5,7 @@
 import { Cmd, command } from "./commands";
 import { desktop, initDesktop, pickAndAddMedia } from "./desktop";
 import { el } from "./dom";
-import { addTrack, copySelection, createFromBlueprint, creatable, cutSelection, deleteSelectedClips, groupSelection, pasteClipboard, promptNewOverlay, promptNewSequence, splitAt, swapOrientation, transcribe, ungroupSelection } from "./edits";
+import { addTrack, copySelection, createFromBlueprint, creatable, cutSelection, deleteSelectedClips, groupSelection, matchSelectedToReference, pasteClipboard, pasteEffects, promptNewOverlay, promptNewSequence, splitAt, swapOrientation, transcribe, ungroupSelection } from "./edits";
 import { panelCommands, panels } from "./panelhost";
 import { installPalette } from "./palette";
 import { agentPanel } from "./panels/agentpanel";
@@ -53,6 +53,8 @@ function projectCommands() {
   command(Cmd.copyClip, "Copy Clips", () => copySelection());
   command(Cmd.cutClip, "Cut Clips", () => cutSelection());
   command(Cmd.pasteClip, "Paste Clips", () => pasteClipboard());
+  command(Cmd.pasteEffects, "Paste Effects onto Selected Clips", () => pasteEffects());
+  command(Cmd.matchSelected, "Match Selected Clips to the Colour Reference", () => matchSelectedToReference());
   command(Cmd.group, "Group Clips", () => groupSelection());
   command(Cmd.ungroup, "Ungroup Clips", () => ungroupSelection());
   command(Cmd.addTrack, "Add Track", (kind) => addTrack(kind as TrackKind));

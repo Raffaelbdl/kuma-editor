@@ -112,3 +112,57 @@ describe("the inspector's curve, wheels and colour picker", { skip: why ? `skipp
     await page.until(`${CARD}.then(c => c === "#ff0000")`);
   });
 });
+
+describe("copying an effect onto other clips", { skip: why ? `skipping: ${why}` : false }, () => {
+  let tmp, daemon, page;
+  const clip = (id, start, end, effects) => ({ id, start, end, bin: "card", in: 0, speed: 1, volume: 1, muted: false, label: "", effects });
+  const COPIES = JSON.stringify({
+    version: 11, name: "copies", master: "main",
+    fps: { num: 30, den: 1 }, width: 320, height: 180, sample_rate: 48000,
+    bin: {
+      card: { name: "Card", source: { color: "#808080" } },
+      main: { name: "Main", source: { markers: [], tracks: [
+        { id: "v1", kind: "video", name: "Video", muted: false, hidden: false, transitions: [], clips: [
+          clip("a", 0, 1, [{ type: "grade", temperature: 0.4, saturation: 0.8 }]),
+          clip("b", 1, 2, [{ type: "grade", exposure: 1 }, { type: "blur", radius: 2 }]),
+          clip("c", 2, 3, []),
+        ] },
+      ] } },
+    },
+  }, null, 2);
+  const effects = (i) => `fetch("/api/project").then(r => r.json()).then(p => JSON.stringify(p.bin.main.source.tracks[0].clips[${i}].effects))`;
+
+  before(async () => {
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), "kuma-copies-"));
+    const projectFile = path.join(tmp, "copies.kuma.json");
+    fs.writeFileSync(projectFile, COPIES);
+    daemon = await startDaemon(projectFile);
+    page = await driver(daemon.url);
+    await page.until(`!!document.querySelector('.clip[data-id="a"]')`);
+  });
+
+  after(() => {
+    page?.close();
+    daemon?.proc.kill("SIGTERM");
+    if (tmp) fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it("pastes a grade onto every selected clip as one edit: replacing a grade, adding one, leaving the rest", async () => {
+    await selectClip(page, "a");
+    await page.until(`!!document.querySelector("#inspector .fx-copy")`);
+    await page.eval(`document.querySelector("#inspector .fx-copy").click(), true`);
+    // Select b and c (Shift adds to a selection), then Ctrl + Alt + V.
+    await selectClip(page, "b");
+    await page.eval(`(() => { const c = document.querySelector('.clip[data-id="c"]'); const r = c.getBoundingClientRect();
+      c.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, shiftKey: true, clientX: r.left + 20, clientY: r.top + 2 }));
+      window.dispatchEvent(new PointerEvent("pointerup", { bubbles: true })); return true; })()`);
+    await page.until(`document.querySelectorAll(".clip.selected").length === 2`);
+    const before = await page.eval(`fetch("/api/project").then(r => r.json()).then(p => p.revision)`);
+    await page.eval(`window.dispatchEvent(new KeyboardEvent("keydown", { key: "v", ctrlKey: true, altKey: true, bubbles: true })), true`);
+    await page.until(`fetch("/api/project").then(r => r.json()).then(p => p.revision > ${before})`);
+    const grade = { type: "grade", temperature: 0.4, saturation: 0.8 };
+    assert.deepEqual(JSON.parse(await page.eval(effects(1))), [grade, { type: "blur", radius: 2 }], "b's grade replaced, its blur kept");
+    assert.deepEqual(JSON.parse(await page.eval(effects(2))), [grade], "c given one");
+    assert.equal(await page.eval(`fetch("/api/project").then(r => r.json()).then(p => p.revision)`), before + 1, "one edit");
+  });
+});

@@ -1,20 +1,41 @@
-// A grade's tone curve, as the compiler bends the picture with it: the same monotone cubic
+// A grade's curves, as the compiler bends the picture with them: the same monotone cubic
 // as `Curve` in `crates/kuma-core/src/grade.rs` (Fritsch–Carlson), so what the curve field
-// draws is what renders. Both are pinned to the same values (`ui/test/curve.test.mjs` and
-// `the_curve_draws_what_the_editor_draws`): change one, change both.
+// draws is what renders. Both are pinned to the same values (`ui/test/curve.test.mjs`,
+// `the_curve_draws_what_the_editor_draws` and `the_amount_curves_draw_what_the_editor_draws`):
+// change one, change both.
 //
 // Pure, with no imports, so a test can load it without a browser.
 
-/** A point of a curve, `[in, out]`, each 0..1. */
+/** A point of a curve, `[in, out]`, each 0..1 — or `[at, amount]`, amount -1..1. */
 export type CurvePoint = [number, number];
+
+/** What a curve is of: a tone curve (`in → out`, through the corners `[0, 0]` and `[1, 1]`),
+ *  a curve of amounts against luma or saturation (0 for none, through `[0, 0]` and `[1, 0]`),
+ *  or one of amounts against hue, which wraps round with no corners at all. */
+export type CurveKind = "tone" | "amount" | "hue";
 
 /** The curve through `points` and the corners it is not told otherwise about — `[0, 0]`
  *  unless a point sits at in 0, `[1, 1]` unless one sits at in 1 — as a function, or null
  *  when that is the straight line. */
 export function curveThrough(points: CurvePoint[]): ((v: number) => number) | null {
+  return curveOf(points, "tone");
+}
+
+/** The curve of `kind` through `points`, as the compiler reads it (`Curve::through`,
+ *  `offset` and `periodic`), or null when it changes nothing. */
+export function curveOf(points: CurvePoint[], kind: CurveKind): ((v: number) => number) | null {
+  if (kind === "hue") {
+    if (points.every(([, y]) => y === 0)) return null;
+    const f = monotone([-1, 0, 1].flatMap((turn) => points.map(([x, y]) => [x + turn, y] as CurvePoint)));
+    return (v: number) => f(v - Math.floor(v));
+  }
   if (points.length === 0) return null;
-  const pts = withCorners(points);
-  if (pts.every(([x, y]) => x === y)) return null;
+  const pts = withCorners(points, kind);
+  if (pts.every(([x, y]) => (kind === "tone" ? x === y : y === 0))) return null;
+  return monotone(pts);
+}
+
+function monotone(pts: CurvePoint[]): (v: number) => number {
   const x = pts.map((p) => p[0]);
   const y = pts.map((p) => p[1]);
   const n = x.length;
@@ -48,19 +69,39 @@ export function curveThrough(points: CurvePoint[]): ((v: number) => number) | nu
   };
 }
 
+/** Where a curve of `kind` ends when no point says otherwise: `[0, 0]`, and `[1, 1]` for a
+ *  tone curve or `[1, 0]` for amounts. A curve against hue has no ends. */
+export function corners(kind: CurveKind): [CurvePoint, CurvePoint] {
+  return [[0, 0], [1, kind === "tone" ? 1 : 0]];
+}
+
 /** `points` with the corners the curve passes through added: what the curve field shows. */
-export function withCorners(points: CurvePoint[]): CurvePoint[] {
+export function withCorners(points: CurvePoint[], kind: CurveKind = "tone"): CurvePoint[] {
   const pts = points.map((p) => [p[0], p[1]] as CurvePoint);
-  if (pts.length === 0 || pts[0][0] > 0) pts.unshift([0, 0]);
-  if (pts[pts.length - 1][0] < 1) pts.push([1, 1]);
+  if (kind === "hue") return pts;
+  const [first, last] = corners(kind);
+  if (pts.length === 0 || pts[0][0] > 0) pts.unshift(first);
+  if (pts[pts.length - 1][0] < 1) pts.push(last);
   return pts;
 }
 
 /** `points` without the corners that are only what the curve would do anyway: what the
  *  document stores, so a curve someone only bent in the middle stays the points they set. */
-export function withoutCorners(points: CurvePoint[]): CurvePoint[] {
+export function withoutCorners(points: CurvePoint[], kind: CurveKind = "tone"): CurvePoint[] {
   const pts = points.slice();
-  if (pts.length && pts[0][0] === 0 && pts[0][1] === 0) pts.shift();
-  if (pts.length && pts[pts.length - 1][0] === 1 && pts[pts.length - 1][1] === 1) pts.pop();
+  if (kind === "hue") return pts;
+  const [first, last] = corners(kind);
+  const is = (p: CurvePoint, q: CurvePoint) => p[0] === q[0] && p[1] === q[1];
+  if (pts.length && is(pts[0], first)) pts.shift();
+  if (pts.length && is(pts[pts.length - 1], last)) pts.pop();
   return pts;
+}
+
+/** The colour of hue `h` on a hue curve's axis, as CSS: turns round the vectorscope from
+ *  +Cb, as the grade reads hue — a mid-bright colour of that hue, for drawing the axis. */
+export function hueColour(h: number): string {
+  const a = h * 2 * Math.PI, y = 0.55, cb = 0.2 * Math.cos(a), cr = 0.2 * Math.sin(a);
+  const r = y + 1.5748 * cr, b = y + 1.8556 * cb, g = (y - 0.2126 * r - 0.0722 * b) / 0.7152;
+  const byte = (v: number) => Math.round(Math.min(1, Math.max(0, v)) * 255);
+  return `rgb(${byte(r)}, ${byte(g)}, ${byte(b)})`;
 }

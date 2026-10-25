@@ -3451,6 +3451,33 @@ round trip per frame could not; and they read pixels already on screen, so there
 to keep in agreement. `measure_color` stays the agent's, in numbers. A panel in a window of
 its own has no preview to read, and says so.
 
+## More of the grade: tones, vibrance, and curves on colour
+
+**Each new control is a step of the one LUT, neutral when left out** — adopted. FilmCraft and
+Resolve both grade with more than lift, gamma and gain: tonal ranges (blacks, shadows,
+highlights, whites), vibrance, per-channel curves, and curves against hue, luma and
+saturation, which is how a sky is darkened or a shirt greyed without a mask. All of it is
+a function of the colour alone, so it fits the LUT as it is: a field each, applied in the
+order the module documents, skipped while neutral so every grade made before them computes
+the same table (the existing pins did not move; new ones pin the new steps, worked out apart
+from the code).
+
+Choices that would be expensive to change, since the maths is append-only: tones move luma
+with every channel alike, by four smooth bumps that sum to at most one (`0.25` of white at
+full), so they never shift a colour; the hue curves read hue as the vectorscope's angle from
++Cb, the axis the scopes panel draws, and act in Rec. 709 Y'CbCr — chroma turned and scaled,
+luma scaled by `2^(amount·saturation)` — so a grey has nothing for them to move; every one
+of them is read at the colour as it arrives, so their order among themselves does not
+matter. A hue curve wraps (the monotone cubic through its points repeated a turn either
+side), and its points stop below 1, which is 0 again. The editor draws them with its copy of
+the curve maths, pinned to the same values as the compiler's.
+
+Not done: a qualifier (an HSL key, with a matte to see it by). It is a function of the
+colour too and would fit the LUT, but most of what it is used for — one hue more or less
+saturated, turned, darker — the hue curves already do, without a second grade inside the
+first. Worth adding when a range of saturation or luma *within* a hue needs its own grade;
+the matte would be a table the preview asks for, never a field of the document.
+
 ## Still open
 
 Nested sequences are done and the editor is an application now, so this list is the whole

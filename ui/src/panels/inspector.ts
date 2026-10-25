@@ -25,7 +25,7 @@ import type { NumberOpts } from "../props";
 import { keyStrip, numberField, showNumber, sliderField, vectorField } from "../props";
 import { colorField, wheelField } from "../colorfield";
 import { curveField } from "../curvefield";
-import type { CurvePoint } from "../curve";
+import type { CurveKind, CurvePoint } from "../curve";
 import { LUMAS, SEQUENCE_EFFECTS, sourceAfter, actsOn, ANIMATABLE, binItem, binPath, canPlace, canTimeWarp, childrenOf, clipStreams, covers, expandPreset, hasAudio, isColorSource, isFileSource, isFolderSource, isOverlaySource, isSequenceSource, isTimedMedia, itemKind, mediaFacts, placementsOf, seqDuration, seqPath, sequenceOf, sequenceStreams, streamsOf, wouldNest } from "../types";
 
 const presetsPromise = api.effectPresets().catch(() => []);
@@ -42,6 +42,8 @@ type PropSpec =
   | { kind: "json"; key: string; label?: string }
   /** A tone curve's points, edited on the curve (`curvefield.ts`). */
   | { kind: "curve"; key: string; label?: string; title?: string }
+  /** Several curves sharing one plot, a tab each: the one picked is edited. */
+  | { kind: "curves"; label: string; curves: CurveTab[] }
   /** Per-channel offsets as colour wheels side by side (`colorfield.ts`), one per key. */
   | { kind: "wheels"; label: string; keys: { key: string; title: string }[] }
   /** A grade's white balance and exposure, measured into place from the picture: a clip's
@@ -72,6 +74,24 @@ const CHANNELS = [["r", "x", "red"], ["g", "y", "green"], ["b", "z", "blue"]] as
 const channels = (key: string, what: string): PropSpec => ({ kind: "vec", label: capitalize(key), parts: CHANNELS.map(([ch, axis, name]) => (
   { key: `${key}.${ch}`, tag: ch.toUpperCase(), axis, step: 0.01, min: -1, max: 1, title: `${what}, on ${name}` }
 )) });
+/** One tab of a `curves` row. */
+interface CurveTab { key: string; tab: string; kind: CurveKind; channel?: "r" | "g" | "b"; axes?: [string, string]; title: string }
+const ADD_POINTS = "press to add a point, drag to move it, double-click to take it out";
+/** The grade's curves, in the order they apply: the tone curves, then step 7's. */
+const GRADE_CURVES: CurveTab[] = [
+  { key: "curve", tab: "Luma", kind: "tone", title: `The tone curve, on every channel: ${ADD_POINTS}` },
+  { key: "curve_r", tab: "R", kind: "tone", channel: "r", title: `Red's own tone curve, after the first: ${ADD_POINTS}` },
+  { key: "curve_g", tab: "G", kind: "tone", channel: "g", title: `Green's own tone curve, after the first: ${ADD_POINTS}` },
+  { key: "curve_b", tab: "B", kind: "tone", channel: "b", title: `Blue's own tone curve, after the first: ${ADD_POINTS}` },
+  { key: "hue_sat", tab: "Hue·Sat", kind: "hue", axes: ["hue", "sat"], title: `Saturation by hue: up for more of that hue, down to grey it. It wraps round: ${ADD_POINTS}` },
+  { key: "hue_hue", tab: "Hue·Hue", kind: "hue", axes: ["hue", "turn"], title: `Hue by hue: up or down turns that hue towards its neighbours, half way round at the edge. It wraps round: ${ADD_POINTS}` },
+  { key: "hue_luma", tab: "Hue·Luma", kind: "hue", axes: ["hue", "luma"], title: `Luma by hue: brighter or darker for that hue, the more the more saturated, so greys stay. It wraps round: ${ADD_POINTS}` },
+  { key: "luma_sat", tab: "Luma·Sat", kind: "amount", axes: ["luma", "sat"], title: `Saturation by luma, black on the left: up for more, down to grey (say, the shadows). ${capitalize(ADD_POINTS)}` },
+  { key: "sat_sat", tab: "Sat·Sat", kind: "amount", axes: ["sat", "sat"], title: `Saturation by saturation, grey on the left: lift the dull colours, calm the loud ones. ${capitalize(ADD_POINTS)}` },
+];
+/** Which curve tab is open: view state, kept across the rebuild every edit causes. */
+let curveTab = GRADE_CURVES[0].key;
+const tone = (key: string, what: string): PropSpec => ({ kind: "slider", key, min: -1, max: 1, step: 0.01, title: `${what}: up raises it, by a quarter of white at 1, on every channel alike` });
 const BLEND_MODES = ["normal", "multiply", "screen", "overlay", "darken", "lighten", "color_dodge", "color_burn", "hard_light", "soft_light", "difference", "exclusion"];
 const EFFECTS: Partial<Record<Effect["type"], EffectSpec>> = {
   transform: {
@@ -133,8 +153,13 @@ const EFFECTS: Partial<Record<Effect["type"], EffectSpec>> = {
       channels("gamma", "Bends the midtones, black and white stay"),
       channels("gain", "Scales the highlights, black stays"),
       { kind: "slider", key: "contrast", min: 0, max: 3, step: 0.01, title: "About mid grey: 1 leaves it" },
-      { kind: "curve", key: "curve", label: "Curve", title: "Press to add a point, drag to move it, double-click to take it out" },
+      tone("blacks", "The darkest tones"),
+      tone("shadows", "The shadows, a third of the way up"),
+      tone("highlights", "The highlights, two thirds of the way up"),
+      tone("whites", "The brightest tones"),
+      { kind: "curves", label: "Curves", curves: GRADE_CURVES },
       { kind: "slider", key: "saturation", min: 0, max: 3, step: 0.01, title: "1 leaves it, 0 is black and white" },
+      { kind: "slider", key: "vibrance", min: -1, max: 1, step: 0.01, title: "Saturation where there is little, leaving vivid colours (and faces) alone: 1 doubles a dull colour's, -1 greys it" },
       { kind: "text", key: "look", label: "Look LUT", optional: true },
       { kind: "slider", key: "look_amount", label: "Look amount", min: 0, max: 1, step: 0.01 },
       { kind: "match", label: "Match" },
@@ -345,6 +370,27 @@ function propRow(p: PropSpec, ctx: PropCtx): HTMLElement {
       control = curveField((read(p.key) as CurvePoint[] | undefined) ?? [], (v) => write(p.key, v), { title: p.title, ...input(p.key) });
       control.classList.add("wide");
       break;
+    case "curves": {
+      const tabs = el("div", "curve-tabs");
+      const host = el("div");
+      const show = () => {
+        const c = p.curves.find((c) => c.key === curveTab) ?? p.curves[0];
+        for (const b of tabs.children) b.classList.toggle("on", (b as HTMLElement).dataset.curve === c.key);
+        const pts = (read(c.key) as CurvePoint[] | undefined) ?? [];
+        host.replaceChildren(curveField(pts, (v) => write(c.key, v.length ? v : undefined), { title: c.title, kind: c.kind, channel: c.channel, axes: c.axes, ...input(c.key) }));
+      };
+      for (const c of p.curves) {
+        const b = button(c.tab, () => { curveTab = c.key; show(); }, c.title.split(":")[0]);
+        b.dataset.curve = c.key;
+        // A tab whose curve bends something says so while another is open.
+        b.classList.toggle("set", ((read(c.key) as CurvePoint[] | undefined) ?? []).length > 0);
+        tabs.appendChild(b);
+      }
+      show();
+      control = el("div", "curves wide");
+      control.append(tabs, host);
+      break;
+    }
     case "match":
       // A grade is a clip's: the model offers it to nothing else.
       control = matchControls(ctx.clip!, ctx.merge);

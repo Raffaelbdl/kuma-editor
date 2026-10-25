@@ -169,7 +169,7 @@ fn a_prune_keeps_the_luts_the_projects_grades_compile_to() {
     {
         let mut p = state.project.write().unwrap();
         let Some(kuma_core::BinSource::Sequence(main)) = p.bin.get_mut("main").map(|i| &mut i.source) else { unreachable!() };
-        main.tracks[0].clips[0].effects.push(kuma_core::Effect::Grade(warm.clone()));
+        main.tracks[0].clips[0].effects.push(kuma_core::Effect::Grade(Box::new(warm.clone())));
     }
     // What the compiles wrote: the grade the project has, and one it had before an edit.
     let cache = state.config.compile_cache_dir();

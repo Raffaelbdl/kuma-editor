@@ -531,6 +531,11 @@ fn check_grade(issues: &mut Vec<Issue>, ep: &str, g: &Grade) {
         ("contrast", g.contrast, Grade::CONTRAST),
         ("saturation", g.saturation, Grade::SATURATION),
         ("look_amount", g.look_amount, Grade::LOOK_AMOUNT),
+        ("blacks", g.blacks, Grade::TONE),
+        ("shadows", g.shadows, Grade::TONE),
+        ("highlights", g.highlights, Grade::TONE),
+        ("whites", g.whites, Grade::TONE),
+        ("vibrance", g.vibrance, Grade::TONE),
     ];
     for (name, v, range) in scalars {
         if !range.contains(&v) {
@@ -545,15 +550,28 @@ fn check_grade(issues: &mut Vec<Issue>, ep: &str, g: &Grade) {
             }
         }
     }
-    if g.curve.len() > 32 {
-        issues.push(Issue::error(format!("{ep}/curve"), "a grade's curve takes at most 32 points"));
+    let tone = [("curve", &g.curve)].into_iter().chain(g.channel_curves());
+    for (name, points) in tone {
+        check_curve(issues, &format!("{ep}/{name}"), points, 0.0..=1.0, true, "[in, out], each within 0..1");
+    }
+    for (name, points, wraps) in g.hue_curves() {
+        let what = if wraps { "[hue, amount]: hue within 0..1 and below 1, amount within -1..1" } else { "[at, amount]: at within 0..1, amount within -1..1" };
+        check_curve(issues, &format!("{ep}/{name}"), points, Grade::TONE, !wraps, what);
+    }
+}
+
+/// A grade curve's points: at most 32, `x` rising within 0..1 (below 1 for a curve that
+/// wraps, where 1 is 0 again), `y` within `ys`.
+fn check_curve(issues: &mut Vec<Issue>, fp: &str, points: &[[f64; 2]], ys: std::ops::RangeInclusive<f64>, one: bool, what: &str) {
+    if points.len() > 32 {
+        issues.push(Issue::error(fp.to_string(), "a grade's curve takes at most 32 points"));
     }
     let mut last = f64::NEG_INFINITY;
-    for (i, [x, y]) in g.curve.iter().enumerate() {
-        if !(0.0..=1.0).contains(x) || !(0.0..=1.0).contains(y) {
-            issues.push(Issue::error(format!("{ep}/curve/{i}"), "curve points are [in, out], each within 0..1"));
+    for (i, [x, y]) in points.iter().enumerate() {
+        if !(0.0..=1.0).contains(x) || (!one && *x == 1.0) || !ys.contains(y) {
+            issues.push(Issue::error(format!("{fp}/{i}"), format!("curve points are {what}")));
         } else if *x <= last {
-            issues.push(Issue::error(format!("{ep}/curve/{i}"), "curve points must be in order of `in`, no two at the same `in`"));
+            issues.push(Issue::error(format!("{fp}/{i}"), "curve points must be in order of their first number, no two at the same one"));
         }
         last = *x;
     }
@@ -931,9 +949,11 @@ mod tests {
             { "type": "grade", "exposure": 6, "saturation": -1, "lift": { "g": 1.5 } },
             { "type": "grade", "curve": [[0.5, 0.5], [0.4, 0.6], [0.9, 1.2]] },
             { "type": "grade", "input_lut": "../elsewhere.cube", "look": "look.png" },
-            { "type": "grade", "input_lut": "missing.cube", "look": "short.cube" }
+            { "type": "grade", "input_lut": "missing.cube", "look": "short.cube" },
+            { "type": "grade", "shadows": 0.5, "vibrance": -2, "curve_g": [[0.5, 1.5]],
+              "hue_sat": [[0.2, 0.5], [1.0, 0.2]], "hue_hue": [[0.0, 1.0], [0.6, -0.4]], "sat_sat": [[0.0, 0.5], [1.0, -1.5]] }
         ]);
-        let tracks: Vec<_> = (0..5).map(|i| json!({ "id": format!("v{i}"), "clips": [
+        let tracks: Vec<_> = (0..6).map(|i| json!({ "id": format!("v{i}"), "clips": [
             { "id": format!("c{i}"), "start": 0, "end": 1, "bin": "x", "effects": [grades[i].clone()] }
         ] })).collect();
         let p = project(json!({ "bin": { "x": { "source": { "path": "x.mp4" } } }, "tracks": tracks }));
@@ -949,6 +969,8 @@ mod tests {
         assert_eq!(paths(2), ["curve/1", "curve/2"], "{:?}", on(2));
         assert!(on(3).iter().any(|m| m.starts_with("input_lut") && m.contains("inside the project")) && on(3).iter().any(|m| m.starts_with("look") && m.contains(".cube")), "{:?}", on(3));
         assert!(on(4).iter().any(|m| m.starts_with("input_lut") && m.contains("missing.cube")) && on(4).iter().any(|m| m.starts_with("look") && m.contains("needs 8 rows")), "{:?}", on(4));
+        // The later steps: a hue curve wraps, so 1 is 0 again; the others reach 1.
+        assert_eq!(paths(5), ["vibrance", "curve_g/0", "hue_sat/1", "sat_sat/1"], "{:?}", on(5));
         // The compiler's check reads no files, so what is on disk cannot fail it.
         let unread = validate(&p, &ValidationContext { check_files: false, ..ctx });
         assert!(!unread.iter().any(|i| i.path.contains("/tracks/4/")), "{unread:?}");

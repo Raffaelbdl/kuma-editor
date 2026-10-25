@@ -42,9 +42,15 @@ other effects act on the held frame and still move. Split the clip to play, then
 `input_lut` (a `.cube` under the project: a camera's log into Rec. 709), `temperature`
 (-2..2, warmer/cooler; tungsten against daylight is about 1.5) and `tint` (-1..1, magenta/green), `exposure` (stops, -5..5), `lift`, `gamma` and
 `gain` (`{r, g, b}`, each -1..1: shadows, midtones, highlights; equal channels move brightness,
-unequal ones colour), `contrast` (0..3, 1 neutral), `curve` (`[[in, out], …]` in 0..1, a
-monotone cubic through `[0,0]` and `[1,1]`), `saturation` (0..3, 1 neutral), then `look` (a
-`.cube`) mixed by `look_amount` (0..1). It is one LUT for the whole clip and takes no keyframes:
+unequal ones colour), `contrast` (0..3, 1 neutral), `blacks`, `shadows`, `highlights` and
+`whites` (-1..1 each, moving that part of the tonal range on every channel alike: 1 is a
+quarter of white), `curve` (`[[in, out], …]` in 0..1, a monotone cubic through `[0,0]` and
+`[1,1]`) then `curve_r`, `curve_g`, `curve_b` (the same, per channel), the curves of amounts
+(`[[x, amount], …]`, amount -1..1, 0 none): `hue_sat`, `hue_hue` (±1 is half a turn) and
+`hue_luma` against hue (x in turns round the vectorscope from +Cb, 0..1 and below 1, wrapping
+round — skin sits near 0.34), `luma_sat` and `sat_sat` against luma and saturation (through
+`[0,0]`, `[1,0]`), then `saturation` (0..3, 1 neutral) and `vibrance` (-1..1, saturation where
+there is little), then `look` (a `.cube`) mixed by `look_amount` (0..1). It is one LUT for the whole clip and takes no keyframes:
 split the clip to grade its halves differently. Grade by measuring, then look: `measure_color`
 reads a region's `exposure` (stops from mid grey) and `balance` (its cast as `temperature` and
 `tint`) so two shots compare as numbers, and with `match: {clip, reference}` solves the clip's

@@ -84,6 +84,28 @@ describe("the inspector's curve, wheels and colour picker", { skip: why ? `skipp
     await settled(page);
   });
 
+  it("keeps the grade's other curves a tab away, and a hue curve wraps with no ends", async () => {
+    const tab = (key) => `document.querySelector('#inspector .curve-tabs [data-curve="${key}"]')`;
+    assert.equal(await page.eval(`${tab("curve")}.classList.contains("on")`), true, "the tone curve first");
+    await page.eval(`${tab("hue_sat")}.click(), true`);
+    assert.equal(await page.eval(`!!document.querySelector("#inspector .curve-plot.curve-hue")`), true);
+    assert.equal(await page.eval(`document.querySelectorAll("#inspector .curve-pt").length`), 0, "no corners round a circle");
+    // Pressed at hue 0.3, a quarter of the way down: an amount of 0.5.
+    await page.eval(drag("#inspector .curve-plot", [0.3, 0.25], [0.3, 0.25]));
+    await page.until(`${GRADE}.then(e => e.hue_sat?.length === 1)`);
+    assert.deepEqual(await page.eval(`${GRADE}.then(e => e.hue_sat)`), [[0.3, 0.5]]);
+    await settled(page);
+    // The edit rebuilt the inspector, and the tab it was made in is still the one open; the
+    // tone curve's tab says it bends something.
+    await page.until(`${tab("hue_sat")}?.classList.contains("on")`);
+    assert.equal(await page.eval(`${tab("curve")}.classList.contains("set")`), true);
+    // Flat takes the curve out of the document, rather than leaving an empty list.
+    await page.eval(`[...document.querySelectorAll("#inspector .curve-reset")].find(b => b.offsetParent).click(), true`);
+    await page.until(`${GRADE}.then(e => !("hue_sat" in e))`);
+    await settled(page);
+    await page.eval(`${tab("curve")}.click(), true`);
+  });
+
   it("turns a wheel's colour without moving its brightness, and a double-click takes the colour out", async () => {
     // The lift wheel, dragged from its centre to the right: towards red.
     await page.eval(drag("#inspector .wheel-disc", [0.5, 0.5], [0.8, 0.5], 0));

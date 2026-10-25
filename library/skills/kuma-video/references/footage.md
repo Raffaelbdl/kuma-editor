@@ -76,7 +76,13 @@ is also what makes it cheap: nothing is baked.
   look right shot to shot; then the wheels — `lift` for the shadows, `gain` for the
   highlights, `gamma` for the middle, as `{r, g, b}` (warm shadows: `lift {r: 0.02, b: -0.02}`)
   — and `contrast`, a gentle S `curve` (`[[0.25, 0.22], [0.75, 0.8]]`) or `saturation` last.
-  Small numbers: 0.05 on a wheel is already visible. Log footage (S-Log, V-Log, LogC) wants
+  Small numbers: 0.05 on a wheel is already visible. To recover a part of the range rather
+  than the whole: `shadows: 0.15` opens dark faces, `highlights: -0.2` brings a bright sky
+  back, `blacks`/`whites` set the ends. `vibrance` (0.2) livens dull colours without pushing
+  skin; for one colour only, the hue curves — `hue_sat: [[0.6, -0.4]]` greys that hue,
+  `hue_hue` turns it towards its neighbours, `hue_luma` darkens it (a sky) — with hue in
+  turns round the vectorscope (skin near 0.34). `luma_sat: [[0.1, -0.5]]` takes colour out of
+  the shadows, where noise lives. Log footage (S-Log, V-Log, LogC) wants
   its maker's `.cube` as `input_lut` before anything else; a creative `.cube` goes in `look`,
   softened by `look_amount`. Sample a frame of each clip side by side after grading, and
   compare a neutral in each (a white wall, a grey shirt) rather than the whole picture.

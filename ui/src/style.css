@@ -920,6 +920,16 @@ button.mk-remove:hover { color: var(--danger); }
 .curve-pt { position: absolute; width: 10px; height: 10px; margin: -5px 0 0 -5px; border-radius: 50%; background: var(--accent); border: 2px solid var(--bg-0); cursor: grab; }
 .curve-pt.end { background: var(--bg-0); border-color: var(--accent); }
 .curve-plot.dragging, .curve-plot.dragging .curve-pt { cursor: grabbing; }
+.curve-plot .curve-r { stroke: var(--axis-x); }
+.curve-plot .curve-g { stroke: var(--axis-y); }
+.curve-plot .curve-b { stroke: var(--axis-z); }
+/* The hues along the foot of a hue curve, as the grade reads them. */
+.curve-plot.curve-hue::after { content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 6px; background: var(--hues); border-radius: 0 0 3px 3px; pointer-events: none; }
+.curves { display: flex; flex-direction: column; gap: 4px; }
+.curve-tabs { display: flex; flex-wrap: wrap; gap: 2px; }
+.curve-tabs button { padding: 1px 6px; font-size: 11px; }
+.curve-tabs button.on { background: var(--accent); color: var(--bg-0); border-color: var(--accent); }
+.curve-tabs button.set:not(.on)::after { content: "•"; margin-left: 3px; color: var(--accent); }
 .curve-foot { display: flex; align-items: center; justify-content: space-between; gap: 6px; min-height: 22px; }
 
 /* The colour field (`colorfield.ts`): a swatch and its hex, opening into the picker. */

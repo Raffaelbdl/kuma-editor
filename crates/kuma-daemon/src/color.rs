@@ -267,7 +267,7 @@ pub fn measure(state: &AppState, req: &ColorRequest, progress: &dyn Fn(u8, &str)
     let matched = match_light(&at.grade, lut(state, at.grade.input_lut.as_deref())?, lut(state, at.grade.look.as_deref())?, &spread(ungraded, MATCH_PIXELS), aim)
         .ok_or_else(|| anyhow::anyhow!("the region has no pixels"))?;
     let effects = format!("/bin/{}/source/tracks/{}/clips/{}/effects", at.sequence, at.track, at.clip);
-    let value = serde_json::to_value(Effect::Grade(matched.grade.clone()))?;
+    let value = serde_json::to_value(Effect::Grade(Box::new(matched.grade.clone())))?;
     let patch = match at.graded_at {
         Some(ei) => json!([{ "op": "replace", "path": format!("{effects}/{ei}"), "value": value }]),
         None => json!([{ "op": "add", "path": format!("{effects}/-"), "value": value }]),

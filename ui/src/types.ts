@@ -149,6 +149,10 @@ export interface Grade {
   input_lut?: string; temperature?: number; tint?: number; exposure?: number;
   lift?: Rgb; gamma?: Rgb; gain?: Rgb; contrast?: number;
   curve?: [number, number][]; saturation?: number; look?: string; look_amount?: number;
+  blacks?: number; shadows?: number; highlights?: number; whites?: number; vibrance?: number;
+  curve_r?: [number, number][]; curve_g?: [number, number][]; curve_b?: [number, number][];
+  hue_sat?: [number, number][]; hue_hue?: [number, number][]; hue_luma?: [number, number][];
+  luma_sat?: [number, number][]; sat_sat?: [number, number][];
 }
 
 /** A rectangle of the picture in composition pixels, as `sample_frames` and

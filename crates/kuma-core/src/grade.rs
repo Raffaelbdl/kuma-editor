@@ -14,10 +14,16 @@
 //!    decodes, and encodes back after);
 //! 3. lift, gain, then gamma, per channel;
 //! 4. contrast about mid grey (18% light, encoded);
-//! 5. the curve, on each channel;
-//! 6. saturation about Rec. 709 luma;
-//! 7. the look, mixed in by `look_amount`;
-//! 8. clamped to 0..1, which is all a LUT can hold.
+//! 5. blacks, shadows, highlights and whites, on luma, every channel moved alike;
+//! 6. the curve, on each channel; then red's, green's and blue's own;
+//! 7. the hue and saturation curves, on Rec. 709 chroma: hue against saturation, hue
+//!    against hue, hue against luma, luma against saturation, saturation against saturation;
+//! 8. saturation about Rec. 709 luma, then vibrance (more where there is less);
+//! 9. the look, mixed in by `look_amount`;
+//! 10. clamped to 0..1, which is all a LUT can hold.
+//!
+//! Steps 5, 7 and 8's vibrance came after the others, between them: each is skipped while it
+//! is neutral, so a grade without them comes out as it always did.
 
 use std::fmt::Write;
 
@@ -32,6 +38,10 @@ pub(crate) const DISPLAY_GAMMA: f64 = 2.4;
 
 /// Rec. 709 luma weights.
 pub(crate) const LUMA: [f64; 3] = [0.2126, 0.7152, 0.0722];
+
+/// Rec. 709's chroma scales: Cb is (B' − Y') / CB, Cr is (R' − Y') / CR, each ±0.5 at most.
+pub(crate) const CB: f64 = 1.8556;
+pub(crate) const CR: f64 = 1.5748;
 
 /// Mid grey: 18% of white's light.
 pub(crate) const MID_GREY: f64 = 0.18;
@@ -57,6 +67,9 @@ impl Grade {
     pub const LOOK_AMOUNT: std::ops::RangeInclusive<f64> = 0.0..=1.0;
     /// Each channel of lift, gamma and gain.
     pub const WHEEL: std::ops::RangeInclusive<f64> = -1.0..=1.0;
+    /// Blacks, shadows, highlights, whites and vibrance; and what a hue, luma or saturation
+    /// curve's points may ask for.
+    pub const TONE: std::ops::RangeInclusive<f64> = -1.0..=1.0;
 
     /// Whether it leaves every colour as it is — nothing set, which the compiler leaves
     /// out. Read off the settings alone: a grade with a LUT is never neutral, so this needs
@@ -71,6 +84,25 @@ impl Grade {
             && self.gain.is_zero()
             && self.contrast == 1.0
             && self.saturation == 1.0
+            && [self.blacks, self.shadows, self.highlights, self.whites, self.vibrance] == [0.0; 5]
+            && Grading::curves(self).iter().all(Option::is_none)
+    }
+
+    /// The tone curves of red, green and blue, as stored.
+    pub fn channel_curves(&self) -> [(&'static str, &Vec<[f64; 2]>); 3] {
+        [("curve_r", &self.curve_r), ("curve_g", &self.curve_g), ("curve_b", &self.curve_b)]
+    }
+
+    /// The curves against hue (whose points wrap round) and against luma and saturation, as
+    /// stored, in step 7's order.
+    pub fn hue_curves(&self) -> [(&'static str, &Vec<[f64; 2]>, bool); 5] {
+        [
+            ("hue_sat", &self.hue_sat, true),
+            ("hue_hue", &self.hue_hue, true),
+            ("hue_luma", &self.hue_luma, true),
+            ("luma_sat", &self.luma_sat, false),
+            ("sat_sat", &self.sat_sat, false),
+        ]
     }
 }
 
@@ -220,6 +252,11 @@ pub struct Grading<'a> {
     input: Option<Lut>,
     look: Option<Lut>,
     curve: Option<Curve>,
+    /// Red's, green's and blue's own curves.
+    channels: [Option<Curve>; 3],
+    /// Hue against saturation, hue, luma; luma against saturation; saturation against
+    /// saturation — the step 7 curves, in that order.
+    hue: [Option<Curve>; 5],
     /// White balance and exposure as one gain per channel on linear light.
     light: [f64; 3],
 }
@@ -228,8 +265,16 @@ impl<'a> Grading<'a> {
     /// `input` and `look` are the grade's LUT files, parsed; the caller reads them, since
     /// where a path resolves is the project's business.
     pub fn new(grade: &'a Grade, input: Option<Lut>, look: Option<Lut>) -> Self {
-        let curve = Curve::through(&grade.curve);
-        Grading { grade, input, look, curve, light: light_gains(grade.temperature, grade.tint, grade.exposure) }
+        let [curve, r, g, b, hue @ ..] = Grading::curves(grade);
+        Grading { grade, input, look, curve, channels: [r, g, b], hue, light: light_gains(grade.temperature, grade.tint, grade.exposure) }
+    }
+
+    /// Every curve of `grade`, `None` for one that changes nothing: the master curve, red's,
+    /// green's, blue's, then step 7's.
+    fn curves(grade: &Grade) -> [Option<Curve>; 9] {
+        let [r, g, b] = grade.channel_curves().map(|(_, pts)| Curve::through(pts));
+        let [hs, hh, hl, ls, ss] = grade.hue_curves().map(|(_, pts, wraps)| if wraps { Curve::periodic(pts) } else { Curve::offset(pts) });
+        [Curve::through(&grade.curve), r, g, b, hs, hh, hl, ls, ss]
     }
 
     /// The same grade with other white balance and exposure: what a match tries in turn,
@@ -257,18 +302,59 @@ impl<'a> Grading<'a> {
             let pivot = MID_GREY.powf(1.0 / DISPLAY_GAMMA);
             c = c.map(|v| pivot + (v - pivot) * g.contrast);
         }
+        let tones = [g.blacks, g.shadows, g.highlights, g.whites];
+        if tones != [0.0; 4] {
+            // Four bumps that sum to at most 1: at black, a third of the way up, two thirds
+            // of the way up and at white.
+            let y = luma(c);
+            let (v, w) = (y.clamp(0.0, 1.0), 1.0 - y.clamp(0.0, 1.0));
+            let weights = [w.powi(4), 6.75 * v * w * w, 6.75 * v * v * w, v.powi(4)];
+            let shift: f64 = 0.25 * (0..4).map(|i| tones[i] * weights[i]).sum::<f64>();
+            c = c.map(|x| x + shift);
+        }
         if let Some(curve) = &self.curve {
             c = c.map(|v| curve.at(v));
+        }
+        for (i, curve) in self.channels.iter().enumerate() {
+            if let Some(curve) = curve {
+                c[i] = curve.at(c[i]);
+            }
+        }
+        if self.hue.iter().any(Option::is_some) {
+            c = self.hue_curves(c);
         }
         if g.saturation != 1.0 {
             let y = luma(c);
             c = c.map(|v| y + (v - y) * g.saturation);
+        }
+        if g.vibrance != 0.0 {
+            let y = luma(c);
+            let spread = (c.iter().copied().fold(f64::MIN, f64::max) - c.iter().copied().fold(f64::MAX, f64::min)).clamp(0.0, 1.0);
+            let k = 1.0 + g.vibrance * (1.0 - spread);
+            c = c.map(|v| y + (v - y) * k);
         }
         if let Some(look) = self.look.as_ref().filter(|_| g.look_amount != 0.0) {
             let l = look.apply(c.map(|v| v.clamp(0.0, 1.0)));
             c = std::array::from_fn(|i| c[i] + (l[i] - c[i]) * g.look_amount);
         }
         c.map(|v| v.clamp(0.0, 1.0))
+    }
+
+    /// Step 7: every curve read at the colour as it comes in — its hue, luma and saturation —
+    /// then chroma turned, scaled, and luma scaled, all in Rec. 709 Y'CbCr, so a grey (no
+    /// chroma, no hue) stays where it is whatever the curves say.
+    fn hue_curves(&self, c: [f64; 3]) -> [f64; 3] {
+        let y = luma(c);
+        let (cb, cr) = ((c[2] - y) / CB, (c[0] - y) / CR);
+        let hue = cr.atan2(cb) / std::f64::consts::TAU;
+        let sat = (2.0 * cb.hypot(cr)).min(1.0);
+        let at = |i: usize, v: f64| self.hue[i].as_ref().map_or(0.0, |curve| curve.at(v));
+        let scale = (1.0 + at(0, hue)).max(0.0) * (1.0 + at(3, y.clamp(0.0, 1.0))).max(0.0) * (1.0 + at(4, sat)).max(0.0);
+        let (sin, cos) = (at(1, hue) * std::f64::consts::PI).sin_cos();
+        let (cb, cr) = ((cb * cos - cr * sin) * scale, (cb * sin + cr * cos) * scale);
+        let y = y * 2f64.powf(at(2, hue) * sat);
+        let (r, b) = (y + CR * cr, y + CB * cb);
+        [r, (y - LUMA[0] * r - LUMA[2] * b) / LUMA[1], b]
     }
 
     /// The grade as a `.cube` of [`GRID`]³ points, red fastest — the file the compiler
@@ -317,25 +403,55 @@ struct Curve {
     x: Vec<f64>,
     y: Vec<f64>,
     m: Vec<f64>,
+    /// Whether it repeats every 1 along `x`, as a curve against hue does.
+    wraps: bool,
 }
 
 impl Curve {
     /// The curve through `points` and the corners it is not told otherwise about; `None`
     /// when that is the straight line. The points are the validator's to check.
     fn through(points: &[[f64; 2]]) -> Option<Curve> {
-        if points.is_empty() {
-            return None;
-        }
-        let mut pts = points.to_vec();
-        if pts[0][0] > 0.0 {
-            pts.insert(0, [0.0, 0.0]);
-        }
-        if pts[pts.len() - 1][0] < 1.0 {
-            pts.push([1.0, 1.0]);
-        }
+        let pts = Curve::cornered(points, 1.0)?;
         if pts.iter().all(|[x, y]| x == y) {
             return None;
         }
+        Some(Curve::monotone(&pts, false))
+    }
+
+    /// A curve of amounts, 0 for none: through `points` and `[0, 0]`, `[1, 0]` unless they
+    /// say otherwise; `None` when it is 0 everywhere.
+    fn offset(points: &[[f64; 2]]) -> Option<Curve> {
+        let pts = Curve::cornered(points, 0.0)?;
+        if pts.iter().all(|p| p[1] == 0.0) {
+            return None;
+        }
+        Some(Curve::monotone(&pts, false))
+    }
+
+    /// A curve of amounts round a circle: through `points` (`x` in 0..1) and on round, so
+    /// past the last point it bends towards the first; `None` when it is 0 everywhere.
+    fn periodic(points: &[[f64; 2]]) -> Option<Curve> {
+        if points.iter().all(|p| p[1] == 0.0) {
+            return None;
+        }
+        let pts: Vec<[f64; 2]> = [-1.0, 0.0, 1.0].iter().flat_map(|turn| points.iter().map(move |&[x, y]| [x + turn, y])).collect();
+        Some(Curve::monotone(&pts, true))
+    }
+
+    /// `points` with `[0, 0]` before and `[1, end]` after unless points sit there; `None`
+    /// when there are no points.
+    fn cornered(points: &[[f64; 2]], end: f64) -> Option<Vec<[f64; 2]>> {
+        let mut pts = points.to_vec();
+        if pts.first()?[0] > 0.0 {
+            pts.insert(0, [0.0, 0.0]);
+        }
+        if pts[pts.len() - 1][0] < 1.0 {
+            pts.push([1.0, end]);
+        }
+        Some(pts)
+    }
+
+    fn monotone(pts: &[[f64; 2]], wraps: bool) -> Curve {
         let (x, y): (Vec<f64>, Vec<f64>) = pts.iter().map(|p| (p[0], p[1])).unzip();
         let n = x.len();
         let d: Vec<f64> = (0..n - 1).map(|k| (y[k + 1] - y[k]) / (x[k + 1] - x[k])).collect();
@@ -359,11 +475,13 @@ impl Curve {
                 m[k + 1] = t * b * d[k];
             }
         }
-        Some(Curve { x, y, m })
+        Curve { x, y, m, wraps }
     }
 
-    /// The curve at `v`; past its ends it goes on straight, along its end slopes.
+    /// The curve at `v`; past its ends it goes on straight, along its end slopes (or round,
+    /// for one that wraps).
     fn at(&self, v: f64) -> f64 {
+        let v = if self.wraps { v.rem_euclid(1.0) } else { v };
         let (x, y, m) = (&self.x, &self.y, &self.m);
         let n = x.len();
         if v <= x[0] {
@@ -427,6 +545,56 @@ mod tests {
         }
     }
 
+    /// The same, for the steps that came later: tones, vibrance, the channels' curves and
+    /// step 7's. Worked out apart from this code, from the formulas in the module's steps.
+    #[test]
+    fn the_later_steps_keep_the_values_they_have_always_given() {
+        let c = [0.6, 0.5, 0.4];
+        let offset = vec![[0.3, -0.5], [0.6, 0.4]];
+        let hues = vec![[0.1, 0.5], [0.4, -0.25], [0.8, 0.2]];
+        let cases: Vec<(Grade, [f64; 3], [f64; 3])> = vec![
+            (Grade { shadows: 1.0, ..Grade::default() }, [0.25; 3], [0.4873046875; 3]),
+            (Grade { highlights: 1.0, ..Grade::default() }, [0.6; 3], [0.843; 3]),
+            (Grade { whites: -1.0, ..Grade::default() }, [0.9; 3], [0.735975; 3]),
+            (Grade { blacks: 0.5, ..Grade::default() }, [0.0; 3], [0.125; 3]),
+            (Grade { vibrance: 1.0, ..Grade::default() }, c, [0.668768, 0.488768, 0.308768]),
+            (Grade { curve_r: vec![[0.5, 0.6]], ..Grade::default() }, [0.5; 3], [0.6, 0.5, 0.5]),
+            (Grade { curve_b: vec![[0.5, 0.25]], ..Grade::default() }, [0.5; 3], [0.5, 0.5, 0.25]),
+            (Grade { hue_hue: vec![[0.0, 1.0]], ..Grade::default() }, c, [0.42808, 0.52808, 0.62808]),
+            (Grade { hue_hue: vec![[0.0, 0.25]], ..Grade::default() }, c, [0.506387114, 0.531685604, 0.361780545]),
+            (Grade { hue_sat: vec![[0.3, -1.0]], ..Grade::default() }, [1.0, 0.0, 0.0], [0.2126; 3]),
+            (Grade { hue_sat: hues.clone(), ..Grade::default() }, c, [0.579013908, 0.503427696, 0.427841484]),
+            (Grade { hue_luma: vec![[0.0, 1.0]], ..Grade::default() }, [1.0, 0.0, 0.0], [1.0, 0.2126, 0.2126]),
+            (Grade { hue_luma: vec![[0.0, -1.0]], ..Grade::default() }, c, [0.544639051, 0.444639051, 0.344639051]),
+            (Grade { luma_sat: offset.clone(), ..Grade::default() }, c, [0.618968874, 0.49690178, 0.374834685]),
+            (Grade { sat_sat: offset, ..Grade::default() }, c, [0.570613718, 0.504799714, 0.43898571]),
+        ];
+        for (g, c, want) in cases {
+            assert!(!g.is_neutral(), "{g:?}");
+            let got = graded(&g, c);
+            assert!((0..3).all(|i| (got[i] - want[i]).abs() < 1e-8), "{g:?} on {c:?}: {got:?}, want {want:?}");
+        }
+    }
+
+    #[test]
+    fn a_grey_keeps_its_place_whatever_the_hue_curves_say() {
+        let g = Grade {
+            hue_sat: vec![[0.2, 1.0]],
+            hue_hue: vec![[0.5, 0.7]],
+            hue_luma: vec![[0.7, -1.0]],
+            luma_sat: vec![[0.5, 1.0]],
+            sat_sat: vec![[0.0, 1.0]],
+            vibrance: 1.0,
+            ..Grade::default()
+        };
+        for v in [0.0, 0.18, 0.5, 1.0] {
+            assert!(close(graded(&g, [v; 3]), [v; 3]), "{v}");
+        }
+        // Curves at nought are no curves.
+        let flat = Grade { hue_sat: vec![[0.2, 0.0]], luma_sat: vec![[0.5, 0.0]], curve_g: vec![[0.3, 0.3]], ..Grade::default() };
+        assert!(flat.is_neutral());
+    }
+
     #[test]
     fn white_balance_keeps_a_whites_luminance_and_exposure_scales_light() {
         let g = Grade { temperature: 0.7, tint: -0.3, ..Grade::default() };
@@ -474,6 +642,23 @@ mod tests {
                 assert!((c.at(*x) - w).abs() < 1e-8, "{points:?} at {x}: {} not {w}", c.at(*x));
             }
         }
+    }
+
+    /// The curves of amounts, which the editor draws with its copy too
+    /// (`ui/test/curve.test.mjs` pins the same values).
+    #[test]
+    fn the_amount_curves_draw_what_the_editor_draws() {
+        let xs = [0.0, 0.1, 0.2, 0.3, 0.35, 0.5, 0.52, 0.6, 0.7, 0.8, 0.9, 1.0];
+        let offset = Curve::offset(&[[0.3, -0.5], [0.6, 0.4]]).unwrap();
+        let want = [0.0, -0.203703704, -0.407407407, -0.5, -0.433333333, 0.166666667, 0.242133333, 0.4, 0.35625, 0.25, 0.11875, 0.0];
+        let periodic = Curve::periodic(&[[0.1, 0.5], [0.4, -0.25], [0.8, 0.2]]).unwrap();
+        let round = [0.445833333, 0.5, 0.305555556, -0.055555556, -0.194444444, -0.199609375, -0.179575, -0.078125, 0.069921875, 0.2, 0.325, 0.445833333];
+        for (i, x) in xs.iter().enumerate() {
+            assert!((offset.at(*x) - want[i]).abs() < 1e-8, "offset at {x}: {}", offset.at(*x));
+            assert!((periodic.at(*x) - round[i]).abs() < 1e-8, "periodic at {x}: {}", periodic.at(*x));
+        }
+        // Round the circle and on.
+        assert!((periodic.at(1.1) - periodic.at(0.1)).abs() < 1e-12 && (periodic.at(-0.2) - periodic.at(0.8)).abs() < 1e-12);
     }
 
     const IDENTITY_2: &str = "TITLE \"identity\"\nLUT_3D_SIZE 2\n0 0 0\n1 0 0\n0 1 0\n1 1 0\n0 0 1\n1 0 1\n0 1 1\n1 1 1\n";

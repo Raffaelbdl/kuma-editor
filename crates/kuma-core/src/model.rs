@@ -916,7 +916,7 @@ pub enum Effect {
     },
     /// A colour grade: white balance, exposure, lift/gamma/gain, contrast, a curve and
     /// saturation, between an optional input LUT and an optional look. See [`Grade`].
-    Grade(Grade),
+    Grade(Box<Grade>),
     /// Picture fade in/out (opacity), durations in seconds. The sound's is `audio_fade`.
     Fade {
         #[serde(default, rename = "in")]
@@ -1037,6 +1037,47 @@ pub struct Grade {
     /// 0..3: 1 leaves it, 0 is black and white.
     #[serde(default = "one", skip_serializing_if = "is_one")]
     pub saturation: f64,
+    /// The tones, -1..1 each, moved on luma with every channel alike (so no colour shifts):
+    /// `blacks` and `whites` the ends, `shadows` and `highlights` a third of the way in from
+    /// them; 1 raises that part of the range by a quarter of white, and the far end not at all.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub blacks: f64,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub shadows: f64,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub highlights: f64,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub whites: f64,
+    /// Saturation where there is little of it, -1..1, leaving vivid colours (and so faces
+    /// pushed too far) alone: 1 doubles a grey-ish colour's chroma, -1 takes it out.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub vibrance: f64,
+    /// Red's, green's and blue's own tone curves, after `curve` and like it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub curve_r: Vec<[f64; 2]>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub curve_g: Vec<[f64; 2]>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub curve_b: Vec<[f64; 2]>,
+    /// Curves against a colour's hue, `[hue, amount]` points: hue in turns round the
+    /// vectorscope from +Cb (0..1, `hue` rising, wrapping round), amount -1..1, 0 leaving
+    /// it. Each wraps, so the last point bends towards the first. Against saturation: 1
+    /// doubles the chroma of that hue, -1 greys it. Against hue: ±1 turns it half way round.
+    /// Against luma: ±1 is twice or half the luma of that hue at full saturation, and less
+    /// as there is less, so a grey never moves.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hue_sat: Vec<[f64; 2]>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hue_hue: Vec<[f64; 2]>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hue_luma: Vec<[f64; 2]>,
+    /// Saturation against luma, and against saturation itself: `[at, amount]` points, `at`
+    /// 0..1 rising, amount -1..1 as for `hue_sat`; through `[0, 0]` and `[1, 0]` unless points
+    /// there say otherwise.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub luma_sat: Vec<[f64; 2]>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sat_sat: Vec<[f64; 2]>,
     /// A `.cube` LUT under the project, applied last: a creative look.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub look: Option<String>,
@@ -1058,6 +1099,19 @@ impl Default for Grade {
             contrast: 1.0,
             curve: Vec::new(),
             saturation: 1.0,
+            blacks: 0.0,
+            shadows: 0.0,
+            highlights: 0.0,
+            whites: 0.0,
+            vibrance: 0.0,
+            curve_r: Vec::new(),
+            curve_g: Vec::new(),
+            curve_b: Vec::new(),
+            hue_sat: Vec::new(),
+            hue_hue: Vec::new(),
+            hue_luma: Vec::new(),
+            luma_sat: Vec::new(),
+            sat_sat: Vec::new(),
             look: None,
             look_amount: 1.0,
         }

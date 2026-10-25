@@ -410,6 +410,13 @@ async fn a_media_entry_is_served_for_the_viewer_in_ranges() {
     let (status, body) = get_body(&addr, "/api/bin/take/source");
     assert!(status.starts_with("HTTP/1.1 403") && !body.contains("key"), "{status}: {body}");
 
+    // A file that is not there says which, so the viewer can tell it from a daemon older
+    // than the editor, whose 404 for this path is a bare "not found".
+    let (status, reply) = post(&addr, "/api/project/patch", &format!(r#"{{ "patch": [{{ "op": "replace", "path": "/bin/take/source/proxy", "value": "gone.wav" }}], "base_revision": {} }}"#, revision + 2));
+    assert!(status.contains("200"), "{status}: {reply}");
+    let (status, body) = get_body(&addr, "/api/bin/take/source");
+    assert!(status.starts_with("HTTP/1.1 404") && body.contains("gone.wav is not on disk"), "{status}: {body}");
+
     // An overlay has no file of its own to play, and an entry that is not there has nothing.
     for id in ["tag", "nope"] {
         let (status, _) = get_body(&addr, &format!("/api/bin/{id}/source"));

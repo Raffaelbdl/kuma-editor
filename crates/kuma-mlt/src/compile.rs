@@ -251,7 +251,7 @@ fn emit_sequence(ctx: &Ctx, seq_id: &str, seq: &Sequence, is_root: bool, w: &mut
     // while a nested sequence's tractor is shared by its placements, so each placement
     // carries its own copy of them (`emit_sequence_effects`).
     if is_root {
-        emit_effects(ctx, w, &Span { id: "main_tractor".into(), f_in: 0, f_out: total - 1, pre: 0, post: 0 }, &seq.effects, 1.0);
+        emit_effects(ctx, w, &Span { id: "main_tractor".into(), f_in: 0, f_out: total - 1, pre: 0, post: 0 }, seq.effects.iter(), 1.0);
     }
     w.close("tractor");
     Ok(())
@@ -282,9 +282,7 @@ fn grade_luts(project: &Project, order: &[BinId], opts: &CompileOptions) -> Resu
         return Ok(luts);
     }
     let clips = order.iter().filter_map(|id| project.seq(id)).flat_map(|s| s.tracks.iter()).flat_map(|t| t.clips.iter());
-    // A clip's grades and its entry's, which apply wherever the entry is placed.
-    let effects = clips.flat_map(|c| c.effects.iter().chain(project.item(c).map_or(&[][..], |i| &i.effects[..])));
-    for g in effects.filter_map(Effect::as_grade) {
+    for g in clips.flat_map(|c| project.effects_on(c)).filter_map(Effect::as_grade) {
         for g in luts::parts(g) {
             if let std::collections::hash_map::Entry::Vacant(slot) = luts.entry(grade_key(&g)) {
                 slot.insert(luts::resolve(&g, &opts.root, &opts.cache_dir).map_err(|e| CompileError::Internal(format!("grade: {e}")))?);
@@ -615,7 +613,7 @@ fn emit_sequence_effects(ctx: &Ctx, p: &Plan, id: &str, seq: &Sequence, w: &mut 
     let own = format!("{}_seq", p.producer_id);
     w.open("playlist", &[("id", own.clone())]);
     w.empty("entry", &[("producer", tractor), ("in", "0".into()), ("out", (total - 1).to_string())]);
-    emit_effects(ctx, w, &Span { id: own.clone(), f_in: 0, f_out: total - 1, pre: 0, post: 0 }, &seq.effects, 1.0);
+    emit_effects(ctx, w, &Span { id: own.clone(), f_in: 0, f_out: total - 1, pre: 0, post: 0 }, seq.effects.iter(), 1.0);
     w.close("playlist");
     own
 }
@@ -732,21 +730,16 @@ fn emit_filters(ctx: &Ctx, p: &Plan, w: &mut XmlWriter) {
         w.close("filter");
     }
 
-    // Clip-level volume times the entry's (static).
-    let item = ctx.project.item(clip);
-    let fader = clip.volume * item.map_or(1.0, |i| i.volume);
-    // The entry's own effects first: they are what the source is, before what this
-    // placement does with it.
-    match item.map(|i| &i.effects[..]).filter(|e| !e.is_empty()) {
-        None => emit_effects(ctx, w, &span, &clip.effects, fader),
-        Some(entry) => emit_effects(ctx, w, &span, &entry.iter().chain(&clip.effects).cloned().collect::<Vec<_>>(), fader),
-    }
+    // Clip-level volume times the entry's (static); the entry's own effects first, since
+    // they are what the source is, before what this placement does with it.
+    let fader = clip.volume * ctx.project.item(clip).map_or(1.0, |i| i.volume);
+    emit_effects(ctx, w, &span, ctx.project.effects_on(clip), fader);
 }
 
 /// `effects` as filters over `span`, those of them this graph carries, after a static
 /// `volume` filter for `fader` — a linear gain, folded into a `volume` effect when there is
 /// one, so a clip's own volume and the effect are one filter.
-fn emit_effects(ctx: &Ctx, w: &mut XmlWriter, span: &Span, effects: &[Effect], fader: f64) {
+fn emit_effects<'e>(ctx: &Ctx, w: &mut XmlWriter, span: &Span, effects: impl Iterator<Item = &'e Effect> + Clone, fader: f64) {
     let fps = ctx.fps;
     let n = std::cell::Cell::new(0usize);
     let (f_in, f_out) = (span.f_in, span.f_out);
@@ -763,12 +756,12 @@ fn emit_effects(ctx: &Ctx, w: &mut XmlWriter, span: &Span, effects: &[Effect], f
     let at = |t: f64| (fps.frame(t) + span.pre).clamp(0, len - 1);
     let streams = ctx.opts.streams;
 
-    if streams.audio() && !effects.iter().any(|e| matches!(e, Effect::Volume { .. })) && (fader - 1.0).abs() > 1e-9 {
+    if streams.audio() && !effects.clone().any(|e| matches!(e, Effect::Volume { .. })) && (fader - 1.0).abs() > 1e-9 {
         open(w, "vol", "volume");
         w.property("level", num(db(fader)));
         w.close("filter");
     }
-    for e in effects.iter().filter(|e| e.streams().meets(streams)) {
+    for e in effects.filter(|e| e.streams().meets(streams)) {
         match e {
             Effect::Transform { x, y, scale, rotation, opacity, keyframes } => {
                 open(w, "xform", "qtblend");
@@ -821,42 +814,41 @@ fn emit_effects(ctx: &Ctx, w: &mut XmlWriter, span: &Span, effects: &[Effect], f
                 mask_apply(w, &open, mask.as_ref());
             }
             Effect::Grade(g) => {
-                // The whole grade is one LUT, computed by kuma (`luts.rs`); a grade that
-                // changes nothing is no filter at all, and needs no mask.
-                let lut = |w: &mut XmlWriter, g: &Grade| {
-                    if let Some(Some(path)) = ctx.luts.get(&grade_key(g)) {
+                // A grade is one LUT, computed by kuma (`luts.rs`), or a keyed one's parts
+                // with its light moving as a gain per channel before the last of them
+                // (`Grade::keyed_parts`). A grade that changes nothing is no filter at all,
+                // and needs no mask.
+                let keyed = !g.keyframes.is_empty();
+                let paths: Vec<Option<&PathBuf>> = luts::parts(g).iter().map(|p| ctx.luts.get(&grade_key(p)).and_then(Option::as_ref)).collect();
+                if !keyed && paths.iter().all(Option::is_none) {
+                    continue;
+                }
+                let lut = |w: &mut XmlWriter, path: Option<&PathBuf>| {
+                    if let Some(path) = path {
                         open(w, "grade", "avfilter.lut3d");
                         w.property("av.file", path.to_string_lossy());
                         w.property("av.interp", "tetrahedral");
                         w.close("filter");
                     }
                 };
-                if g.keyframes.is_empty() {
-                    if let Some(Some(_)) = ctx.luts.get(&grade_key(g)) {
-                        mask_start(w, &open, &at, ctx, g.mask.as_ref());
-                        lut(w, g);
-                        mask_apply(w, &open, g.mask.as_ref());
-                    }
-                } else {
-                    // Keyed: the light moves as a gain per channel between the grade's
-                    // input conversion and the rest of it (`Grade::keyed_parts`).
-                    let (input, rest) = g.keyed_parts();
-                    mask_start(w, &open, &at, ctx, g.mask.as_ref());
-                    if let Some(input) = &input {
-                        lut(w, input);
-                    }
+                let (rest, input) = paths.split_last().expect("a grade is one part at least");
+                mask_start(w, &open, &at, ctx, g.mask.as_ref());
+                for path in input {
+                    lut(w, *path);
+                }
+                if keyed {
                     open(w, "light", "avfilter.colorchannelmixer");
                     let scale = |k: Option<&Keyframe>| {
-                        let at = |name: &str, stat: f64| k.map_or(stat, |k| k.or(name, stat));
-                        grade::light_scale(at("temperature", g.temperature), at("tint", g.tint), at("exposure", g.exposure))
+                        let [t, m, e] = g.light_at(k);
+                        grade::light_scale(t, m, e)
                     };
                     for (i, channel) in ["rr", "gg", "bb"].into_iter().enumerate() {
                         w.property(&format!("av.{channel}"), anim(&g.keyframes, &at, num(scale(None)[i]), |k| num(scale(Some(k))[i])));
                     }
                     w.close("filter");
-                    lut(w, &rest);
-                    mask_apply(w, &open, g.mask.as_ref());
                 }
+                lut(w, *rest);
+                mask_apply(w, &open, g.mask.as_ref());
             }
             Effect::Fade { fade_in, fade_out } | Effect::AudioFade { fade_in, fade_out } => {
                 // Fades span the clip's own range, not the dissolve handles. The picture

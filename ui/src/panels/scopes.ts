@@ -84,10 +84,12 @@ export function scopesPanel(): { body: HTMLElement; tools: HTMLElement; show: ()
       if (!img) return;
       const data = analyse(img.data, img.width, img.height, COLUMNS, VECTOR);
       const pixels = img.width * img.height;
-      if (kind === "all" || kind === "waveform") drawTraces(views.waveform.ctx, data, [[200, 255, 210]], pixels);
-      if (kind === "all" || kind === "parade") drawTraces(views.parade.ctx, data, [[255, 80, 80], [80, 255, 120], [90, 140, 255]], pixels);
-      if (kind === "all" || kind === "vectorscope") drawVector(views.vectorscope.ctx, data, pixels);
-      if (kind === "all" || kind === "histogram") drawHistogram(views.histogram.ctx, data);
+      // The graticule's colour, the theme's: read once an update, not once a scope.
+      const ink = getComputedStyle(document.documentElement).getPropertyValue("--fg-2").trim() || "gray";
+      if (kind === "all" || kind === "waveform") drawTraces(views.waveform.ctx, data, [[200, 255, 210]], pixels, ink);
+      if (kind === "all" || kind === "parade") drawTraces(views.parade.ctx, data, [[255, 80, 80], [80, 255, 120], [90, 140, 255]], pixels, ink);
+      if (kind === "all" || kind === "vectorscope") drawVector(views.vectorscope.ctx, data, pixels, ink);
+      if (kind === "all" || kind === "histogram") drawHistogram(views.histogram.ctx, data, ink);
     });
   };
   // The preview says when it drew: the engine's frame (`frame`), or the grade being dragged
@@ -97,33 +99,40 @@ export function scopesPanel(): { body: HTMLElement; tools: HTMLElement; show: ()
   return { body, tools, show: update };
 }
 
-/** Brightness for a count: logarithmic, so a few pixels show and a flat colour does not burn. */
-const glow = (count: number, full: number) => (count ? Math.min(1, 0.25 + Math.log1p(count) / Math.log1p(full)) : 0);
+/** Brightness for a count, out of about `full`: logarithmic, so a few pixels show and a flat
+ *  colour does not burn. */
+const glow = (full: number) => {
+  const top = Math.log1p(full);
+  return (count: number) => (count ? Math.min(1, 0.25 + Math.log1p(count) / top) : 0);
+};
 
-/** The graticule's colour, the theme's. */
-const ink = () => getComputedStyle(document.documentElement).getPropertyValue("--fg-2").trim() || "gray";
+/** Put one opaque pixel of `rgb` at `a` of full brightness into `d` at byte `i`. */
+const lit = (d: Uint8ClampedArray, i: number, r: number, g: number, b: number, a: number) => {
+  d[i] = r * a;
+  d[i + 1] = g * a;
+  d[i + 2] = b * a;
+  d[i + 3] = 255;
+};
 
 /** A waveform (one trace) or a parade (one per channel, side by side): columns across, level up. */
-function drawTraces(ctx: CanvasRenderingContext2D, data: ScopeData, colours: number[][], pixels: number) {
+function drawTraces(ctx: CanvasRenderingContext2D, data: ScopeData, colours: number[][], pixels: number, ink: string) {
   const { columns } = data;
   const w = columns * colours.length;
   const img = ctx.createImageData(w, 256);
   // A column's pixels spread over its levels: about a column's worth at one level is full.
-  const full = pixels / columns;
+  const bright = glow(pixels / columns);
   colours.forEach((rgb, c) => {
     const counts = colours.length === 1 ? data.waveform : data.parade.subarray(c * columns * 256, (c + 1) * columns * 256);
     for (let col = 0; col < columns; col++) {
       for (let level = 0; level < 256; level++) {
-        const a = glow(counts[col * 256 + level], full);
-        if (!a) continue;
-        const i = ((255 - level) * w + c * columns + col) * 4;
-        img.data.set([rgb[0] * a, rgb[1] * a, rgb[2] * a, 255], i);
+        const a = bright(counts[col * 256 + level]);
+        if (a) lit(img.data, ((255 - level) * w + c * columns + col) * 4, rgb[0], rgb[1], rgb[2], a);
       }
     }
   });
   ctx.putImageData(img, 0, 0);
   // 0, 25, 50, 75 and 100%.
-  ctx.strokeStyle = ink();
+  ctx.strokeStyle = ink;
   ctx.globalAlpha = 0.35;
   ctx.lineWidth = 1;
   for (const pct of [0, 25, 50, 75, 100]) {
@@ -137,17 +146,17 @@ function drawTraces(ctx: CanvasRenderingContext2D, data: ScopeData, colours: num
 }
 
 /** The vectorscope: chroma as a cloud round the centre, the bars' targets and the skin line. */
-function drawVector(ctx: CanvasRenderingContext2D, data: ScopeData, pixels: number) {
+function drawVector(ctx: CanvasRenderingContext2D, data: ScopeData, pixels: number, ink: string) {
   const n = data.size;
   const img = ctx.createImageData(n, n);
-  const full = pixels / 40;
+  const bright = glow(pixels / 40);
   for (let i = 0; i < n * n; i++) {
-    const a = glow(data.vector[i], full);
-    if (a) img.data.set([230 * a, 240 * a, 230 * a, 255], i * 4);
+    const a = bright(data.vector[i]);
+    if (a) lit(img.data, i * 4, 230, 240, 230, a);
   }
   ctx.putImageData(img, 0, 0);
   const c = (n - 1) / 2;
-  ctx.strokeStyle = ink();
+  ctx.strokeStyle = ink;
   ctx.globalAlpha = 0.45;
   ctx.lineWidth = 1;
   ctx.beginPath();
@@ -174,7 +183,7 @@ function drawVector(ctx: CanvasRenderingContext2D, data: ScopeData, pixels: numb
 }
 
 /** The histogram: red, green and blue over each other, and luma. */
-function drawHistogram(ctx: CanvasRenderingContext2D, data: ScopeData) {
+function drawHistogram(ctx: CanvasRenderingContext2D, data: ScopeData, ink: string) {
   const { width: w, height: h } = ctx.canvas;
   ctx.clearRect(0, 0, w, h);
   const most = Math.max(1, ...data.histogram);
@@ -190,7 +199,7 @@ function drawHistogram(ctx: CanvasRenderingContext2D, data: ScopeData) {
   curve(256, "rgba(70, 255, 110, 0.7)");
   curve(512, "rgba(80, 130, 255, 0.7)");
   ctx.globalCompositeOperation = "source-over";
-  ctx.strokeStyle = ink();
+  ctx.strokeStyle = ink;
   ctx.beginPath();
   for (let level = 0; level < 256; level++) {
     const v = Math.sqrt(data.histogram[768 + level] / most) * h;

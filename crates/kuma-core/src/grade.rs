@@ -26,6 +26,7 @@
 //! is neutral, so a grade without them comes out as it always did.
 
 use std::fmt::Write;
+use std::sync::Arc;
 
 use crate::model::Grade;
 
@@ -56,6 +57,11 @@ pub(crate) fn decode(v: f64) -> f64 {
     v.max(0.0).powf(DISPLAY_GAMMA)
 }
 
+/// The display value that stands for `light`, [`decode`]'s inverse.
+pub(crate) fn encode(light: f64) -> f64 {
+    light.powf(1.0 / DISPLAY_GAMMA)
+}
+
 /// The ranges a grade's settings take: the validator holds a grade to them, and a match
 /// solves within them, so a grade it answers can always be written.
 impl Grade {
@@ -70,6 +76,15 @@ impl Grade {
     /// Blacks, shadows, highlights, whites and vibrance; and what a hue, luma or saturation
     /// curve's points may ask for.
     pub const TONE: std::ops::RangeInclusive<f64> = -1.0..=1.0;
+    /// The light: what a grade's keys may set, in [`Grade::light_at`]'s order.
+    pub const LIGHT: [&'static str; 3] = ["temperature", "tint", "exposure"];
+
+    /// The light as key `k` has it, the static values filling in what it leaves out; the
+    /// static light with no key.
+    pub fn light_at(&self, k: Option<&crate::model::Keyframe>) -> [f64; 3] {
+        let stat = [self.temperature, self.tint, self.exposure];
+        std::array::from_fn(|i| k.map_or(stat[i], |k| k.or(Grade::LIGHT[i], stat[i])))
+    }
 
     /// Whether it leaves every colour as it is — nothing set, which the compiler leaves
     /// out. Read off the settings alone: a grade with a LUT is never neutral, so this needs
@@ -78,8 +93,10 @@ impl Grade {
         self.input_lut.is_none()
             && self.log.is_none()
             && (self.look.is_none() || self.look_amount == 0.0)
-            && Curve::through(&self.curve).is_none()
-            && light_gains(self.temperature, self.tint, self.exposure) == [1.0; 3]
+            && std::iter::once(None).chain(self.keyframes.iter().map(Some)).all(|k| {
+                let [t, m, e] = self.light_at(k);
+                light_gains(t, m, e) == [1.0; 3]
+            })
             && self.lift.is_zero()
             && self.gamma.is_zero()
             && self.gain.is_zero()
@@ -87,7 +104,6 @@ impl Grade {
             && self.saturation == 1.0
             && [self.blacks, self.shadows, self.highlights, self.whites, self.vibrance] == [0.0; 5]
             && Grading::curves(self).iter().all(Option::is_none)
-            && self.keyframes.iter().all(|k| light_gains(k.or("temperature", self.temperature), k.or("tint", self.tint), k.or("exposure", self.exposure)) == [1.0; 3])
     }
 
     /// A keyed grade as the compiler applies it: its input conversion, when it has one, and
@@ -144,6 +160,27 @@ impl Lut {
         let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
         let lut = Lut::from_bytes(&bytes)?;
         Ok((bytes, lut))
+    }
+
+    /// The LUT at `path`, parsed once and remembered as long as its size and time do not
+    /// change — or why it will not read. Every edit validates every grade on every clip, and
+    /// the live preview asks for a grade's table at the rate a control is dragged; a 65³
+    /// `.cube` takes tens of milliseconds to parse.
+    pub fn cached(path: &std::path::Path) -> Result<Arc<Lut>, String> {
+        type Seen = std::collections::HashMap<std::path::PathBuf, ((u64, Option<std::time::SystemTime>), Result<Arc<Lut>, String>)>;
+        static SEEN: std::sync::OnceLock<std::sync::Mutex<Seen>> = std::sync::OnceLock::new();
+        let meta = std::fs::metadata(path).map_err(|e| e.to_string())?;
+        let stamp = (meta.len(), meta.modified().ok());
+        let seen = SEEN.get_or_init(Default::default);
+        let lock = || seen.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some((at, read)) = lock().get(path) {
+            if *at == stamp {
+                return read.clone();
+            }
+        }
+        let read = Lut::load(path).map(|(_, lut)| Arc::new(lut));
+        lock().insert(path.to_path_buf(), (stamp, read.clone()));
+        read
     }
 
     /// Parse a `.cube` file's bytes, which are text (stray non-UTF-8 bytes are in comments
@@ -263,8 +300,8 @@ impl Lut {
 pub struct Grading<'a> {
     grade: &'a Grade,
     log: Option<crate::camera::Conversion>,
-    input: Option<Lut>,
-    look: Option<Lut>,
+    input: Option<Arc<Lut>>,
+    look: Option<Arc<Lut>>,
     curve: Option<Curve>,
     /// Red's, green's and blue's own curves.
     channels: [Option<Curve>; 3],
@@ -278,7 +315,7 @@ pub struct Grading<'a> {
 impl<'a> Grading<'a> {
     /// `input` and `look` are the grade's LUT files, parsed; the caller reads them, since
     /// where a path resolves is the project's business.
-    pub fn new(grade: &'a Grade, input: Option<Lut>, look: Option<Lut>) -> Self {
+    pub fn new(grade: &'a Grade, input: Option<Arc<Lut>>, look: Option<Arc<Lut>>) -> Self {
         let [curve, r, g, b, hue @ ..] = Grading::curves(grade);
         let log = grade.log.map(crate::camera::Conversion::new);
         Grading { grade, log, input, look, curve, channels: [r, g, b], hue, light: light_gains(grade.temperature, grade.tint, grade.exposure) }
@@ -300,14 +337,24 @@ impl<'a> Grading<'a> {
 
     /// What the grade makes of the display-encoded colour `c`; see the module's steps.
     pub fn apply(&self, c: [f64; 3]) -> [f64; 3] {
-        let g = self.grade;
-        let mut c = match (&self.log, &self.input) {
+        self.after_input(self.input(c))
+    }
+
+    /// Step 1 alone: the camera log or the input LUT. It comes before the light, so a match
+    /// converts its pixels once and tries each light on what came out.
+    pub(crate) fn input(&self, c: [f64; 3]) -> [f64; 3] {
+        match (&self.log, &self.input) {
             (Some(log), _) => log.apply(c),
             (None, Some(lut)) => lut.apply(c),
             (None, None) => c,
-        };
+        }
+    }
+
+    /// Steps 2 onwards, on what [`Grading::input`] made of a colour.
+    pub(crate) fn after_input(&self, mut c: [f64; 3]) -> [f64; 3] {
+        let g = self.grade;
         if self.light != [1.0; 3] {
-            c = std::array::from_fn(|i| (decode(c[i]) * self.light[i]).powf(1.0 / DISPLAY_GAMMA));
+            c = std::array::from_fn(|i| encode(decode(c[i]) * self.light[i]));
         }
         let (lift, gain, gamma) = (g.lift.channels(), g.gain.channels(), g.gamma.channels());
         c = std::array::from_fn(|i| {
@@ -315,7 +362,7 @@ impl<'a> Grading<'a> {
             if gamma[i] == 0.0 { v } else { v.max(0.0).powf(2f64.powf(-gamma[i])) }
         });
         if g.contrast != 1.0 {
-            let pivot = MID_GREY.powf(1.0 / DISPLAY_GAMMA);
+            let pivot = encode(MID_GREY);
             c = c.map(|v| pivot + (v - pivot) * g.contrast);
         }
         let tones = [g.blacks, g.shadows, g.highlights, g.whites];
@@ -402,7 +449,7 @@ impl<'a> Grading<'a> {
 /// Step 2 as a gain per channel on display values: what a keyed grade's light compiles to.
 /// BT.1886 is a power law, so a gain on light is a gain on the values that stand for it.
 pub fn light_scale(temperature: f64, tint: f64, exposure: f64) -> [f64; 3] {
-    light_gains(temperature, tint, exposure).map(|g| g.powf(1.0 / DISPLAY_GAMMA))
+    light_gains(temperature, tint, exposure).map(encode)
 }
 
 /// White balance and exposure as gains on linear light. Temperature moves red and blue
@@ -433,21 +480,13 @@ impl Curve {
     /// The curve through `points` and the corners it is not told otherwise about; `None`
     /// when that is the straight line. The points are the validator's to check.
     fn through(points: &[[f64; 2]]) -> Option<Curve> {
-        let pts = Curve::cornered(points, 1.0)?;
-        if pts.iter().all(|[x, y]| x == y) {
-            return None;
-        }
-        Some(Curve::monotone(&pts, false))
+        Curve::cornered(points, 1.0)
     }
 
     /// A curve of amounts, 0 for none: through `points` and `[0, 0]`, `[1, 0]` unless they
     /// say otherwise; `None` when it is 0 everywhere.
     fn offset(points: &[[f64; 2]]) -> Option<Curve> {
-        let pts = Curve::cornered(points, 0.0)?;
-        if pts.iter().all(|p| p[1] == 0.0) {
-            return None;
-        }
-        Some(Curve::monotone(&pts, false))
+        Curve::cornered(points, 0.0)
     }
 
     /// A curve of amounts round a circle: through `points` (`x` in 0..1) and on round, so
@@ -460,9 +499,10 @@ impl Curve {
         Some(Curve::monotone(&pts, true))
     }
 
-    /// `points` with `[0, 0]` before and `[1, end]` after unless points sit there; `None`
-    /// when there are no points.
-    fn cornered(points: &[[f64; 2]], end: f64) -> Option<Vec<[f64; 2]>> {
+    /// The curve through `points`, `[0, 0]` before and `[1, end]` after unless points sit
+    /// there; `None` when there are none, or when it is the line from one corner to the
+    /// other, which changes nothing.
+    fn cornered(points: &[[f64; 2]], end: f64) -> Option<Curve> {
         let mut pts = points.to_vec();
         if pts.first()?[0] > 0.0 {
             pts.insert(0, [0.0, 0.0]);
@@ -470,7 +510,8 @@ impl Curve {
         if pts[pts.len() - 1][0] < 1.0 {
             pts.push([1.0, end]);
         }
-        Some(pts)
+        let flat = |[x, y]: [f64; 2]| y == x * end;
+        (!pts.iter().all(|&p| flat(p))).then(|| Curve::monotone(&pts, false))
     }
 
     fn monotone(pts: &[[f64; 2]], wraps: bool) -> Curve {
@@ -636,7 +677,7 @@ mod tests {
         use crate::camera::CameraLog;
         let g = Grade { log: Some(CameraLog::VLog), temperature: 0.4, tint: -0.2, exposure: 0.3, lift: Rgb { r: 0.02, g: 0.0, b: -0.02 }, contrast: 1.2, saturation: 0.9, ..Grade::default() };
         let (input, rest) = g.keyed_parts();
-        let (input, rest) = (input.unwrap(), rest);
+        let input = input.unwrap();
         assert!(rest.log.is_none() && rest.temperature == 0.0 && rest.contrast == 1.2);
         let scale = light_scale(g.temperature, g.tint, g.exposure);
         for c in [[0.4, 0.42, 0.38], [0.3, 0.35, 0.45]] {
@@ -754,7 +795,7 @@ mod tests {
 
     #[test]
     fn the_luts_go_either_side_of_the_grade() {
-        let invert = Lut::parse("LUT_1D_SIZE 2\n1 1 1\n0 0 0\n").unwrap();
+        let invert = Arc::new(Lut::parse("LUT_1D_SIZE 2\n1 1 1\n0 0 0\n").unwrap());
         // Input first: inverted black is white, which a gain cannot raise past 1.
         let g = Grade { gain: Rgb { r: -0.5, g: -0.5, b: -0.5 }, ..Grade::default() };
         assert!(close(Grading::new(&g, Some(invert.clone()), None).apply([0.0; 3]), [0.5; 3]));

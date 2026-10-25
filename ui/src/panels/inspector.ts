@@ -17,7 +17,7 @@ import { binName, fmtTime, isEntryTab, store, toast } from "../store";
 import type { BinItem, Clip, ColorReference, Cue, Ease, Effect, FontFamily, Grade, Keyframe, Mask, PatchOp, Project, Streams, Transition, VarSpec } from "../types";
 import { pickRegion } from "../regionpick";
 import { previewGrade, settle, showBefore } from "../gradepreview";
-import { blueprintActions, copyEffects, makeOverlayUnique, matchSelectedToReference, removeTransition, setTransitionDuration, setTransitionKind, updateTransition, manifestOf, moveBinItem, overlayError, placeBinItem, previewImg, renderPreview, saveAsBlueprint, sharersOf } from "../edits";
+import { blueprintActions, copyEffects, makeOverlayUnique, matchSelectedToReference, measureMatch, removeTransition, setTransitionDuration, setTransitionKind, updateTransition, manifestOf, moveBinItem, overlayError, placeBinItem, previewImg, renderPreview, saveAsBlueprint, sharersOf } from "../edits";
 import { Animation, animationOf } from "../keyframes";
 import { historyFor } from "./history";
 import { icon, svgEl } from "../icons";
@@ -40,8 +40,6 @@ type PropSpec =
   | { kind: "enum"; key: string; label?: string; options: string[]; /** What each option is called, when not its value. */ labels?: Record<string, string>; /** Offer none, which leaves the field out. */ optional?: string; title?: string }
   | { kind: "text"; key: string; label?: string; /** Empty means the field is left out, not an empty string. */ optional?: boolean }
   | { kind: "json"; key: string; label?: string }
-  /** A tone curve's points, edited on the curve (`curvefield.ts`). */
-  | { kind: "curve"; key: string; label?: string; title?: string }
   /** Several curves sharing one plot, a tab each: the one picked is edited. */
   | { kind: "curves"; label: string; curves: CurveTab[] }
   /** Per-channel offsets as colour wheels side by side (`colorfield.ts`), one per key. */
@@ -388,24 +386,20 @@ function propRow(p: PropSpec, ctx: PropCtx): HTMLElement {
     case "json":
       control = jsonInput(read(p.key) ?? null, (v) => write(p.key, v));
       break;
-    case "curve":
-      control = curveField((read(p.key) as CurvePoint[] | undefined) ?? [], (v) => write(p.key, v), { title: p.title, ...input(p.key) });
-      control.classList.add("wide");
-      break;
     case "curves": {
       const tabs = el("div", "curve-tabs");
       const host = el("div");
+      const points = (key: string) => (read(key) as CurvePoint[] | undefined) ?? [];
       const show = () => {
         const c = p.curves.find((c) => c.key === curveTab) ?? p.curves[0];
         for (const b of tabs.children) b.classList.toggle("on", (b as HTMLElement).dataset.curve === c.key);
-        const pts = (read(c.key) as CurvePoint[] | undefined) ?? [];
-        host.replaceChildren(curveField(pts, (v) => write(c.key, v.length ? v : undefined), { title: c.title, kind: c.kind, channel: c.channel, axes: c.axes, ...input(c.key) }));
+        host.replaceChildren(curveField(points(c.key), (v) => write(c.key, v.length ? v : undefined), { title: c.title, kind: c.kind, channel: c.channel, axes: c.axes, ...input(c.key) }));
       };
       for (const c of p.curves) {
         const b = button(c.tab, () => { curveTab = c.key; show(); }, c.title.split(":")[0]);
         b.dataset.curve = c.key;
         // A tab whose curve bends something says so while another is open.
-        b.classList.toggle("set", ((read(c.key) as CurvePoint[] | undefined) ?? []).length > 0);
+        b.classList.toggle("set", points(c.key).length > 0);
         tabs.appendChild(b);
       }
       show();
@@ -970,7 +964,7 @@ export class Inspector {
           const { type: _, keyframes: __, ...grade } = withValue(key, v) as Effect & Grade;
           // A keyed light previews as it is at the playhead, the field dragged as dragged;
           // a moving mask where it is at the playhead.
-          if (anim?.animated) for (const p of ["temperature", "tint", "exposure"] as const) if (p !== key) grade[p] = anim.at(p);
+          if (anim?.animated) for (const p of anim.fields) if (p !== key) (grade as Record<string, unknown>)[p] = anim.at(p);
           if (grade.mask?.keyframes?.length && anim) grade.mask = maskAt(grade.mask, anim.local);
           previewGrade(owner.clip!, ei, grade);
         } : undefined,
@@ -1067,23 +1061,24 @@ function maskControls(ctx: PropCtx): HTMLElement {
   const keyed = keys.length > 0 && !!a;
   const now = () => maskAt(m, a?.local ?? 0);
   const keyIndex = () => (a ? keys.findIndex((k) => Math.abs(k.t - a.local) < store.halfFrame) : -1);
-  /** `fields` written: into the key at the playhead when the mask moves, else static. */
-  const setShape = (fields: Partial<Mask>) => {
-    if (!keyed || !a) return ctx.write("mask", { ...m, ...fields });
-    const t = a.clampT(a.local);
+  /** The keys, copied, with `fields` in the key at the playhead — made, in its place in
+   *  time and holding the shape there, when there is none. */
+  const keyedHere = (at: Animation, fields: Partial<Mask>): Keyframe[] => {
     const ks = keys.map((k) => ({ ...k }));
     let i = keyIndex();
     if (i < 0) {
       const cur = now();
-      const key: Keyframe = { t };
+      const key: Keyframe = { t: at.clampT(at.local) };
       for (const f of MASK_KEYED) key[f] = cur[f] ?? 0;
-      i = ks.findIndex((k) => k.t > t);
+      i = ks.findIndex((k) => k.t > key.t);
       if (i < 0) i = ks.length;
       ks.splice(i, 0, key);
     }
     Object.assign(ks[i], fields);
-    ctx.write("mask", { ...m, keyframes: ks });
+    return ks;
   };
+  /** `fields` written: into the key at the playhead when the mask moves, else static. */
+  const setShape = (fields: Partial<Mask>) => ctx.write("mask", keyed ? { ...m, keyframes: keyedHere(a!, fields) } : { ...m, ...fields });
   const live = (f: (typeof MASK_KEYED)[number]) => ({
     readOnly: keyed && !a!.inside,
     live: keyed ? (set: (v: number) => void) => ctx.follow(() => set(now()[f] ?? 0)) : undefined,
@@ -1110,12 +1105,7 @@ function maskControls(ctx: PropCtx): HTMLElement {
   if (a) {
     const add = button("+ key", () => {
       const cur = now();
-      const key: Keyframe = { t: a.clampT(a.local) };
-      for (const f of MASK_KEYED) key[f] = cur[f] ?? 0;
-      const ks = keys.filter((k) => Math.abs(k.t - key.t) >= store.halfFrame);
-      ks.push(key);
-      ks.sort((p, q) => p.t - q.t);
-      ctx.write("mask", { ...m, keyframes: ks });
+      ctx.write("mask", { ...m, keyframes: keyedHere(a, Object.fromEntries(MASK_KEYED.map((f) => [f, cur[f] ?? 0]))) });
     }, "Key the shape where the playhead is: between keys it moves in a straight line");
     const del = button("− key", () => {
       const i = keyIndex();
@@ -1191,10 +1181,8 @@ async function matchColour(clip: string, reference: ColorReference, what: string
   const region = await pickRegion(what);
   if (!region) return;
   try {
-    const { job } = await api.measureColor({ times: [t], region, match: { clip, reference } });
-    const done = await store.awaitJob(job);
-    if (done.state !== "done") return;
-    const m = (done.result as { match: { grade: Grade; reached: boolean } }).match;
+    const m = await measureMatch(clip, t, region, reference);
+    if (!m) return;
     const light: Light = { temperature: m.grade.temperature ?? 0, tint: m.grade.tint ?? 0, exposure: m.grade.exposure ?? 0 };
     write(light);
     const said = `temperature ${light.temperature}, tint ${light.tint}, exposure ${light.exposure}`;

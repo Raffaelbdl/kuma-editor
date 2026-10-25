@@ -14,7 +14,7 @@ import { Cmd, command } from "../commands";
 import { seekOverlay } from "../overlay";
 import { SEQUENCE_TAB, store, toast } from "../store";
 import type { Clip, Project } from "../types";
-import { binItem, covers, isOverlayClip, paramAt, transformAt } from "../types";
+import { binItem, covers, isOverlayClip, maskOf, paramAt, transformAt } from "../types";
 
 interface OverlayView {
   clipId: string;
@@ -509,7 +509,7 @@ function applyEffects(iframe: HTMLIFrameElement, c: Clip, local: number, W: numb
   for (const e of c.effects) {
     // A masked effect acts on part of the picture, which a filter on the whole iframe
     // cannot say: only the render draws it.
-    if ("mask" in e && e.mask) continue;
+    if (maskOf(e)) continue;
     if (e.type === "transform") {
       const t = transformAt(e, local);
       transform += ` translate(${t.x}px, ${t.y}px) scale(${t.scale}) rotate(${t.rotation}deg)`;

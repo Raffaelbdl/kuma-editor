@@ -7,20 +7,17 @@
 //! grade, by sampling a copy of the project that lacks it, and answers with the grade and
 //! the patch that writes it; applying it is the caller's edit.
 
-use std::collections::HashMap;
-use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Mutex, OnceLock};
-use std::time::SystemTime;
+use std::sync::Arc;
 
 use kuma_core::color::{match_light, ColorStats, Target};
 use kuma_core::grade::Lut;
 use kuma_core::manifest::Region;
-use kuma_core::{BinSource, Effect, Grade, Project};
+use kuma_core::{Effect, Grade, Project};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use crate::jobs::{sample_frames_of, Before, OverlayScope, SampleRequest};
+use crate::jobs::{sample_frames_of, Before, OverlayScope, SampleRequest, Without};
 use crate::state::{read, AppState};
 
 /// The most pixels a match pushes through the grade on each try: an even spread over the
@@ -103,7 +100,7 @@ fn locate(doc: &Project, id: &str) -> anyhow::Result<Located> {
         for (ti, track) in seq.tracks.iter().enumerate() {
             if let Some((ci, c)) = track.clips.iter().enumerate().find(|(_, c)| c.id == id) {
                 // The grade over the whole picture: a masked one is a window, not the clip's.
-                let graded_at = c.effects.iter().position(|e| e.as_grade().is_some_and(|g| g.mask.is_none()));
+                let graded_at = c.effects.iter().position(|e| e.as_grade().is_some() && e.one_per_clip());
                 let grade = graded_at.and_then(|ei| c.effects[ei].as_grade()).cloned().unwrap_or_default();
                 return Ok(Located { sequence: seq_id.clone(), track: ti, clip: ci, start: c.start, end: c.end, grade, graded_at });
             }
@@ -121,7 +118,7 @@ fn keyed_at(grade: &Grade, solved: &Grade, t: f64, fps: kuma_core::Fps) -> Grade
     if g.keyframes.get(i).is_none_or(|k| fps.frame(k.t) != frame) {
         g.keyframes.insert(i, kuma_core::Keyframe { t, ease: Default::default(), values: Default::default() });
     }
-    for (name, v) in [("temperature", solved.temperature), ("tint", solved.tint), ("exposure", solved.exposure)] {
+    for (name, v) in Grade::LIGHT.into_iter().zip(solved.light_at(None)) {
         g.keyframes[i].values.insert(name.into(), v);
     }
     g
@@ -182,24 +179,9 @@ fn measure_frames(state: &AppState, doc: Project, req: &SampleRequest, region: R
         .collect()
 }
 
-/// A grade's LUT, read from the project — remembered by file, size and time, since the
-/// live preview asks for a grade's table at the rate a control is dragged.
-fn lut(state: &AppState, path: Option<&str>) -> anyhow::Result<Option<Lut>> {
-    type Seen = HashMap<PathBuf, (u64, Option<SystemTime>, Lut)>;
-    static SEEN: OnceLock<Mutex<Seen>> = OnceLock::new();
-    let Some(path) = path else { return Ok(None) };
-    let file = state.config.project_root().join(path);
-    let meta = std::fs::metadata(&file).map_err(|e| anyhow::anyhow!("LUT `{path}`: {e}"))?;
-    let stamp = (meta.len(), meta.modified().ok());
-    let seen = SEEN.get_or_init(Default::default);
-    if let Some((len, time, lut)) = crate::state::lock(seen).get(&file) {
-        if (*len, *time) == stamp {
-            return Ok(Some(lut.clone()));
-        }
-    }
-    let (_, lut) = Lut::load(&file).map_err(|e| anyhow::anyhow!("LUT `{path}`: {e}"))?;
-    crate::state::lock(seen).insert(file, (stamp.0, stamp.1, lut.clone()));
-    Ok(Some(lut))
+/// A grade's LUT, read from the project (`Lut::cached`).
+fn lut(state: &AppState, path: Option<&str>) -> anyhow::Result<Option<Arc<Lut>>> {
+    path.map(|path| Lut::cached(&state.config.project_root().join(path)).map_err(|e| anyhow::anyhow!("LUT `{path}`: {e}"))).transpose()
 }
 
 /// The most points a side the editor's preview table may have, and what it gets by default:
@@ -257,10 +239,7 @@ pub fn measure(state: &AppState, req: &ColorRequest, progress: &dyn Fn(u8, &str)
     let ungraded = match at.graded_at {
         None => &frames,
         Some(ei) => {
-            let mut bare = doc.clone();
-            if let Some(BinSource::Sequence(seq)) = bare.bin.get_mut(&at.sequence).map(|i| &mut i.source) {
-                seq.tracks[at.track].clips[at.clip].effects.remove(ei);
-            }
+            let bare = Before::Without { without: Without { clips: vec![m.clip.clone()], effects: vec![ei], ..Without::default() } }.document(state, &doc)?;
             bare_frames = measure_frames(state, bare, &sample, region, &part(1 + b), cancel)?;
             &bare_frames
         }

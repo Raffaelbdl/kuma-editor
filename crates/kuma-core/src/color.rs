@@ -195,17 +195,19 @@ pub struct Matched {
 /// difference the light still shows, read in the grade's own units (as [`ColorStats`]
 /// reads a cast), and tries again: exact in one step for a grade of white balance and
 /// exposure alone, and a few steps more when its other settings bend the light after them.
-pub fn match_light(grade: &Grade, input: Option<Lut>, look: Option<Lut>, pixels: &[[f64; 3]], target: Target) -> Option<Matched> {
+pub fn match_light(grade: &Grade, input: Option<std::sync::Arc<Lut>>, look: Option<std::sync::Arc<Lut>>, pixels: &[[f64; 3]], target: Target) -> Option<Matched> {
     if pixels.is_empty() {
         return None;
     }
     let mut grading = Grading::new(grade, input, look);
+    // Step 1 is before the light being solved: once, not on every try.
+    let pixels: Vec<[f64; 3]> = pixels.iter().map(|p| grading.input(*p)).collect();
     let (mut t, mut m, mut e) = (grade.temperature, grade.tint, grade.exposure);
     let within = |v: f64, r: std::ops::RangeInclusive<f64>| v.clamp(*r.start(), *r.end());
     let mut reached = false;
     for _ in 0..16 {
         grading.set_light(t, m, e);
-        let now = linear_mean(pixels.iter().map(|p| grading.apply(*p)));
+        let now = linear_mean(pixels.iter().map(|p| grading.after_input(*p)));
         let (want, de) = match target {
             Target::Light(want) => (want, (luma(want).max(FLOOR) / luma(now).max(FLOOR)).log2()),
             Target::Neutral => ([luma(now); 3], 0.0),
@@ -225,19 +227,15 @@ pub fn match_light(grade: &Grade, input: Option<Lut>, look: Option<Lut>, pixels:
     let round = |v: f64| (v * 1000.0).round() / 1000.0;
     let solved = Grade { temperature: round(t), tint: round(m), exposure: round(e), ..grade.clone() };
     grading.set_light(solved.temperature, solved.tint, solved.exposure);
-    let after = ColorStats::of(pixels.iter().map(|p| grading.apply(*p)))?;
+    let after = ColorStats::of(pixels.iter().map(|p| grading.after_input(*p)))?;
     Some(Matched { grade: solved, after, reached })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::grade::DISPLAY_GAMMA;
+    use crate::grade::encode;
     use crate::model::Rgb;
-
-    fn encode(light: f64) -> f64 {
-        light.powf(1.0 / DISPLAY_GAMMA)
-    }
 
     #[test]
     fn a_flat_region_says_what_it_is() {

@@ -14,15 +14,9 @@ export type CurvePoint = [number, number];
  *  or one of amounts against hue, which wraps round with no corners at all. */
 export type CurveKind = "tone" | "amount" | "hue";
 
-/** The curve through `points` and the corners it is not told otherwise about — `[0, 0]`
- *  unless a point sits at in 0, `[1, 1]` unless one sits at in 1 — as a function, or null
- *  when that is the straight line. */
-export function curveThrough(points: CurvePoint[]): ((v: number) => number) | null {
-  return curveOf(points, "tone");
-}
-
-/** The curve of `kind` through `points`, as the compiler reads it (`Curve::through`,
- *  `offset` and `periodic`), or null when it changes nothing. */
+/** The curve of `kind` through `points` and the corners it is not told otherwise about (a
+ *  tone curve's `[0, 0]` and `[1, 1]` unless points sit there), as the compiler reads it
+ *  (`Curve::through`, `offset` and `periodic`); null when it changes nothing. */
 export function curveOf(points: CurvePoint[], kind: CurveKind): ((v: number) => number) | null {
   if (kind === "hue") {
     if (points.every(([, y]) => y === 0)) return null;
@@ -76,7 +70,7 @@ export function corners(kind: CurveKind): [CurvePoint, CurvePoint] {
 }
 
 /** `points` with the corners the curve passes through added: what the curve field shows. */
-export function withCorners(points: CurvePoint[], kind: CurveKind = "tone"): CurvePoint[] {
+export function withCorners(points: CurvePoint[], kind: CurveKind): CurvePoint[] {
   const pts = points.map((p) => [p[0], p[1]] as CurvePoint);
   if (kind === "hue") return pts;
   const [first, last] = corners(kind);
@@ -87,7 +81,7 @@ export function withCorners(points: CurvePoint[], kind: CurveKind = "tone"): Cur
 
 /** `points` without the corners that are only what the curve would do anyway: what the
  *  document stores, so a curve someone only bent in the middle stays the points they set. */
-export function withoutCorners(points: CurvePoint[], kind: CurveKind = "tone"): CurvePoint[] {
+export function withoutCorners(points: CurvePoint[], kind: CurveKind): CurvePoint[] {
   const pts = points.slice();
   if (kind === "hue") return pts;
   const [first, last] = corners(kind);

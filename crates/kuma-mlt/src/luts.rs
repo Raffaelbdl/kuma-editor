@@ -22,7 +22,7 @@ pub fn resolve(grade: &Grade, root: &Path, cache_dir: &Path) -> std::io::Result<
     let Some((name, luts)) = read(grade, root)? else { return Ok(None) };
     let path = crate::generated::write_once(&dir(cache_dir), &name, || {
         let [input, look] = luts.map(|lut| {
-            lut.map(|(path, bytes)| Lut::from_bytes(&bytes).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, format!("LUT `{path}`: {e}"))))
+            lut.map(|(path, bytes)| Lut::from_bytes(&bytes).map(std::sync::Arc::new).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, format!("LUT `{path}`: {e}"))))
                 .transpose()
         });
         Ok(Grading::new(grade, input?, look?).cube().into_bytes())

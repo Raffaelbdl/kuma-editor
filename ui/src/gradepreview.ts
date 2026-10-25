@@ -100,12 +100,16 @@ function frameFor(clip: string, effect: number): Promise<ImageBitmap | null> {
   return frame;
 }
 
+const UNIFORMS = ["useLut", "shape", "size", "centre", "radii", "turn", "feather", "invert"] as const;
+
 interface View {
   canvas: HTMLCanvasElement;
   gl: WebGL2RenderingContext;
   frame: WebGLTexture;
   lut: WebGLTexture;
-  uniforms: Record<"useLut" | "shape" | "size" | "centre" | "radii" | "turn" | "feather" | "invert", WebGLUniformLocation>;
+  uniforms: Record<(typeof UNIFORMS)[number], WebGLUniformLocation>;
+  /** The frame in `frame` now: a drag changes the table, not the frame, so it goes up once. */
+  shown: ImageBitmap | null;
 }
 
 const VERTEX = `#version 300 es
@@ -196,9 +200,8 @@ function ensureView(): View | null {
   const lut = texture(1, gl.TEXTURE_3D);
   gl.uniform1i(gl.getUniformLocation(program, "frame"), 0);
   gl.uniform1i(gl.getUniformLocation(program, "lut"), 1);
-  const names = ["useLut", "shape", "size", "centre", "radii", "turn", "feather", "invert"] as const;
-  const uniforms = Object.fromEntries(names.map((n) => [n, gl.getUniformLocation(program, n)!])) as View["uniforms"];
-  view = { canvas, gl, frame, lut, uniforms };
+  const uniforms = Object.fromEntries(UNIFORMS.map((n) => [n, gl.getUniformLocation(program, n)!])) as View["uniforms"];
+  view = { canvas, gl, frame, lut, uniforms, shown: null };
   return view;
 }
 
@@ -213,9 +216,12 @@ function paint(frame: ImageBitmap, table: Uint8Array | null, mask: Mask | undefi
     canvas.height = frame.height;
   }
   gl.viewport(0, 0, canvas.width, canvas.height);
-  gl.activeTexture(gl.TEXTURE0);
-  gl.bindTexture(gl.TEXTURE_2D, v.frame);
-  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, frame);
+  if (v.shown !== frame) {
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, v.frame);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, frame);
+    v.shown = frame;
+  }
   if (table) {
     gl.activeTexture(gl.TEXTURE1);
     gl.bindTexture(gl.TEXTURE_3D, v.lut);

@@ -467,15 +467,8 @@ pub fn transcribe(state: &AppState, req: &TranscribeRequest, progress: &dyn Fn(u
                     vars.insert(var.clone(), code.clone().into());
                 }
                 let name = format!("Subtitles: {}", media_item.display_name(&bin));
-                let entry = kuma_core::BinItem {
-                    name: if several { format!("{name} ({}/{})", written.len() + 1, made.len()) } else { name },
-                    source: BinSource::Overlay { overlay: overlay.clone(), vars },
-                    meta: None,
-                    parent: Some(bin.clone()),
-                    order: None,
-                    volume: 1.0,
-                    effects: Vec::new(),
-                };
+                let name = if several { format!("{name} ({}/{})", written.len() + 1, made.len()) } else { name };
+                let entry = kuma_core::BinItem { parent: Some(bin.clone()), ..kuma_core::BinItem::of(name, BinSource::Overlay { overlay: overlay.clone(), vars }) };
                 // The entry first: the clip that places it must find it.
                 ops.push(bin_op(id, "", serde_json::to_value(entry)?)?);
             }
@@ -1500,6 +1493,16 @@ impl Before {
                     anyhow::bail!("no clip `{unknown}`");
                 }
                 anyhow::ensure!(effects.is_empty() || (clips.len() == 1 && kinds.is_empty()), "`without.effects` names effects of one clip: give that clip alone in `clips`, and no `kinds`");
+                // Whether effect `i` of a clip named is taken out.
+                let takes = |i: usize, e: &kuma_core::Effect| {
+                    if !effects.is_empty() {
+                        effects.contains(&i)
+                    } else if kinds.is_empty() {
+                        e.streams().video()
+                    } else {
+                        kinds.iter().any(|k| k == e.kind())
+                    }
+                };
                 let mut doc = now.clone();
                 let mut taken = 0;
                 for item in doc.bin.values_mut() {
@@ -1509,12 +1512,7 @@ impl Before {
                         if let Some(past) = effects.iter().find(|&&i| i >= had) {
                             anyhow::bail!("clip `{}` has {had} effects, so none at {past}", clip.id);
                         }
-                        let mut i = 0;
-                        clip.effects.retain(|e| {
-                            i += 1;
-                            let out = if !effects.is_empty() { effects.contains(&(i - 1)) } else if kinds.is_empty() { e.streams().video() } else { kinds.iter().any(|k| k == e.kind()) };
-                            !out
-                        });
+                        clip.effects = std::mem::take(&mut clip.effects).into_iter().enumerate().filter(|(i, e)| !takes(*i, e)).map(|(_, e)| e).collect();
                         taken += had - clip.effects.len();
                     }
                 }
@@ -1835,7 +1833,7 @@ pub fn overlay_project(state: &AppState, doc: &Project, id: &str, req: &SampleRe
         clips: vec![clip],
         transitions: Vec::new(),
     };
-    let entry = |source| kuma_core::BinItem { name: String::new(), source, meta: None, parent: None, order: None, volume: 1.0, effects: Vec::new() };
+    let entry = |source| kuma_core::BinItem::of("", source);
     let sequence = kuma_core::Sequence {
         tracks: vec![
             track(&format!("{seq_id}-v"), kuma_core::TrackKind::Video, clip(&format!("{seq_id}-bgc"), &bg_id)),

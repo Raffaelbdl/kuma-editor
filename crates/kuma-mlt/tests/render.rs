@@ -636,7 +636,7 @@ fn a_grade_renders_the_colour_kuma_computes() {
             ], "markers": [] } }
         }));
         let kuma_core::Effect::Grade(g) = &p.seq("main").unwrap().tracks[0].clips[0].effects[0] else { unreachable!() };
-        let input = g.input_lut.as_ref().map(|l| kuma_core::grade::Lut::parse(&std::fs::read_to_string(root.join(l)).unwrap()).unwrap());
+        let input = g.input_lut.as_ref().map(|l| kuma_core::grade::Lut::cached(&root.join(l)).unwrap());
         let want = kuma_core::grade::Grading::new(g, input, None).apply(blue.map(|v| v as f64 / 255.0)).map(|v| (v * 255.0).round() as i32);
         let mlt = root.join(format!("grade{n}.mlt"));
         let xml = compile(&p, &CompileOptions::new(root)).unwrap();

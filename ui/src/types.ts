@@ -149,8 +149,6 @@ export type Effect =
   | { type: "freeze"; t?: number }
   | { type: "mlt"; service: string; properties?: Record<string, string> };
 
-/** A colour grade's settings, every one neutral when absent. Mirrors `Grade` in `model.rs`,
- *  which says what each does; the compiler bakes them into one LUT. */
 /** Where an effect acts (`kuma_core::Mask`): the rectangle `region` is, in composition
  *  pixels, or the ellipse inscribed in it. */
 export interface Mask { shape?: "ellipse" | "rectangle"; x: number; y: number; w: number; h: number; rotation?: number; feather?: number; invert?: boolean; keyframes?: Keyframe[] }
@@ -167,6 +165,15 @@ export function maskAt(m: Mask, local: number): Mask {
   return { ...m, x: at("x"), y: at("y"), w: at("w"), h: at("h"), rotation: at("rotation") };
 }
 
+/** Where `e` acts, when it is limited to a shape (`Effect::mask`). */
+export const maskOf = (e: Effect): Mask | undefined => ("mask" in e ? e.mask : undefined);
+
+/** Whether `e` takes its clip's one place of its kind (`Effect::one_per_clip`): every kind
+ *  but `mlt`, unless masked — a window of its own. */
+export const onePerClip = (e: Effect): boolean => e.type !== "mlt" && !maskOf(e);
+
+/** A colour grade's settings, every one neutral when absent. Mirrors `Grade` in `model.rs`,
+ *  which says what each does; the compiler bakes them into one LUT. */
 export interface Grade {
   log?: string; input_lut?: string; mask?: Mask; temperature?: number; tint?: number; exposure?: number;
   lift?: Rgb; gamma?: Rgb; gain?: Rgb; contrast?: number;

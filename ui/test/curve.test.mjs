@@ -5,7 +5,7 @@
 import { strict as assert } from "node:assert";
 import { describe, it } from "node:test";
 
-import { curveOf, curveThrough, withCorners, withoutCorners } from "../src/curve.ts";
+import { curveOf, withCorners, withoutCorners } from "../src/curve.ts";
 
 const XS = [0.0, 0.1, 0.2, 0.3, 0.35, 0.5, 0.52, 0.6, 0.7, 0.8, 0.9, 1.0];
 const CASES = [
@@ -17,21 +17,21 @@ const CASES = [
 describe("the curve field's curve", () => {
   it("is the compiler's, value for value", () => {
     for (const [points, want] of CASES) {
-      const c = curveThrough(points);
+      const c = curveOf(points, "tone");
       XS.forEach((x, i) => assert.ok(Math.abs(c(x) - want[i]) < 1e-8, `${JSON.stringify(points)} at ${x}: ${c(x)} not ${want[i]}`));
     }
   });
 
   it("is no curve when it is the straight line", () => {
-    assert.equal(curveThrough([]), null);
-    assert.equal(curveThrough([[0.5, 0.5]]), null);
+    assert.equal(curveOf([], "tone"), null);
+    assert.equal(curveOf([[0.5, 0.5]], "tone"), null);
   });
 
   it("shows the corners it passes through, and stores only the points that were set", () => {
-    assert.deepEqual(withCorners([[0.5, 0.6]]), [[0, 0], [0.5, 0.6], [1, 1]]);
-    assert.deepEqual(withCorners([[0, 0.1], [1, 0.9]]), [[0, 0.1], [1, 0.9]]);
-    assert.deepEqual(withoutCorners([[0, 0], [0.5, 0.6], [1, 1]]), [[0.5, 0.6]]);
-    assert.deepEqual(withoutCorners([[0, 0.1], [0.5, 0.6], [1, 1]]), [[0, 0.1], [0.5, 0.6]]);
+    assert.deepEqual(withCorners([[0.5, 0.6]], "tone"), [[0, 0], [0.5, 0.6], [1, 1]]);
+    assert.deepEqual(withCorners([[0, 0.1], [1, 0.9]], "tone"), [[0, 0.1], [1, 0.9]]);
+    assert.deepEqual(withoutCorners([[0, 0], [0.5, 0.6], [1, 1]], "tone"), [[0.5, 0.6]]);
+    assert.deepEqual(withoutCorners([[0, 0.1], [0.5, 0.6], [1, 1]], "tone"), [[0, 0.1], [0.5, 0.6]]);
   });
 
   it("draws the curves of amounts the compiler reads, round the circle for hue", () => {

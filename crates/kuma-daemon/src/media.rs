@@ -133,13 +133,9 @@ pub fn add(state: &AppState, paths: &[PathBuf], how: AddHow, base_revision: Opti
             };
             minted.insert(id.clone());
             let item = BinItem {
-                name: stem,
-                source: BinSource::File { path: c.rel.clone(), kind: probe.kind, proxy: None },
                 meta: Some(probe.meta.clone()),
                 parent: how.parent.clone(),
-                order: None,
-                volume: 1.0,
-                effects: Vec::new(),
+                ..BinItem::of(stem, BinSource::File { path: c.rel.clone(), kind: probe.kind, proxy: None })
             };
             ops.push(bin_op(&id, "", serde_json::to_value(item)?)?);
             ids.push(id);

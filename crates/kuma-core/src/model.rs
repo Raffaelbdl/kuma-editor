@@ -124,9 +124,9 @@ impl Project {
             clips: Vec::new(),
             transitions: Vec::new(),
         };
-        let main = BinItem {
-            name: "Main".into(),
-            source: BinSource::Sequence(Sequence {
+        let main = BinItem::of(
+            "Main",
+            BinSource::Sequence(Sequence {
                 tracks: vec![
                     track("v1", TrackKind::Video, "Video"),
                     track("o1", TrackKind::Overlay, "Overlays"),
@@ -135,12 +135,7 @@ impl Project {
                 markers: Vec::new(),
                 effects: Vec::new(),
             }),
-            meta: None,
-            parent: None,
-            order: None,
-            volume: 1.0,
-            effects: Vec::new(),
-        };
+        );
         Project {
             name: name.into(),
             width,
@@ -328,6 +323,11 @@ impl Project {
         self.bin.get(&clip.bin)
     }
 
+    /// The effects a clip runs, in order: its entry's own, on the source, then its own.
+    pub fn effects_on<'a>(&'a self, clip: &'a Clip) -> impl Iterator<Item = &'a Effect> + Clone {
+        self.item(clip).map_or(&[][..], |i| &i.effects[..]).iter().chain(&clip.effects)
+    }
+
     /// `base` if it is free, else `base-2`, `base-3`… — the shape the editor names bin
     /// entries in, so a minted id reads like one someone typed.
     pub fn free_bin_id(&self, base: &str) -> BinId {
@@ -498,6 +498,13 @@ pub struct BinItem {
     /// over the whole picture and holding still: where and when are the clip's.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub effects: Vec<Effect>,
+}
+
+impl BinItem {
+    /// An entry named `name` holding `source`, everything else as a new entry has it.
+    pub fn of(name: impl Into<String>, source: BinSource) -> BinItem {
+        BinItem { name: name.into(), source, meta: None, parent: None, order: None, volume: 1.0, effects: Vec::new() }
+    }
 }
 
 /// What a bin entry actually is. Exactly one variant.
@@ -1295,6 +1302,13 @@ impl Effect {
         }
     }
 
+    /// Whether it takes its clip's one place of its kind. Every kind does but `mlt` — whose
+    /// service could be anything — and a masked effect, which is a window of its own: windows
+    /// stack. A match writes the grade that does.
+    pub fn one_per_clip(&self) -> bool {
+        !matches!(self, Effect::Mlt { .. }) && self.mask().is_none()
+    }
+
     /// The grade, when this is one.
     pub fn as_grade(&self) -> Option<&Grade> {
         match self {
@@ -1347,7 +1361,7 @@ impl Effect {
             Effect::Blur { .. } => &["radius"],
             Effect::Color { .. } => &["brightness", "contrast", "saturation", "gamma"],
             Effect::Volume { .. } => &["gain"],
-            Effect::Grade(_) => &["temperature", "tint", "exposure"],
+            Effect::Grade(_) => &Grade::LIGHT,
             Effect::Blend { .. }
             | Effect::Fade { .. }
             | Effect::AudioFade { .. }

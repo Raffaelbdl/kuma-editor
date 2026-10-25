@@ -128,7 +128,7 @@ pub fn validate(p: &Project, ctx: &ValidationContext) -> Vec<Issue> {
             BinSource::Sequence(_) | BinSource::Folder { .. } => {}
         }
         let shows_a_file = matches!(&item.source, BinSource::File { kind, .. } if *kind != MediaKind::Audio);
-        let mut kinds = HashSet::new();
+        let mut graded = false;
         for (ei, e) in item.effects.iter().enumerate() {
             let ep = format!("{ip}/effects/{ei}");
             let Effect::Grade(g) = e else {
@@ -139,7 +139,7 @@ pub fn validate(p: &Project, ctx: &ValidationContext) -> Vec<Issue> {
                 issues.push(Issue::error(ep, "only a video or image file takes a grade of its own; grade the clips that place anything else"));
                 continue;
             }
-            if !kinds.insert(e.kind()) {
+            if std::mem::replace(&mut graded, true) {
                 issues.push(Issue::error(ep.clone(), "duplicate `grade` on this entry"));
             }
             if g.mask.is_some() || !g.keyframes.is_empty() {
@@ -339,7 +339,7 @@ fn check_sequence<'a>(
             for (ei, e) in c.effects.iter().enumerate() {
                 let ep = format!("{cp}/effects/{ei}");
                 let kind = e.kind();
-                if kind != "mlt" && e.mask().is_none() && !kinds.insert(kind) {
+                if e.one_per_clip() && !kinds.insert(kind) {
                     issues.push(Issue::error(ep.clone(), format!("duplicate `{kind}` effect on this clip")));
                 }
                 // A warning, not an error: it renders, and does nothing. The editor does not
@@ -465,19 +465,21 @@ fn check_sequence<'a>(
 fn check_effect(issues: &mut Vec<Issue>, ep: &str, e: &Effect, kind: &str, owner: (&str, f64)) {
     if let Some(m) = e.mask() {
         let mp = format!("{ep}/mask");
-        let shapes = std::iter::once((mp.clone(), m.clone())).chain(m.keyframes.iter().enumerate().map(|(ki, k)| (format!("{mp}/keyframes/{ki}"), m.at_key(k))));
-        for (sp, s) in shapes {
+        // The shape, and the shape at each key.
+        let shape = |issues: &mut Vec<Issue>, sp: String, s: &Mask| {
             if ![s.x, s.y, s.w, s.h, s.rotation, s.feather].iter().all(|v| v.is_finite()) {
                 issues.push(Issue::error(sp, "a mask's numbers must be finite"));
             } else if !(s.w > 0.0 && s.h > 0.0) {
                 issues.push(Issue::error(sp, "a mask's `w` and `h` must be above 0: it is the rectangle `region` is, in composition pixels"));
             }
-        }
+        };
+        shape(issues, mp.clone(), m);
         if m.feather < 0.0 {
             issues.push(Issue::error(format!("{mp}/feather"), "a mask's feather is pixels of soft edge, 0 or more"));
         }
         check_keyframes(issues, &mp, owner, m.keyframes.iter().map(|k| k.t));
         for (ki, k) in m.keyframes.iter().enumerate() {
+            shape(issues, format!("{mp}/keyframes/{ki}"), &m.at_key(k));
             if let Some(name) = k.values.keys().find(|n| !Mask::KEYED.contains(&n.as_str())) {
                 issues.push(Issue::error(format!("{mp}/keyframes/{ki}/{name}"), format!("a mask's keys may set {}; `{name}` holds still", Mask::KEYED.join(", "))));
             }
@@ -585,13 +587,14 @@ fn check_grade(issues: &mut Vec<Issue>, ep: &str, g: &Grade) {
         ("whites", g.whites, Grade::TONE),
         ("vibrance", g.vibrance, Grade::TONE),
     ];
-    for (name, v, range) in scalars {
-        if !range.contains(&v) {
+    for (name, v, range) in &scalars {
+        if !range.contains(v) {
             issues.push(Issue::error(format!("{ep}/{name}"), format!("grade {name} must be within {}..{}", range.start(), range.end())));
         }
     }
+    // Keys set the light, which is the first three, with the same ranges.
     for (ki, k) in g.keyframes.iter().enumerate() {
-        for (name, range) in [("temperature", Grade::TEMPERATURE), ("tint", Grade::TINT), ("exposure", Grade::EXPOSURE)] {
+        for (name, _, range) in &scalars[..Grade::LIGHT.len()] {
             if k.get(name).is_some_and(|v| !range.contains(&v)) {
                 issues.push(Issue::error(format!("{ep}/keyframes/{ki}/{name}"), format!("grade {name} must be within {}..{}", range.start(), range.end())));
             }
@@ -641,31 +644,13 @@ fn check_grade_luts(issues: &mut Vec<Issue>, ep: &str, g: &Grade, ctx: &Validati
         } else if !path.to_ascii_lowercase().ends_with(".cube") {
             issues.push(Issue::error(fp, "a LUT must be a `.cube` file"));
         } else if ctx.check_files {
-            if let Err(e) = lut_reads(&ctx.root.join(path)) {
+            if let Err(e) = crate::grade::Lut::cached(&ctx.root.join(path)) {
                 issues.push(Issue::error(fp, format!("LUT `{path}`: {e}")));
             }
         }
     }
 }
 
-/// Whether the LUT at `path` reads, remembered per file as long as its size and time do
-/// not change: every edit validates the whole project, and a 65³ `.cube` takes tens of
-/// milliseconds to parse — per clip that names it, on every edit, unremembered.
-fn lut_reads(path: &std::path::Path) -> Result<(), String> {
-    type Seen = HashMap<PathBuf, (u64, Option<std::time::SystemTime>, Result<(), String>)>;
-    static SEEN: std::sync::OnceLock<std::sync::Mutex<Seen>> = std::sync::OnceLock::new();
-    let meta = std::fs::metadata(path).map_err(|e| e.to_string())?;
-    let stamp = (meta.len(), meta.modified().ok());
-    let seen = SEEN.get_or_init(Default::default);
-    if let Some((len, time, read)) = seen.lock().unwrap_or_else(|p| p.into_inner()).get(path) {
-        if (*len, *time) == stamp {
-            return read.clone();
-        }
-    }
-    let read = crate::grade::Lut::load(path).map(drop);
-    seen.lock().unwrap_or_else(|p| p.into_inner()).insert(path.to_path_buf(), (stamp.0, stamp.1, read.clone()));
-    read
-}
 
 /// Whether `path` is relative and never climbs out of the directory it is read from — the
 /// test for a file the project names that must be the project's own (a LUT, a luma).

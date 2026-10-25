@@ -37,7 +37,7 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::grade::DISPLAY_GAMMA;
+use crate::grade::encode;
 
 /// A camera's log encoding and the gamut it records in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
@@ -130,8 +130,7 @@ const LOG_PEAK_NITS: f64 = 4000.0;
 pub struct Conversion {
     curve: Curve,
     matrix: Mat3,
-    /// The tone map's source peak, in nits.
-    peak: f64,
+    tone: ToneMap,
 }
 
 impl Conversion {
@@ -139,15 +138,15 @@ impl Conversion {
         let curve = log.curve();
         let matrix = mul(&inverse(&npm(BT709, D65)), &npm(log.primaries(), D65));
         let peak = (curve.peak_linear() * REFERENCE_WHITE_NITS).clamp(REFERENCE_WHITE_NITS, LOG_PEAK_NITS);
-        Conversion { curve, matrix, peak }
+        Conversion { curve, matrix, tone: ToneMap::new(peak) }
     }
 
     /// The display-encoded Rec. 709 colour the log-encoded `c` stands for.
     pub fn apply(&self, c: [f64; 3]) -> [f64; 3] {
         let light = c.map(|v| self.curve.decode(self.curve.signal(v)));
         let light = mul_vec(&self.matrix, light);
-        let light = tone_map(light, self.peak);
-        gamut_compress(light).map(|v| v.clamp(0.0, 1.0).powf(1.0 / DISPLAY_GAMMA))
+        let light = self.tone.apply(light);
+        gamut_compress(light).map(|v| encode(v.clamp(0.0, 1.0)))
     }
 }
 
@@ -279,49 +278,73 @@ fn inverse(m: &Mat3) -> Mat3 {
     ]
 }
 
+/// SMPTE ST 2084's constants.
+const PQ_M1: f64 = 0.159_301_758_125;
+const PQ_M2: f64 = 78.84375;
+const PQ_C1: f64 = 0.8359375;
+const PQ_C2: f64 = 18.8515625;
+const PQ_C3: f64 = 18.6875;
+
 /// SMPTE ST 2084: a PQ signal's light, as a fraction of 10 000 nits, and back.
 fn pq_eotf(e: f64) -> f64 {
-    let (m1, m2, c1, c2, c3) = (0.159_301_758_125, 78.84375, 0.8359375, 18.8515625, 18.6875);
-    let p = e.max(0.0).powf(1.0 / m2);
-    ((p - c1).max(0.0) / (c2 - c3 * p)).powf(1.0 / m1)
+    let p = e.max(0.0).powf(1.0 / PQ_M2);
+    ((p - PQ_C1).max(0.0) / (PQ_C2 - PQ_C3 * p)).powf(1.0 / PQ_M1)
 }
 
 fn pq_inverse_eotf(y: f64) -> f64 {
-    let (m1, m2, c1, c2, c3) = (0.159_301_758_125, 78.84375, 0.8359375, 18.8515625, 18.6875);
-    let p = y.max(0.0).powf(m1);
-    ((c1 + c2 * p) / (1.0 + c3 * p)).powf(m2)
+    let p = y.max(0.0).powf(PQ_M1);
+    ((PQ_C1 + PQ_C2 * p) / (1.0 + PQ_C3 * p)).powf(PQ_M2)
 }
 
-/// ITU-R BT.2390's EETF: `nits` from a display peaking at `src` onto one peaking at `dst`, a
-/// Hermite knee in the PQ domain.
-fn bt2390(nits: f64, src: f64, dst: f64) -> f64 {
-    if dst >= src || nits <= 0.0 {
-        return nits.max(0.0).min(src.max(dst));
-    }
-    let pq = |n: f64| pq_inverse_eotf((n / 10_000.0).clamp(0.0, 1.0));
-    let top = pq(src);
-    let e1 = (pq(nits) / top).min(1.0);
-    let most = pq(dst) / top;
-    let ks = 1.5 * most - 0.5;
-    let e2 = if e1 < ks {
-        e1
-    } else {
-        let t = (e1 - ks) / (1.0 - ks);
-        let (t2, t3) = (t * t, t * t * t);
-        (2.0 * t3 - 3.0 * t2 + 1.0) * ks + (t3 - 2.0 * t2 + t) * (1.0 - ks) + (-2.0 * t3 + 3.0 * t2) * most
-    };
-    pq_eotf(e2 * top) * 10_000.0
+/// A PQ signal for `nits`.
+fn pq(nits: f64) -> f64 {
+    pq_inverse_eotf((nits / 10_000.0).clamp(0.0, 1.0))
 }
 
-/// Scene light peaking at `peak` nits onto SDR white: BT.2390 on max(R, G, B), as a ratio.
-fn tone_map(c: [f64; 3], peak: f64) -> [f64; 3] {
-    let m = c[0].max(c[1]).max(c[2]);
-    if m <= 0.0 {
-        return c;
+/// Scene light peaking at `peak` nits onto SDR white: ITU-R BT.2390's EETF (a Hermite knee
+/// in the PQ domain) on max(R, G, B), as a ratio. Its knee is the peak's, worked out once.
+#[derive(Debug, Clone)]
+struct ToneMap {
+    peak: f64,
+    /// The peak as a PQ signal, white as a fraction of it, and where the knee starts.
+    top: f64,
+    most: f64,
+    ks: f64,
+}
+
+impl ToneMap {
+    fn new(peak: f64) -> Self {
+        let top = pq(peak);
+        let most = pq(REFERENCE_WHITE_NITS) / top;
+        ToneMap { peak, top, most, ks: 1.5 * most - 0.5 }
     }
-    let nits = m * REFERENCE_WHITE_NITS;
-    let k = if nits >= peak { 1.0 / m } else { bt2390(nits, peak, REFERENCE_WHITE_NITS) / nits };
-    c.map(|v| v * k)
+
+    fn apply(&self, c: [f64; 3]) -> [f64; 3] {
+        let m = c[0].max(c[1]).max(c[2]);
+        if m <= 0.0 {
+            return c;
+        }
+        let nits = m * REFERENCE_WHITE_NITS;
+        let k = if nits >= self.peak { 1.0 / m } else { self.eetf(nits) / nits };
+        c.map(|v| v * k)
+    }
+
+    /// `nits` from a display peaking at `peak` onto one peaking at white.
+    fn eetf(&self, nits: f64) -> f64 {
+        if REFERENCE_WHITE_NITS >= self.peak {
+            return nits.max(0.0).min(self.peak.max(REFERENCE_WHITE_NITS));
+        }
+        let (top, most, ks) = (self.top, self.most, self.ks);
+        let e1 = (pq(nits) / top).min(1.0);
+        let e2 = if e1 < ks {
+            e1
+        } else {
+            let t = (e1 - ks) / (1.0 - ks);
+            let (t2, t3) = (t * t, t * t * t);
+            (2.0 * t3 - 3.0 * t2 + 1.0) * ks + (t3 - 2.0 * t2 + t) * (1.0 - ks) + (-2.0 * t3 + 3.0 * t2) * most
+        };
+        pq_eotf(e2 * top) * 10_000.0
+    }
 }
 
 /// Colours outside the gamut (a channel below 0 after the matrix) pulled towards grey, after
@@ -380,7 +403,7 @@ mod tests {
 
     #[test]
     fn mid_grey_comes_out_mid_grey_and_white_rolls_off() {
-        let grey = 0.18f64.powf(1.0 / DISPLAY_GAMMA);
+        let grey = encode(0.18);
         // S-Log3's grey is code 420, which is (420 − 64) / 876 once expanded.
         let s = Conversion::new(CameraLog::SLog3Cine);
         let v = (420.0 - 64.0) / 876.0;

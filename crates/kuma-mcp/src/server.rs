@@ -576,6 +576,36 @@ pub struct MeasureAudio {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct MeasureColor {
+    /// Bin id of the sequence to measure. The master when omitted; with `match`, the
+    /// clip's own sequence.
+    #[serde(default)]
+    pub sequence: Option<String>,
+    /// Moments to measure, seconds in that sequence (up to 32), pooled into `stats`.
+    /// Default: `t0`.
+    #[serde(default)]
+    pub times: Option<Vec<f64>>,
+    #[serde(default)]
+    pub t0: f64,
+    /// The region in composition pixels `{x, y, w, h}`: a face, a white wall, the sky.
+    /// The whole frame when omitted.
+    #[serde(default)]
+    pub region: Option<Rect>,
+    /// Measure with the overlays in the picture. Off by default.
+    #[serde(default)]
+    pub overlays: Option<bool>,
+    /// Solve a grade: `{clip, reference}`, where `reference` is `{"neutral": true}` (the
+    /// region is white or grey in life), `{"color": "#rrggbb"}`, or `{"t", "region"?,
+    /// "sequence"?}` (another moment of the video, as it shows now; the region defaults to
+    /// this one and the sequence to the clip's).
+    #[serde(default, rename = "match")]
+    pub matching: Option<Value>,
+    /// Seconds to wait before returning the job id instead (default 600).
+    #[serde(default)]
+    pub wait_seconds: Option<u64>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct MeasureMedia {
     /// Bin id of a media entry (audio or video) to measure.
     #[serde(default)]
@@ -969,6 +999,15 @@ impl KumaServer {
     async fn measure_audio(&self, Parameters(p): Parameters<MeasureAudio>, ctx: RequestContext<RoleServer>) -> Result<CallToolResult, McpError> {
         let body = json!({ "sequence": p.sequence, "range": p.range, "sections": p.sections, "mute": p.mute.unwrap_or_default(), "solo": p.solo.unwrap_or_default() });
         self.job("/api/audio/measure", body, Duration::from_secs(p.wait_seconds.unwrap_or(600)), &ctx).await
+    }
+
+    #[tool(description = "Measure the colour of a region of the picture (the whole frame by default) at some moments, through the real graph with overlays left out unless asked: `stats` with the mean R'G'B' (0..1), luma levels (min, p5, median, p95, max; ×100 reads as IRE), `exposure` (its light in stops from mid grey), `balance` (its cast as the grade's own `temperature` and `tint`: warm above 0, magenta above 0, so a grade of minus these neutralises it), `saturation`, and the share of pixels `clipped` (a channel at full scale) and `crushed` (black). To compare two shots, measure the same thing in each — a face, a white wall — and grade the difference in `exposure` and `balance`. With `match: {clip, reference}` it also solves the clip's `grade` (its white balance and exposure, the rest kept) so the region looks like the reference: `{\"neutral\": true}`, a `{\"color\"}`, or `{\"t\", \"region\"?}` elsewhere in the video. It measures the clip without its grade, answers `before`, the predicted `after`, `reached` (false when the reference is past the grade's ranges or clipping holds it back) and the `patch` to pass to `apply_edits` as is. Nothing is stored.")]
+    async fn measure_color(&self, Parameters(p): Parameters<MeasureColor>, ctx: RequestContext<RoleServer>) -> Result<CallToolResult, McpError> {
+        let body = json!({
+            "sequence": p.sequence, "times": p.times, "t0": p.t0, "overlays": p.overlays.unwrap_or(false), "match": p.matching,
+            "region": p.region.as_ref().map(|r| json!({ "x": r.x, "y": r.y, "w": r.w, "h": r.h })),
+        });
+        self.job("/api/color/measure", body, Duration::from_secs(p.wait_seconds.unwrap_or(600)), &ctx).await
     }
 
     #[tool(description = "Measure one source, a media entry (`bin`) or a file in the project (`path`), optionally over a `range` of it, in its own seconds: integrated loudness (LUFS), loudness range and true peak (dBTP); its loudness over time (`curve`: short-term by default, about 120 values unless `step` says, at most 1200); and its quiet stretches as `{start, end}` (every sample under `silence_db`, default -35 dB, for `silence_min`, default 0.15 s; at most 500 listed). A silence's end is where sound starts: a take, a sentence or a sound effect's onset. For a level a volume keyframe can follow, a pause to cut at, or a take to place. Nothing is stored.")]

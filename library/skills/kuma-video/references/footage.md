@@ -82,6 +82,14 @@ is also what makes it cheap: nothing is baked.
   compare a neutral in each (a white wall, a grey shirt) rather than the whole picture.
   `color` (brightness, contrast, saturation, gamma) still works and can be keyframed; a
   grade cannot — split the clip where the light changes.
+- **Grade by measuring.** `measure_color` with a `region` on something that should match in
+  life (a face, a white wall, a grey shirt — never the whole frame, whose content differs)
+  gives its `exposure` and `balance` as grade numbers; compare shots by those. To fix one,
+  `match: {clip, reference}` with `{"neutral": true}` (the region is white or grey) or
+  `{"t": <a moment of the hero shot>, "region": …}` returns the clip's grade and a `patch`
+  for `apply_edits`. `reached: false` means the reference is past the grade's ranges or
+  clipped highlights hold it back: say so rather than push. `clipped` above a few percent on
+  a face or sky is lost detail no grade brings back. Then `sample_frames` to look.
 
 ## Stills
 

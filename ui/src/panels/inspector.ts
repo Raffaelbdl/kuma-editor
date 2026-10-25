@@ -13,15 +13,16 @@ import { keysFor } from "../shortcuts";
 import { desktop } from "../desktop";
 import { askForm } from "../modal";
 import { panels } from "../panelhost";
-import { isEntryTab, store, toast } from "../store";
-import type { BinItem, Clip, Cue, Ease, Effect, FontFamily, PatchOp, Project, Streams, Transition, VarSpec } from "../types";
+import { binName, fmtTime, isEntryTab, store, toast } from "../store";
+import type { BinItem, Clip, ColorReference, Cue, Ease, Effect, FontFamily, Grade, PatchOp, Project, Region, Streams, Transition, VarSpec } from "../types";
+import { pickRegion } from "../regionpick";
 import { blueprintActions, makeOverlayUnique, removeTransition, setTransitionDuration, setTransitionKind, updateTransition, manifestOf, moveBinItem, overlayError, placeBinItem, previewImg, renderPreview, saveAsBlueprint, sharersOf } from "../edits";
 import { Animation, animationOf } from "../keyframes";
 import { historyFor } from "./history";
 import { icon, svgEl } from "../icons";
 import type { NumberOpts } from "../props";
 import { keyStrip, numberField, showNumber, sliderField, vectorField } from "../props";
-import { LUMAS, SEQUENCE_EFFECTS, sourceAfter, actsOn, ANIMATABLE, binItem, binPath, canPlace, canTimeWarp, childrenOf, clipStreams, covers, expandPreset, hasAudio, isColorSource, isFileSource, isFolderSource, isOverlaySource, isSequenceSource, isTimedMedia, itemKind, mediaFacts, placementsOf, seqDuration, seqPath, sequenceOf, sequenceStreams, streamsOf, wouldNest } from "../types";
+import { LUMAS, SEQUENCE_EFFECTS, isFinal, sourceAfter, actsOn, ANIMATABLE, binItem, binPath, canPlace, canTimeWarp, childrenOf, clipStreams, covers, expandPreset, hasAudio, isColorSource, isFileSource, isFolderSource, isOverlaySource, isSequenceSource, isTimedMedia, itemKind, mediaFacts, placementsOf, seqDuration, seqPath, sequenceOf, sequenceStreams, streamsOf, wouldNest } from "../types";
 
 const presetsPromise = api.effectPresets().catch(() => []);
 
@@ -100,7 +101,7 @@ const EFFECTS: Partial<Record<Effect["type"], EffectSpec>> = {
     add: { type: "grade", temperature: 0, tint: 0, exposure: 0, contrast: 1, curve: [], saturation: 1, look_amount: 1 },
     props: [
       { kind: "text", key: "input_lut", label: "Input LUT", optional: true },
-      { kind: "slider", key: "temperature", min: -1, max: 1, step: 0.01, title: "Warmer above 0, cooler below: red and blue a stop apart at ±1" },
+      { kind: "slider", key: "temperature", min: -2, max: 2, step: 0.01, title: "Warmer above 0, cooler below: red and blue a stop apart at ±1, and tungsten against daylight is about 1.5" },
       { kind: "slider", key: "tint", min: -1, max: 1, step: 0.01, title: "Towards magenta above 0, green below" },
       { kind: "slider", key: "exposure", min: -5, max: 5, step: 0.05, suffix: "EV", title: "Stops of light: 1 doubles it" },
       wheel("lift", "Raises the shadows, white stays"),
@@ -822,6 +823,8 @@ export class Inspector {
       if (anim) head.append(keyToggle(anim));
       head.append(remove);
       for (const p of spec.props ?? []) body.appendChild(propRow(p, ctx));
+      // A clip's grade can be measured into place; a sequence never carries one.
+      if (e.type === "grade" && !owner.key.startsWith("seq:")) body.appendChild(matchRow(owner.key, (light) => replace({ ...e, ...light }, "match")));
       if (anim?.animated) body.appendChild(keyRow(anim, id, (fn) => mine.push(fn)));
       if (mine.length) followers.push(() => { if (!closedEffects.has(id)) for (const f of mine) f(); });
       this.host.appendChild(box);
@@ -879,6 +882,87 @@ export class Inspector {
 
 /** A button that reads as a link: it navigates the panel rather than changing anything. */
 const linkButton = (label: string, onClick: () => void, title = "") => button(label, onClick, title, "linkish");
+
+/** The region a grade is matched to, picked once at a moment of the open sequence and
+ *  matched from any clip's grade: the reference shot. View state; nothing saves it. */
+let colourReference: { sequence: string; t: number; region: Region } | null = null;
+
+/** What a match writes: the grade's white balance and exposure, the rest of it kept. */
+type Light = Pick<Grade, "temperature" | "tint" | "exposure">;
+
+/** A grade's match buttons: make a region of this clip neutral, pick the reference, or
+ *  match a region of this clip to it. Each is measured where the playhead is. */
+function matchRow(clip: string, write: (light: Light) => void): HTMLElement {
+  const neutral = button("Neutral…", () => void matchColour(clip, { neutral: true }, "Something white or grey in life", write),
+    "Drag over something in this clip that is white or grey in life: its white balance is set to make it so");
+  const pick = button("Set reference…", () => void setReference(), "Drag over what the other shots should look like — a face, a wall — at the playhead. Kept until you set another");
+  const match = button("Match…", () => {
+    const ref = colourReference;
+    if (ref) void matchColour(clip, { t: ref.t, region: ref.region, sequence: ref.sequence }, "The same thing in this clip", write);
+  }, "Drag over the same thing in this clip: its white balance and exposure are set to look like the reference", "match-ref");
+  const wrap = field("Match", row("match-row", neutral, pick, match));
+  wrap.appendChild(el("div", "match-note muted tiny"));
+  wrap.dataset.prop = "match";
+  showReference(wrap);
+  return wrap;
+}
+
+/** Say what the reference is, and offer matching to it only once there is one, in `within`. */
+function showReference(within: ParentNode) {
+  const ref = colourReference;
+  const p = store.state.project;
+  const fps = p ? p.fps.num / p.fps.den : 30;
+  for (const b of within.querySelectorAll<HTMLButtonElement>(".match-ref")) b.disabled = !ref;
+  for (const n of within.querySelectorAll(".match-note")) {
+    n.textContent = ref ? `Reference: ${ref.region.w}×${ref.region.h} px at ${fmtTime(ref.t, fps)} in ${binName(ref.sequence)}` : "No reference yet";
+  }
+}
+
+/** Pick the reference region at the playhead of the open sequence. */
+async function setReference() {
+  const region = await pickRegion("The reference: what the other shots should look like");
+  if (!region) return;
+  colourReference = { sequence: store.state.sequence, t: store.state.playhead, region };
+  showReference(document);
+  toast("Reference set: match other clips to it from their grade", "ok");
+}
+
+/** Measure `clip` at the playhead over a region the user picks, solve its grade's light to
+ *  look like `reference`, and write it. */
+async function matchColour(clip: string, reference: ColorReference, what: string, write: (light: Light) => void) {
+  const found = store.findClip(clip);
+  if (!found || !covers(found.clip, store.state.playhead)) {
+    toast("Put the playhead on this clip: the match measures it there", "err");
+    return;
+  }
+  const t = store.state.playhead;
+  const region = await pickRegion(what);
+  if (!region) return;
+  try {
+    const { job } = await api.measureColor({ times: [t], region, match: { clip, reference } });
+    const done = await finished(job);
+    if (done.state !== "done") {
+      toast(done.message || `Measuring failed (${done.state})`, "err");
+      return;
+    }
+    const m = (done.result as { match: { grade: Grade; reached: boolean } }).match;
+    const light: Light = { temperature: m.grade.temperature ?? 0, tint: m.grade.tint ?? 0, exposure: m.grade.exposure ?? 0 };
+    write(light);
+    const said = `temperature ${light.temperature}, tint ${light.tint}, exposure ${light.exposure}`;
+    toast(m.reached ? `Matched: ${said}` : `As near as the grade reaches: ${said}`, m.reached ? "ok" : "err");
+  } catch (e) {
+    toast((e as Error).message, "err");
+  }
+}
+
+/** The job, once it has ended. */
+async function finished(id: number) {
+  for (;;) {
+    const j = await api.job(id);
+    if (isFinal(j)) return j;
+    await new Promise((r) => setTimeout(r, 250));
+  }
+}
 
 function field(label: string, input: HTMLElement): HTMLDivElement {
   const row = el("div", "field");

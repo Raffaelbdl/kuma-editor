@@ -461,7 +461,7 @@ claude mcp add --scope user    kuma -- kuma mcp --project /abs/path.kuma.json  #
 `kuma mcp` starts the daemon in-process if none is running on the port, so the browser UI
 and the agent always share one state. Tools: `timeline_guide`, `get_project`, `get_schema`, `apply_edits`,
 `undo`, `redo`, `list_markers`, `validate_project`, `list_presets`, `add_media`, `probe_media`, `reprobe_media`, `unused_entries`,
-`transcribe`, **`sample_frames`**, `measure_audio`, `measure_media`, `bake_overlay`, `render`, `export_subtitles`, `export_chapters`, `job_status`, `cancel_job`,
+`transcribe`, **`sample_frames`**, `measure_audio`, `measure_media`, `measure_color`, `bake_overlay`, `render`, `export_subtitles`, `export_chapters`, `job_status`, `cancel_job`,
 `prune_cache`, `health`, for libraries `list_libraries`, `add_library`, `remove_library`,
 `list_design_systems`, `apply_design_system`, `list_effect_presets`, and for overlays
 `overlay_guide`, `new_overlay`, `check_overlay`, `import_overlay`, `make_overlay_unique`,
@@ -483,7 +483,13 @@ baking anything; `solo` and `mute` (track ids, nested ones too) hear one part al
 measurement, on the copy that is compiled and never on the project. `measure_media` meters
 one source instead, a media entry or a file in the project: loudness, range and true peak, a
 loudness curve over time and its quiet stretches (pauses, gaps between takes, the onset of a
-sound), in the file's own seconds; nothing is stored. The tools that start a job (`render`, `measure_audio`, `measure_media`, `transcribe`,
+sound), in the file's own seconds; nothing is stored. `measure_color` reads a region of the
+picture (overlays left out unless asked) as numbers in the grade's own terms — luma levels,
+`exposure` in stops from mid grey, the cast as the `temperature` and `tint` that would make
+it, what is clipped or crushed — and with `match` solves a clip's white balance and exposure
+so its region is neutral or looks like a region elsewhere, measuring the clip without its
+grade on a copy of the project and answering the patch that writes the result
+(`POST /api/color/measure`, `kuma_core::color`). The tools that start a job (`render`, `measure_audio`, `measure_media`, `measure_color`, `transcribe`,
 `bake_overlay`, `sample_frames`) wait `wait_seconds` and then return it still running, with
 its id; `job_status` with that id and its own `wait_seconds` waits again, in calls as short
 as the client needs (Claude Code moves a call that runs past 120 s to the background), and
@@ -688,6 +694,11 @@ same way, so a grade cannot vary across the frame (a vignette is an `mlt` filter
 or over time (no keyframes — split the clip). The editor shows its fields in the order the
 colour goes through them; the live overlay preview approximates only its exposure,
 contrast and saturation. LUT files are `.cube` (1D or 3D, any domain) under the project.
+A grade's **Match** row sets its white balance and exposure by measuring: put the playhead on
+the clip, press **Neutral…** and drag over something white or grey in life, or **Set
+reference…** on the shot the others should look like and then **Match…** on each other
+clip, dragging over the same thing (a face, a wall). Each runs `measure_color` and writes the
+result as one undoable edit; the rest of the grade is kept.
 
 A clip that reads past the end of its source is padded with nothing for the frames the
 source lacks, which show the tracks below and are silent. MLT would otherwise cut the

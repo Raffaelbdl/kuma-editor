@@ -26,10 +26,10 @@ use crate::model::Grade;
 pub const GRID: usize = 33;
 
 /// Display encoding, as BT.1886 has it for a studio monitor.
-const DISPLAY_GAMMA: f64 = 2.4;
+pub(crate) const DISPLAY_GAMMA: f64 = 2.4;
 
 /// Rec. 709 luma weights.
-const LUMA: [f64; 3] = [0.2126, 0.7152, 0.0722];
+pub(crate) const LUMA: [f64; 3] = [0.2126, 0.7152, 0.0722];
 
 /// A parsed `.cube`: Adobe's format, which Resolve, ffmpeg and the cameras' vendors write.
 #[derive(Debug, Clone, PartialEq)]
@@ -173,6 +173,12 @@ impl<'a> Grading<'a> {
     pub fn new(grade: &'a Grade, input: Option<Lut>, look: Option<Lut>) -> Self {
         let curve = Curve::through(&grade.curve);
         Grading { grade, input, look, curve, light: light_gains(grade.temperature, grade.tint, grade.exposure) }
+    }
+
+    /// The same grade with other white balance and exposure: what a match tries in turn,
+    /// without parsing the grade's LUTs again for each try.
+    pub(crate) fn set_light(&mut self, temperature: f64, tint: f64, exposure: f64) {
+        self.light = light_gains(temperature, tint, exposure);
     }
 
     /// Whether it leaves every colour as it is — a grade with nothing set, which the

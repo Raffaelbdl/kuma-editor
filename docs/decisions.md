@@ -3363,10 +3363,46 @@ field. The render test checks melt's pixels against the maths (within 3 of 255 a
 YUV round trip, measured within 1), and the reference project carries a grade, so the golden
 file and the parallel-frames check cover it.
 
-Still open here: a curve editor (the inspector edits the curve as JSON points), numeric
-scopes for agents (`measure_color`: levels, balance, clipping — FilmCraft's `scopes.read`
-is the model) and a scopes panel, and grading on a bin entry rather than a placement, which
-is the *one pipeline for every bin entry* item below.
+Still open here: a curve editor (the inspector edits the curve as JSON points), a scopes
+panel, and grading on a bin entry rather than a placement, which is the *one pipeline for
+every bin entry* item below.
+
+## Measuring colour, and matching a grade to a reference
+
+**`measure_color` says a region in the grade's own units, and matching is solved, not
+guessed** — adopted. FilmCraft's `scopes.read` gives an agent levels to check a grade
+without looking; kuma's answer goes one step further because the grade's maths are its own.
+White balance and exposure are gains on light, so a region's mean light *is* a grade:
+`exposure` is its light in stops from mid grey, and `balance` the `temperature` and `tint`
+that turn a grey into its colour, solved in closed form (t = log2(r/b), m = log2(r·b/g²) on
+decoded light). Two shots compare as numbers, and the difference is the edit.
+
+A match (`match: {clip, reference}`) measures the clip **without its grade**, on a copy of
+the project that lacks it, so the answer does not chase its own previous answer; then it
+iterates the closed form through the whole grade (`kuma_core::color::match_light`): exact in
+one step for white balance and exposure alone, a few more when contrast, a curve or a LUT
+bend the light after them. Only exposure, temperature and tint are solved — the rest of the
+grade is the look, and stays. The reference is a region elsewhere in the video as it shows
+now (`{t, region?}`), a colour, or neutral (white balance only, brightness kept): what a
+colourist does with a grey card, a white wall or the hero shot. It answers the predicted
+`after`, whether it was `reached`, and the patch, and stores nothing; applying is the
+caller's edit, so an agent's match is an ordinary undoable patch and the editor's is too.
+The daemon test applies the patch and renders: the clip lands within 4/255 of its reference,
+and kuma's prediction within 3/255 of melt's pixels.
+
+Measured with overlays out by default: a title over a face is not the face's colour. The
+region is the user's to choose, and the docs say why: a match of whole frames matches their
+content, not their light.
+
+`temperature` widened to ±2 on the way (from ±1): the first realistic test, a tungsten-warm
+clip, measured 1.77 and could not be reached. Widening a range changes what no existing value
+means, so it re-grades nothing; the maths' append-only rule is about meaning, not bounds.
+
+In the editor, a grade has **Neutral…**, **Set reference…** and **Match…**: each drags a
+rectangle over the frame (`regionpick.ts`, a sheet over the preview stage in composition
+pixels, Escape to cancel) at the playhead, runs the job and writes the grade's light. The
+reference is view state, kept until another is set, so one hero shot can be matched from
+every clip's grade in turn.
 
 ## Still open
 

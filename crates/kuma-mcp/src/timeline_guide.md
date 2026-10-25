@@ -39,13 +39,19 @@ to its own edges first. `freeze` `{t}` holds the frame the clip shows `t` s in (
 places, sequences too) for the whole clip; its sound runs on (mute the clip to silence it), its
 other effects act on the held frame and still move. Split the clip to play, then hold.
 `grade` is a colour grade, every field neutral when left out, applied in this order:
-`input_lut` (a `.cube` under the project: a camera's log into Rec. 709), `temperature` and
-`tint` (-1..1: warmer/cooler, magenta/green), `exposure` (stops, -5..5), `lift`, `gamma` and
+`input_lut` (a `.cube` under the project: a camera's log into Rec. 709), `temperature`
+(-2..2, warmer/cooler; tungsten against daylight is about 1.5) and `tint` (-1..1, magenta/green), `exposure` (stops, -5..5), `lift`, `gamma` and
 `gain` (`{r, g, b}`, each -1..1: shadows, midtones, highlights; equal channels move brightness,
 unequal ones colour), `contrast` (0..3, 1 neutral), `curve` (`[[in, out], …]` in 0..1, a
 monotone cubic through `[0,0]` and `[1,1]`), `saturation` (0..3, 1 neutral), then `look` (a
 `.cube`) mixed by `look_amount` (0..1). It is one LUT for the whole clip and takes no keyframes:
-split the clip to grade its halves differently. Check a grade with `sample_frames`.
+split the clip to grade its halves differently. Grade by measuring, then look: `measure_color`
+reads a region's `exposure` (stops from mid grey) and `balance` (its cast as `temperature` and
+`tint`) so two shots compare as numbers, and with `match: {clip, reference}` solves the clip's
+white balance and exposure to make its region neutral (`{"neutral": true}` on something white or
+grey in life) or like a region elsewhere (`{"t", "region"?}`), answering a `patch` for
+`apply_edits`. Pick what should match in life — a face, a wall — not the whole frame, whose
+content differs; then `sample_frames` to see it.
 `auto_level` `{target (LUFS, -23), window (s, 3), max_gain, min_gain (dB, ±15)}` rides a
 drifting source's gain toward `target`, measured over the last `window`: no keyframes needed for
 a bed that swells and falls; it lags a sudden change by about a window, and after a seek it

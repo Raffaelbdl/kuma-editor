@@ -525,7 +525,7 @@ fn check_effect(issues: &mut Vec<Issue>, ep: &str, e: &Effect, kind: &str, owner
 /// draw. Its LUT files are checked where the project's root is known, with the clip.
 fn check_grade(issues: &mut Vec<Issue>, ep: &str, g: &Grade) {
     let scalars = [
-        ("temperature", g.temperature, -1.0, 1.0),
+        ("temperature", g.temperature, -2.0, 2.0),
         ("tint", g.tint, -1.0, 1.0),
         ("exposure", g.exposure, -5.0, 5.0),
         ("contrast", g.contrast, 0.0, 3.0),

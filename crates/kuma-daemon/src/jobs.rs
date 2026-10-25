@@ -1486,8 +1486,14 @@ pub fn sample_frames(state: &AppState, req: &SampleRequest, progress: &dyn Fn(u8
 
 /// [`sample_frames`], with the warnings of the bakes the frames show.
 fn sample_frames_warned(state: &AppState, req: &SampleRequest, progress: &dyn Fn(u8, &str), cancel: Option<&AtomicBool>) -> anyhow::Result<(Vec<Sample>, Vec<Issue>)> {
-    let _cache = read(&state.cache_users);
     let doc = read(&state.project).clone();
+    sample_frames_of(state, doc, req, progress, cancel)
+}
+
+/// [`sample_frames`] of `doc`, a project that need not be the open one: the open one with
+/// something taken out for a measurement, which is never stored.
+pub(crate) fn sample_frames_of(state: &AppState, doc: Project, req: &SampleRequest, progress: &dyn Fn(u8, &str), cancel: Option<&AtomicBool>) -> anyhow::Result<(Vec<Sample>, Vec<Issue>)> {
+    let _cache = read(&state.cache_users);
     // Sampling an entry is sampling a timeline that holds nothing else. Everything below
     // is then the ordinary path — the same bake, the same compiler, the same melt — so
     // what comes back is the composite the render would produce, not an approximation.

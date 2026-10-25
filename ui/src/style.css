@@ -899,3 +899,11 @@ button.mk-remove:hover { color: var(--danger); }
 .palette-empty { padding: 10px 14px; color: var(--fg-3); }
 /* In den the frame reaches the top corner, where "power ↗" is: the engine badge goes low. */
 #app.den .stage .badge { top: auto; bottom: 8px; }
+
+/* Picking a region of the picture (`regionpick.ts`): a sheet over the frame that takes the
+   drag, the band it draws, and what it is for. */
+.region-pick { position: fixed; z-index: 2500; cursor: crosshair; background: color-mix(in srgb, var(--bg) 18%, transparent); touch-action: none; }
+.region-pick-band { position: absolute; outline: 2px solid var(--accent); background: color-mix(in srgb, var(--accent) 14%, transparent); pointer-events: none; }
+.region-pick-hint { position: absolute; left: 50%; top: 10px; transform: translateX(-50%); padding: 4px 10px; border-radius: 4px; background: var(--bg-2); color: var(--fg); font-size: 12px; white-space: nowrap; pointer-events: none; }
+.match-row { display: flex; gap: 4px; flex-wrap: wrap; }
+.match-note { grid-column: 2; }

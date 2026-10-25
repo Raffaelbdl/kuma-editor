@@ -151,6 +151,14 @@ export interface Grade {
   curve?: [number, number][]; saturation?: number; look?: string; look_amount?: number;
 }
 
+/** A rectangle of the picture in composition pixels, as `sample_frames` and
+ *  `measure_color` take one. */
+export interface Region { x: number; y: number; w: number; h: number }
+
+/** What `measure_color` matches a clip's region to: neutral, a colour, or a region at a
+ *  moment of the video as it shows now. */
+export type ColorReference = { neutral: true } | { color: string } | { t: number; region?: Region; sequence?: string };
+
 /** One number per channel, each 0 when absent. */
 export interface Rgb { r?: number; g?: number; b?: number }
 

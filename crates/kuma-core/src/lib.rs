@@ -7,6 +7,7 @@
 //! * The JSON shape is the public contract: it is exported as a JSON Schema so an
 //!   agent can validate its own edits before sending them.
 
+pub mod color;
 pub mod edit;
 pub mod grade;
 pub mod manifest;

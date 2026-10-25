@@ -74,6 +74,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/sample/job", post(sample_job))
         .route("/api/samples/{*file}", get(sample_file))
         .route("/api/audio/measure", post(measure_audio))
+        .route("/api/color/measure", post(measure_color))
         .route("/api/media/measure", post(measure_media))
         .route("/api/snapshot", get(snapshot))
         .route("/api/cache", get(cache_usage))
@@ -1039,6 +1040,16 @@ async fn measure_audio(State(st): S, Json(asked): Json<Asked<MeasureRequest>>) -
     let s2 = st.clone();
     let params = json!({ "sequence": req.sequence, "mute": req.mute, "solo": req.solo });
     Json(json!({ "job": jobs::spawn_cancellable(st, "measure", params, by, move |progress, cancel| jobs::measure_audio(&s2, &req, progress, cancel)) }))
+}
+
+/// What a region of the picture is, and with `match` the grade that makes a clip's region
+/// look like a reference, as a cancellable job: it samples frames through melt. The result
+/// is `color::measure`'s.
+async fn measure_color(State(st): S, Json(asked): Json<Asked<crate::color::ColorRequest>>) -> Json<Value> {
+    let (by, req) = asked.split();
+    let s2 = st.clone();
+    let params = json!({ "sequence": req.sequence, "times": req.times, "t0": req.t0, "region": req.region, "clip": req.matching.as_ref().map(|m| &m.clip) });
+    Json(json!({ "job": jobs::spawn_cancellable(st, "measure-color", params, by, move |progress, cancel| crate::color::measure(&s2, &req, progress, cancel)) }))
 }
 
 /// How loud one source is and where it is quiet, as a cancellable job: ffmpeg decodes the

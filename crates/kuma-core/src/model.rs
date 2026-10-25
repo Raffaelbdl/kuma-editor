@@ -1005,7 +1005,9 @@ pub struct Grade {
     /// footage into the picture the grade starts from (a camera's log into Rec. 709).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub input_lut: Option<String>,
-    /// White balance, -1..1: warmer (towards amber) above 0, cooler (towards blue) below.
+    /// White balance, -2..2: warmer (towards amber) above 0, cooler (towards blue) below;
+    /// red and blue a stop apart at ±1, which is about daylight against shade, and tungsten
+    /// against daylight is nearer 1.5.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub temperature: f64,
     /// -1..1: towards magenta above 0, towards green below.

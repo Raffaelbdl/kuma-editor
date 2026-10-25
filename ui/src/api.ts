@@ -1,4 +1,4 @@
-import type { Activity, BlueprintInfo, LibraryInfo, HistoryEntry, MarkerInfo, CacheUsage, DaemonEvent, EffectPreset, FontFamily, Issue, Job, LintReport, OverlayInfo, PatchOp, Preset, Project, SequenceState } from "./types";
+import type { Activity, BlueprintInfo, LibraryInfo, HistoryEntry, MarkerInfo, CacheUsage, ColorReference, DaemonEvent, EffectPreset, FontFamily, Issue, Job, LintReport, OverlayInfo, PatchOp, Preset, Project, Region, SequenceState } from "./types";
 
 async function json<T>(url: string, init?: RequestInit): Promise<T> {
   const r = await fetch(url, { headers: { "content-type": "application/json" }, ...init });
@@ -131,6 +131,11 @@ export const api = {
   /** Forget every finished job, for every window. Running and queued ones stay. */
   clearJobs: () => json<{ cleared: number[] }>("/api/jobs/clear", { method: "POST", body: "{}" }),
   /** Stop a queued or running render. It reports itself `cancelled` once it has. */
+  job: (id: number) => json<Job>(`/api/jobs/${id}`),
+  /** What a region of the picture is, and with `match` the grade that makes a clip's
+   *  region look like a reference (`kuma_daemon::color`), as a job. */
+  measureColor: (req: { times: number[]; region?: Region; sequence?: string; match?: { clip: string; reference: ColorReference } }) =>
+    json<{ job: number }>("/api/color/measure", { method: "POST", body: JSON.stringify({ ...req, origin: "ui: match colour" }) }),
   cancelJob: (id: number) => json<Job>(`/api/jobs/${id}/cancel`, { method: "POST", body: "{}" }),
   cache: () => json<CacheUsage>("/api/cache"),
   /** A job: delete what `.kuma/` holds that the project no longer uses. */

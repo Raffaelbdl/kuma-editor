@@ -219,7 +219,16 @@ Values that go together are one row wearing their axis colours (a transform's **
 field. The shapes live in `ui/src/props.ts`, so an effect, an overlay var and a clip's own
 fields are edited the same way; an effect declares which shape each of its fields is, in
 one table in `ui/src/panels/inspector.ts`, and the bounds there are the model's own, so the
-panel cannot offer a value the daemon would refuse.
+panel cannot offer a value the daemon would refuse. Three shapes are drawn rather than typed.
+A **colour** (a colour entry, an overlay's colour var) is a swatch and its hex, opening into
+a saturation/value square, a hue strip and an alpha strip, with **Pick from screen** where the
+browser has an eyedropper (`colorfield.ts`); it keeps `#rrggbbaa`, which the browser's own
+colour input drops, and stays open across the edits it makes. A grade's **wheels** put lift,
+gamma and gain on three colour discs: the puck is their colour, the **Y** under each the
+brightness all three channels share, and a double-click takes the colour out; the R/G/B rows
+under them give the exact numbers. A grade's **curve** is drawn as it bends the picture
+(`curvefield.ts`, the compiler's own monotone cubic, `curve.ts`): press to add a point, drag
+it, double-click to take it out; the ends move up and down only.
 
 **Effects are offered where they can act.** Each effect acts on the picture (transform,
 crop, blur, colour, grade, blend, fade, freeze) or the sound (volume, audio fade, limiter, auto

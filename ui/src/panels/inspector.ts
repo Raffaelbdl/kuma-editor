@@ -22,6 +22,9 @@ import { historyFor } from "./history";
 import { icon, svgEl } from "../icons";
 import type { NumberOpts } from "../props";
 import { keyStrip, numberField, showNumber, sliderField, vectorField } from "../props";
+import { colorField, wheelField } from "../colorfield";
+import { curveField } from "../curvefield";
+import type { CurvePoint } from "../curve";
 import { LUMAS, SEQUENCE_EFFECTS, isFinal, sourceAfter, actsOn, ANIMATABLE, binItem, binPath, canPlace, canTimeWarp, childrenOf, clipStreams, covers, expandPreset, hasAudio, isColorSource, isFileSource, isFolderSource, isOverlaySource, isSequenceSource, isTimedMedia, itemKind, mediaFacts, placementsOf, seqDuration, seqPath, sequenceOf, sequenceStreams, streamsOf, wouldNest } from "../types";
 
 const presetsPromise = api.effectPresets().catch(() => []);
@@ -35,7 +38,11 @@ type PropSpec =
   | { kind: "vec"; label: string; parts: ({ key: string } & NumberOpts)[] }
   | { kind: "enum"; key: string; label?: string; options: string[] }
   | { kind: "text"; key: string; label?: string; /** Empty means the field is left out, not an empty string. */ optional?: boolean }
-  | { kind: "json"; key: string; label?: string };
+  | { kind: "json"; key: string; label?: string }
+  /** A tone curve's points, edited on the curve (`curvefield.ts`). */
+  | { kind: "curve"; key: string; label?: string; title?: string }
+  /** Per-channel offsets as colour wheels side by side (`colorfield.ts`), one per key. */
+  | { kind: "wheels"; label: string; keys: { key: string; title: string }[] };
 
 /** Per effect kind: the value `+ add effect` inserts, and the properties it shows, in
  *  order. Its name is its type, spaced (`title`). Adding a kind is one row here plus the
@@ -104,11 +111,17 @@ const EFFECTS: Partial<Record<Effect["type"], EffectSpec>> = {
       { kind: "slider", key: "temperature", min: -2, max: 2, step: 0.01, title: "Warmer above 0, cooler below: red and blue a stop apart at ±1, and tungsten against daylight is about 1.5" },
       { kind: "slider", key: "tint", min: -1, max: 1, step: 0.01, title: "Towards magenta above 0, green below" },
       { kind: "slider", key: "exposure", min: -5, max: 5, step: 0.05, suffix: "EV", title: "Stops of light: 1 doubles it" },
+      // The wheels first, for the colour, and the channel rows under them for exact numbers.
+      { kind: "wheels", label: "Wheels", keys: [
+        { key: "lift", title: "Lift: drag towards a colour to tint the shadows; white stays" },
+        { key: "gamma", title: "Gamma: drag towards a colour to tint the midtones; black and white stay" },
+        { key: "gain", title: "Gain: drag towards a colour to tint the highlights; black stays" },
+      ] },
       wheel("lift", "Raises the shadows, white stays"),
       wheel("gamma", "Bends the midtones, black and white stay"),
       wheel("gain", "Scales the highlights, black stays"),
       { kind: "slider", key: "contrast", min: 0, max: 3, step: 0.01, title: "About mid grey: 1 leaves it" },
-      { kind: "json", key: "curve", label: "Curve" },
+      { kind: "curve", key: "curve", label: "Curve", title: "Press to add a point, drag to move it, double-click to take it out" },
       { kind: "slider", key: "saturation", min: 0, max: 3, step: 0.01, title: "1 leaves it, 0 is black and white" },
       { kind: "text", key: "look", label: "Look LUT", optional: true },
       { kind: "slider", key: "look_amount", label: "Look amount", min: 0, max: 1, step: 0.01 },
@@ -284,7 +297,7 @@ interface PropCtx {
 function propRow(p: PropSpec, ctx: PropCtx): HTMLElement {
   const { read, write, timed } = ctx;
   const num = (key: string) => Number(read(key) ?? 0);
-  const label = p.kind === "vec" ? p.label : p.label ?? title(p.key);
+  const label = p.kind === "vec" || p.kind === "wheels" ? p.label : p.label ?? title(p.key);
   let input: HTMLElement;
   switch (p.kind) {
     case "vec":
@@ -305,10 +318,20 @@ function propRow(p: PropSpec, ctx: PropCtx): HTMLElement {
     case "json":
       input = jsonInput(read(p.key) ?? null, (v) => write(p.key, v));
       break;
+    case "curve":
+      input = curveField((read(p.key) as CurvePoint[] | undefined) ?? [], (v) => write(p.key, v), { title: p.title });
+      input.classList.add("wide");
+      break;
+    case "wheels":
+      input = row("wheels wide", ...p.keys.map(({ key, title: what }) => {
+        const o = (read(key) ?? {}) as { r?: number; g?: number; b?: number };
+        return wheelField(title(key), { r: o.r ?? 0, g: o.g ?? 0, b: o.b ?? 0 }, (v) => write(key, v), { title: what });
+      }));
+      break;
   }
-  const row = field(label, input);
-  row.dataset.prop = p.kind === "vec" ? p.label.toLowerCase() : p.key;
-  return row;
+  const line = field(label, input);
+  line.dataset.prop = p.kind === "vec" || p.kind === "wheels" ? p.label.toLowerCase() : p.key;
+  return line;
 }
 
 /** The keyframe toggle, in the effect's head: an outlined diamond on an effect that could
@@ -661,10 +684,7 @@ export class Inspector {
       return;
     }
     if (isColorSource(item.source)) {
-      const c = el("input");
-      c.type = "color";
-      c.value = String(item.source.color).slice(0, 7);
-      c.onchange = () => store.patch([{ op: "replace", path: `${bp}/source/color`, value: c.value }], `colour ${id}`);
+      const c = colorField(String(item.source.color), (v) => void store.patch([{ op: "replace", path: `${bp}/source/color`, value: v }], `colour ${id}`), { key: `${bp}/source/color` });
       this.host.appendChild(field("Colour", c));
       return;
     }
@@ -708,7 +728,7 @@ export class Inspector {
       const host = group ? varSection(this.host, group) : this.host;
       for (const [k, spec] of entries) {
         if (!shown(spec)) continue;
-        const f = field(spec.label ?? k, varInput(spec, value(k), (v) => setVar(k, v)));
+        const f = field(spec.label ?? k, varInput(spec, value(k), (v) => setVar(k, v), `${bp}/source/vars/${k}`));
         if (spec.description) f.title = spec.description;
         host.appendChild(f);
       }
@@ -1116,7 +1136,9 @@ export async function addFonts(use: (family: string) => void = () => {}): Promis
   }
 }
 
-function varInput(spec: VarSpec, cur: unknown, onChange: (v: unknown) => void): HTMLElement {
+/** The control for one var; `key`, the document path it edits, keeps a colour picker open
+ *  across the rebuild each edit causes. */
+function varInput(spec: VarSpec, cur: unknown, onChange: (v: unknown) => void, key?: string): HTMLElement {
   switch (spec.type) {
     case "font":
       return fontInput(String(cur ?? ""), onChange);
@@ -1126,13 +1148,8 @@ function varInput(spec: VarSpec, cur: unknown, onChange: (v: unknown) => void): 
       return spec.min !== undefined && spec.max !== undefined
         ? sliderField(Number(cur), onChange, { min: spec.min, max: spec.max, step: spec.step ?? 0.01, soft: true })
         : numberField(Number(cur), onChange, { step: spec.step ?? 0.01, min: spec.min, max: spec.max });
-    case "color": {
-      const c = el("input");
-      c.type = "color";
-      c.value = String(cur).slice(0, 7);
-      c.onchange = () => onChange(c.value);
-      return c;
-    }
+    case "color":
+      return colorField(String(cur ?? "#000000"), onChange, { key });
     case "boolean":
       return checkbox(Boolean(cur), onChange);
     case "enum":

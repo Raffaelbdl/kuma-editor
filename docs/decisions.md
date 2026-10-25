@@ -3363,9 +3363,17 @@ field. The render test checks melt's pixels against the maths (within 3 of 255 a
 YUV round trip, measured within 1), and the reference project carries a grade, so the golden
 file and the parallel-frames check cover it.
 
-Still open here: a curve editor (the inspector edits the curve as JSON points), a scopes
-panel, and grading on a bin entry rather than a placement, which is the *one pipeline for
-every bin entry* item below.
+Still open here: a scopes panel, and grading on a bin entry rather than a placement, which
+is the *one pipeline for every bin entry* item below.
+
+**The curve field draws the compiler's curve, from a copy pinned to it** — adopted. The
+editor needs the curve every frame of a drag, so it cannot ask the daemon; `ui/src/curve.ts`
+is a port of `Curve` in `grade.rs`, and both sides pin the same table of values
+(`the_curve_draws_what_the_editor_draws`, `ui/test/curve.test.mjs`), so a change to either
+fails until both agree. The UI's maths modules (`curve.ts`, `color.ts`) import nothing, which
+lets Node run their tests directly with no browser. Colour fields are kuma's own picker rather
+than `<input type="color">`, which cannot hold alpha and silently cut `#rrggbbaa` to
+`#rrggbb` on every edit; the hues they paint are inline data, not theme colours.
 
 ## Measuring colour, and matching a grade to a reference
 

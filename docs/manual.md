@@ -417,9 +417,9 @@ Any project open in the app can also be opened in a browser: **`kuma servers`** 
 ps`) lists every daemon running on the machine with its address and project — the app's,
 on whatever port each window got, a `kuma mcp`'s private one, and any `kuma serve` — and
 `--json` prints the same for a script. Each daemon leaves a note in
-`$XDG_RUNTIME_DIR/kuma/daemons` (`~/.local/state/kuma/daemons` without one) while it
-serves; a killed one cannot take its note away, so the listing checks every note against
-its address and forgets the ones nothing answers for.
+`~/.local/state/kuma/daemons` (`$XDG_STATE_HOME`, or `KUMA_DAEMONS_DIR`) while it serves;
+a killed one cannot take its note away, so the listing forgets a note whose process has
+gone or whose port refuses connections.
 
 The shell needs to find the `kuma` binary and the checkout. It looks for `KUMA_BIN`, then
 `target/release/kuma`, then `target/debug/kuma`, then `PATH`; and for the repository the

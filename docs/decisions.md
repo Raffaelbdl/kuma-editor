@@ -497,18 +497,23 @@ assets behind the user's back is not the shell's call.
 daemon on 7455 could be found from outside; every other project the shell opens gets an
 ephemeral port, as does a `kuma mcp`'s private daemon, and the way into one of those in a
 browser was reading the shell's log. So `kuma_daemon::serve` writes
-`$XDG_RUNTIME_DIR/kuma/daemons/<addr>.json` (`running.rs`: url, project, pid, start time)
+`$XDG_STATE_HOME/kuma/daemons/<addr>.json` (`running.rs`: url, project, pid, start time)
 for as long as its server task lives, and `kuma servers` (`ps`) lists them, `--json` for a
-script.
+script. Not `$XDG_RUNTIME_DIR`, which would be the textbook home for runtime state: a
+desktop session sets it and an ssh shell, cron or `sudo -u` often does not, so the app's
+daemons and a CLI asking about them would look in two places. `KUMA_DAEMONS_DIR`
+overrides it, which is how the daemon's integration tests keep out of the real one.
 
 The shell stops its daemons with `SIGTERM`, so `kuma serve` catches it, removes its note
 and calls `process::exit` — not a return from `main`, which drops the runtime and so waits
 for blocking work such as a render, where the signal's default stopped at once. A note is
 still a claim, not a fact: a process killed with `SIGKILL`, or crashed, cannot take its note
-away. So readers check. `running::notes` deletes a note whose port refuses connections, so
-every reader agrees on that much; `kuma servers` then asks the rest what they serve, all at
-once, deletes a note whose port answers for another project, and lists one that does not
-answer as *not answering* and keeps it, because a busy daemon is still a daemon. Notes are keyed by address, so a daemon that
+away. So readers check. `running::notes` deletes a note whose process has gone (`/proc`,
+where there is one) or whose port refuses connections — refuses, not times out: a slow
+handshake is a busy machine — so every reader agrees on that much; `kuma servers` then asks
+the rest what they serve, all at once, deletes a note whose port answers for another
+project, and lists one that does not answer as *not answering* and keeps it, because a busy
+daemon is still a daemon. Notes are keyed by address, so a daemon that
 takes over a killed one's port replaces its note, and the old guard, if it ever drops,
 removes only a note that still carries its own pid. A daemon on `--bind` that left no note
 — a kuma from before notes — is still listed, found the old way.
@@ -1058,6 +1063,10 @@ does not build. It is an optimisation of one subject kind, as the workbench's if
 not a second rendering path: nothing shown there is a composite anyone could compare
 with a render. The proxy is served when the entry has one, as the preview compile takes
 it, since a proxy is usually made because the source is too heavy or too exotic to scrub.
+Only a file named like media is served (`is_media_name`): an entry's path may be absolute
+and an edit can set it, and probing such a path never handed its bytes back, so serving
+whatever it names would have made "add an entry, then GET it" a way to read any file the
+daemon's user can.
 
 What it costs is Chromium's codec list: ProRes and friends do not play. The viewer says so
 and shows the timeline's filmstrip rather than a black box, and says too that the

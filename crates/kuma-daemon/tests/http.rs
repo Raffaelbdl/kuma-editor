@@ -61,6 +61,8 @@ async fn daemon() -> (Arc<AppState>, String, tempfile::TempDir) {
         libraries: Libraries::new(dir.path().join("library")),
         bind: "127.0.0.1:0".parse().unwrap(),
     };
+    // Its note for `kuma servers` goes beside the project, not among this machine's daemons.
+    std::env::set_var("KUMA_DAEMONS_DIR", dir.path().join("daemons"));
     let (state, addr) = serve(config).await.unwrap();
     (state, addr.to_string(), dir)
 }
@@ -400,6 +402,13 @@ async fn a_media_entry_is_served_for_the_viewer_in_ranges() {
     let (status, reply) = post(&addr, "/api/project/patch", &format!(r#"{{ "patch": [{{ "op": "add", "path": "/bin/take/source/proxy", "value": "take-proxy.wav" }}], "base_revision": {revision} }}"#));
     assert!(status.contains("200"), "{status}: {reply}");
     assert_eq!(get_body(&addr, "/api/bin/take/source").1, "proxy");
+
+    // Only media is served: an entry pointed at any other file gets nothing of it.
+    std::fs::write(dir.path().join("secret.txt"), b"key").unwrap();
+    let (status, reply) = post(&addr, "/api/project/patch", &format!(r#"{{ "patch": [{{ "op": "replace", "path": "/bin/take/source/proxy", "value": {:?} }}], "base_revision": {} }}"#, dir.path().join("secret.txt"), revision + 1));
+    assert!(status.contains("200"), "{status}: {reply}");
+    let (status, body) = get_body(&addr, "/api/bin/take/source");
+    assert!(status.starts_with("HTTP/1.1 403") && !body.contains("key"), "{status}: {body}");
 
     // An overlay has no file of its own to play, and an entry that is not there has nothing.
     for id in ["tag", "nope"] {

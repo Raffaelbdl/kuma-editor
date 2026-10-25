@@ -30,12 +30,17 @@ pub struct Running {
     pub started: u64,
 }
 
-/// Where the notes are: `$XDG_RUNTIME_DIR/kuma/daemons`, which is this user's and is
-/// emptied at logout, else `$XDG_STATE_HOME/kuma/daemons` (`~/.local/state`).
+/// Where the notes are: `$XDG_STATE_HOME/kuma/daemons` (`~/.local/state`), or
+/// `KUMA_DAEMONS_DIR` (tests point it elsewhere). Not `$XDG_RUNTIME_DIR`, though notes are
+/// runtime state: it is set for a desktop session's processes and often not for an ssh
+/// shell, cron or `sudo -u`, so the app's daemons and a CLI asking about them would look in
+/// two places. A note left behind costs nothing; readers drop it.
 fn dir() -> PathBuf {
-    let base = std::env::var_os("XDG_RUNTIME_DIR")
+    if let Some(d) = std::env::var_os("KUMA_DAEMONS_DIR") {
+        return PathBuf::from(d);
+    }
+    let base = std::env::var_os("XDG_STATE_HOME")
         .map(PathBuf::from)
-        .or_else(|| std::env::var_os("XDG_STATE_HOME").map(PathBuf::from))
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/state")))
         .unwrap_or_else(std::env::temp_dir);
     base.join("kuma/daemons")
@@ -100,16 +105,36 @@ fn read(path: &Path) -> Option<Running> {
     serde_json::from_slice(&std::fs::read(path).ok()?).ok()
 }
 
-/// Every note in [`dir`] whose address still accepts connections, oldest first. A note
-/// whose address refuses them is a daemon that was killed: it is deleted here, so every
-/// reader agrees on that much. Whether what answers is still that daemon is the reader's
-/// to ask (`/api/health`), since that takes an HTTP client this crate does not have.
+/// Every note in [`dir`] that may still be a daemon, oldest first. One whose process has
+/// gone, or whose address refuses connections, was killed: it is deleted here, so every
+/// reader agrees on that much. A connection that only times out is a busy daemon (or a
+/// busy machine), not a dead one, and its note stays. Whether what answers is still that
+/// daemon is the reader's to ask (`/api/health`), since that takes an HTTP client this
+/// crate does not have. The addresses are tried at once, so a slow one costs one timeout.
 pub fn notes() -> Vec<(PathBuf, Running)> {
-    let live = |r: &Running| r.url.trim_start_matches("http://").parse::<SocketAddr>().is_ok_and(|a| std::net::TcpStream::connect_timeout(&a, std::time::Duration::from_millis(500)).is_ok());
-    notes_in(&dir())
+    let notes = notes_in(&dir());
+    let dead: Vec<bool> = std::thread::scope(|s| {
+        let checks: Vec<_> = notes.iter().map(|(_, r)| s.spawn(|| !alive(r.pid) || refused(&r.url))).collect();
+        checks.into_iter().map(|c| c.join().unwrap_or(false)).collect()
+    });
+    notes
         .into_iter()
-        .filter(|(path, r)| live(r) || { let _ = std::fs::remove_file(path); false })
+        .zip(dead)
+        .filter(|((path, _), dead)| !dead || { let _ = std::fs::remove_file(path); false })
+        .map(|(note, _)| note)
         .collect()
+}
+
+/// Whether process `pid` is running, where this machine can say (`/proc`); elsewhere it is
+/// taken to be, and the address decides.
+fn alive(pid: u32) -> bool {
+    !Path::new("/proc/self").exists() || Path::new(&format!("/proc/{pid}")).exists()
+}
+
+/// Whether nothing listens at `url` any more — refused, not merely slow.
+fn refused(url: &str) -> bool {
+    let Ok(addr) = url.trim_start_matches("http://").parse::<SocketAddr>() else { return true };
+    std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_millis(500)).is_err_and(|e| e.kind() == std::io::ErrorKind::ConnectionRefused)
 }
 
 /// The notes in `dir`, unchecked, oldest first. A file that is not a note is skipped.
@@ -167,6 +192,33 @@ mod tests {
         assert_eq!(url_for("[::]:7455".parse().unwrap()), "http://[::1]:7455");
         assert_eq!(url_for("192.168.1.4:80".parse().unwrap()), "http://192.168.1.4:80");
         assert_eq!(file_name("[::1]:7455".parse().unwrap()), "___1__7455.json");
+    }
+
+    /// A note whose process has gone, or whose port refuses, is dropped; one that is alive
+    /// and listening stays.
+    #[test]
+    fn notes_of_dead_daemons_are_dropped() {
+        let tmp = tempfile::tempdir().unwrap();
+        let listening = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let refusing = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap();
+        let live = register_in(tmp.path(), listening.local_addr().unwrap(), Path::new("/live.kuma.json")).unwrap();
+        let _closed = register_in(tmp.path(), refusing, Path::new("/closed.kuma.json")).unwrap();
+        // Listening, but by a process that is not the one the note names.
+        let other = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let _gone = register_in(tmp.path(), other.local_addr().unwrap(), Path::new("/gone.kuma.json")).unwrap();
+        let gone = tmp.path().join(file_name(other.local_addr().unwrap()));
+        let mut note = read(&gone).unwrap();
+        note.pid = u32::MAX;
+        std::fs::write(&gone, serde_json::to_vec(&note).unwrap()).unwrap();
+
+        std::env::set_var("KUMA_DAEMONS_DIR", tmp.path());
+        let kept: Vec<_> = notes().into_iter().map(|(_, r)| r.project).collect();
+        std::env::remove_var("KUMA_DAEMONS_DIR");
+        let expected: Vec<PathBuf> = if Path::new("/proc/self").exists() { vec!["/live.kuma.json".into()] } else { vec!["/gone.kuma.json".into(), "/live.kuma.json".into()] };
+        let mut kept = kept;
+        kept.sort();
+        assert_eq!(kept, expected);
+        drop(live);
     }
 
     #[test]

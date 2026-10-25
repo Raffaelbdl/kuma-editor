@@ -16,7 +16,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { driver, missing, startDaemon } from "./harness.mjs";
+import { driver, FAKE_ENGINE, missing, startDaemon } from "./harness.mjs";
 import { encodePng } from "./png.mjs";
 
 const track = (id, kind, clips = []) => ({ id, kind, name: kind, muted: false, hidden: false, transitions: [], clips });
@@ -58,11 +58,13 @@ describe("the viewer", { skip: why ? `skipping: ${why}` : false }, () => {
     fs.writeFileSync(path.join(tmp, "media/tone.wav"), wav(2));
     // Named like a video and nothing like one: what a codec the browser lacks looks like.
     fs.writeFileSync(path.join(tmp, "media/broken.mp4"), Buffer.from("not a video at all"));
+    fs.writeFileSync(path.join(tmp, "media/broken.wav"), Buffer.from("not a sound either"));
     const bin = {
       main: { name: "Main", source: { markers: [], tracks: [track("v1", "video"), track("a1", "audio")] } },
       still: { name: "Still", source: { path: "media/still.png", kind: "image" }, meta: { width: 64, height: 48, has_audio: false } },
       tone: { name: "Tone", source: { path: "media/tone.wav", kind: "audio" }, meta: { duration: 2, has_audio: true } },
       broken: { name: "Broken", source: { path: "media/broken.mp4", kind: "video" }, meta: { duration: 2, width: 160, height: 90, has_audio: false } },
+      hiss: { name: "Hiss", source: { path: "media/broken.wav", kind: "audio" }, meta: { duration: 2, has_audio: true } },
     };
     if (vp9) {
       const ff = spawnSync("ffmpeg", ["-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "testsrc=size=160x90:rate=10:duration=3", "-c:v", "libvpx-vp9", "-b:v", "200k", path.join(tmp, "media/clip.webm")], { encoding: "utf8" });
@@ -74,7 +76,11 @@ describe("the viewer", { skip: why ? `skipping: ${why}` : false }, () => {
 
     daemon = await startDaemon(projectFile, path.join(tmp, "library"));
     page = await driver(daemon.url);
-    await page.until(`document.querySelectorAll("#editor-tabs .etab").length > 0`);
+    // An engine to play the sequence on, for "one thing plays at a time".
+    await page.onNewDocument(FAKE_ENGINE);
+    await page.eval(`(location.reload(), true)`);
+    // `__engine` is the reloaded page's: tabs alone could still be the first load's.
+    await page.until(`!!window.__engine && document.querySelectorAll("#editor-tabs .etab").length > 0`);
   });
 
   after(() => {
@@ -117,6 +123,18 @@ describe("the viewer", { skip: why ? `skipping: ${why}` : false }, () => {
     await page.press(" ", "Space");
     await page.until(`${AUDIO}.paused`);
     assert.equal(await page.eval(`document.querySelector("#transport .time")?.textContent`), playhead);
+
+    // One thing plays at a time: the sequence starting pauses the file, and the file
+    // starting stops the sequence, rather than two soundtracks over each other.
+    const SEQ_PLAYING = `document.querySelector("#transport button[data-playing]").dataset.playing === "true"`;
+    await page.press(" ", "Space");
+    await page.until(`!${AUDIO}.paused`);
+    await page.eval(`document.querySelector("#transport button[data-playing]").click()`);
+    await page.until(`${SEQ_PLAYING} && ${AUDIO}.paused`);
+    await page.press(" ", "Space");
+    await page.until(`!${AUDIO}.paused && !(${SEQ_PLAYING})`);
+    await page.press(" ", "Space");
+    await page.until(`${AUDIO}.paused`);
   });
 
   it("keeps where each entry was left, and lets go of a file it is not showing", async () => {
@@ -137,6 +155,12 @@ describe("the viewer", { skip: why ? `skipping: ${why}` : false }, () => {
     assert.match(hint, /cannot play media\/broken\.mp4/);
     assert.match(hint, /not affected/, "and that the timeline, preview and render are another matter");
     assert.equal(await page.eval(`document.querySelectorAll("#viewer video").length`), 0);
+
+    // A sound keeps its waveform under the message: the daemon draws it, not the browser.
+    await page.eval(open("hiss"));
+    await page.until(`document.querySelector("#viewer .wb-hint").textContent.includes("cannot play media/broken.wav")`);
+    assert.ok(await page.eval(`!!document.querySelector("#viewer .vw-wave")`), "the waveform's place is kept");
+    await page.eval(closeTab("Hiss"));
   });
 
   it("plays a video the browser can decode, stepping its own frames", { skip: !vp9 && "no ffmpeg with libvpx-vp9" }, async () => {

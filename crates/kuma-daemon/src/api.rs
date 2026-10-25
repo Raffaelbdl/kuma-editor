@@ -774,12 +774,19 @@ async fn bin_asset(State(st): S, Path((id, file)): Path<(String, String)>) -> Re
 /// it in ranges to seek, and `ServeFile` answers those. The proxy when the entry has one,
 /// as the preview compile takes it — the viewer is a preview, and a proxy is usually made
 /// because the source is too heavy (or too exotic) to scrub. Looking, not editing.
+///
+/// Only a file named like media is served. An entry's path may be absolute and anywhere,
+/// and an edit can set it, so without that this route would hand back the bytes of any
+/// file the daemon's user can read; probing such a path never returned its contents.
 async fn media_source(State(st): S, Path(id): Path<String>, req: axum::extract::Request) -> Result<Response, ApiError> {
     let path = match read(&st.project).bin.get(&id) {
         Some(kuma_core::BinItem { source: BinSource::File { path, proxy, .. }, .. }) => proxy.clone().unwrap_or_else(|| path.clone()),
         _ => return Err(ApiError::not_found("not a media entry")),
     };
     let file = jobs::resolve_path(&st, std::path::Path::new(&path));
+    if !kuma_overlay::media::is_media_name(&file) {
+        return Err(ApiError::new(StatusCode::FORBIDDEN, format!("{path} is not named like a media file")));
+    }
     let resp = tower_http::services::ServeFile::new(file).try_call(req).await.map_err(|e| ApiError::not_found(format!("{path}: {e}")))?;
     Ok(resp.map(axum::body::Body::new))
 }

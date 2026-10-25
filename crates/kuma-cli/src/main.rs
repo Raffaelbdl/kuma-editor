@@ -936,7 +936,7 @@ async fn doctor(cli: &Cli) -> anyhow::Result<()> {
         None if port_busy(cfg.bind) => println!("daemon        port {} is busy but not answering /api/health", cfg.bind),
         None => println!("daemon        not running (kuma serve, or kuma mcp starts one)"),
     }
-    let others = kuma_daemon::running::notes().into_iter().filter(|(_, r)| r.url != kuma_daemon::running::url_for(cfg.bind)).count();
+    let others = tokio::task::spawn_blocking(kuma_daemon::running::notes).await?.into_iter().filter(|(_, r)| r.url != kuma_daemon::running::url_for(cfg.bind)).count();
     if others > 0 {
         println!("other daemons {others} on other ports — `kuma servers` lists them");
     }
@@ -1041,7 +1041,9 @@ async fn servers(cli: &Cli, as_json: bool) -> anyhow::Result<()> {
     let mut found: Vec<Server> = Vec::new();
     for ((file, note), probe) in notes.into_iter().zip(probes) {
         let health = probe.await?;
-        if health.as_ref().is_some_and(|h| !serves(h, &note.project)) {
+        // Both sides are the daemon's own `project_file`, so they are compared as written:
+        // canonicalizing one would fail for a file renamed while it is served.
+        if health.as_ref().is_some_and(|h| h["project"].as_str() != note.project.to_str()) {
             let _ = std::fs::remove_file(&file);
             continue;
         }

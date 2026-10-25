@@ -31,7 +31,12 @@ export class Viewer {
   private foot = el("div", "wb-foot");
   private play = button(icon("play"), () => this.togglePlay(), "Play it on its own (Space)", "icon");
   private clock = el("span", "time mono");
-  private scrub: HTMLInputElement = Object.assign(el("input", "wb-scrub"), { type: "range", min: "0", step: "0.001", oninput: () => this.seek(Number(this.scrub.value)) });
+  /** While it is dragged, playback does not move the thumb out from under the pointer. */
+  private scrub: HTMLInputElement = Object.assign(el("input", "wb-scrub"), {
+    type: "range", min: "0", step: "0.001", oninput: () => this.seek(Number(this.scrub.value)),
+    onpointerdown: () => { this.scrubbing = true; }, onpointerup: () => { this.scrubbing = false; },
+  });
+  private scrubbing = false;
   private hint = el("div", "muted wb-hint");
   /** The sound, drawn: the waveform the timeline draws, the whole file across. */
   private waveBox = el("div", "vw-wave");
@@ -46,6 +51,9 @@ export class Viewer {
   private raf = 0;
   /** What the waveform was last painted for; a resize that changes neither paints nothing. */
   private waveKey = "";
+  /** Bumped by every unmount, so a callback from a file this panel has let go of — an
+   *  image that fails late, a filmstrip that arrives late — can tell it is stale. */
+  private mounted = 0;
 
   constructor(private host: HTMLElement) {
     this.build();
@@ -53,6 +61,9 @@ export class Viewer {
     new ResizeObserver(() => this.drawWave()).observe(this.waveBox);
     command(Cmd.viewerTogglePlay, "Play/Pause in the Viewer", () => this.togglePlay());
     command(Cmd.viewerStep, "Step in the Viewer", (by) => this.step(by as Step));
+    // One thing plays at a time: the sequence starting pauses the file, and the file
+    // starting (`onplay`) stops the sequence.
+    store.select((s) => [s.playing], (s) => { if (s.playing) this.media?.pause(); });
   }
 
   private build() {
@@ -99,12 +110,13 @@ export class Viewer {
 
   private mount(id: string, source: FileSource) {
     this.unmount();
+    const gen = this.mounted;
     this.hint.replaceChildren();
     // The file the entry names, in its URL, so pointing the entry elsewhere is a new URL.
     const url = `/api/bin/${encodeURIComponent(id)}/source?v=${encodeURIComponent(source.proxy ?? source.path)}`;
     if (source.kind === "image") {
       // `onerror` before `src`: `Object.assign` sets them in order.
-      this.stageHost.append(Object.assign(el("img", "vw-picture image"), { alt: "", onerror: () => this.say(`This window cannot show ${source.path}. The timeline, the preview and renders read it through MLT and are not affected.`), src: url }));
+      this.stageHost.append(Object.assign(el("img", "vw-picture image"), { alt: "", onerror: () => { if (gen === this.mounted) this.say(`This window cannot show ${source.path}. The timeline, the preview and renders read it through MLT and are not affected.`); }, src: url }));
       this.foot.hidden = true;
       return;
     }
@@ -116,7 +128,11 @@ export class Viewer {
       this.sync();
       this.drawWave();
     };
-    m.onplay = () => { this.play.replaceChildren(icon("pause")); this.tick(); };
+    m.onplay = () => {
+      if (store.state.playing) store.set({ playing: false });
+      this.play.replaceChildren(icon("pause"));
+      this.tick();
+    };
     m.onpause = () => { this.play.replaceChildren(icon("play")); cancelAnimationFrame(this.raf); this.sync(); };
     m.onerror = () => this.failed(id, source);
     m.src = url;
@@ -141,6 +157,8 @@ export class Viewer {
       m.load();
     }
     this.media = null;
+    this.mounted++;
+    this.waveKey = "";
     this.stageHost.replaceChildren();
     this.play.replaceChildren(icon("play"));
   }
@@ -149,15 +167,21 @@ export class Viewer {
     this.hint.replaceChildren(el("div", "", text));
   }
 
-  /** Chromium could not decode it: say so, and show what the timeline draws of it instead. */
+  /** Chromium could not decode it: say so, and show what the timeline draws of it instead —
+   *  a sound's waveform, a video's filmstrip; the daemon makes both, whatever the codec. */
   private failed(id: string, source: FileSource) {
     const why = this.media?.error?.message || "it cannot decode this file";
     this.unmount();
+    const gen = this.mounted;
     this.foot.hidden = true;
     this.say(`This window cannot play ${source.proxy ?? source.path} (${why}). The timeline, the preview and renders read it through MLT and are not affected.`);
-    if (source.kind !== "video") return;
+    if (source.kind === "audio") {
+      this.stageHost.append(this.waveBox);
+      this.drawWave();
+      return;
+    }
     void hasStrip(id, source.path).then((made) => {
-      if (!made || this.entry()?.id !== id) return;
+      if (!made || gen !== this.mounted) return;
       this.stageHost.append(Object.assign(el("img", "vw-picture"), { alt: "", title: "Frames across the file, as the timeline draws them", src: stripUrl(id, source.path) }));
     });
   }
@@ -180,7 +204,7 @@ export class Viewer {
     const len = this.duration();
     // Only a file that has loaded knows where it is; before that its 0 is not a place.
     if (this.media && this.media.readyState >= 1) this.times.set(id, t);
-    this.scrub.value = String(t);
+    if (!this.scrubbing) this.scrub.value = String(t);
     this.clock.textContent = `${fmtTime(t, this.fps())} / ${fmtTime(len, this.fps())}`;
     this.cursor.style.left = `${len ? (100 * t) / len : 0}%`;
   }

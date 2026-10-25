@@ -94,7 +94,7 @@ struct Located {
     start: f64,
     end: f64,
     grade: Grade,
-    /// Which of its effects the grade is, when it has one.
+    /// Which of its effects the grade over the whole picture is, when it has one.
     graded_at: Option<usize>,
 }
 
@@ -102,7 +102,8 @@ fn locate(doc: &Project, id: &str) -> anyhow::Result<Located> {
     for (seq_id, seq) in doc.sequences() {
         for (ti, track) in seq.tracks.iter().enumerate() {
             if let Some((ci, c)) = track.clips.iter().enumerate().find(|(_, c)| c.id == id) {
-                let graded_at = c.effects.iter().position(|e| e.as_grade().is_some());
+                // The grade over the whole picture: a masked one is a window, not the clip's.
+                let graded_at = c.effects.iter().position(|e| e.as_grade().is_some_and(|g| g.mask.is_none()));
                 let grade = graded_at.and_then(|ei| c.effects[ei].as_grade()).cloned().unwrap_or_default();
                 return Ok(Located { sequence: seq_id.clone(), track: ti, clip: ci, start: c.start, end: c.end, grade, graded_at });
             }

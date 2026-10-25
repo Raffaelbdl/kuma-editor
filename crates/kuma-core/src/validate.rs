@@ -306,7 +306,8 @@ fn check_sequence<'a>(
                 }
             }
             // A second effect of these kinds would stack (two volume filters square the
-            // gain) or silently shadow the first (blend); only `mlt` may repeat.
+            // gain) or silently shadow the first (blend); only `mlt` may repeat, and the
+            // masked ones — each a window of its own, stacking being what they are for.
             let mut kinds = HashSet::new();
             // What the clip can show and sound, for the effects that act on neither. Only
             // for an entry that resolves to something placeable (the others are errors
@@ -317,7 +318,7 @@ fn check_sequence<'a>(
             for (ei, e) in c.effects.iter().enumerate() {
                 let ep = format!("{cp}/effects/{ei}");
                 let kind = e.kind();
-                if kind != "mlt" && !kinds.insert(kind) {
+                if kind != "mlt" && e.mask().is_none() && !kinds.insert(kind) {
                     issues.push(Issue::error(ep.clone(), format!("duplicate `{kind}` effect on this clip")));
                 }
                 // A warning, not an error: it renders, and does nothing. The editor does not
@@ -441,6 +442,18 @@ fn check_sequence<'a>(
 /// order, within `duration`, naming parameters the kind has) and the bounds of its kind,
 /// checked on every sample the effect will be evaluated at.
 fn check_effect(issues: &mut Vec<Issue>, ep: &str, e: &Effect, kind: &str, owner: (&str, f64)) {
+    if let Some(m) = e.mask() {
+        let mp = format!("{ep}/mask");
+        if ![m.x, m.y, m.w, m.h, m.rotation, m.feather].iter().all(|v| v.is_finite()) {
+            issues.push(Issue::error(mp.clone(), "a mask's numbers must be finite"));
+        }
+        if !(m.w > 0.0 && m.h > 0.0) {
+            issues.push(Issue::error(mp.clone(), "a mask's `w` and `h` must be above 0: it is the rectangle `region` is, in composition pixels"));
+        }
+        if m.feather < 0.0 {
+            issues.push(Issue::error(format!("{mp}/feather"), "a mask's feather is pixels of soft edge, 0 or more"));
+        }
+    }
     // A key naming a parameter the kind does not have is refused here rather than by serde
     // — the parameters *are* a keyframe's unknown fields — and this error can say what the
     // kind's parameters are.
@@ -977,6 +990,35 @@ mod tests {
         // The compiler's check reads no files, so what is on disk cannot fail it.
         let unread = validate(&p, &ValidationContext { check_files: false, ..ctx });
         assert!(!unread.iter().any(|i| i.path.contains("/tracks/4/")), "{unread:?}");
+    }
+
+    /// A clip has one of each kind over its whole picture and any number masked; a mask is
+    /// a rectangle with a size.
+    #[test]
+    fn masked_effects_may_repeat_and_a_mask_has_a_size() {
+        let window = json!({ "x": 10, "y": 10, "w": 100, "h": 80 });
+        let p = project(json!({
+            "bin": { "x": { "source": { "path": "x.mp4" } } },
+            "tracks": [{ "id": "v1", "clips": [
+                { "id": "a", "start": 0, "end": 1, "bin": "x", "effects": [
+                    { "type": "grade", "exposure": 0.5 },
+                    { "type": "grade", "exposure": -0.5, "mask": window },
+                    { "type": "grade", "saturation": 0.5, "mask": { "x": 0, "y": 0, "w": 50, "h": 50, "shape": "rectangle", "invert": true } },
+                    { "type": "blur", "radius": 12, "mask": window },
+                    { "type": "blur", "radius": 2 }
+                ] },
+                { "id": "b", "start": 1, "end": 2, "bin": "x", "effects": [
+                    { "type": "color", "brightness": 0.1, "mask": { "x": 0, "y": 0, "w": 0, "h": 50 } },
+                    { "type": "blur", "radius": 1, "mask": { "x": 0, "y": 0, "w": 5, "h": 5, "feather": -1 } },
+                    { "type": "grade" }, { "type": "grade" }
+                ] }
+            ] }]
+        }));
+        let m = messages(&p);
+        assert_eq!(m.len(), 3, "{m:?}");
+        assert!(m.iter().any(|m| m.contains("`w` and `h` must be above 0")), "{m:?}");
+        assert!(m.iter().any(|m| m.contains("feather")), "{m:?}");
+        assert!(m.iter().any(|m| m.contains("duplicate `grade`")), "two over the whole picture still clash: {m:?}");
     }
 
     /// A keyframe's parameters are its unknown fields, so the validator is what says a

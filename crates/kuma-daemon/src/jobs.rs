@@ -1471,7 +1471,8 @@ pub enum Before {
 }
 
 /// Which effects a `before` takes out: those of `kinds` (`grade`, `color`; every effect
-/// that acts on the picture when empty) on `clips` (every clip when empty).
+/// that acts on the picture when empty) on `clips` (every clip when empty) — or, with one
+/// clip named, the ones at `effects`, its effects' indexes: one window of several.
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Without {
@@ -1479,6 +1480,8 @@ pub struct Without {
     pub clips: Vec<String>,
     #[serde(default)]
     pub kinds: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub effects: Vec<usize>,
 }
 
 impl Before {
@@ -1491,17 +1494,26 @@ impl Before {
                 let snap = snap.ok_or_else(|| anyhow::anyhow!("revision {revision} is not in the history, which keeps the last {}", crate::history::SNAPSHOTS))?;
                 Ok(crate::history::parse(&snap)?)
             }
-            Before::Without { without: Without { clips, kinds } } => {
+            Before::Without { without: Without { clips, kinds, effects } } => {
                 if let Some(unknown) = clips.iter().find(|id| now.find_clip(id).is_none()) {
                     anyhow::bail!("no clip `{unknown}`");
                 }
+                anyhow::ensure!(effects.is_empty() || (clips.len() == 1 && kinds.is_empty()), "`without.effects` names effects of one clip: give that clip alone in `clips`, and no `kinds`");
                 let mut doc = now.clone();
                 let mut taken = 0;
                 for item in doc.bin.values_mut() {
                     let BinSource::Sequence(seq) = &mut item.source else { continue };
                     for clip in seq.tracks.iter_mut().flat_map(|t| t.clips.iter_mut()).filter(|c| clips.is_empty() || clips.contains(&c.id)) {
                         let had = clip.effects.len();
-                        clip.effects.retain(|e| !(if kinds.is_empty() { e.streams().video() } else { kinds.iter().any(|k| k == e.kind()) }));
+                        if let Some(past) = effects.iter().find(|&&i| i >= had) {
+                            anyhow::bail!("clip `{}` has {had} effects, so none at {past}", clip.id);
+                        }
+                        let mut i = 0;
+                        clip.effects.retain(|e| {
+                            i += 1;
+                            let out = if !effects.is_empty() { effects.contains(&(i - 1)) } else if kinds.is_empty() { e.streams().video() } else { kinds.iter().any(|k| k == e.kind()) };
+                            !out
+                        });
                         taken += had - clip.effects.len();
                     }
                 }

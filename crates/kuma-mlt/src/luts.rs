@@ -46,7 +46,9 @@ fn read<'g>(grade: &'g Grade, root: &Path) -> std::io::Result<Option<(String, Lu
     }
     let mut hash = Sha256::new();
     hash.update(b"kuma grade\n");
-    hash.update(serde_json::to_vec(grade).map_err(std::io::Error::other)?);
+    // What it does to a colour, not where: a mask is the compiler's, around the filter.
+    let colour = Grade { mask: None, ..grade.clone() };
+    hash.update(serde_json::to_vec(&colour).map_err(std::io::Error::other)?);
     let mut luts: Luts = [None, None];
     for (slot, path) in luts.iter_mut().zip([&grade.input_lut, &grade.look]) {
         let Some(path) = path.as_deref() else { continue };

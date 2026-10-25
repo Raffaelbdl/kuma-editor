@@ -132,8 +132,8 @@ export type Effect =
   | { type: "transform"; x?: number; y?: number; scale?: number; rotation?: number; opacity?: number; keyframes?: Keyframe[] }
   | { type: "crop"; left?: number; right?: number; top?: number; bottom?: number; radius?: number; keyframes?: Keyframe[] }
   | { type: "blend"; mode: string }
-  | { type: "blur"; radius: number; keyframes?: Keyframe[] }
-  | { type: "color"; brightness?: number; contrast?: number; saturation?: number; gamma?: number; keyframes?: Keyframe[] }
+  | { type: "blur"; radius: number; keyframes?: Keyframe[]; mask?: Mask }
+  | { type: "color"; brightness?: number; contrast?: number; saturation?: number; gamma?: number; keyframes?: Keyframe[]; mask?: Mask }
   | ({ type: "grade" } & Grade)
   | { type: "fade"; in?: number; out?: number }
   | { type: "audio_fade"; in?: number; out?: number }
@@ -145,8 +145,12 @@ export type Effect =
 
 /** A colour grade's settings, every one neutral when absent. Mirrors `Grade` in `model.rs`,
  *  which says what each does; the compiler bakes them into one LUT. */
+/** Where an effect acts (`kuma_core::Mask`): the rectangle `region` is, in composition
+ *  pixels, or the ellipse inscribed in it. */
+export interface Mask { shape?: "ellipse" | "rectangle"; x: number; y: number; w: number; h: number; rotation?: number; feather?: number; invert?: boolean }
+
 export interface Grade {
-  log?: string; input_lut?: string; temperature?: number; tint?: number; exposure?: number;
+  log?: string; input_lut?: string; mask?: Mask; temperature?: number; tint?: number; exposure?: number;
   lift?: Rgb; gamma?: Rgb; gain?: Rgb; contrast?: number;
   curve?: [number, number][]; saturation?: number; look?: string; look_amount?: number;
   blacks?: number; shadows?: number; highlights?: number; whites?: number; vibrance?: number;

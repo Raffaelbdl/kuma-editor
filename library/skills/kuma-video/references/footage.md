@@ -90,6 +90,14 @@ is also what makes it cheap: nothing is baked.
   compare a neutral in each (a white wall, a grey shirt) rather than the whole picture.
   `color` (brightness, contrast, saturation, gamma) still works and can be keyframed; a
   grade cannot — split the clip where the light changes.
+- **Part of the picture**: a `mask` on `grade`, `color` or `blur` limits it to a shape. Read
+  the region off a `sample_frames` frame (composition pixels, top-left and size, as `region`)
+  and give it as `mask: {x, y, w, h, feather}` — an ellipse unless `shape: "rectangle"`. A
+  face to hide: `blur` `radius: 24` with the face's region and `feather: 20`. A vignette:
+  `grade` `exposure: -0.7` with an ellipse a little inside the frame, `invert: true`,
+  `feather` a fifth of the height. A sky too bright: a rectangle over it, `exposure` down. Each
+  window is its own effect (a clip takes any number masked), and the mask does not move, so
+  check the first and last frame of the clip: a subject that walks out of it needs a split.
 - **Grade by measuring.** `measure_color` with a `region` on something that should match in
   life (a face, a white wall, a grey shirt — never the whole frame, whose content differs)
   gives its `exposure` and `balance` as grade numbers; compare shots by those. To fix one,

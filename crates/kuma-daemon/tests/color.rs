@@ -256,3 +256,36 @@ fn a_log_grey_card_renders_mid_grey() {
     assert!(s["exposure"].as_f64().unwrap().abs() < 0.1, "converted, it is mid grey: {s}");
     assert!(s["balance"]["temperature"].as_f64().unwrap().abs() < 0.05 && s["balance"]["tint"].as_f64().unwrap().abs() < 0.05, "and still grey: {s}");
 }
+
+/// A masked grade renders inside its window and nowhere else: the window darker by its
+/// exposure, the corners as they were — and a second, whole-picture grade on the same clip
+/// is the one a match reads and writes.
+#[test]
+fn a_masked_grade_renders_inside_its_window_only() {
+    if !renders() {
+        eprintln!("melt/ffmpeg not available; skipping");
+        return;
+    }
+    let (state, _dir) = fixture();
+    apply(&state, &json!([{ "op": "add", "path": "/bin/main/source/tracks/0/clips/0/effects", "value": [
+        { "type": "grade", "exposure": -2, "mask": { "shape": "rectangle", "x": 16, "y": 9, "w": 32, "h": 18 } }
+    ] }]));
+    let inside = run(&state, json!({ "times": [0.5], "region": { "x": 24, "y": 13, "w": 16, "h": 10 } })).unwrap();
+    let corner = run(&state, json!({ "times": [0.5], "region": { "x": 0, "y": 0, "w": 8, "h": 6 } })).unwrap();
+    let ev = |s: &Value| s["stats"]["exposure"].as_f64().unwrap();
+    assert!((ev(&inside) - ev(&corner) + 2.0).abs() < 0.15, "two stops darker inside: {} against {}", inside["stats"], corner["stats"]);
+    assert!((mean(&corner["stats"])[0] - 128.0 / 255.0).abs() < 3.0 / 255.0, "the corner untouched: {}", corner["stats"]);
+    // The window alone taken out, by its index: what it did, as a before.
+    let compared = run(&state, json!({ "times": [0.5], "region": { "x": 24, "y": 13, "w": 16, "h": 10 }, "before": { "without": { "clips": ["g"], "effects": [0] } } })).unwrap();
+    assert!((compared["before"]["stats"]["exposure"].as_f64().unwrap() - ev(&corner)).abs() < 0.05, "{compared}");
+    for (without, says) in [
+        (json!({ "clips": ["g"], "effects": [3] }), "none at 3"),
+        (json!({ "effects": [0] }), "effects of one clip"),
+    ] {
+        let e = run(&state, json!({ "times": [0.5], "before": { "without": without } })).unwrap_err().to_string();
+        assert!(e.contains(says), "{e}");
+    }
+    // A match adds the whole-picture grade rather than rewriting the window.
+    let out = run(&state, json!({ "times": [0.5], "region": { "x": 0, "y": 0, "w": 8, "h": 6 }, "match": { "clip": "g", "reference": { "neutral": true } } })).unwrap();
+    assert_eq!(out["match"]["patch"][0]["op"], "add", "{}", out["match"]);
+}

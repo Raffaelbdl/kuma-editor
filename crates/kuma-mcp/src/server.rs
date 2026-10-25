@@ -423,7 +423,9 @@ pub struct SampleFrames {
     /// comes back as a pair, before then after (with `tile`, one row each). `{"revision": N}`
     /// is the document at revision N — before an edit, its revision less one; `{"without":
     /// {"kinds"?: ["grade", "color"], "clips"?: ["c1"]}}` is the document now with those
-    /// effects taken out (every picture effect, on every clip, when a list is omitted).
+    /// effects taken out (every picture effect, on every clip, when a list is omitted); with
+    /// one clip, `"effects": [i]` takes out the effects at those indexes instead — one masked
+    /// window among several.
     #[serde(default)]
     pub before: Option<Value>,
     /// Bin id of an overlay **entry** to sample on its own, with no placement — the way to

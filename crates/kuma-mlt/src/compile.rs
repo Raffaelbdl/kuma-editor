@@ -787,7 +787,8 @@ fn emit_effects(ctx: &Ctx, w: &mut XmlWriter, span: &Span, effects: &[Effect], f
                 }
                 w.close("filter");
             }
-            Effect::Blur { radius, keyframes } => {
+            Effect::Blur { radius, keyframes, mask } => {
+                mask_start(w, &open, ctx, mask.as_ref());
                 open(w, "blur", "avfilter.gblur");
                 // σ is half the radius; the live overlay preview's CSS `blur()` says the same.
                 let sigma = |r: f64| num((r * ctx.scale / 2.0).max(0.01));
@@ -798,22 +799,27 @@ fn emit_effects(ctx: &Ctx, w: &mut XmlWriter, span: &Span, effects: &[Effect], f
                 w.property("av.sigmaV", sigma);
                 w.property("av.steps", "2");
                 w.close("filter");
+                mask_apply(w, &open, mask.as_ref());
             }
-            Effect::Color { brightness, contrast, saturation, gamma, keyframes } => {
+            Effect::Color { brightness, contrast, saturation, gamma, keyframes, mask } => {
+                mask_start(w, &open, ctx, mask.as_ref());
                 open(w, "color", "avfilter.eq");
                 for (name, stat) in [("brightness", *brightness), ("contrast", *contrast), ("saturation", *saturation), ("gamma", *gamma)] {
                     w.property(&format!("av.{name}"), anim(keyframes, &at, num(stat), |k| num(k.or(name, stat))));
                 }
                 w.close("filter");
+                mask_apply(w, &open, mask.as_ref());
             }
             Effect::Grade(g) => {
                 // The whole grade is one LUT, computed by kuma (`luts.rs`); a grade that
-                // changes nothing is no filter at all.
+                // changes nothing is no filter at all, and needs no mask.
                 if let Some(Some(path)) = ctx.luts.get(&grade_key(g)) {
+                    mask_start(w, &open, ctx, g.mask.as_ref());
                     open(w, "grade", "avfilter.lut3d");
                     w.property("av.file", path.to_string_lossy());
                     w.property("av.interp", "tetrahedral");
                     w.close("filter");
+                    mask_apply(w, &open, g.mask.as_ref());
                 }
             }
             Effect::Fade { fade_in, fade_out } | Effect::AudioFade { fade_in, fade_out } => {
@@ -913,6 +919,65 @@ fn ease_op(ease: Ease) -> &'static str {
 /// qtcrop `rect` = "left%/top%:width%xheight%", from fractions cut off each edge.
 fn crop_rect(left: f64, right: f64, top: f64, bottom: f64) -> String {
     format!("{}%/{}%:{}%x{}%", num(left * 100.0), num(top * 100.0), num((1.0 - left - right) * 100.0), num((1.0 - top - bottom) * 100.0))
+}
+
+/// Where a masked effect starts: `mask_start` keeps the frame as it is and cuts the shape
+/// out of a copy with `rotoscoping`, which the effect then works on. Nothing without a mask.
+fn mask_start(w: &mut XmlWriter, open: &dyn Fn(&mut XmlWriter, &str, &str), ctx: &Ctx, mask: Option<&Mask>) {
+    let Some(m) = mask else { return };
+    open(w, "mask", "mask_start");
+    w.property("filter", "rotoscoping");
+    w.property("filter.mode", "alpha");
+    // The shape within the alpha the frame already has, so a masked effect on a picture
+    // with holes leaves them.
+    w.property("filter.alpha_operation", "min");
+    w.property("filter.spline", mask_spline(m, ctx.project.width as f64, ctx.project.height as f64));
+    if m.invert {
+        w.property("filter.invert", "1");
+    }
+    // `rotoscoping` blurs the matte: three passes of a box `feather` wide spread the edge
+    // over about four times that, centred on the shape's edge — measured, and what the
+    // live preview draws.
+    let feather = (m.feather * ctx.scale / 4.0).round();
+    if m.feather > 0.0 {
+        w.property("filter.feather", num(feather.max(1.0)));
+        w.property("filter.feather_passes", "3");
+    }
+    w.close("filter");
+}
+
+/// Where a masked effect ends: its result, through the shape, over the frame from before it.
+fn mask_apply(w: &mut XmlWriter, open: &dyn Fn(&mut XmlWriter, &str, &str), mask: Option<&Mask>) {
+    if mask.is_none() {
+        return;
+    }
+    open(w, "unmask", "mask_apply");
+    w.property("transition", "qtblend");
+    w.close("filter");
+}
+
+/// `mask`'s shape as the Bézier spline `rotoscoping` reads — `[handle, point, handle]` per
+/// point, in fractions of the frame: a rectangle's corners, or an ellipse as four arcs (the
+/// handles a third of the way along each, scaled by the circle constant).
+fn mask_spline(m: &Mask, width: f64, height: f64) -> String {
+    let (rx, ry) = (m.w / 2.0, m.h / 2.0);
+    let (cx, cy) = (m.x + rx, m.y + ry);
+    let (sin, cos) = m.rotation.to_radians().sin_cos();
+    // Composition pixels about the centre → turned (clockwise on screen, y being down) →
+    // a fraction of the frame.
+    let at = |x: f64, y: f64| format!("[{},{}]", num((cx + x * cos - y * sin) / width), num((cy + x * sin + y * cos) / height));
+    let k = 0.552_284_749_830_793_6;
+    let points: Vec<[(f64, f64); 3]> = match m.shape {
+        MaskShape::Rectangle => [(-rx, -ry), (rx, -ry), (rx, ry), (-rx, ry)].map(|p| [p, p, p]).to_vec(),
+        MaskShape::Ellipse => vec![
+            [(rx, -k * ry), (rx, 0.0), (rx, k * ry)],
+            [(k * rx, ry), (0.0, ry), (-k * rx, ry)],
+            [(-rx, k * ry), (-rx, 0.0), (-rx, -k * ry)],
+            [(-k * rx, -ry), (0.0, -ry), (k * rx, -ry)],
+        ],
+    };
+    let points: Vec<String> = points.iter().map(|p| format!("[{}]", p.map(|(x, y)| at(x, y)).join(","))).collect();
+    format!("[{}]", points.join(","))
 }
 
 /// qtblend `rect` = "x y w h opacity" in profile pixels, from centre-relative offsets.
@@ -1109,6 +1174,50 @@ mod tests {
         opts.streams = Streams::Audio;
         let xml = compile(&p, &opts).unwrap();
         assert!(!xml.contains("lut3d") && !sound.path().join("cache").exists(), "{xml}");
+    }
+
+    /// A masked effect is its filter between `mask_start` and `mask_apply`; a masked grade
+    /// is the LUT the same grade unmasked uses, and a mask on nothing is nothing.
+    #[test]
+    fn a_mask_wraps_its_effect_and_nothing_else() {
+        let dir = tempfile::tempdir().unwrap();
+        let mask = json!({ "shape": "rectangle", "x": 480, "y": 270, "w": 960, "h": 540, "feather": 40, "invert": true });
+        let p = project(json!({
+            "fps": 30, "width": 1920, "height": 1080, "bin": { "x": { "source": { "path": "x.mp4" } } },
+            "tracks": [{ "id": "v1", "clips": [
+                { "id": "a", "start": 0, "end": 2, "bin": "x", "effects": [
+                    { "type": "grade", "exposure": 1, "mask": mask },
+                    { "type": "blur", "radius": 8 },
+                    { "type": "grade", "mask": mask }
+                ] },
+                { "id": "b", "start": 2, "end": 4, "bin": "x", "effects": [{ "type": "grade", "exposure": 1 }] }
+            ]}]
+        }));
+        let mut opts = CompileOptions::new(dir.path());
+        opts.cache_dir = dir.path().join("cache");
+        let xml = compile(&p, &opts).unwrap();
+        assert_eq!((xml.matches("mask_start").count(), xml.matches("mask_apply").count()), (1, 1), "{xml}");
+        let (start, lut, apply, blur) = (xml.find("mask_start").unwrap(), xml.find("lut3d").unwrap(), xml.find("mask_apply").unwrap(), xml.find("gblur").unwrap());
+        assert!(start < lut && lut < apply && apply < blur, "the mask is around the grade alone: {xml}");
+        assert_eq!(std::fs::read_dir(dir.path().join("cache/luts")).unwrap().count(), 1, "masked or not, one grade is one LUT");
+        // The frame's middle quarter, as fractions, corners as their own handles; outside it.
+        assert!(xml.contains(r#"<property name="filter.spline">[[[0.25,0.25],[0.25,0.25],[0.25,0.25]],[[0.75,0.25],[0.75,0.25],[0.75,0.25]],[[0.75,0.75],[0.75,0.75],[0.75,0.75]],[[0.25,0.75],[0.25,0.75],[0.25,0.75]]]</property>"#), "{xml}");
+        assert!(xml.contains(r#"<property name="filter.invert">1</property>"#) && xml.contains(r#"<property name="filter.feather">10</property>"#), "{xml}");
+        assert!(xml.contains(r#"<property name="transition">qtblend</property>"#), "{xml}");
+    }
+
+    /// An ellipse is four arcs through the middles of its rectangle's sides, and turning it
+    /// turns them about its centre, in pixels — so a circle stays round on a wide frame.
+    #[test]
+    fn an_ellipse_is_four_arcs_and_turns_about_its_centre() {
+        let circle = Mask { shape: MaskShape::Ellipse, x: 0.0, y: 0.0, w: 100.0, h: 100.0, rotation: 0.0, feather: 0.0, invert: false };
+        let points = |m: &Mask| -> Vec<Vec<[f64; 2]>> { serde_json::from_str(&mask_spline(m, 200.0, 100.0)).unwrap() };
+        let p = points(&circle);
+        assert_eq!(p.len(), 4);
+        assert_eq!(p[0][1], [0.5, 0.5], "the right of a circle at (50, 50) on a 200×100 frame");
+        assert_eq!(p[1][1], [0.25, 1.0], "then its bottom");
+        let turned = points(&Mask { rotation: 90.0, ..circle.clone() });
+        assert!((turned[0][1][0] - 0.25).abs() < 1e-6 && (turned[0][1][1] - 1.0).abs() < 1e-6, "a quarter turn clockwise puts the right at the bottom: {turned:?}");
     }
 
     /// A sound fade is a gain ramp over the clip's own first and last frames, from and to

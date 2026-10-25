@@ -930,6 +930,11 @@ button.mk-remove:hover { color: var(--danger); }
 .curve-tabs button { padding: 1px 6px; font-size: 11px; }
 .curve-tabs button.on { background: var(--accent); color: var(--bg-0); border-color: var(--accent); }
 .curve-tabs button.set:not(.on)::after { content: "•"; margin-left: 3px; color: var(--accent); }
+.mask-field { display: flex; flex-direction: column; gap: 4px; }
+.mask-head, .mask-more { display: flex; align-items: center; gap: 6px; }
+.mask-head select { flex: 1; min-width: 0; }
+.mask-more .num { width: 70px; }
+.mask-invert { display: flex; align-items: center; gap: 3px; font-size: 11px; color: var(--fg-2); }
 .curve-foot { display: flex; align-items: center; justify-content: space-between; gap: 6px; min-height: 22px; }
 
 /* The colour field (`colorfield.ts`): a swatch and its hex, opening into the picker. */

@@ -3497,6 +3497,46 @@ grade's other steps then work on the converted picture as they do on any Rec. 70
 exposure that acts on scene light *before* the tone map would recover more highlight, and is
 the open question if log footage turns out to be graded mostly by exposure.
 
+## Masks: where an effect acts
+
+**A `mask` is a field of the effect it limits, not an effect of its own** — adopted. A
+power window (a grade on a face, a sky, the edge of the frame) and a blur over a face or a
+number plate are the same thing: one effect, inside a shape, the rest of the picture as it
+was. So `grade`, `color` and `blur` — the effects that change the picture's colour or detail
+in place — take `mask: {shape, x, y, w, h, rotation, feather, invert}`, and the compiler
+wraps that effect's filter in MLT's `mask_start` / `mask_apply` pair.
+
+Rejected: a `mask` effect followed by the effects it governs, closed by an `unmask` — a
+pair that an edit to the list can break, reorder or leave open, with an effect's meaning
+depending on what sits above it. And a mask holding a list of effects: a second, nested
+effect list, which every effect editor, copy and paste, preset and keyframe path would have
+to learn. Several windows on one clip are several effects, each with its own; the list is
+already how kuma stacks things. Transforms, crops, fades and blends take none: they are
+about where the picture is and how much of it shows, which a crop or an overlay says better.
+
+Choices that would be expensive to change:
+
+- **The shape is the same rectangle `region` is**: composition pixels, `x`/`y` its top-left,
+  `w`/`h` its size, so a region an agent reads off `sample_frames` or measures with
+  `measure_color` is a mask as it is, and the ellipse is the one inscribed in it. `rotation`
+  (degrees, about its centre) and `feather` (pixels of soft edge) follow; `invert` masks the
+  outside instead. The coordinates are the frame's as the effects before this one left it —
+  a transform above it moves the picture, not the mask.
+- **`rotoscoping` cuts the shape, `qtblend` puts it back**: the shape is written as the Bézier
+  spline `rotoscoping` takes (an ellipse as four arcs), which feathers by blurring the matte;
+  `mask_apply` composites the effect's result through the matte over the frame from before
+  it. Both ship with MLT's core and Qt modules; the `frei0r` services Shotcut's masks default
+  to are not in every build (the Debian one kuma is tested on has none). The feather scales
+  with the preview size like every pixel quantity in the compiler (`Ctx::scale`).
+- **A mask is not in the LUT**: a grade's LUT is what happens to a colour, a mask is where,
+  and they stay apart — the masked grade's LUT is the same file the unmasked one would use.
+  The live grade preview (`gradepreview.ts`) draws the table through the same shape, so a
+  masked grade previews where it applies.
+
+Open: masks that move. `rotoscoping` takes a spline per keyframe and interpolates linearly;
+a mask keyed like the effects' own keyframes (`t` and the fields that change) fits that,
+but only with linear easing, and it should land with keyframed grades rather than before.
+
 ## Still open
 
 Nested sequences are done and the editor is an application now, so this list is the whole

@@ -900,6 +900,9 @@ pub enum Effect {
         radius: f64,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         keyframes: Vec<Keyframe>,
+        /// Blur only inside this shape (a face, a number plate).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        mask: Option<Mask>,
     },
     /// Basic colour correction. All default to neutral.
     Color {
@@ -913,6 +916,9 @@ pub enum Effect {
         gamma: f64,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         keyframes: Vec<Keyframe>,
+        /// Correct only inside this shape.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        mask: Option<Mask>,
     },
     /// A colour grade: white balance, exposure, lift/gamma/gain, contrast, a curve and
     /// saturation, between an optional input LUT and an optional look. See [`Grade`].
@@ -989,6 +995,37 @@ pub enum Effect {
         #[serde(default)]
         properties: BTreeMap<String, String>,
     },
+}
+
+/// Where an effect acts: inside a shape, the picture outside it as it was. The shape is the
+/// rectangle `region` is — composition pixels, `x`/`y` its top-left, `w`/`h` its size — so a
+/// region read off a sampled frame is a mask as it is; an ellipse is the one inscribed in it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Mask {
+    #[serde(default)]
+    pub shape: MaskShape,
+    pub x: f64,
+    pub y: f64,
+    pub w: f64,
+    pub h: f64,
+    /// Degrees, clockwise on screen, about the shape's centre.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub rotation: f64,
+    /// Pixels of soft edge.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub feather: f64,
+    /// Act outside the shape instead.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub invert: bool,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum MaskShape {
+    #[default]
+    Ellipse,
+    Rectangle,
 }
 
 /// A colour grade, the `grade` effect. Every field defaults to neutral, and a grade that is
@@ -1083,6 +1120,10 @@ pub struct Grade {
     pub luma_sat: Vec<[f64; 2]>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sat_sat: Vec<[f64; 2]>,
+    /// Grade only inside this shape — a power window. Not part of the grade's colour maths:
+    /// the LUT is the same, applied where the mask lets it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mask: Option<Mask>,
     /// A `.cube` LUT under the project, applied last: a creative look.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub look: Option<String>,
@@ -1118,6 +1159,7 @@ impl Default for Grade {
             hue_luma: Vec::new(),
             luma_sat: Vec::new(),
             sat_sat: Vec::new(),
+            mask: None,
             look: None,
             look_amount: 1.0,
         }
@@ -1214,6 +1256,15 @@ impl Effect {
     /// one of these.
     pub fn fits_a_sequence(&self) -> bool {
         matches!(self, Effect::Volume { .. } | Effect::Limiter { .. } | Effect::AutoLevel { .. })
+    }
+
+    /// Where it acts, for an effect that can be limited to a shape and is.
+    pub fn mask(&self) -> Option<&Mask> {
+        match self {
+            Effect::Blur { mask, .. } | Effect::Color { mask, .. } => mask.as_ref(),
+            Effect::Grade(g) => g.mask.as_ref(),
+            _ => None,
+        }
     }
 
     /// The grade, when this is one.

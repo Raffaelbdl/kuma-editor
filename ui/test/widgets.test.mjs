@@ -200,3 +200,54 @@ describe("copying an effect onto other clips", { skip: why ? `skipping: ${why}` 
     assert.equal(await page.eval(`fetch("/api/project").then(r => r.json()).then(p => p.revision)`), before + 1, "one edit");
   });
 });
+
+describe("a mask: where an effect acts", { skip: why ? `skipping: ${why}` : false }, () => {
+  let tmp, daemon, page;
+  const EFFECTS = `fetch("/api/project").then(r => r.json()).then(p => p.bin.main.source.tracks[0].clips[0].effects)`;
+
+  before(async () => {
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), "kuma-mask-"));
+    const projectFile = path.join(tmp, "mask.kuma.json");
+    fs.writeFileSync(projectFile, PROJECT.replace(`"effects": [{ "type": "grade", "curve": [[0.5, 0.6]] }]`, `"effects": [{ "type": "grade" }]`));
+    daemon = await startDaemon(projectFile);
+    page = await driver(daemon.url);
+    await page.until(`!!document.querySelector('.clip[data-id="c1"]')`);
+    await selectClip(page, "c1");
+    await page.until(`!!document.querySelector('#inspector [data-prop="where"] select')`);
+  });
+
+  after(() => {
+    page?.close();
+    daemon?.proc.kill("SIGTERM");
+    if (tmp) fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it("puts a shape in the middle of the frame, and previews the grade inside it alone", async () => {
+    await page.eval(`(() => { const s = document.querySelector('#inspector [data-prop="where"] select'); s.value = "rectangle"; s.dispatchEvent(new Event("change")); return true; })()`);
+    await page.until(`${EFFECTS}.then(e => !!e[0].mask)`);
+    assert.deepEqual(await page.eval(`${EFFECTS}.then(e => e[0].mask)`), { shape: "rectangle", x: 80, y: 45, w: 160, h: 90, feather: 9 });
+    await settled(page);
+    await page.until(`!!document.querySelector('#inspector [data-prop="where"] .vec')`);
+    // An exposure dragged: brighter inside the rectangle, the corner as it was.
+    await page.eval(`(() => { const r = document.querySelector('#inspector [data-prop="exposure"] input[type=range]'); r.value = "2"; r.dispatchEvent(new Event("input", { bubbles: true })); return true; })()`);
+    await page.until(`(() => { const c = document.querySelector("#preview .grade-live"); return c ? !c.hidden : false; })()`, 30000);
+    const at = (x, y) => `(() => { const c = document.querySelector("#preview .grade-live"); const k = document.createElement("canvas"); k.width = c.width; k.height = c.height;
+      const g = k.getContext("2d"); g.drawImage(c, 0, 0); return [...g.getImageData(Math.round(c.width * ${x}), Math.round(c.height * ${y}), 1, 1).data.slice(0, 3)]; })()`;
+    const [inside, corner] = [await page.eval(at(0.5, 0.5)), await page.eval(at(0.05, 0.05))];
+    assert.ok(inside[0] > 170 && Math.abs(corner[0] - 128) < 6, `inside ${inside}, corner ${corner}`);
+    await page.eval(`window.dispatchEvent(new PointerEvent("pointerup", { bubbles: true })), true`);
+  });
+
+  it("adds a second window of the same effect, and the whole picture takes the mask away", async () => {
+    await page.eval(`[...document.querySelectorAll('#inspector [data-prop="where"] button')].find(b => b.textContent === "+ window").click(), true`);
+    await page.until(`${EFFECTS}.then(e => e.length === 2)`);
+    const second = await page.eval(`${EFFECTS}.then(e => e[1])`);
+    assert.equal(second.type, "grade");
+    assert.equal(second.mask.shape, "ellipse");
+    await settled(page);
+    await page.until(`document.querySelectorAll('#inspector [data-prop="where"] select').length === 2`);
+    await page.eval(`(() => { const s = document.querySelector('#inspector [data-prop="where"] select'); s.value = ""; s.dispatchEvent(new Event("change")); return true; })()`);
+    await page.until(`${EFFECTS}.then(e => !("mask" in e[0]))`);
+    await settled(page);
+  });
+});

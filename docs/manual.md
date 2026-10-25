@@ -231,7 +231,11 @@ under them give the exact numbers. A grade's **curve** is drawn as it bends the 
 it, double-click to take it out; the ends move up and down only. Its tabs hold the grade's
 other curves on the same plot: red's, green's and blue's own, then saturation, hue and luma
 against hue (which wrap round, with the hues along the foot), and saturation against luma and
-against saturation, each an amount about a level line at none.
+against saturation, each an amount about a level line at none. **Where**, under a grade, a
+colour correction or a blur, limits it to a shape: an ellipse or rectangle in composition
+pixels, turned, feathered or inverted, placed by its numbers or by **Draw** (drag it over the
+frame); **+ window** adds another of the same effect inside a shape of its own, since a clip
+takes one of each over the whole picture and any number masked.
 
 **Effects are offered where they can act.** Each effect acts on the picture (transform,
 crop, blur, colour, grade, blend, fade, freeze) or the sound (volume, audio fade, limiter, auto

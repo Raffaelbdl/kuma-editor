@@ -14,14 +14,14 @@ import { desktop } from "../desktop";
 import { askForm } from "../modal";
 import { panels } from "../panelhost";
 import { binName, fmtTime, isEntryTab, store, toast } from "../store";
-import type { BinItem, Clip, ColorReference, Cue, Ease, Effect, FontFamily, Grade, PatchOp, Project, Streams, Transition, VarSpec } from "../types";
+import type { BinItem, Clip, ColorReference, Cue, Ease, Effect, FontFamily, Grade, Mask, PatchOp, Project, Streams, Transition, VarSpec } from "../types";
 import { pickRegion } from "../regionpick";
 import { previewGrade, settle, showBefore } from "../gradepreview";
 import { blueprintActions, copyEffects, makeOverlayUnique, matchSelectedToReference, removeTransition, setTransitionDuration, setTransitionKind, updateTransition, manifestOf, moveBinItem, overlayError, placeBinItem, previewImg, renderPreview, saveAsBlueprint, sharersOf } from "../edits";
 import { Animation, animationOf } from "../keyframes";
 import { historyFor } from "./history";
 import { icon, svgEl } from "../icons";
-import type { NumberOpts } from "../props";
+import type { Axis, NumberOpts } from "../props";
 import { keyStrip, numberField, showNumber, sliderField, vectorField } from "../props";
 import { colorField, wheelField } from "../colorfield";
 import { curveField } from "../curvefield";
@@ -48,7 +48,9 @@ type PropSpec =
   | { kind: "wheels"; label: string; keys: { key: string; title: string }[] }
   /** A grade's white balance and exposure, measured into place from the picture: a clip's
    *  only, since it measures the clip (a grade never sits on a sequence). */
-  | { kind: "match"; label: string };
+  | { kind: "match"; label: string }
+  /** Where the effect acts: the whole picture, or inside a shape (`Mask`). */
+  | { kind: "mask"; label: string };
 
 /** Per effect kind: the value `+ add effect` inserts, and the properties it shows, in
  *  order. Its name is its type, spaced (`title`). Adding a kind is one row here plus the
@@ -126,7 +128,7 @@ const EFFECTS: Partial<Record<Effect["type"], EffectSpec>> = {
     ],
   },
   blend: { add: { type: "blend", mode: "screen" }, props: [{ kind: "enum", key: "mode", options: BLEND_MODES }] },
-  blur: { add: { type: "blur", radius: 4 }, props: [{ kind: "num", key: "radius", step: 0.5, min: 0, suffix: "px" }] },
+  blur: { add: { type: "blur", radius: 4 }, props: [{ kind: "num", key: "radius", step: 0.5, min: 0, suffix: "px" }, { kind: "mask", label: "Where" }] },
   color: {
     add: { type: "color", ...ANIMATABLE.color },
     // Neutral is 0, 1, 1, 1. The ranges are what the eye uses; `soft` lets a typed value
@@ -136,6 +138,7 @@ const EFFECTS: Partial<Record<Effect["type"], EffectSpec>> = {
       { kind: "slider", key: "contrast", min: 0, max: 3, step: 0.01, soft: true },
       { kind: "slider", key: "saturation", min: 0, max: 3, step: 0.01, soft: true },
       { kind: "slider", key: "gamma", min: 0.1, max: 4, step: 0.01, soft: true },
+      { kind: "mask", label: "Where" },
     ],
   },
   // Compiled as one LUT, in this order (`kuma_core::grade`), so the rows read top to bottom
@@ -170,6 +173,7 @@ const EFFECTS: Partial<Record<Effect["type"], EffectSpec>> = {
       { kind: "slider", key: "vibrance", min: -1, max: 1, step: 0.01, title: "Saturation where there is little, leaving vivid colours (and faces) alone: 1 doubles a dull colour's, -1 greys it" },
       { kind: "text", key: "look", label: "Look LUT", optional: true },
       { kind: "slider", key: "look_amount", label: "Look amount", min: 0, max: 1, step: 0.01 },
+      { kind: "mask", label: "Where" },
       { kind: "match", label: "Match" },
     ],
   },
@@ -340,10 +344,14 @@ interface PropCtx {
   timed: (key: string) => Pick<NumberOpts, "readOnly" | "live">;
   /** The clip the effect is on, when it is on one: what a match measures. */
   clip?: string;
+  /** Which of the owner's effects this is. */
+  effect: number;
   /** Write several fields of the effect as one edit. */
   merge: (fields: Record<string, unknown>) => void;
   /** Show what a value would do while it is dragged, for a kind that can (`live`). */
   preview?: (key: string, v: unknown) => void;
+  /** Add another effect of this kind to the owner, with `fields` over what one starts as. */
+  another: (fields: Record<string, unknown>) => void;
 }
 
 /** One property row, whatever shape it is. What it edits is on the row: the panel styles
@@ -401,9 +409,12 @@ function propRow(p: PropSpec, ctx: PropCtx): HTMLElement {
       control.append(tabs, host);
       break;
     }
+    case "mask":
+      control = maskControls(ctx, input);
+      break;
     case "match":
       // A grade is a clip's: the model offers it to nothing else.
-      control = matchControls(ctx.clip!, ctx.merge);
+      control = matchControls(ctx.clip!, ctx.effect, ctx.merge);
       break;
     case "wheels":
       control = row("wheels wide", ...p.keys.map(({ key, title: what }) => {
@@ -930,10 +941,12 @@ export class Inspector {
         // `store.select` exists to prevent.
         timed: (key) => (timed(key) ? { readOnly: !anim!.inside, live: (set) => mine.push(() => set(anim!.at(key))) } : {}),
         clip: owner.clip,
+        effect: ei,
         merge: (fields) => replace({ ...e, ...fields }, Object.keys(fields).join(", ")),
+        another: (fields) => void store.patch([{ op: "add", path: `${owner.path}/-`, value: { ...spec.add, ...fields } }], `add ${e.type}`),
         preview: spec.live && owner.clip ? (key, v) => {
           const { type: _, ...grade } = withValue(key, v) as Effect & Grade;
-          previewGrade(owner.clip!, grade);
+          previewGrade(owner.clip!, ei, grade);
         } : undefined,
       };
       // The toggle is in the head, so a keyframed effect says so while folded too.
@@ -998,12 +1011,49 @@ export class Inspector {
 /** A button that reads as a link: it navigates the panel rather than changing anything. */
 const linkButton = (label: string, onClick: () => void, title = "") => button(label, onClick, title, "linkish");
 
+/** A mask a shape starts as: the middle quarter of the frame, edged by a twentieth of its
+ *  shorter side. */
+function startingMask(shape: "ellipse" | "rectangle"): Mask {
+  const { width: W, height: H } = store.state.project!;
+  return { shape, x: Math.round(W / 4), y: Math.round(H / 4), w: Math.round(W / 2), h: Math.round(H / 2), feather: Math.round(Math.min(W, H) / 20) };
+}
+
+/** Where an effect acts: the whole picture, or a shape — placed by its numbers or drawn on
+ *  the frame — with another window of the same kind one click away. */
+function maskControls(ctx: PropCtx, input: (key: string) => { input?: (v: unknown) => void }): HTMLElement {
+  const m = ctx.read("mask") as Mask | undefined;
+  const wrap = el("div", "mask-field wide");
+  const shapes = [{ value: "", label: "the whole picture" }, { value: "ellipse", label: "inside an ellipse" }, { value: "rectangle", label: "inside a rectangle" }];
+  const shape = selectInput(shapes, m ? m.shape ?? "ellipse" : "", (v) => ctx.write("mask", v ? { ...(m ?? startingMask(v as "ellipse")), shape: v } : undefined));
+  shape.title = "Where this effect acts: a shape keeps the rest of the picture as it was";
+  const more = button("+ window", () => ctx.another({ mask: startingMask("ellipse") }), "Add another of this effect, inside a shape of its own: a second window");
+  wrap.appendChild(row("mask-head", shape, more));
+  if (!m) return wrap;
+  const num = (key: string) => Number(ctx.read(key) ?? 0);
+  const part = (key: string, tag: string, axis: Axis, title: string) => (
+    { key, tag, axis, step: 1, suffix: "px", title, value: num(key), commit: (v: number) => ctx.write(key, v), ...input(key) });
+  // Two rows: composition pixels run to four digits, and four fields abreast clip them.
+  wrap.appendChild(vectorField([part("mask.x", "X", "x", "The shape's left edge, in composition pixels"), part("mask.y", "Y", "y", "Its top edge")]));
+  wrap.appendChild(vectorField([part("mask.w", "W", "z", "Its width"), part("mask.h", "H", "w", "Its height")]));
+  const turn = numberField(num("mask.rotation"), (v) => ctx.write("mask.rotation", v), { step: 1, suffix: "°", title: "Turned clockwise about its centre", ...input("mask.rotation") });
+  const feather = numberField(num("mask.feather"), (v) => ctx.write("mask.feather", v), { step: 1, min: 0, suffix: "px", title: "Pixels of soft edge, centred on the shape's edge", ...input("mask.feather") });
+  const invert = el("label", "mask-invert");
+  invert.append(checkbox(!!m.invert, (v) => ctx.write("mask.invert", v || undefined)), document.createTextNode("outside"));
+  invert.title = "Act outside the shape instead of inside";
+  const draw = button("Draw", async () => {
+    const r = await pickRegion("Where the effect acts");
+    if (r) ctx.write("mask", { ...m, ...r });
+  }, "Drag the shape's rectangle over the picture");
+  wrap.appendChild(row("mask-more", turn, feather, invert, draw));
+  return wrap;
+}
+
 /** What a match writes: the grade's white balance and exposure, the rest of it kept. */
 type Light = Pick<Grade, "temperature" | "tint" | "exposure">;
 
 /** A grade's match controls: make a region of this clip neutral, pick the reference, or
  *  match a region of this clip to it. Each is measured where the playhead is. */
-function matchControls(clip: string, write: (light: Light) => void): HTMLElement {
+function matchControls(clip: string, effect: number, write: (light: Light) => void): HTMLElement {
   const ref = store.state.colorReference;
   const neutral = button("Neutral…", () => void matchColour(clip, { neutral: true }, "Something white or grey in life", write),
     "Drag over something in this clip that is white or grey in life: its white balance is set to make it so");
@@ -1020,7 +1070,7 @@ function matchControls(clip: string, write: (light: Light) => void): HTMLElement
     if (on && !(found && covers(found.clip, store.state.playhead))) return toast("Put the playhead on this clip to compare it", "err");
     held = on;
     before.classList.toggle("on", on);
-    showBefore(clip, on);
+    showBefore(clip, effect, on);
   };
   before.addEventListener("pointerdown", hold(true));
   for (const end of ["pointerup", "pointerleave", "pointercancel"]) before.addEventListener(end, hold(false));

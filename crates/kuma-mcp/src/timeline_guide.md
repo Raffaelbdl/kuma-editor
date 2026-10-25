@@ -38,6 +38,15 @@ leaves (1 on a square is a circle), and the crop is of the whole frame: crop a l
 to its own edges first. `freeze` `{t}` holds the frame the clip shows `t` s in (anything it
 places, sequences too) for the whole clip; its sound runs on (mute the clip to silence it), its
 other effects act on the held frame and still move. Split the clip to play, then hold.
+`grade`, `color` and `blur` take a `mask`: `{x, y, w, h}` — the rectangle `region` is, in
+composition pixels, so a region read off a sampled frame is a mask as it is — with `shape`
+(`ellipse`, the default, inscribed in it, or `rectangle`), `rotation` (degrees clockwise),
+`feather` (pixels of soft edge) and `invert` (act outside instead). The effect acts inside and
+leaves the rest as it was: a face blurred, a sky darkened, a vignette (an inverted ellipse
+with `exposure` down). A clip has one of each effect over its whole picture and any number
+masked, so each window is an effect of its own; `before: {"without": {"clips": [id],
+"effects": [i]}}` compares one of them. Masks do not move yet: split the clip where the
+subject does.
 `grade` is a colour grade, every field neutral when left out, applied in this order:
 `log` (the camera log the footage was shot in, converted to Rec. 709 by kuma: `s-log3-cine`,
 `s-log3`, `v-log`, `c-log2`, `c-log3`, `logc3`, `logc4`, `apple-log`, `d-log`, `f-log`, `f-log2`,
@@ -61,7 +70,8 @@ grey in life) or like a region elsewhere (`{"t", "region"?}`), answering a `patc
 `apply_edits`. Pick what should match in life — a face, a wall — not the whole frame, whose
 content differs; then look at what it did. **Before and after**: `sample_frames` and
 `measure_color` take `before` — `{"revision": N}` (the document before an edit: the revision
-`apply_edits` answered, less one) or `{"without": {"kinds": ["grade"], "clips"?: [...]}}` — and
+`apply_edits` answered, less one) or `{"without": {"kinds": ["grade"], "clips"?: [...]}}` (one
+clip and `"effects": [i]` takes out just those of its effects) — and
 return each moment as a pair; with `tile` one sheet, a row per moment, before on the left. Check
 a grade at several moments of each clip it is on, not one.
 `auto_level` `{target (LUFS, -23), window (s, 3), max_gain, min_gain (dB, ±15)}` rides a

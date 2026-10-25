@@ -507,6 +507,9 @@ function applyEffects(iframe: HTMLIFrameElement, c: Clip, local: number, W: numb
   let filter = "";
   let clip = "";
   for (const e of c.effects) {
+    // A masked effect acts on part of the picture, which a filter on the whole iframe
+    // cannot say: only the render draws it.
+    if ("mask" in e && e.mask) continue;
     if (e.type === "transform") {
       const t = transformAt(e, local);
       transform += ` translate(${t.x}px, ${t.y}px) scale(${t.scale}) rotate(${t.rotation}deg)`;

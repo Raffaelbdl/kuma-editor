@@ -139,6 +139,24 @@
       <property name="av.file">$CACHE/luts/28d933781bb6bd8fda49728f3500d262.cube</property>
       <property name="av.interp">tetrahedral</property>
     </filter>
+    <filter id="clip_c2_mask4" in="45" out="179">
+      <property name="mlt_service">mask_start</property>
+      <property name="filter">rotoscoping</property>
+      <property name="filter.mode">alpha</property>
+      <property name="filter.alpha_operation">min</property>
+      <property name="filter.spline">[[[0.761583,0.481664],[0.741481,0.615031],[0.72138,0.748397]],[[0.59697,0.805011],[0.463604,0.741481],[0.330237,0.677952]],[[0.238417,0.518336],[0.258519,0.384969],[0.27862,0.251603]],[[0.40303,0.194989],[0.536396,0.258519],[0.669763,0.322048]]]</property>
+      <property name="filter.feather">15</property>
+      <property name="filter.feather_passes">3</property>
+    </filter>
+    <filter id="clip_c2_grade5" in="45" out="179">
+      <property name="mlt_service">avfilter.lut3d</property>
+      <property name="av.file">$CACHE/luts/e8117d9d98c4767e12c5cfc8718db0dd.cube</property>
+      <property name="av.interp">tetrahedral</property>
+    </filter>
+    <filter id="clip_c2_unmask6" in="45" out="179">
+      <property name="mlt_service">mask_apply</property>
+      <property name="transition">qtblend</property>
+    </filter>
   </producer>
   <producer id="clip_c3" in="0" out="29">
     <property name="mlt_service">color</property>
@@ -213,6 +231,24 @@
   </playlist>
   <playlist id="clip_s1">
     <entry producer="clip_s1_seq" in="0" out="119"/>
+    <filter id="clip_s1_mask1" in="0" out="119">
+      <property name="mlt_service">mask_start</property>
+      <property name="filter">rotoscoping</property>
+      <property name="filter.mode">alpha</property>
+      <property name="filter.alpha_operation">min</property>
+      <property name="filter.spline">[[[0,0],[0,0],[0,0]],[[0.333333,0],[0.333333,0],[0.333333,0]],[[0.333333,0.333333],[0.333333,0.333333],[0.333333,0.333333]],[[0,0.333333],[0,0.333333],[0,0.333333]]]</property>
+      <property name="filter.invert">1</property>
+    </filter>
+    <filter id="clip_s1_blur2" in="0" out="119">
+      <property name="mlt_service">avfilter.gblur</property>
+      <property name="av.sigma">3</property>
+      <property name="av.sigmaV">3</property>
+      <property name="av.steps">2</property>
+    </filter>
+    <filter id="clip_s1_unmask3" in="0" out="119">
+      <property name="mlt_service">mask_apply</property>
+      <property name="transition">qtblend</property>
+    </filter>
   </playlist>
   <playlist id="clip_s2_seq">
     <entry producer="seq_intro" in="0" out="179"/>

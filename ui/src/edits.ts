@@ -548,7 +548,10 @@ export async function pasteEffects(): Promise<void> {
     const carries = clipStreams(p, track, clip);
     if (!path) continue;
     for (const e of effects.filter((x) => actsOn(x.type, carries))) {
-      const at = e.type === "mlt" ? -1 : clip.effects.findIndex((x) => x.type === e.type);
+      // A clip has one of each over its whole picture, and any number masked: a mask
+      // pasted is one more window, not a replacement.
+      const masked = (x: Effect) => "mask" in x && !!x.mask;
+      const at = e.type === "mlt" || masked(e) ? -1 : clip.effects.findIndex((x) => x.type === e.type && !masked(x));
       ops.push(at >= 0 ? { op: "replace", path: `${path}/effects/${at}`, value: e } : { op: "add", path: `${path}/effects/-`, value: e });
     }
   }

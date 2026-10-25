@@ -16,6 +16,7 @@ pub mod markers;
 pub mod media;
 pub mod overlays;
 pub mod preview;
+pub mod running;
 pub mod state;
 
 use std::net::SocketAddr;
@@ -35,11 +36,13 @@ pub async fn serve(config: Config) -> anyhow::Result<(Arc<AppState>, SocketAddr)
     let addr = listener.local_addr()?;
     tracing::info!("kuma daemon listening on http://{addr}");
     let st = state.clone();
+    // Noted for `kuma servers` for as long as this task runs, which is as long as it serves.
+    let note = running::register(addr, &state.config.project_file);
     tokio::spawn(async move {
         if let Err(e) = axum::serve(listener, app).await {
             tracing::error!("server error: {e}");
         }
-        drop(st);
+        drop((st, note));
     });
     Ok((state, addr))
 }

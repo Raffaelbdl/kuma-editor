@@ -28,6 +28,8 @@ async fn daemon() -> (Arc<AppState>, String, tempfile::TempDir) {
     let project_file = dir.path().join("t.kuma.json");
     std::fs::write(&project_file, PROJECT).unwrap();
     let config = Config { project_file, repo_root: dir.path().join("repo"), libraries: Libraries::new(dir.path().join("library")), bind: "127.0.0.1:0".parse().unwrap() };
+    // Its note for `kuma servers` goes beside the project, not among this machine's daemons.
+    std::env::set_var("KUMA_DAEMONS_DIR", dir.path().join("daemons"));
     let (state, addr) = serve(config).await.unwrap();
     (state, addr.to_string(), dir)
 }

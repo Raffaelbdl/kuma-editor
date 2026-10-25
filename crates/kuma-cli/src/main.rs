@@ -39,6 +39,14 @@ enum LibraryCmd {
 enum Cmd {
     /// Run the daemon (HTTP API, UI, preview) in the foreground.
     Serve,
+    /// List the daemons running on this machine: the URL to open each one's editor in a
+    /// browser, and the project it serves. Ones that have died are forgotten as they are found.
+    #[command(visible_alias = "ps")]
+    Servers {
+        /// Print them as JSON, for a script.
+        #[arg(long)]
+        json: bool,
+    },
     /// Run as an MCP server on stdio (starts the daemon in-process unless one is running).
     Mcp {
         /// Use an already-running daemon at this URL instead of starting one.
@@ -373,12 +381,16 @@ fn open(cli: &Cli) -> anyhow::Result<std::sync::Arc<kuma_daemon::AppState>> {
     Ok(std::sync::Arc::new(kuma_daemon::AppState::load(config(cli)?)?))
 }
 
+/// Whether a daemon's `/api/health` names `project` (canonical, as `absolute` makes it).
+fn serves(health: &serde_json::Value, project: &Path) -> bool {
+    health["project"].as_str().and_then(|p| Path::new(p).canonicalize().ok()).is_some_and(|p| p == project)
+}
+
 /// The running daemon for *this* project at `--bind`, if any.
 async fn running_daemon(cli: &Cli) -> Option<String> {
     let url = format!("http://{}", cli.bind);
     let h = kuma_mcp::client::health(&url).await?;
-    let theirs = h["project"].as_str().map(PathBuf::from).and_then(|p| p.canonicalize().ok())?;
-    (theirs == absolute(&cli.project).ok()?).then_some(url)
+    serves(&h, &absolute(&cli.project).ok()?).then_some(url)
 }
 
 /// Run a job on the daemon serving this project, when one does, so it shows in the editor's
@@ -429,6 +441,21 @@ async fn main() -> anyhow::Result<()> {
         Cmd::Serve => {
             let (state, addr) = kuma_daemon::serve(config(&cli)?).await?;
             println!("kuma: http://{addr}  project={}", state.config.project_file.display());
+            #[cfg(unix)]
+            {
+                // The desktop shell stops its daemons with SIGTERM. Exiting from here rather
+                // than returning skips the runtime's wait on blocking work (a render), as the
+                // signal's default did; only the note for `kuma servers` is taken first.
+                let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+                tokio::select! {
+                    r = tokio::signal::ctrl_c() => r?,
+                    _ = term.recv() => {
+                        kuma_daemon::running::forget_mine();
+                        std::process::exit(0);
+                    }
+                }
+            }
+            #[cfg(not(unix))]
             tokio::signal::ctrl_c().await?;
         }
         Cmd::Mcp { daemon } => {
@@ -447,6 +474,7 @@ async fn main() -> anyhow::Result<()> {
             kuma_mcp::run_stdio(url, note).await?;
         }
         Cmd::Doctor => doctor(&cli).await?,
+        Cmd::Servers { json } => servers(&cli, *json).await?,
         Cmd::Render { preset, output, sequence } => {
             let req = kuma_daemon::jobs::RenderRequest { preset: preset.clone(), output: output.as_deref().map(absolute).transpose()?, sequence: sequence.clone(), ..Default::default() };
             let out = match on_daemon(&cli, "/api/render", "render", serde_json::to_value(&req)?).await? {
@@ -908,6 +936,10 @@ async fn doctor(cli: &Cli) -> anyhow::Result<()> {
         None if port_busy(cfg.bind) => println!("daemon        port {} is busy but not answering /api/health", cfg.bind),
         None => println!("daemon        not running (kuma serve, or kuma mcp starts one)"),
     }
+    let others = tokio::task::spawn_blocking(kuma_daemon::running::notes).await?.into_iter().filter(|(_, r)| r.url != kuma_daemon::running::url_for(cfg.bind)).count();
+    if others > 0 {
+        println!("other daemons {others} on other ports — `kuma servers` lists them");
+    }
     let mcp = cfg.project_root().join(".mcp.json");
     println!("mcp config    {}", if mcp.is_file() { mcp.display().to_string() } else { "none — run `kuma mcp-config`".into() });
     let skill_dir = skill::dir(&cfg.project_root());
@@ -984,6 +1016,75 @@ fn write_mcp_config(out: &Path, json: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// One running daemon as `kuma servers` reports it.
+#[derive(serde::Serialize)]
+struct Server {
+    url: String,
+    project: PathBuf,
+    /// Absent for a daemon found on `--bind` that left no note (a kuma from before notes).
+    pid: Option<u32>,
+    started: Option<u64>,
+    revision: Option<u64>,
+    /// False when something holds the port but `/api/health` did not answer in time.
+    answering: bool,
+}
+
+/// `kuma servers`: every daemon's note that still has something on its port, asked what it
+/// serves — all at once, so a busy one costs one timeout rather than one each. A note whose
+/// address answers for another project is a daemon that was killed, its port since reused:
+/// its note is deleted. One that does not answer is listed as such and kept, since a busy
+/// daemon is still a daemon. A daemon on `--bind` with no note is listed too.
+async fn servers(cli: &Cli, as_json: bool) -> anyhow::Result<()> {
+    let notes = tokio::task::spawn_blocking(kuma_daemon::running::notes).await?;
+    // Every probe is spawned before any is awaited, so they run at once.
+    let probes: Vec<_> = notes.iter().map(|(_, n)| { let url = n.url.clone(); tokio::spawn(async move { kuma_mcp::client::health(&url).await }) }).collect();
+    let mut found: Vec<Server> = Vec::new();
+    for ((file, note), probe) in notes.into_iter().zip(probes) {
+        let health = probe.await?;
+        // Both sides are the daemon's own `project_file`, so they are compared as written:
+        // canonicalizing one would fail for a file renamed while it is served.
+        if health.as_ref().is_some_and(|h| h["project"].as_str() != note.project.to_str()) {
+            let _ = std::fs::remove_file(&file);
+            continue;
+        }
+        let revision = health.as_ref().and_then(|h| h["revision"].as_u64());
+        found.push(Server { url: note.url, project: note.project, pid: Some(note.pid), started: Some(note.started), revision, answering: health.is_some() });
+    }
+    let url = kuma_daemon::running::url_for(cli.bind);
+    if !found.iter().any(|s| s.url == url) {
+        if let Some(h) = kuma_mcp::client::health(&url).await {
+            let project = PathBuf::from(h["project"].as_str().unwrap_or("?"));
+            found.push(Server { url, project, pid: None, started: None, revision: h["revision"].as_u64(), answering: true });
+        }
+    }
+    if as_json {
+        println!("{}", serde_json::to_string_pretty(&found)?);
+        return Ok(());
+    }
+    if found.is_empty() {
+        println!("no kuma daemon is running (kuma serve -p <project>, or open one in the app)");
+        return Ok(());
+    }
+    let now = kuma_daemon::history::now_ms() / 1000;
+    let width = found.iter().map(|s| s.url.len()).max().unwrap_or(0);
+    for s in &found {
+        let about: Vec<String> = [s.pid.map(|p| format!("pid {p}")), s.started.map(|t| format!("up {}", since(now.saturating_sub(t)))), (!s.answering).then(|| "not answering".into())].into_iter().flatten().collect();
+        let about = if about.is_empty() { String::new() } else { format!("  ({})", about.join(", ")) };
+        println!("{:width$}  {}{about}", s.url, s.project.display());
+    }
+    Ok(())
+}
+
+/// `secs` as the largest unit that fits: `40s`, `12m`, `3h`, `2d`.
+fn since(secs: u64) -> String {
+    match secs {
+        s if s < 60 => format!("{s}s"),
+        s if s < 3600 => format!("{}m", s / 60),
+        s if s < 86400 => format!("{}h", s / 3600),
+        s => format!("{}d", s / 86400),
+    }
+}
+
 /// Decide which daemon the MCP server talks to:
 /// 1. a running daemon on `--bind` that serves *this* project → use it;
 /// 2. a daemon serving another project, a busy port, or a lost bind race → a private
@@ -993,9 +1094,8 @@ async fn resolve_daemon(cli: &Cli) -> anyhow::Result<(String, Option<String>)> {
     let mut cfg = config(cli)?;
     let url = format!("http://{}", cfg.bind);
     let wanted = cfg.project_file.clone();
-    let serves_us = |h: &serde_json::Value| h["project"].as_str().map(PathBuf::from).and_then(|p| p.canonicalize().ok()).as_ref() == Some(&wanted);
     let note = match kuma_mcp::client::health(&url).await {
-        Some(h) if serves_us(&h) => return Ok((url, None)),
+        Some(h) if serves(&h, &wanted) => return Ok((url, None)),
         Some(h) => {
             let theirs = h["project"].as_str().unwrap_or("?");
             format!("This MCP server is connected to a PRIVATE daemon for {} because the daemon at {url} (the one behind the browser UI) serves a different project, {theirs}. Edits here will not show in that UI. To unify: run `kuma mcp-config --project {theirs}` and reconnect, or restart `kuma serve -p {}`.", wanted.display(), wanted.display())
@@ -1011,7 +1111,7 @@ async fn resolve_daemon(cli: &Cli) -> anyhow::Result<(String, Option<String>)> {
                     for _ in 0..10 {
                         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
                         if let Some(h) = kuma_mcp::client::health(&url).await {
-                            if serves_us(&h) {
+                            if serves(&h, &wanted) {
                                 return Ok((url, None));
                             }
                             break;
@@ -1036,6 +1136,11 @@ fn port_busy(addr: SocketAddr) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn uptime_reads_in_one_unit() {
+        assert_eq!([since(5), since(61), since(7200), since(3 * 86400)], ["5s", "1m", "2h", "3d"]);
+    }
 
     /// `--no-overlays` is the MCP tool's `overlays: false`: footage only, nothing baked.
     #[test]

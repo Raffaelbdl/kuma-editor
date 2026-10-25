@@ -13,7 +13,7 @@ import { keysFor } from "../shortcuts";
 import { desktop } from "../desktop";
 import { askForm } from "../modal";
 import { panels } from "../panelhost";
-import { store, toast } from "../store";
+import { isEntryTab, store, toast } from "../store";
 import type { BinItem, Clip, Cue, Ease, Effect, FontFamily, PatchOp, Project, Streams, Transition, VarSpec } from "../types";
 import { blueprintActions, makeOverlayUnique, removeTransition, setTransitionDuration, setTransitionKind, updateTransition, manifestOf, moveBinItem, overlayError, placeBinItem, previewImg, renderPreview, saveAsBlueprint, sharersOf } from "../edits";
 import { Animation, animationOf } from "../keyframes";
@@ -21,7 +21,7 @@ import { historyFor } from "./history";
 import { icon, svgEl } from "../icons";
 import type { NumberOpts } from "../props";
 import { keyStrip, numberField, showNumber, sliderField, vectorField } from "../props";
-import { LUMAS, SEQUENCE_EFFECTS, sourceAfter, actsOn, ANIMATABLE, binItem, binPath, canPlace, canTimeWarp, childrenOf, clipStreams, covers, expandPreset, fpsValue, hasAudio, isColorSource, isFileSource, isFolderSource, isOverlaySource, isSequenceSource, isTimedMedia, placementsOf, seqDuration, seqPath, sequenceOf, sequenceStreams, streamsOf, wouldNest } from "../types";
+import { LUMAS, SEQUENCE_EFFECTS, sourceAfter, actsOn, ANIMATABLE, binItem, binPath, canPlace, canTimeWarp, childrenOf, clipStreams, covers, expandPreset, hasAudio, isColorSource, isFileSource, isFolderSource, isOverlaySource, isSequenceSource, isTimedMedia, itemKind, mediaFacts, placementsOf, seqDuration, seqPath, sequenceOf, sequenceStreams, streamsOf, wouldNest } from "../types";
 
 const presetsPromise = api.effectPresets().catch(() => []);
 
@@ -601,11 +601,14 @@ export class Inspector {
       (open as HTMLButtonElement).disabled = id === store.state.sequence;
       actions.appendChild(open);
     }
-    // The same gesture for the other kind of entry that has an editor of its own.
-    if (isOverlaySource(item.source)) {
-      const open = button("Open", () => store.openOverlay(id), "Iterate on it in the overlay workbench");
+    // The same gesture for the other kinds of entry that open on their own.
+    if (isEntryTab(p, id)) {
+      const what = isOverlaySource(item.source) ? "Iterate on it in the overlay workbench" : `${itemKind(item) === "image" ? "Look at it" : "Play it"} in the viewer, on its own`;
+      const open = button("Open", () => store.openEntry(id), what);
       (open as HTMLButtonElement).disabled = id === store.state.tab;
       actions.appendChild(open);
+    }
+    if (isOverlaySource(item.source)) {
       actions.appendChild(button("Preview", () => void renderPreview({ bins: [id] }), "Render its animated preview with these vars"));
       actions.appendChild(button("Save as blueprint", () => void saveAsBlueprint(id), "Copy this overlay into your library, to reuse in other projects"));
     }
@@ -628,9 +631,7 @@ export class Inspector {
   private renderSource(p: Project, id: string, item: BinItem, bp: string) {
     if (isFileSource(item.source)) {
       this.host.appendChild(field("Path", textInput(item.source.path, (v) => store.patch([{ op: "replace", path: `${bp}/source/path`, value: v }], `path ${id}`))));
-      const m = item.meta;
-      const rate = m?.fps ? `${+fpsValue(m.fps).toFixed(3)} fps${m.variable_fps ? " (variable)" : ""}` : "";
-      const facts = [m?.duration ? `${m.duration.toFixed(2)}s` : "", m?.width ? `${m.width}×${m.height}` : "", rate, m?.alpha ? "alpha" : "", m?.has_audio ? "audio" : ""].filter(Boolean).join(" · ");
+      const facts = mediaFacts(item.meta);
       if (facts) this.host.appendChild(field("Probed", el("div", "mono muted", facts)));
       return;
     }

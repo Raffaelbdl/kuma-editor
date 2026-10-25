@@ -57,6 +57,25 @@ export const missing = () =>
   : !findBrowser() ? "no Chromium"
   : null;
 
+/** The preview engine's socket, played by the page: ready at once, and every command the
+ *  page sends kept in `window.__engine`. Every other socket is the real one. */
+export const FAKE_ENGINE = `(() => {
+  const Real = window.WebSocket;
+  window.__engine = [];
+  window.WebSocket = function (url, protocols) {
+    if (!String(url).includes("/api/preview/ws")) return new Real(url, protocols);
+    const ws = { readyState: 0, binaryType: "blob", onopen: null, onmessage: null, onclose: null, onerror: null,
+      send(m) { window.__engine.push(String(m)); }, close() {} };
+    setTimeout(() => {
+      ws.readyState = 1;
+      ws.onopen?.({});
+      ws.onmessage?.({ data: JSON.stringify({ ready: true, scale: 0.5 }) });
+    }, 50);
+    return ws;
+  };
+  window.WebSocket.OPEN = 1;
+})();`;
+
 /** A daemon serving `projectFile`, answering on the returned url. */
 export async function startDaemon(projectFile, library) {
   const port = await freePort();
@@ -154,6 +173,14 @@ export async function driver(url) {
      *  cannot prove: a drag, or a double-click the page's pointer handlers might swallow. */
     mouse(type, x, y, opts = {}) {
       return send("Input.dispatchMouseEvent", { type, x, y, button: type === "mouseMoved" && !opts.held ? "none" : "left", buttons: opts.held || type === "mousePressed" ? 1 : 0, clickCount: opts.clickCount ?? 1 });
+    },
+    /** A real key press through the browser's input pipeline — what a page sees as the
+     *  person's gesture, which a synthetic `KeyboardEvent` is not (`play()` refuses one). */
+    async press(key, code = key, opts = {}) {
+      const vk = { " ": 32, ArrowLeft: 37, ArrowRight: 39 }[key] ?? key.toUpperCase().charCodeAt(0);
+      const base = { key, code, windowsVirtualKeyCode: vk, modifiers: opts.shift ? 8 : 0 };
+      await send("Input.dispatchKeyEvent", { type: "keyDown", ...base, ...(key.length === 1 ? { text: key } : {}) });
+      await send("Input.dispatchKeyEvent", { type: "keyUp", ...base });
     },
     /** A PNG of the viewport, written to `file` — for looking at a page while writing a
      *  test, not for asserting on. */

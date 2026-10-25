@@ -18,7 +18,7 @@ function entries(): Entry[] {
   const out: Entry[] = list()
     // Ones that need an argument from somewhere else (a step, a scale, a kind) are not
     // commands a name can run on its own.
-    .filter((c) => ![Cmd.seekEdge, Cmd.previewScale, Cmd.overlayStep, Cmd.addTrack, Cmd.palette].includes(c.id as never))
+    .filter((c) => ![Cmd.seekEdge, Cmd.previewScale, Cmd.overlayStep, Cmd.viewerStep, Cmd.addTrack, Cmd.palette].includes(c.id as never))
     .map((c) => ({ label: c.label, keys: keysFor(c.id), run: () => run(c.id) }));
   for (const kind of ["video", "overlay", "audio"]) out.push({ label: `Add ${kind} track`, run: () => run(Cmd.addTrack, kind) });
   const p = store.state.project;

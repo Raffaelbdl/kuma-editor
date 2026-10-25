@@ -880,6 +880,7 @@ dependencies = [
  "kuma-mcp",
  "kuma-mlt",
  "kuma-overlay",
+ "serde",
  "serde_json",
  "tokio",
  "tracing",

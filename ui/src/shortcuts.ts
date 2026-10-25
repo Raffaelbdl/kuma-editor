@@ -10,10 +10,10 @@ import { Cmd, command, run } from "./commands";
 import { el, row } from "./dom";
 import { showInfo } from "./modal";
 import { panels } from "./panelhost";
-import { SEQUENCE_TAB, store } from "./store";
+import { isMediaEntry, SEQUENCE_TAB, store } from "./store";
 
 /** Which part of the shortcut list a binding belongs to, in the order they are shown. */
-const SECTIONS = ["Panels", "Transport", "Editing", "Overlay workbench"] as const;
+const SECTIONS = ["Panels", "Transport", "Editing", "Workbench and viewer"] as const;
 type Section = (typeof SECTIONS)[number];
 
 /** Matched top to bottom; the first whose `when` passes wins. */
@@ -40,8 +40,13 @@ const panelBindings = (): Binding[] => panels.all.filter((s) => s.key).map((s) =
 const PANELS: Binding = { when: () => false, action: "" };
 const bindings = (): Binding[] => BINDINGS.flatMap((b) => (b === PANELS ? panelBindings() : [b]));
 const frame = () => 1 / store.fps;
-/** The overlay workbench is on screen, and has its own clock. */
-const onOverlay = () => store.state.tab !== SEQUENCE_TAB;
+/** An entry's own tab is on screen — the workbench or the viewer — so there is no timeline
+ *  for a timeline key to act on. */
+const onEntry = () => store.state.tab !== SEQUENCE_TAB;
+/** The viewer is on screen (else the workbench is, on an entry's tab). */
+const onMedia = () => isMediaEntry(store.state.project, store.state.tab);
+/** A frame, or with Shift a second, of the entry on screen, in its own time. */
+const entryStep = (e: KeyboardEvent, sign: number) => run(onMedia() ? Cmd.viewerStep : Cmd.overlayStep, e.shiftKey ? { seconds: sign } : { frames: sign });
 
 const BINDINGS: Binding[] = [
   { when: (e) => mod(e) && e.key.toLowerCase() === "k", action: Cmd.palette, preventDefault: true,
@@ -49,17 +54,18 @@ const BINDINGS: Binding[] = [
   { when: (e) => e.key === "`" && !mod(e) && !e.altKey, action: Cmd.toggleMode, preventDefault: true,
     list: { where: "Panels", keys: "`", what: "Den or power: the frame and what the agent did, or every panel docked" } },
   PANELS,
-  // A marker is a note on the frame you are looking at; the workbench has no timeline to
-  // hold one.
-  { when: (e) => bare(e, "p") && !onOverlay(), action: Cmd.addMarker, preventDefault: true,
+  // A marker is a note on the frame you are looking at; the workbench and the viewer have no
+  // timeline to hold one.
+  { when: (e) => bare(e, "p") && !onEntry(), action: Cmd.addMarker, preventDefault: true,
     list: { where: "Panels", keys: "P", what: "A marker at the playhead: a note on this frame — for the agent, or for you" } },
   // Transport means the surface you are looking at: on the workbench it is that overlay's
-  // own time, not the sequence's. Everything below here is the same key on the timeline.
-  { when: (e) => e.code === "Space" && onOverlay(), action: Cmd.overlayTogglePlay, preventDefault: true,
-    list: { where: "Overlay workbench", keys: "Space", what: "Play or pause this overlay on its own" } },
-  { when: (e) => e.key === "ArrowLeft" && onOverlay(), action: (e) => run(Cmd.overlayStep, e.shiftKey ? -store.fps : -1), preventDefault: true,
-    list: { where: "Overlay workbench", keys: "← →", what: "Step a frame in the overlay's own time (Shift: a second)" } },
-  { when: (e) => e.key === "ArrowRight" && onOverlay(), action: (e) => run(Cmd.overlayStep, e.shiftKey ? store.fps : 1), preventDefault: true },
+  // own time, in the viewer the file's, not the sequence's. Everything below here is the
+  // same key on the timeline.
+  { when: (e) => e.code === "Space" && onEntry(), action: () => run(onMedia() ? Cmd.viewerTogglePlay : Cmd.overlayTogglePlay), preventDefault: true,
+    list: { where: "Workbench and viewer", keys: "Space", what: "Play or pause this overlay, video or sound on its own" } },
+  { when: (e) => e.key === "ArrowLeft" && onEntry(), action: (e) => entryStep(e, -1), preventDefault: true,
+    list: { where: "Workbench and viewer", keys: "← →", what: "Step a frame in its own time (Shift: a second)" } },
+  { when: (e) => e.key === "ArrowRight" && onEntry(), action: (e) => entryStep(e, 1), preventDefault: true },
   { when: (e) => e.code === "Space", action: Cmd.togglePlay, preventDefault: true,
     list: { where: "Transport", keys: "Space", what: "Play or pause" } },
   // Alt is the coarse jump: to the next place something starts or ends. Before the plain
@@ -80,25 +86,25 @@ const BINDINGS: Binding[] = [
     list: { where: "Editing", keys: "S", what: "Split the selected clips at the playhead" } },
   // Auto-key gave R to the render queue (the letters are the panels' now) and kept it with
   // Shift: still R for record, as Kdenlive and Blender have it.
-  { when: (e) => e.key.toLowerCase() === "r" && e.shiftKey && !mod(e) && !e.altKey && !onOverlay(), action: Cmd.autoKey,
+  { when: (e) => e.key.toLowerCase() === "r" && e.shiftKey && !mod(e) && !e.altKey && !onEntry(), action: Cmd.autoKey,
     list: { where: "Editing", keys: "Shift + R", what: "Auto-key: while on, changing an effect's value writes a keyframe at the playhead" } },
   { when: (e) => e.key === "Delete" || e.key === "Backspace", action: Cmd.deleteClip,
     list: { where: "Editing", keys: "Del", what: "Delete the selected clips" } },
-  // The clipboard is the timeline's, so it is bound off the workbench only: the workbench
-  // edits an entry and has no track to paste onto, and a paste landing on a timeline you
+  // The clipboard is the timeline's, so it is bound off the workbench and the viewer: they
+  // show an entry and have no track to paste onto, and a paste landing on a timeline you
   // are not looking at is an edit out of sight. The guard above keeps Ctrl+C in a text
   // field doing what it has always done.
-  { when: (e) => mod(e) && e.key.toLowerCase() === "c" && !onOverlay(), action: Cmd.copyClip, preventDefault: true,
+  { when: (e) => mod(e) && e.key.toLowerCase() === "c" && !onEntry(), action: Cmd.copyClip, preventDefault: true,
     list: { where: "Editing", keys: "Ctrl + C / X", what: "Copy or cut the selected clips" } },
-  { when: (e) => mod(e) && e.key.toLowerCase() === "x" && !onOverlay(), action: Cmd.cutClip, preventDefault: true },
-  { when: (e) => mod(e) && e.key.toLowerCase() === "v" && !onOverlay(), action: Cmd.pasteClip, preventDefault: true,
+  { when: (e) => mod(e) && e.key.toLowerCase() === "x" && !onEntry(), action: Cmd.cutClip, preventDefault: true },
+  { when: (e) => mod(e) && e.key.toLowerCase() === "v" && !onEntry(), action: Cmd.pasteClip, preventDefault: true,
     list: { where: "Editing", keys: "Ctrl + V", what: "Paste at the playhead, on the track you last clicked" } },
   // Ctrl/Cmd+G groups the selection, and with Shift ungroups it — the pair every editor
-  // and every drawing program uses. Off the workbench, like the clipboard, because a group
+  // and every drawing program uses. Off an entry's tab, like the clipboard, because a group
   // is a relation between clips on a timeline.
-  { when: (e) => mod(e) && e.key.toLowerCase() === "g" && !e.shiftKey && !onOverlay(), action: Cmd.group, preventDefault: true,
+  { when: (e) => mod(e) && e.key.toLowerCase() === "g" && !e.shiftKey && !onEntry(), action: Cmd.group, preventDefault: true,
     list: { where: "Editing", keys: "Ctrl + G", what: "Group the selected clips: one click selects them all, a drag moves the block" } },
-  { when: (e) => mod(e) && e.key.toLowerCase() === "g" && e.shiftKey && !onOverlay(), action: Cmd.ungroup, preventDefault: true,
+  { when: (e) => mod(e) && e.key.toLowerCase() === "g" && e.shiftKey && !onEntry(), action: Cmd.ungroup, preventDefault: true,
     list: { where: "Editing", keys: "Ctrl + Shift + G", what: "Ungroup them" } },
   { when: (e) => mod(e) && e.key.toLowerCase() === "z" && !e.shiftKey, action: Cmd.undo, preventDefault: true,
     list: { where: "Editing", keys: "Ctrl + Z", what: "Undo" } },

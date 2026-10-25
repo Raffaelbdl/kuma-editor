@@ -60,6 +60,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/media/probe", get(probe_media))
         .route("/api/bin", post(add_media))
         .route("/api/transcribe", post(transcribe))
+        .route("/api/bin/{id}/source", get(media_source))
         .route("/api/bin/{id}/{file}", get(bin_asset))
         .route("/api/bin/reprobe", post(reprobe_media))
         .route("/api/bin/unused", get(unused_entries))
@@ -767,6 +768,27 @@ async fn bin_asset(State(st): S, Path((id, file)): Path<(String, String)>) -> Re
         _ => return Err(ApiError::not_found("not found")),
     };
     file_response(&bin_asset_path(&st, &id, ext))
+}
+
+/// A media entry's file, for the editor's viewer to play: a `<video>` or `<audio>` asks for
+/// it in ranges to seek, and `ServeFile` answers those. The proxy when the entry has one,
+/// as the preview compile takes it — the viewer is a preview, and a proxy is usually made
+/// because the source is too heavy (or too exotic) to scrub. Looking, not editing.
+///
+/// Only a file named like media is served. An entry's path may be absolute and anywhere,
+/// and an edit can set it, so without that this route would hand back the bytes of any
+/// file the daemon's user can read; probing such a path never returned its contents.
+async fn media_source(State(st): S, Path(id): Path<String>, req: axum::extract::Request) -> Result<Response, ApiError> {
+    let path = match read(&st.project).bin.get(&id) {
+        Some(kuma_core::BinItem { source: BinSource::File { path, proxy, .. }, .. }) => proxy.clone().unwrap_or_else(|| path.clone()),
+        _ => return Err(ApiError::not_found("not a media entry")),
+    };
+    let file = jobs::resolve_path(&st, std::path::Path::new(&path));
+    if !kuma_overlay::media::is_media_name(&file) {
+        return Err(ApiError::new(StatusCode::FORBIDDEN, format!("{path} is not named like a media file")));
+    }
+    let resp = tower_http::services::ServeFile::new(file).try_call(req).await.map_err(|e| ApiError::not_found(format!("{path}: {e}")))?;
+    Ok(resp.map(axum::body::Body::new))
 }
 
 /// One media view generated at a time: a timeline full of new clips asks for all of theirs

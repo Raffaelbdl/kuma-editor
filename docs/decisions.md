@@ -493,6 +493,36 @@ the only place that can see the skew. `app/dist` it simply builds, since it owns
 other two it refuses to paper over, because rebuilding a Rust binary or the daemon's own
 assets behind the user's back is not the shell's call.
 
+**Running daemons leave a note, and `kuma servers` reads them** — adopted. Only the
+daemon on 7455 could be found from outside; every other project the shell opens gets an
+ephemeral port, as does a `kuma mcp`'s private daemon, and the way into one of those in a
+browser was reading the shell's log. So `kuma_daemon::serve` writes
+`$XDG_STATE_HOME/kuma/daemons/<addr>.json` (`running.rs`: url, project, pid, start time)
+for as long as its server task lives, and `kuma servers` (`ps`) lists them, `--json` for a
+script. Not `$XDG_RUNTIME_DIR`, which would be the textbook home for runtime state: a
+desktop session sets it and an ssh shell, cron or `sudo -u` often does not, so the app's
+daemons and a CLI asking about them would look in two places. `KUMA_DAEMONS_DIR`
+overrides it, which is how the daemon's integration tests keep out of the real one.
+
+The shell stops its daemons with `SIGTERM`, so `kuma serve` catches it, removes its note
+and calls `process::exit` — not a return from `main`, which drops the runtime and so waits
+for blocking work such as a render, where the signal's default stopped at once. A note is
+still a claim, not a fact: a process killed with `SIGKILL`, or crashed, cannot take its note
+away. So readers check. `running::notes` deletes a note whose process has gone (`/proc`,
+where there is one) or whose port refuses connections — refuses, not times out: a slow
+handshake is a busy machine — so every reader agrees on that much; `kuma servers` then asks
+the rest what they serve, all at once, deletes a note whose port answers for another
+project, and lists one that does not answer as *not answering* and keeps it, because a busy
+daemon is still a daemon. Notes are keyed by address, so a daemon that
+takes over a killed one's port replaces its note, and the old guard, if it ever drops,
+removes only a note that still carries its own pid. A daemon on `--bind` that left no note
+— a kuma from before notes — is still listed, found the old way.
+
+Not done with it, and worth doing next: `kuma mcp` and the shell look for a daemon serving
+their project on 7455 alone, so a second project open in the app gets an agent with a
+private daemon on the same file — two writers. The notes are what would let both find the
+one already serving it, on any port.
+
 Still open here: packaging (there is no `electron-builder` config, so the app runs from the
 checkout), remembering window size and position, and opening a second project from an
 editor window rather than going back to the launcher.
@@ -1013,6 +1043,40 @@ Still open here: the workbench shows the overlay as the template renders it, not
 compiler will composite it — there is no clip, so there are no clip effects to approximate.
 The exact answer is a sample, which is now available for an unplaced entry as well.
 Template *markup* is still edited outside the editor; `Reload` is the loop, not an editor.
+
+**Media opens in a viewer of its own** — adopted, Kdenlive's clip monitor. A picture, a
+video or a sound in the bin could be seen only by placing it and scrubbing to the clip:
+looking at a take cost an edit, the trap the workbench was made to get out of for
+overlays. So a media entry opens in a tab as an overlay does, and the viewer keeps the
+workbench's rules — no clip, no playhead, the time under the picture is view state, and
+`Place at playhead` is the one write. The tab list became one list of open entries
+(`state.entries`, overlays and media alike), which is the tab-strip half of the subject
+work under *Still open* without its session-state half.
+
+**The browser plays the file, not MLT** — adopted, and deliberately not the "one pipeline
+for every bin entry" that *Still open* describes. That pipeline would give the viewer the
+engine and frames exactly as the render composites them; it is also a reshaping of the
+daemon's session state, and a viewer of an *unplaced source* has nothing to composite —
+no clip, no effects, no neighbours. A `<video>` on `/api/bin/{id}/source` (Range requests
+from `ServeFile`, so it seeks) needs no compile and no engine, and works where the engine
+does not build. It is an optimisation of one subject kind, as the workbench's iframe is,
+not a second rendering path: nothing shown there is a composite anyone could compare
+with a render. The proxy is served when the entry has one, as the preview compile takes
+it, since a proxy is usually made because the source is too heavy or too exotic to scrub.
+Only a file named like media is served (`is_media_name`): an entry's path may be absolute
+and an edit can set it, and probing such a path never handed its bytes back, so serving
+whatever it names would have made "add an entry, then GET it" a way to read any file the
+daemon's user can.
+
+What it costs is Chromium's codec list: ProRes and friends do not play. The viewer says so
+and shows the timeline's filmstrip rather than a black box, and says too that the
+timeline, the preview and renders are MLT's and unaffected — the first thing someone
+seeing that message would otherwise wonder. A colour-grading or keyed-effect editor on an
+entry is still the use that would justify the engine path; it is not this one.
+
+Still open here: marking an in and out in the viewer and placing that range (`Place at
+playhead` places the whole file, as the inspector's `Add at playhead` does), and a
+waveform under a video that has sound.
 
 ## The timeline clipboard
 

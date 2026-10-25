@@ -14,7 +14,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { driver, missing, startDaemon } from "./harness.mjs";
+import { driver, FAKE_ENGINE, missing, startDaemon } from "./harness.mjs";
 
 const track = (id, clips = []) => ({ id, kind: "video", name: id, muted: false, hidden: false, transitions: [], clips });
 const clip = (id, start, end) => ({ id, start, end, bin: "red", in: 0, speed: 1, volume: 1, muted: false, effects: [], label: "" });
@@ -28,24 +28,6 @@ const PROJECT = JSON.stringify({
   },
 });
 
-/** The preview engine's socket, played by the page: ready at once, and every command the
- *  page sends kept in `window.__engine`. Every other socket is the real one. */
-const FAKE_ENGINE = `(() => {
-  const Real = window.WebSocket;
-  window.__engine = [];
-  window.WebSocket = function (url, protocols) {
-    if (!String(url).includes("/api/preview/ws")) return new Real(url, protocols);
-    const ws = { readyState: 0, binaryType: "blob", onopen: null, onmessage: null, onclose: null, onerror: null,
-      send(m) { window.__engine.push(String(m)); }, close() {} };
-    setTimeout(() => {
-      ws.readyState = 1;
-      ws.onopen?.({});
-      ws.onmessage?.({ data: JSON.stringify({ ready: true, scale: 0.5 }) });
-    }, 50);
-    return ws;
-  };
-  window.WebSocket.OPEN = 1;
-})();`;
 
 const why = missing();
 

@@ -75,7 +75,8 @@ drag bin entries onto the timeline, edit in the inspector on the right, and pres
 ![The editor: bin, preview, inspector and timeline](docs/media/kuma-editor.gif)
 
 You can also skip the app and use a browser: run `kuma serve` in a project folder and open
-<http://127.0.0.1:7455>.
+<http://127.0.0.1:7455>. `kuma servers` lists every daemon running on the machine — the
+app's, an agent's, yours — with the address to open each one's editor at.
 
 ### With a coding agent
 
@@ -109,6 +110,7 @@ To add kuma to an existing project, run `kuma mcp-config` in its folder.
 kuma init --project myvideo.kuma.json --fps 30   # --width 1080 --height 1920 for vertical
 kuma add-media media/clip.mp4
 kuma serve                                       # the editor at http://127.0.0.1:7455
+kuma servers                                     # every running daemon: its URL and project
 kuma render --preset youtube-1080p               # bake overlays and export
 kuma transcribe --clip c1                        # subtitles for clip c1
 kuma sample 12 14 --count 4                      # save a few frames to look at

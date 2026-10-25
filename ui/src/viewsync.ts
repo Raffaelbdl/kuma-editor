@@ -11,7 +11,7 @@ import { desktop } from "./desktop";
 import { panels } from "./panelhost";
 import { store, type State } from "./store";
 
-type Shared = Pick<State, "selection" | "playhead" | "playing" | "sequence" | "sequences" | "tab" | "overlays" | "zoom" | "track">;
+type Shared = Pick<State, "selection" | "playhead" | "playing" | "sequence" | "sequences" | "tab" | "entries" | "zoom" | "track">;
 type Message =
   | { type: "state"; from: string; state: Partial<Shared> }
   | { type: "hello"; from: string; panel: string | null }
@@ -20,7 +20,7 @@ type Message =
   | { type: "recall"; from: string; panel: string }
   | { type: "run"; from: string; id: string; arg?: unknown };
 
-const KEYS: (keyof Shared)[] = ["selection", "playhead", "sequence", "sequences", "tab", "overlays", "zoom", "track"];
+const KEYS: (keyof Shared)[] = ["selection", "playhead", "sequence", "sequences", "tab", "entries", "zoom", "track"];
 const me = Math.random().toString(36).slice(2);
 /** A panel's window says it is there this often; the editor window takes the panel back when
  *  it has not heard for `LOST`, after a `GRACE` for the window to load. */

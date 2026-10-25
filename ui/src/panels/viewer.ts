@@ -116,7 +116,7 @@ export class Viewer {
     const url = `/api/bin/${encodeURIComponent(id)}/source?v=${encodeURIComponent(source.proxy ?? source.path)}`;
     if (source.kind === "image") {
       // `onerror` before `src`: `Object.assign` sets them in order.
-      this.stageHost.append(Object.assign(el("img", "vw-picture image"), { alt: "", onerror: () => { if (gen === this.mounted) this.cannot(`show ${source.path}`); }, src: url }));
+      this.stageHost.append(Object.assign(el("img", "vw-picture image"), { alt: "", onerror: () => { if (gen === this.mounted) this.cannot(`show ${source.path}`, url); }, src: url }));
       this.foot.hidden = true;
       return;
     }
@@ -134,7 +134,7 @@ export class Viewer {
       this.tick();
     };
     m.onpause = () => { this.play.replaceChildren(icon("play")); cancelAnimationFrame(this.raf); this.sync(); };
-    m.onerror = () => this.failed(id, source);
+    m.onerror = () => this.failed(id, source, url);
     m.src = url;
     if (source.kind === "audio") this.stageHost.append(this.waveBox);
     this.stageHost.append(m);
@@ -163,19 +163,33 @@ export class Viewer {
     this.play.replaceChildren(icon("play"));
   }
 
-  /** What this window could not do with the file, and that nothing else is affected. */
-  private cannot(what: string) {
+  /** What this window could not do with the file, and that nothing else is affected.
+   *  Chromium names every answer it cannot use a format error, a refusal included, so the
+   *  daemon is asked what it answered: a missing file, or a daemon older than this editor
+   *  (it reads `ui/dist` from disk, so a rebuild reaches a running one half-way), is not
+   *  the codec's fault. */
+  private cannot(what: string, url: string) {
+    const gen = this.mounted;
     this.hint.replaceChildren(el("div", "", `This window cannot ${what}. The timeline, the preview and renders read it through MLT and are not affected.`));
+    void fetch(url, { headers: { Range: "bytes=0-0" } }).then(async (r) => {
+      if (r.ok) return;
+      const body = (await r.json().catch(() => ({}))) as { error?: string };
+      if (gen !== this.mounted) return;
+      // A daemon from before the viewer routes `source` to `/api/bin/{id}/{file}`, whose
+      // answer is a bare "not found"; this route's own refusals name the file.
+      const why = body.error && body.error !== "not found" ? body.error : `the daemon answered ${r.status}, so it is older than this editor and has no viewer route — restart it`;
+      this.hint.replaceChildren(el("div", "", `This window cannot ${what}: ${why}.`));
+    }, () => {});
   }
 
   /** Chromium could not decode it: say so, and show what the timeline draws of it instead —
    *  a sound's waveform, a video's filmstrip; the daemon makes both, whatever the codec. */
-  private failed(id: string, source: FileSource) {
+  private failed(id: string, source: FileSource, url: string) {
     const why = this.media?.error?.message || "it cannot decode this file";
     this.unmount();
     const gen = this.mounted;
     this.foot.hidden = true;
-    this.cannot(`play ${source.proxy ?? source.path} (${why})`);
+    this.cannot(`play ${source.proxy ?? source.path} (${why})`, url);
     if (source.kind === "audio") {
       this.stageHost.append(this.waveBox);
       this.drawWave();

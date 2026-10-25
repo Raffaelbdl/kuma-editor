@@ -787,6 +787,11 @@ async fn media_source(State(st): S, Path(id): Path<String>, req: axum::extract::
     if !kuma_overlay::media::is_media_name(&file) {
         return Err(ApiError::new(StatusCode::FORBIDDEN, format!("{path} is not named like a media file")));
     }
+    // `ServeFile` answers a missing file with an empty 404, which the viewer would read as
+    // a daemon too old to have this route; say which file it is.
+    if !file.is_file() {
+        return Err(ApiError::not_found(format!("{path} is not on disk")));
+    }
     let resp = tower_http::services::ServeFile::new(file).try_call(req).await.map_err(|e| ApiError::not_found(format!("{path}: {e}")))?;
     Ok(resp.map(axum::body::Body::new))
 }

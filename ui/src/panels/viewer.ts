@@ -116,7 +116,7 @@ export class Viewer {
     const url = `/api/bin/${encodeURIComponent(id)}/source?v=${encodeURIComponent(source.proxy ?? source.path)}`;
     if (source.kind === "image") {
       // `onerror` before `src`: `Object.assign` sets them in order.
-      this.stageHost.append(Object.assign(el("img", "vw-picture image"), { alt: "", onerror: () => { if (gen === this.mounted) this.say(`This window cannot show ${source.path}. The timeline, the preview and renders read it through MLT and are not affected.`); }, src: url }));
+      this.stageHost.append(Object.assign(el("img", "vw-picture image"), { alt: "", onerror: () => { if (gen === this.mounted) this.cannot(`show ${source.path}`); }, src: url }));
       this.foot.hidden = true;
       return;
     }
@@ -163,8 +163,9 @@ export class Viewer {
     this.play.replaceChildren(icon("play"));
   }
 
-  private say(text: string) {
-    this.hint.replaceChildren(el("div", "", text));
+  /** What this window could not do with the file, and that nothing else is affected. */
+  private cannot(what: string) {
+    this.hint.replaceChildren(el("div", "", `This window cannot ${what}. The timeline, the preview and renders read it through MLT and are not affected.`));
   }
 
   /** Chromium could not decode it: say so, and show what the timeline draws of it instead —
@@ -174,7 +175,7 @@ export class Viewer {
     this.unmount();
     const gen = this.mounted;
     this.foot.hidden = true;
-    this.say(`This window cannot play ${source.proxy ?? source.path} (${why}). The timeline, the preview and renders read it through MLT and are not affected.`);
+    this.cannot(`play ${source.proxy ?? source.path} (${why})`);
     if (source.kind === "audio") {
       this.stageHost.append(this.waveBox);
       this.drawWave();

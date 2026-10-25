@@ -120,15 +120,19 @@ pub fn notes() -> Vec<(PathBuf, Running)> {
     notes
         .into_iter()
         .zip(dead)
-        .filter(|((path, _), dead)| !dead || { let _ = std::fs::remove_file(path); false })
-        .map(|(note, _)| note)
+        .filter_map(|(note, dead)| if dead { let _ = std::fs::remove_file(&note.0); None } else { Some(note) })
         .collect()
 }
 
 /// Whether process `pid` is running, where this machine can say (`/proc`); elsewhere it is
-/// taken to be, and the address decides.
+/// taken to be, and the address decides. A zombie is not: it has exited and only waits for
+/// its parent to collect it, which a container's init can be slow to do, or never.
 fn alive(pid: u32) -> bool {
-    !Path::new("/proc/self").exists() || Path::new(&format!("/proc/{pid}")).exists()
+    if !Path::new("/proc/self").exists() {
+        return true;
+    }
+    // `<pid> (<name>) <state> …`; the name may hold anything, so the state follows its last `)`.
+    std::fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|s| s.rsplit_once(')').is_some_and(|(_, rest)| !rest.trim_start().starts_with('Z')))
 }
 
 /// Whether nothing listens at `url` any more — refused, not merely slow.

@@ -97,6 +97,9 @@ const BINDINGS: Binding[] = [
   { when: (e) => mod(e) && e.key.toLowerCase() === "c" && !onEntry(), action: Cmd.copyClip, preventDefault: true,
     list: { where: "Editing", keys: "Ctrl + C / X", what: "Copy or cut the selected clips" } },
   { when: (e) => mod(e) && e.key.toLowerCase() === "x" && !onEntry(), action: Cmd.cutClip, preventDefault: true },
+  // With Alt, the effects copied off a clip, onto every selected one — Kdenlive's key too.
+  { when: (e) => mod(e) && e.altKey && e.key.toLowerCase() === "v" && !onEntry(), action: Cmd.pasteEffects, preventDefault: true,
+    list: { where: "Editing", keys: "Ctrl + Alt + V", what: "Paste the copied effects onto the selected clips" } },
   { when: (e) => mod(e) && e.key.toLowerCase() === "v" && !onEntry(), action: Cmd.pasteClip, preventDefault: true,
     list: { where: "Editing", keys: "Ctrl + V", what: "Paste at the playhead, on the track you last clicked" } },
   // Ctrl/Cmd+G groups the selection, and with Shift ungroups it — the pair every editor

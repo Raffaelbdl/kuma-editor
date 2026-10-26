@@ -1,5 +1,5 @@
 {
-  "version": 9,
+  "version": 11,
   "name": "reference",
   "master": "main",
   "fps": { "num": 30, "den": 1 },
@@ -60,7 +60,13 @@
               {
                 "id": "c2", "start": 10.0, "end": 14.0, "bin": "cam", "in": 1.0,
                 "speed": 0.5, "volume": 0.5,
-                "effects": [ { "type": "color", "saturation": 1.2 } ]
+                "effects": [
+                  { "type": "color", "saturation": 1.2 },
+                  { "type": "grade", "temperature": 0.3, "lift": { "b": 0.03 }, "curve": [[0.25, 0.2], [0.75, 0.82]], "saturation": 0.9 },
+                  { "type": "grade", "exposure": -0.5, "mask": { "x": 480, "y": 270, "w": 960, "h": 540, "rotation": 15, "feather": 60,
+                    "keyframes": [{ "t": 0.5 }, { "t": 2.5, "x": 700, "rotation": -10 }] },
+                    "keyframes": [{ "t": 0 }, { "t": 3, "exposure": 0.3, "temperature": -0.4 }] }
+                ]
               },
               { "id": "c3", "start": 14.0, "end": 15.0, "bin": "navy" }
             ],
@@ -82,7 +88,8 @@
           {
             "id": "v3", "kind": "video", "name": "Parts",
             "clips": [
-              { "id": "s1", "start": 9.0, "end": 13.0, "bin": "intro" },
+              { "id": "s1", "start": 9.0, "end": 13.0, "bin": "intro",
+                "effects": [ { "type": "blur", "radius": 6, "mask": { "shape": "rectangle", "x": 0, "y": 0, "w": 640, "h": 360, "invert": true } } ] },
               { "id": "s2", "start": 13.0, "end": 15.0, "bin": "intro", "in": 4.0,
                 "effects": [ { "type": "blur", "radius": 3 } ] }
             ]

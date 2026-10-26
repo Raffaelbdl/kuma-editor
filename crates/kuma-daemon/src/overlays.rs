@@ -113,14 +113,7 @@ pub fn import_overlay(state: &AppState, path: &str, how: Import, base_revision: 
     anyhow::ensure!(problems.is_empty(), "{}", problems.join("; "));
     let folder_name = r.dir.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
     let title = if r.manifest.name.is_empty() { folder_name.clone() } else { r.manifest.name.clone() };
-    let item = BinItem {
-        name: name.filter(|n| !n.is_empty()).unwrap_or(title),
-        source: BinSource::Overlay { overlay: rel, vars },
-        meta: None,
-        parent,
-        order: None,
-        volume: 1.0,
-    };
+    let item = BinItem { parent, ..BinItem::of(name.filter(|n| !n.is_empty()).unwrap_or(title), BinSource::Overlay { overlay: rel, vars }) };
     let (id, rev, warnings) = state.apply_built(origin, base_revision, |p| {
         let id = match id {
             Some(id) => {

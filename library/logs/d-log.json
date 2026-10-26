@@ -1,0 +1,36 @@
+{
+  "name": "DJI D-Log / D-Gamut",
+  "source": "DJI, White Paper on D-Log and D-Gamut of DJI Cinema Color System (2017)",
+  "signal": "code",
+  "decode": [
+    {
+      "upto": 0.14,
+      "linear": {
+        "slope": 6.025,
+        "offset": 0.0929
+      }
+    },
+    {
+      "log": {
+        "a": 0.9892,
+        "b": 0.0108,
+        "c": 0.2566629707198883,
+        "d": 0.5845550490739599
+      }
+    }
+  ],
+  "primaries": [
+    [
+      0.71,
+      0.31
+    ],
+    [
+      0.21,
+      0.88
+    ],
+    [
+      0.09,
+      -0.08
+    ]
+  ]
+}

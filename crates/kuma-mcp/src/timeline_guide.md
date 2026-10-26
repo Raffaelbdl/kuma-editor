@@ -27,7 +27,7 @@ nothing is: a drawing made for a white page needs a white colour entry under it.
 rasterise it to a PNG, or show it from an overlay.
 
 An effect acts on the picture or the sound (`mlt` on either): `transform`, `crop`, `blur`, `color`,
-`blend`, `fade` and `freeze` on what a clip shows, `volume`, `audio_fade`, `limiter` and
+`grade`, `blend`, `fade` and `freeze` on what a clip shows, `volume`, `audio_fade`, `limiter` and
 `auto_level` on what it sounds. A colour, a
 still and an overlay never sound; nothing on an audio track shows. Put only what can act on the clip:
 anything else renders as nothing and comes back as a warning. Every effect with a quantity to move
@@ -38,6 +38,50 @@ leaves (1 on a square is a circle), and the crop is of the whole frame: crop a l
 to its own edges first. `freeze` `{t}` holds the frame the clip shows `t` s in (anything it
 places, sequences too) for the whole clip; its sound runs on (mute the clip to silence it), its
 other effects act on the held frame and still move. Split the clip to play, then hold.
+`grade`, `color` and `blur` take a `mask`: `{x, y, w, h}` — the rectangle `region` is, in
+composition pixels, so a region read off a sampled frame is a mask as it is — with `shape`
+(`ellipse`, the default, inscribed in it, or `rectangle`), `rotation` (degrees clockwise),
+`feather` (pixels of soft edge) and `invert` (act outside instead). The effect acts inside and
+leaves the rest as it was: a face blurred, a sky darkened, a vignette (an inverted ellipse
+with `exposure` down). A clip has one of each effect over its whole picture and any number
+masked, so each window is an effect of its own; `before: {"without": {"clips": [id],
+"effects": [i]}}` compares one of them. A mask moves with `keyframes: [{t, x?, y?, w?, h?,
+rotation?}]` (`t` from the clip's start, straight lines between keys, no `ease`): read the
+subject's region off frames sampled at the moments it turns, a key each.
+`grade` is a colour grade, every field neutral when left out, applied in this order:
+`log` (the camera log the footage was shot in, converted to Rec. 709 by kuma: the id of a
+`logs/<id>.json` in a library or the project — the starter set has `s-log3-cine`, `s-log3`,
+`v-log`, `c-log2`, `c-log3`, `logc3`, `logc4`, `apple-log`, `d-log`, `f-log`, `f-log2`,
+`f-log2c`; a camera it lacks is a file the project's `logs/` gains, see the skill) or instead
+`input_lut` (a `.cube` under the project, the maker's), `temperature`
+(-2..2, warmer/cooler; tungsten against daylight is about 1.5) and `tint` (-1..1, magenta/green), `exposure` (stops, -5..5), `lift`, `gamma` and
+`gain` (`{r, g, b}`, each -1..1: shadows, midtones, highlights; equal channels move brightness,
+unequal ones colour), `contrast` (0..3, 1 neutral), `blacks`, `shadows`, `highlights` and
+`whites` (-1..1 each, moving that part of the tonal range on every channel alike: 1 is a
+quarter of white), `curve` (`[[in, out], …]` in 0..1, a monotone cubic through `[0,0]` and
+`[1,1]`) then `curve_r`, `curve_g`, `curve_b` (the same, per channel), the curves of amounts
+(`[[x, amount], …]`, amount -1..1, 0 none): `hue_sat`, `hue_hue` (±1 is half a turn) and
+`hue_luma` against hue (x in turns round the vectorscope from +Cb, 0..1 and below 1, wrapping
+round — skin sits near 0.34), `luma_sat` and `sat_sat` against luma and saturation (through
+`[0,0]`, `[1,0]`), then `saturation` (0..3, 1 neutral) and `vibrance` (-1..1, saturation where
+there is little), then `look` (a `.cube`) mixed by `look_amount` (0..1). It is one LUT for the
+whole clip, except its light: `keyframes` may set `temperature`, `tint` and `exposure` (a walk
+from shade into sun, a drifting auto-exposure), and the rest holds; for more than the light,
+split the clip. A video or image **bin entry** takes `effects: [{"type": "grade", …}]` too —
+still, over the whole picture — applied before every clip that places it: the camera `log`
+belongs there, and so does the grade that matches one camera to the rest; a clip's own grade
+then acts on that. Grade by measuring, then look: `measure_color`
+reads a region's `exposure` (stops from mid grey) and `balance` (its cast as `temperature` and
+`tint`) so two shots compare as numbers, and with `match: {clip, reference}` solves the clip's
+white balance and exposure to make its region neutral (`{"neutral": true}` on something white or
+grey in life) or like a region elsewhere (`{"t", "region"?}`), answering a `patch` for
+`apply_edits`. Pick what should match in life — a face, a wall — not the whole frame, whose
+content differs; then look at what it did. **Before and after**: `sample_frames` and
+`measure_color` take `before` — `{"revision": N}` (the document before an edit: the revision
+`apply_edits` answered, less one) or `{"without": {"kinds": ["grade"], "clips"?: [...]}}` (one
+clip and `"effects": [i]` takes out just those of its effects) — and
+return each moment as a pair; with `tile` one sheet, a row per moment, before on the left. Check
+a grade at several moments of each clip it is on, not one.
 `auto_level` `{target (LUFS, -23), window (s, 3), max_gain, min_gain (dB, ±15)}` rides a
 drifting source's gain toward `target`, measured over the last `window`: no keyframes needed for
 a bed that swells and falls; it lags a sudden change by about a window, and after a seek it

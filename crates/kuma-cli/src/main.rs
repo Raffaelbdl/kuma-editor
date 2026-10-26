@@ -954,11 +954,11 @@ async fn doctor(cli: &Cli) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Copy `<src>/{blueprints,presets,design-systems}` into the library, skipping entries that already exist
-/// unless `force`. Returns the number of entries written.
+/// Copy `<src>/{blueprints,presets,design-systems,fonts,logs}` into the library, skipping
+/// entries that already exist unless `force`. Returns the number of entries written.
 fn install_library(src: &Path, dst: &Path, force: bool) -> anyhow::Result<usize> {
     let mut n = 0;
-    for kind in ["blueprints", "presets", "design-systems", "fonts"] {
+    for kind in ["blueprints", "presets", "design-systems", "fonts", "logs"] {
         let Ok(rd) = std::fs::read_dir(src.join(kind)) else { continue };
         for e in rd.flatten() {
             let target = dst.join(kind).join(e.file_name());

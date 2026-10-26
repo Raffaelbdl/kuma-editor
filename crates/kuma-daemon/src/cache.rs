@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::sync::TryLockError;
 use std::time::{Duration, SystemTime};
 
-use kuma_core::{BinItem, BinSource, Project};
+use kuma_core::{BinItem, BinSource, Effect, Project};
 use kuma_overlay::Baker;
 use serde::{Deserialize, Serialize};
 
@@ -36,12 +36,14 @@ pub struct Usage {
     pub bakes: Part,
     pub samples: Part,
     pub thumbs: Part,
+    /// Grades compiled to LUT files, one per distinct grade.
+    pub luts: Part,
     pub bytes: u64,
 }
 
 impl Usage {
-    fn of(bakes: Part, samples: Part, thumbs: Part) -> Self {
-        Usage { bakes, samples, thumbs, bytes: bakes.bytes + samples.bytes + thumbs.bytes }
+    fn of(bakes: Part, samples: Part, thumbs: Part, luts: Part) -> Self {
+        Usage { bakes, samples, thumbs, luts, bytes: bakes.bytes + samples.bytes + thumbs.bytes + luts.bytes }
     }
 }
 
@@ -53,7 +55,26 @@ pub struct Pruned {
 
 pub fn usage(state: &AppState) -> std::io::Result<Usage> {
     let c = &state.config;
-    Ok(Usage::of(tally(&c.bakes_dir())?, tally(&c.samples_dir())?, tally(&c.thumbs_dir())?))
+    Ok(Usage::of(tally(&c.bakes_dir())?, tally(&c.samples_dir())?, tally(&c.thumbs_dir())?, tally(&c.luts_dir())?))
+}
+
+/// Names of the LUT files the project's grades compile to. A grade whose own LUT will not
+/// read has none, and cannot compile until it does, which writes it again.
+pub fn live_luts(state: &AppState, project: &Project) -> HashSet<String> {
+    let root = state.config.project_root();
+    // Each distinct grade once: clips graded alike share a file. A grade is floats, so
+    // this is a list, not a set. The clips' grades, and the entries' own, which every
+    // placement applies; each as the files it compiles to.
+    let clips = project.all_clips().flat_map(|(_, _, c)| c.effects.iter());
+    let entries = project.bin.values().flat_map(|i| i.effects.iter());
+    let mut seen = Vec::new();
+    for g in clips.chain(entries).filter_map(Effect::as_grade).flat_map(kuma_mlt::luts::parts) {
+        if !seen.contains(&g) {
+            seen.push(g);
+        }
+    }
+    let logs = state.config.all_log_dirs();
+    seen.iter().filter_map(|g| kuma_mlt::luts::name(g, &root, &logs).ok().flatten()).collect()
 }
 
 /// Keys of the bakes the project still wants: every overlay clip in every sequence (the
@@ -86,9 +107,10 @@ fn overlay<'f, 'i>(folders: &'f Folders, item: &'i BinItem) -> Option<(&'f (Reso
     }
 }
 
-/// Delete bakes whose key is not live, sampled frames older than [`SAMPLE_GRACE`] and
-/// thumbnails of entries gone from the bin. `all` deletes every bake and frame too, but
-/// keeps the bin's thumbnails, which nothing regenerates until asked. Waits for whatever
+/// Delete bakes whose key is not live, sampled frames older than [`SAMPLE_GRACE`],
+/// thumbnails of entries gone from the bin and LUTs no grade compiles to. `all` deletes
+/// every bake and frame too, but keeps the bin's thumbnails, which nothing regenerates
+/// until asked, and the live LUTs, which the preview engine may have loaded. Waits for whatever
 /// holds `cache_users`, and never touches scratch still being written (`is_in_flight`).
 pub fn prune(state: &AppState, all: bool, progress: &dyn Fn(u8, &str)) -> anyhow::Result<Pruned> {
     let freed = {
@@ -96,6 +118,7 @@ pub fn prune(state: &AppState, all: bool, progress: &dyn Fn(u8, &str)) -> anyhow
         progress(10, "pruning");
         let project = read(&state.project).clone();
         let live = if all { HashSet::new() } else { live_bakes(state, &project) };
+        let luts = live_luts(state, &project);
         let now = SystemTime::now();
         let old = |meta: &Metadata| meta.modified().ok().and_then(|m| now.duration_since(m).ok()).is_some_and(|age| age >= SAMPLE_GRACE);
         let c = &state.config;
@@ -103,6 +126,7 @@ pub fn prune(state: &AppState, all: bool, progress: &dyn Fn(u8, &str)) -> anyhow
             sweep(&c.bakes_dir(), |name, _| !live.contains(name))?,
             sweep(&c.samples_dir(), |_, meta| all || old(meta))?,
             sweep(&c.thumbs_dir(), |name, _| !project.bin.contains_key(crate::Config::thumb_owner(name)))?,
+            sweep(&c.luts_dir(), |name, _| !luts.contains(name))?,
         )
     };
     Ok(Pruned { freed, kept: usage(state)? })

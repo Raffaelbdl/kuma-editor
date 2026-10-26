@@ -14,7 +14,7 @@ import { Cmd, command } from "../commands";
 import { seekOverlay } from "../overlay";
 import { SEQUENCE_TAB, store, toast } from "../store";
 import type { Clip, Project } from "../types";
-import { binItem, covers, isOverlayClip, paramAt, transformAt } from "../types";
+import { binItem, covers, isOverlayClip, maskOf, paramAt, transformAt } from "../types";
 
 interface OverlayView {
   clipId: string;
@@ -350,6 +350,8 @@ export class Preview {
     }
     this.ctx.drawImage(bmp.image, 0, 0);
     bmp.close();
+    // Said for what draws over the frame until the engine catches up (`gradepreview.ts`).
+    this.stage.dispatchEvent(new Event("frame", { bubbles: true }));
   }
 
   private onState(playhead: number, playing: boolean, revision: number, sequence: string) {
@@ -505,6 +507,9 @@ function applyEffects(iframe: HTMLIFrameElement, c: Clip, local: number, W: numb
   let filter = "";
   let clip = "";
   for (const e of c.effects) {
+    // A masked effect acts on part of the picture, which a filter on the whole iframe
+    // cannot say: only the render draws it.
+    if (maskOf(e)) continue;
     if (e.type === "transform") {
       const t = transformAt(e, local);
       transform += ` translate(${t.x}px, ${t.y}px) scale(${t.scale}) rotate(${t.rotation}deg)`;
@@ -514,6 +519,10 @@ function applyEffects(iframe: HTMLIFrameElement, c: Clip, local: number, W: numb
     // `compile.rs`): `blur(r)` drew every overlay blur twice as strong as the export.
     else if (e.type === "blur") filter += ` blur(${paramAt(e, "radius", local) / 2}px)`;
     else if (e.type === "color") filter += ` brightness(${1 + paramAt(e, "brightness", local)}) contrast(${paramAt(e, "contrast", local)}) saturate(${paramAt(e, "saturation", local)})`;
+    // A grade's three whole-picture numbers; its white balance, wheels, curve and LUTs only
+    // the render draws. Exposure is stops of light, which brightens the encoded value by
+    // 2^(EV / 2.4).
+    else if (e.type === "grade") filter += ` brightness(${2 ** (paramAt(e, "exposure", local) / 2.4)}) contrast(${e.contrast ?? 1}) saturate(${e.saturation ?? 1})`;
     else if (e.type === "crop") {
       const at = (p: string) => paramAt(e, p, local);
       clip = `inset(${at("top") * 100}% ${at("right") * 100}% ${at("bottom") * 100}% ${at("left") * 100}% round ${at("radius") * Math.min(W, H) * 0.5}px)`;

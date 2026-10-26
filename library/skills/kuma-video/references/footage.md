@@ -71,8 +71,71 @@ is also what makes it cheap: nothing is baked.
   way round, the crop's window stays put and cuts whatever the transform moved into it. A
   picture that moves inside a circle that stays (a push within a round frame) is the
   clip with its transform in a sequence, and the crop on the clip placing it.
-- `color` (brightness, contrast, saturation, gamma) to match clips shot
-  in different light.
+- `grade` to match clips shot in different light, and to give a video one look. Fix before
+  you style: white balance (`temperature`, `tint`) and `exposure` first, so skin and greys
+  look right shot to shot; then the wheels — `lift` for the shadows, `gain` for the
+  highlights, `gamma` for the middle, as `{r, g, b}` (warm shadows: `lift {r: 0.02, b: -0.02}`)
+  — and `contrast`, a gentle S `curve` (`[[0.25, 0.22], [0.75, 0.8]]`) or `saturation` last.
+  Small numbers: 0.05 on a wheel is already visible. To recover a part of the range rather
+  than the whole: `shadows: 0.15` opens dark faces, `highlights: -0.2` brings a bright sky
+  back, `blacks`/`whites` set the ends. `vibrance` (0.2) livens dull colours without pushing
+  skin; for one colour only, the hue curves — `hue_sat: [[0.6, -0.4]]` greys that hue,
+  `hue_hue` turns it towards its neighbours, `hue_luma` darkens it (a sky) — with hue in
+  turns round the vectorscope (skin near 0.34). `luma_sat: [[0.1, -0.5]]` takes colour out of
+  the shadows, where noise lives. Log footage (flat, grey, washed out
+  straight from the camera) wants converting before anything else — on the bin entry
+  (`/bin/<id>/effects: [{"type": "grade", "log": …}]`), so every clip of it converts and a
+  split cannot lose it: `log` names the camera's (a file, `logs/<id>.json` — see "A camera
+  kuma lacks" below)
+  (`s-log3-cine`, `v-log`, `logc3`, `apple-log`, `d-log`, … — kuma does the maker's maths, mid
+  grey to mid grey, highlights rolled off), or the maker's `.cube` as `input_lut`; a creative `.cube` goes in `look`,
+  softened by `look_amount`. Sample a frame of each clip side by side after grading, and
+  compare a neutral in each (a white wall, a grey shirt) rather than the whole picture.
+  `color` (brightness, contrast, saturation, gamma) still works and can be keyframed. A
+  grade's light can be keyed (`keyframes: [{t, exposure?, temperature?, tint?}]`) for light
+  that changes in the shot; `match` on such a grade answers a key at the moment measured,
+  so measure the start and the end of the change and match each. Anything more than the
+  light changing is a split.
+- **Part of the picture**: a `mask` on `grade`, `color` or `blur` limits it to a shape. Read
+  the region off a `sample_frames` frame (composition pixels, top-left and size, as `region`)
+  and give it as `mask: {x, y, w, h, feather}` — an ellipse unless `shape: "rectangle"`. A
+  face to hide: `blur` `radius: 24` with the face's region and `feather: 20`. A vignette:
+  `grade` `exposure: -0.7` with an ellipse a little inside the frame, `invert: true`,
+  `feather` a fifth of the height. A sky too bright: a rectangle over it, `exposure` down. Each
+  window is its own effect (a clip takes any number masked). A subject that moves: sample
+  frames where it turns (`times`), read its region off each, and give the mask a key per
+  frame, `keyframes: [{t, x, y}, …]` (`t` from the clip's start; straight lines between, so
+  a curved path wants more keys). Check frames *between* the keys before rendering.
+- **A camera kuma lacks.** A camera log is a file in the project's `logs/` (or a library's),
+  named by its id, so adding one is writing that file — no change to kuma. From the maker's
+  published document (the white paper giving the encoding formula and the gamut's
+  primaries), write the curve that turns the signal into scene light as pieces, each for
+  signals `below` (or `upto`) a bound and the last unbounded, in the shapes makers print
+  them — `"linear": {slope, offset}` for `y = slope·x + offset`, `"log": {a, b, c, d, base}`
+  for `y = c·log_base(a·x + b) + d`, `"power": {scale, power, from}` for
+  `y = scale·(x − from)^power`, `"constant": x` — with `"signal": "code"` (10-bit code over
+  1023) or `"ire"` as the document writes it, the three `primaries` as (x, y), and the
+  document in `source`. Check it: the document's code value for 18% grey must decode to 0.18
+  (sample a grey card shot in that log after; `measure_color` reads `exposure` ≈ 0). A maker
+  who publishes only a LUT — DJI's D-Log M, on the Osmo Pocket 3, Action 4 and recent drones,
+  is one — is `{"name": "DJI D-Log M", "source": "DJI's D-Log M to Rec.709 LUT", "lut":
+  "dlogm-rec709.cube"}` with the maker's `.cube` beside it; get the `.cube` from the maker's
+  download page and ask the person for it if you cannot. Never invent a curve's numbers.
+- **Grade by measuring.** `measure_color` with a `region` on something that should match in
+  life (a face, a white wall, a grey shirt — never the whole frame, whose content differs)
+  gives its `exposure` and `balance` as grade numbers; compare shots by those. To fix one,
+  `match: {clip, reference}` with `{"neutral": true}` (the region is white or grey) or
+  `{"t": <a moment of the hero shot>, "region": …}` returns the clip's grade and a `patch`
+  for `apply_edits`. `reached: false` means the reference is past the grade's ranges or
+  clipped highlights hold it back: say so rather than push. `clipped` above a few percent on
+  a face or sky is lost detail no grade brings back.
+- **One grade on many clips** (a look over the whole video, one camera's correction): the
+  same `grade` patched onto each, in one `apply_edits`; then match the shots that still differ.
+- **Look at before and after**, at several moments of every clip you graded:
+  `sample_frames` with `times` across each clip, `tile: true` and `before: {"without":
+  {"kinds": ["grade"]}}` (or `{"revision": <the one before your edit>}`) gives one sheet, a
+  row a moment, before on the left. A grade that fixes the moment you measured and spoils
+  another — a face that leaves the light, a window that comes into shot — shows up there.
 
 ## Stills
 

@@ -13,7 +13,7 @@ use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{CallToolRequestParams, CallToolResponse, CallToolResult, ContentBlock, ProgressNotificationParam, ProgressToken, ServerCapabilities, ServerInfo};
 use rmcp::service::RequestContext;
 use rmcp::{schemars, tool, tool_handler, tool_router, ErrorData as McpError, Peer, RoleServer, ServerHandler};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::activity;
@@ -419,6 +419,15 @@ pub struct SampleFrames {
     /// Bin id of the sequence to sample. The project's `master` when omitted.
     #[serde(default)]
     pub sequence: Option<String>,
+    /// Compare with another version of the document, to see what an edit did: each moment
+    /// comes back as a pair, before then after (with `tile`, one row each). `{"revision": N}`
+    /// is the document at revision N — before an edit, its revision less one; `{"without":
+    /// {"kinds"?: ["grade", "color"], "clips"?: ["c1"]}}` is the document now with those
+    /// effects taken out (every picture effect, on every clip, when a list is omitted); with
+    /// one clip, `"effects": [i]` takes out the effects at those indexes instead — one masked
+    /// window among several.
+    #[serde(default)]
+    pub before: Option<Value>,
     /// Bin id of an overlay **entry** to sample on its own, with no placement — the way to
     /// check an animation you are authoring before it is in the cut. `t0`/`t1` are then
     /// seconds into the overlay. Not combinable with `sequence`.
@@ -448,7 +457,7 @@ pub struct SampleFrames {
 }
 
 
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct Rect {
     pub x: u32,
     pub y: u32,
@@ -570,6 +579,41 @@ pub struct MeasureAudio {
     /// a track on the way, is silenced. Tracks or clips the project mutes stay muted.
     #[serde(default)]
     pub solo: Option<Vec<String>>,
+    /// Seconds to wait before returning the job id instead (default 600).
+    #[serde(default)]
+    pub wait_seconds: Option<u64>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct MeasureColor {
+    /// Bin id of the sequence to measure. The master when omitted; with `match`, the
+    /// clip's own sequence.
+    #[serde(default)]
+    pub sequence: Option<String>,
+    /// Moments to measure, seconds in that sequence (up to 32), pooled into `stats`.
+    /// Default: `t0`.
+    #[serde(default)]
+    pub times: Option<Vec<f64>>,
+    #[serde(default)]
+    pub t0: f64,
+    /// The region in composition pixels `{x, y, w, h}`: a face, a white wall, the sky.
+    /// The whole frame when omitted.
+    #[serde(default)]
+    pub region: Option<Rect>,
+    /// Measure with the overlays in the picture. Off by default.
+    #[serde(default)]
+    pub overlays: Option<bool>,
+    /// Solve a grade: `{clip, reference}`, where `reference` is `{"neutral": true}` (the
+    /// region is white or grey in life), `{"color": "#rrggbb"}`, or `{"t", "region"?,
+    /// "sequence"?}` (another moment of the video, as it shows now; the region defaults to
+    /// this one and the sequence to the clip's).
+    #[serde(default, rename = "match")]
+    pub matching: Option<Value>,
+    /// Also measure the same frames of another version, as `sample_frames` takes it:
+    /// `{"revision": N}` or `{"without": {"kinds"?, "clips"?}}`. Answers `before` beside the
+    /// measurement, so what an edit did to a region is numbers too.
+    #[serde(default)]
+    pub before: Option<Value>,
     /// Seconds to wait before returning the job id instead (default 600).
     #[serde(default)]
     pub wait_seconds: Option<u64>,
@@ -882,7 +926,7 @@ impl KumaServer {
         self.post("/api/overlays/save-blueprint", &json!({ "bin": p.bin, "id": p.id, "force": p.force.unwrap_or(false) })).await
     }
 
-    #[tool(description = "Render exact composited frames (through the real MLT graph, overlays included) and return them as images: evenly over `t0`..`t1`, or at exactly the `times` given, and with `tile` as one captioned contact sheet (every cut ±0.3 s in one image). Use a rect to zoom into a region. Pass `sequence` to look at a nested sequence instead of the master, or `overlay` to look at one overlay bin entry on its own — no placement needed, times counted from the start of the overlay, which is how to check an animation you are authoring before it is in the cut. One frame comes back 960 px wide and several 480 px each unless `width` says. Frames are also written as PNGs whose paths are returned. An overlay changed since it was last baked is baked for its whole clip first, which can take a minute or more per overlay: after `wait_seconds` a sample still baking returns its job id and progress, and calling again with `job` set to that id picks it up.")]
+    #[tool(description = "Render exact composited frames (through the real MLT graph, overlays included) and return them as images: evenly over `t0`..`t1`, or at exactly the `times` given, and with `tile` as one captioned contact sheet (every cut ±0.3 s in one image). Use a rect to zoom into a region. Pass `sequence` to look at a nested sequence instead of the master, or `overlay` to look at one overlay bin entry on its own — no placement needed, times counted from the start of the overlay, which is how to check an animation you are authoring before it is in the cut. One frame comes back 960 px wide and several 480 px each unless `width` says. `before` compares: the same moments of the document at an earlier `revision` (to see what an edit did) or `without` some effects (to see what a grade does), as before/after pairs — with `tile`, one sheet of rows, before on the left. Frames are also written as PNGs whose paths are returned. An overlay changed since it was last baked is baked for its whole clip first, which can take a minute or more per overlay: after `wait_seconds` a sample still baking returns its job id and progress, and calling again with `job` set to that id picks it up.")]
     async fn sample_frames(&self, Parameters(p): Parameters<SampleFrames>, ctx: RequestContext<RoleServer>) -> Result<CallToolResult, McpError> {
         let id = match p.job {
             Some(id) => id,
@@ -890,12 +934,13 @@ impl KumaServer {
                 let tile = p.tile.unwrap_or(false);
                 let body = json!({
                     "t0": p.t0, "t1": p.t1, "count": p.count, "times": p.times, "tile": tile, "columns": p.columns,
-                    "rect": p.rect.as_ref().map(|r| json!({ "x": r.x, "y": r.y, "w": r.w, "h": r.h })),
+                    "rect": p.rect,
                     "width": p.width,
                     "overlays": p.overlays.unwrap_or(true),
                     "sequence": p.sequence,
                     "overlay": p.overlay, "duration": p.duration, "backdrop": p.backdrop,
                     "frame_width": p.frame.map(|f| f.0), "frame_height": p.frame.map(|f| f.1),
+                    "before": p.before,
                 });
                 self.start_job("/api/sample/job", body, &ctx).await?
             }
@@ -920,10 +965,11 @@ impl KumaServer {
         }
         let mut content = Vec::new();
         let samples = j["result"]["samples"].as_array().cloned().unwrap_or_default();
-        let listing: Vec<Value> = samples.iter().map(|s| json!({ "t": s["t"], "frame": s["frame"], "path": s["path"] })).collect();
+        let earlier = j["result"]["before"].as_array().cloned();
+        let list = |frames: &[Value]| -> Vec<Value> { frames.iter().map(|s| json!({ "t": s["t"], "frame": s["frame"], "path": s["path"] })).collect() };
         let sheet = j["result"]["sheet"].as_str();
         // `warnings`: an overlay that baked blank is why a frame is empty, and nothing else says so.
-        content.push(ContentBlock::text(serde_json::to_string_pretty(&json!({ "samples": listing, "sheet": sheet, "warnings": j["result"]["warnings"] })).unwrap()));
+        content.push(ContentBlock::text(serde_json::to_string_pretty(&json!({ "samples": list(&samples), "before": earlier.as_deref().map(list), "sheet": sheet, "warnings": j["result"]["warnings"] })).unwrap()));
         // The PNGs live on the daemon's disk; say so when this process cannot see them.
         let mut image = |label: String, path: &str| match std::fs::read(path) {
             Ok(bytes) => {
@@ -932,11 +978,19 @@ impl KumaServer {
             }
             Err(e) => content.push(ContentBlock::text(format!("{label}: cannot read {path}: {e}"))),
         };
-        match sheet {
-            Some(path) => image(format!("contact sheet, {} frames in the order listed, left to right then down", samples.len()), path),
-            None => {
+        let at = |s: &Value| s["t"].as_f64().unwrap_or(0.0);
+        match (sheet, &earlier) {
+            (Some(path), Some(_)) => image(format!("before and after, one row per moment ({}), before on the left", samples.len()), path),
+            (Some(path), None) => image(format!("contact sheet, {} frames in the order listed, left to right then down", samples.len()), path),
+            (None, Some(earlier)) => {
+                for (b, a) in earlier.iter().zip(&samples) {
+                    image(format!("t={:.3}s before", at(b)), b["path"].as_str().unwrap_or_default());
+                    image(format!("t={:.3}s after", at(a)), a["path"].as_str().unwrap_or_default());
+                }
+            }
+            (None, None) => {
                 for s in &samples {
-                    image(format!("t={:.3}s", s["t"].as_f64().unwrap_or(0.0)), s["path"].as_str().unwrap_or_default());
+                    image(format!("t={:.3}s", at(s)), s["path"].as_str().unwrap_or_default());
                 }
             }
         }
@@ -969,6 +1023,15 @@ impl KumaServer {
     async fn measure_audio(&self, Parameters(p): Parameters<MeasureAudio>, ctx: RequestContext<RoleServer>) -> Result<CallToolResult, McpError> {
         let body = json!({ "sequence": p.sequence, "range": p.range, "sections": p.sections, "mute": p.mute.unwrap_or_default(), "solo": p.solo.unwrap_or_default() });
         self.job("/api/audio/measure", body, Duration::from_secs(p.wait_seconds.unwrap_or(600)), &ctx).await
+    }
+
+    #[tool(description = "Measure the colour of a region of the picture (the whole frame by default) at some moments, through the real graph with overlays left out unless asked: `stats` with the mean R'G'B' (0..1), luma levels (min, p5, median, p95, max; ×100 reads as IRE), `exposure` (its light in stops from mid grey), `balance` (its cast as the grade's own `temperature` and `tint`: warm above 0, magenta above 0, so a grade of minus these neutralises it), `saturation`, and the share of pixels `clipped` (a channel at full scale) and `crushed` (black). To compare two shots, measure the same thing in each — a face, a white wall — and grade the difference in `exposure` and `balance`. With `match: {clip, reference}` it also solves the clip's `grade` (its white balance and exposure, the rest kept) so the region looks like the reference: `{\"neutral\": true}`, a `{\"color\"}`, or `{\"t\", \"region\"?}` elsewhere in the video. It measures the clip without its grade, answers `before`, the predicted `after`, `reached` (false when the reference is past the grade's ranges or clipping holds it back) and the `patch` to pass to `apply_edits` as is. Nothing is stored.")]
+    async fn measure_color(&self, Parameters(p): Parameters<MeasureColor>, ctx: RequestContext<RoleServer>) -> Result<CallToolResult, McpError> {
+        let body = json!({
+            "sequence": p.sequence, "times": p.times, "t0": p.t0, "overlays": p.overlays.unwrap_or(false), "match": p.matching, "before": p.before,
+            "region": p.region,
+        });
+        self.job("/api/color/measure", body, Duration::from_secs(p.wait_seconds.unwrap_or(600)), &ctx).await
     }
 
     #[tool(description = "Measure one source, a media entry (`bin`) or a file in the project (`path`), optionally over a `range` of it, in its own seconds: integrated loudness (LUFS), loudness range and true peak (dBTP); its loudness over time (`curve`: short-term by default, about 120 values unless `step` says, at most 1200); and its quiet stretches as `{start, end}` (every sample under `silence_db`, default -35 dB, for `silence_min`, default 0.15 s; at most 500 listed). A silence's end is where sound starts: a take, a sentence or a sound effect's onset. For a level a volume keyframe can follow, a pause to cut at, or a take to place. Nothing is stored.")]

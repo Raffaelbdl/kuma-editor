@@ -42,6 +42,13 @@ impl Config {
     pub fn thumbs_dir(&self) -> PathBuf {
         self.cache_dir().join("thumbs")
     }
+    /// Where compiles write what they generate: wipe lumas, and grades' LUTs.
+    pub fn compile_cache_dir(&self) -> PathBuf {
+        self.cache_dir().join("cache")
+    }
+    pub fn luts_dir(&self) -> PathBuf {
+        kuma_mlt::luts::dir(&self.compile_cache_dir())
+    }
     /// Where a bin entry's generated files live: its still (`png`), moving preview
     /// (`webp`), or a media entry's waveform and filmstrip (`peaks.json`, `strip.…`).
     pub fn thumb_path(&self, bin_id: &str, ext: &str) -> PathBuf {
@@ -83,6 +90,11 @@ impl Config {
     /// Where kuma puts the overlay folders it copies or scaffolds.
     pub fn overlays_dir(&self) -> PathBuf {
         self.project_root().join("overlays")
+    }
+    /// Every library's `logs/` plus the project's own, lowest precedence first: where a
+    /// grade's camera log is found (`camera::find`).
+    pub fn all_log_dirs(&self) -> Vec<PathBuf> {
+        self.libraries.dirs().iter().map(|d| d.join("logs")).chain([self.project_root().join("logs")]).collect()
     }
     /// Every library's `presets/` plus the project's own, lowest precedence first.
     pub fn all_preset_dirs(&self) -> Vec<PathBuf> {
@@ -507,7 +519,7 @@ impl AppState {
 
     pub fn validation_context(&self) -> ValidationContext {
         // Files are checked, so a missing overlay folder is an error now, not at render.
-        ValidationContext { root: self.config.project_root(), check_files: true }
+        ValidationContext { root: self.config.project_root(), check_files: true, log_dirs: self.config.all_log_dirs() }
     }
 
     pub fn save(&self) -> anyhow::Result<()> {

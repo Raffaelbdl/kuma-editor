@@ -46,7 +46,7 @@ use std::path::{Path, PathBuf};
 
 use kuma_core::*;
 
-use crate::lumas;
+use crate::{lumas, luts};
 use crate::xml::{num, XmlWriter};
 
 /// A baked overlay instance, produced by `kuma-overlay`.
@@ -85,6 +85,9 @@ pub struct CompileOptions {
     /// exactly what the full graph plays of its stream, which `tests/render.rs` checks
     /// frame by frame and sample by sample.
     pub streams: Streams,
+    /// Where camera logs are found, lowest precedence first (`camera::find`): the libraries'
+    /// `logs/`, then the project's own, which is all `new` knows of.
+    pub logs: Vec<PathBuf>,
 }
 
 impl CompileOptions {
@@ -92,6 +95,7 @@ impl CompileOptions {
         let root = root.into();
         CompileOptions {
             cache_dir: root.join(".kuma").join("cache"),
+            logs: vec![root.join("logs")],
             root,
             bakes: HashMap::new(),
             unbaked: UnbakedPolicy::Skip,
@@ -135,7 +139,8 @@ pub fn compile(project: &Project, opts: &CompileOptions) -> Result<String, Compi
 
     let (pw, ph) = opts.size.unwrap_or((project.width, project.height));
     let scale = pw as f64 / project.width as f64;
-    let ctx = Ctx { project, opts, fps, pw, ph, scale };
+    let luts = grade_luts(project, &order, opts)?;
+    let ctx = Ctx { project, opts, fps, pw, ph, scale, luts };
 
     let mut w = XmlWriter::new();
     w.open(
@@ -250,7 +255,7 @@ fn emit_sequence(ctx: &Ctx, seq_id: &str, seq: &Sequence, is_root: bool, w: &mut
     // while a nested sequence's tractor is shared by its placements, so each placement
     // carries its own copy of them (`emit_sequence_effects`).
     if is_root {
-        emit_effects(ctx, w, &Span { id: "main_tractor".into(), f_in: 0, f_out: total - 1, pre: 0, post: 0 }, &seq.effects, 1.0);
+        emit_effects(ctx, w, &Span { id: "main_tractor".into(), f_in: 0, f_out: total - 1, pre: 0, post: 0 }, seq.effects.iter(), 1.0);
     }
     w.close("tractor");
     Ok(())
@@ -263,6 +268,32 @@ struct Ctx<'a> {
     pw: u32,
     ph: u32,
     scale: f64,
+    /// Every grade this graph applies, by [`grade_key`], and the LUT it compiled to —
+    /// `None` for one that changes nothing. Written before anything is emitted, so a LUT
+    /// that will not read fails the compile rather than a filter.
+    luts: HashMap<String, Option<PathBuf>>,
+}
+
+/// What names a grade among the others in one compile: its settings.
+fn grade_key(g: &Grade) -> String {
+    serde_json::to_string(g).unwrap_or_default()
+}
+
+/// The LUT files of every grade on a clip of the sequences in `order`, written to the cache.
+fn grade_luts(project: &Project, order: &[BinId], opts: &CompileOptions) -> Result<HashMap<String, Option<PathBuf>>, CompileError> {
+    let mut luts = HashMap::new();
+    if !opts.streams.video() {
+        return Ok(luts);
+    }
+    let clips = order.iter().filter_map(|id| project.seq(id)).flat_map(|s| s.tracks.iter()).flat_map(|t| t.clips.iter());
+    for g in clips.flat_map(|c| project.effects_on(c)).filter_map(Effect::as_grade) {
+        for g in luts::parts(g) {
+            if let std::collections::hash_map::Entry::Vacant(slot) = luts.entry(grade_key(&g)) {
+                slot.insert(luts::resolve(&g, &opts.root, &opts.logs, &opts.cache_dir).map_err(|e| CompileError::Internal(format!("grade: {e}")))?);
+            }
+        }
+    }
+    Ok(luts)
 }
 
 impl Ctx<'_> {
@@ -586,7 +617,7 @@ fn emit_sequence_effects(ctx: &Ctx, p: &Plan, id: &str, seq: &Sequence, w: &mut 
     let own = format!("{}_seq", p.producer_id);
     w.open("playlist", &[("id", own.clone())]);
     w.empty("entry", &[("producer", tractor), ("in", "0".into()), ("out", (total - 1).to_string())]);
-    emit_effects(ctx, w, &Span { id: own.clone(), f_in: 0, f_out: total - 1, pre: 0, post: 0 }, &seq.effects, 1.0);
+    emit_effects(ctx, w, &Span { id: own.clone(), f_in: 0, f_out: total - 1, pre: 0, post: 0 }, seq.effects.iter(), 1.0);
     w.close("playlist");
     own
 }
@@ -703,15 +734,16 @@ fn emit_filters(ctx: &Ctx, p: &Plan, w: &mut XmlWriter) {
         w.close("filter");
     }
 
-    // Clip-level volume times the entry's (static).
+    // Clip-level volume times the entry's (static); the entry's own effects first, since
+    // they are what the source is, before what this placement does with it.
     let fader = clip.volume * ctx.project.item(clip).map_or(1.0, |i| i.volume);
-    emit_effects(ctx, w, &span, &clip.effects, fader);
+    emit_effects(ctx, w, &span, ctx.project.effects_on(clip), fader);
 }
 
 /// `effects` as filters over `span`, those of them this graph carries, after a static
 /// `volume` filter for `fader` — a linear gain, folded into a `volume` effect when there is
 /// one, so a clip's own volume and the effect are one filter.
-fn emit_effects(ctx: &Ctx, w: &mut XmlWriter, span: &Span, effects: &[Effect], fader: f64) {
+fn emit_effects<'e>(ctx: &Ctx, w: &mut XmlWriter, span: &Span, effects: impl Iterator<Item = &'e Effect> + Clone, fader: f64) {
     let fps = ctx.fps;
     let n = std::cell::Cell::new(0usize);
     let (f_in, f_out) = (span.f_in, span.f_out);
@@ -728,12 +760,12 @@ fn emit_effects(ctx: &Ctx, w: &mut XmlWriter, span: &Span, effects: &[Effect], f
     let at = |t: f64| (fps.frame(t) + span.pre).clamp(0, len - 1);
     let streams = ctx.opts.streams;
 
-    if streams.audio() && !effects.iter().any(|e| matches!(e, Effect::Volume { .. })) && (fader - 1.0).abs() > 1e-9 {
+    if streams.audio() && !effects.clone().any(|e| matches!(e, Effect::Volume { .. })) && (fader - 1.0).abs() > 1e-9 {
         open(w, "vol", "volume");
         w.property("level", num(db(fader)));
         w.close("filter");
     }
-    for e in effects.iter().filter(|e| e.streams().meets(streams)) {
+    for e in effects.filter(|e| e.streams().meets(streams)) {
         match e {
             Effect::Transform { x, y, scale, rotation, opacity, keyframes } => {
                 open(w, "xform", "qtblend");
@@ -762,7 +794,8 @@ fn emit_effects(ctx: &Ctx, w: &mut XmlWriter, span: &Span, effects: &[Effect], f
                 }
                 w.close("filter");
             }
-            Effect::Blur { radius, keyframes } => {
+            Effect::Blur { radius, keyframes, mask } => {
+                mask_start(w, &open, &at, ctx, mask.as_ref());
                 open(w, "blur", "avfilter.gblur");
                 // σ is half the radius; the live overlay preview's CSS `blur()` says the same.
                 let sigma = |r: f64| num((r * ctx.scale / 2.0).max(0.01));
@@ -773,13 +806,53 @@ fn emit_effects(ctx: &Ctx, w: &mut XmlWriter, span: &Span, effects: &[Effect], f
                 w.property("av.sigmaV", sigma);
                 w.property("av.steps", "2");
                 w.close("filter");
+                mask_apply(w, &open, mask.as_ref());
             }
-            Effect::Color { brightness, contrast, saturation, gamma, keyframes } => {
+            Effect::Color { brightness, contrast, saturation, gamma, keyframes, mask } => {
+                mask_start(w, &open, &at, ctx, mask.as_ref());
                 open(w, "color", "avfilter.eq");
                 for (name, stat) in [("brightness", *brightness), ("contrast", *contrast), ("saturation", *saturation), ("gamma", *gamma)] {
                     w.property(&format!("av.{name}"), anim(keyframes, &at, num(stat), |k| num(k.or(name, stat))));
                 }
                 w.close("filter");
+                mask_apply(w, &open, mask.as_ref());
+            }
+            Effect::Grade(g) => {
+                // A grade is one LUT, computed by kuma (`luts.rs`), or a keyed one's parts
+                // with its light moving as a gain per channel before the last of them
+                // (`Grade::keyed_parts`). A grade that changes nothing is no filter at all,
+                // and needs no mask.
+                let keyed = !g.keyframes.is_empty();
+                let paths: Vec<Option<&PathBuf>> = luts::parts(g).iter().map(|p| ctx.luts.get(&grade_key(p)).and_then(Option::as_ref)).collect();
+                if !keyed && paths.iter().all(Option::is_none) {
+                    continue;
+                }
+                let lut = |w: &mut XmlWriter, path: Option<&PathBuf>| {
+                    if let Some(path) = path {
+                        open(w, "grade", "avfilter.lut3d");
+                        w.property("av.file", path.to_string_lossy());
+                        w.property("av.interp", "tetrahedral");
+                        w.close("filter");
+                    }
+                };
+                let (rest, input) = paths.split_last().expect("a grade is one part at least");
+                mask_start(w, &open, &at, ctx, g.mask.as_ref());
+                for path in input {
+                    lut(w, *path);
+                }
+                if keyed {
+                    open(w, "light", "avfilter.colorchannelmixer");
+                    let scale = |k: Option<&Keyframe>| {
+                        let [t, m, e] = g.light_at(k);
+                        grade::light_scale(t, m, e)
+                    };
+                    for (i, channel) in ["rr", "gg", "bb"].into_iter().enumerate() {
+                        w.property(&format!("av.{channel}"), anim(&g.keyframes, &at, num(scale(None)[i]), |k| num(scale(Some(k))[i])));
+                    }
+                    w.close("filter");
+                }
+                lut(w, *rest);
+                mask_apply(w, &open, g.mask.as_ref());
             }
             Effect::Fade { fade_in, fade_out } | Effect::AudioFade { fade_in, fade_out } => {
                 // Fades span the clip's own range, not the dissolve handles. The picture
@@ -878,6 +951,74 @@ fn ease_op(ease: Ease) -> &'static str {
 /// qtcrop `rect` = "left%/top%:width%xheight%", from fractions cut off each edge.
 fn crop_rect(left: f64, right: f64, top: f64, bottom: f64) -> String {
     format!("{}%/{}%:{}%x{}%", num(left * 100.0), num(top * 100.0), num((1.0 - left - right) * 100.0), num((1.0 - top - bottom) * 100.0))
+}
+
+/// Where a masked effect starts: `mask_start` keeps the frame as it is and cuts the shape
+/// out of a copy with `rotoscoping`, which the effect then works on. Nothing without a mask.
+fn mask_start(w: &mut XmlWriter, open: &dyn Fn(&mut XmlWriter, &str, &str), at: &dyn Fn(f64) -> i64, ctx: &Ctx, mask: Option<&Mask>) {
+    let Some(m) = mask else { return };
+    open(w, "mask", "mask_start");
+    w.property("filter", "rotoscoping");
+    w.property("filter.mode", "alpha");
+    // The shape within the alpha the frame already has, so a masked effect on a picture
+    // with holes leaves them.
+    w.property("filter.alpha_operation", "min");
+    let (width, height) = (ctx.project.width as f64, ctx.project.height as f64);
+    // A moving mask is a spline per key, by frame, which `rotoscoping` moves between in
+    // straight lines — as the mask's keys say it does.
+    let spline = if m.keyframes.is_empty() {
+        mask_spline(m, width, height)
+    } else {
+        let keys: Vec<String> = m.keyframes.iter().map(|k| format!("\"{}\":{}", at(k.t), mask_spline(&m.at_key(k), width, height))).collect();
+        format!("{{{}}}", keys.join(","))
+    };
+    w.property("filter.spline", spline);
+    if m.invert {
+        w.property("filter.invert", "1");
+    }
+    // `rotoscoping` blurs the matte: three passes of a box `feather` wide spread the edge
+    // over about four times that, centred on the shape's edge — measured, and what the
+    // live preview draws.
+    let feather = (m.feather * ctx.scale / 4.0).round();
+    if m.feather > 0.0 {
+        w.property("filter.feather", num(feather.max(1.0)));
+        w.property("filter.feather_passes", "3");
+    }
+    w.close("filter");
+}
+
+/// Where a masked effect ends: its result, through the shape, over the frame from before it.
+fn mask_apply(w: &mut XmlWriter, open: &dyn Fn(&mut XmlWriter, &str, &str), mask: Option<&Mask>) {
+    if mask.is_none() {
+        return;
+    }
+    open(w, "unmask", "mask_apply");
+    w.property("transition", "qtblend");
+    w.close("filter");
+}
+
+/// `mask`'s shape as the Bézier spline `rotoscoping` reads — `[handle, point, handle]` per
+/// point, in fractions of the frame: a rectangle's corners, or an ellipse as four arcs (the
+/// handles a third of the way along each, scaled by the circle constant).
+fn mask_spline(m: &Mask, width: f64, height: f64) -> String {
+    let (rx, ry) = (m.w / 2.0, m.h / 2.0);
+    let (cx, cy) = (m.x + rx, m.y + ry);
+    let (sin, cos) = m.rotation.to_radians().sin_cos();
+    // Composition pixels about the centre → turned (clockwise on screen, y being down) →
+    // a fraction of the frame.
+    let at = |x: f64, y: f64| format!("[{},{}]", num((cx + x * cos - y * sin) / width), num((cy + x * sin + y * cos) / height));
+    let k = 0.552_284_749_830_793_6;
+    let points: Vec<[(f64, f64); 3]> = match m.shape {
+        MaskShape::Rectangle => [(-rx, -ry), (rx, -ry), (rx, ry), (-rx, ry)].map(|p| [p, p, p]).to_vec(),
+        MaskShape::Ellipse => vec![
+            [(rx, -k * ry), (rx, 0.0), (rx, k * ry)],
+            [(k * rx, ry), (0.0, ry), (-k * rx, ry)],
+            [(-rx, k * ry), (-rx, 0.0), (-rx, -k * ry)],
+            [(-k * rx, -ry), (0.0, -ry), (k * rx, -ry)],
+        ],
+    };
+    let points: Vec<String> = points.iter().map(|p| format!("[{}]", p.map(|(x, y)| at(x, y)).join(","))).collect();
+    format!("[{}]", points.join(","))
 }
 
 /// qtblend `rect` = "x y w h opacity" in profile pixels, from centre-relative offsets.
@@ -1044,6 +1185,128 @@ mod tests {
         // Color: the keyed parameter animates, the others stay static.
         assert!(xml.contains(r#"<property name="av.brightness">0=-0.5;60=0.5</property>"#), "{xml}");
         assert!(xml.contains(r#"<property name="av.contrast">0=1.5;60=1.5</property>"#), "{xml}");
+    }
+
+    /// A grade is one `lut3d` over a LUT in the cache, shared by the clips that grade alike;
+    /// a neutral grade is no filter, and the sound's half graph writes no LUT at all.
+    #[test]
+    fn a_grade_is_one_lut_and_a_neutral_one_is_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let warm = json!({ "type": "grade", "temperature": 0.4, "saturation": 0.8 });
+        let p = project(json!({
+            "fps": 30, "bin": { "x": { "source": { "path": "x.mp4" } } },
+            "tracks": [{ "id": "v1", "clips": [
+                { "id": "a", "start": 0, "end": 2, "bin": "x", "effects": [warm] },
+                { "id": "b", "start": 2, "end": 4, "bin": "x", "effects": [warm] },
+                { "id": "c", "start": 4, "end": 6, "bin": "x", "effects": [{ "type": "grade" }] }
+            ]}]
+        }));
+        let mut opts = CompileOptions::new(dir.path());
+        opts.cache_dir = dir.path().join("cache");
+        let xml = compile(&p, &opts).unwrap();
+        assert_eq!(xml.matches("avfilter.lut3d").count(), 2, "{xml}");
+        let written: Vec<_> = std::fs::read_dir(dir.path().join("cache/luts")).unwrap().collect();
+        assert_eq!(written.len(), 1, "two clips graded alike share one file");
+        assert!(xml.contains(r#"<property name="av.interp">tetrahedral</property>"#), "{xml}");
+
+        let sound = tempfile::tempdir().unwrap();
+        let mut opts = CompileOptions::new(sound.path());
+        opts.cache_dir = sound.path().join("cache");
+        opts.streams = Streams::Audio;
+        let xml = compile(&p, &opts).unwrap();
+        assert!(!xml.contains("lut3d") && !sound.path().join("cache").exists(), "{xml}");
+    }
+
+    /// A masked effect is its filter between `mask_start` and `mask_apply`; a masked grade
+    /// is the LUT the same grade unmasked uses, and a mask on nothing is nothing.
+    #[test]
+    fn a_mask_wraps_its_effect_and_nothing_else() {
+        let dir = tempfile::tempdir().unwrap();
+        let mask = json!({ "shape": "rectangle", "x": 480, "y": 270, "w": 960, "h": 540, "feather": 40, "invert": true });
+        let p = project(json!({
+            "fps": 30, "width": 1920, "height": 1080, "bin": { "x": { "source": { "path": "x.mp4" } } },
+            "tracks": [{ "id": "v1", "clips": [
+                { "id": "a", "start": 0, "end": 2, "bin": "x", "effects": [
+                    { "type": "grade", "exposure": 1, "mask": mask },
+                    { "type": "blur", "radius": 8 },
+                    { "type": "grade", "mask": mask }
+                ] },
+                { "id": "b", "start": 2, "end": 4, "bin": "x", "effects": [{ "type": "grade", "exposure": 1 }] }
+            ]}]
+        }));
+        let mut opts = CompileOptions::new(dir.path());
+        opts.cache_dir = dir.path().join("cache");
+        let xml = compile(&p, &opts).unwrap();
+        assert_eq!((xml.matches("mask_start").count(), xml.matches("mask_apply").count()), (1, 1), "{xml}");
+        let (start, lut, apply, blur) = (xml.find("mask_start").unwrap(), xml.find("lut3d").unwrap(), xml.find("mask_apply").unwrap(), xml.find("gblur").unwrap());
+        assert!(start < lut && lut < apply && apply < blur, "the mask is around the grade alone: {xml}");
+        assert_eq!(std::fs::read_dir(dir.path().join("cache/luts")).unwrap().count(), 1, "masked or not, one grade is one LUT");
+        // The frame's middle quarter, as fractions, corners as their own handles; outside it.
+        assert!(xml.contains(r#"<property name="filter.spline">[[[0.25,0.25],[0.25,0.25],[0.25,0.25]],[[0.75,0.25],[0.75,0.25],[0.75,0.25]],[[0.75,0.75],[0.75,0.75],[0.75,0.75]],[[0.25,0.75],[0.25,0.75],[0.25,0.75]]]</property>"#), "{xml}");
+        assert!(xml.contains(r#"<property name="filter.invert">1</property>"#) && xml.contains(r#"<property name="filter.feather">10</property>"#), "{xml}");
+        assert!(xml.contains(r#"<property name="transition">qtblend</property>"#), "{xml}");
+    }
+
+    /// An entry's grade comes before every placement's own effects, on each placement.
+    #[test]
+    fn an_entrys_grade_comes_first_on_every_placement() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = project(json!({
+            "fps": 30, "bin": { "x": { "source": { "path": "x.mp4" }, "effects": [{ "type": "grade", "log": "s-log3-cine" }] } },
+            "tracks": [{ "id": "v1", "clips": [
+                { "id": "a", "start": 0, "end": 2, "bin": "x", "effects": [{ "type": "blur", "radius": 2 }] },
+                { "id": "b", "start": 2, "end": 4, "bin": "x" }
+            ]}]
+        }));
+        let mut opts = CompileOptions::new(dir.path());
+        opts.cache_dir = dir.path().join("cache");
+        opts.logs = vec![PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../library/logs"))];
+        let xml = compile(&p, &opts).unwrap();
+        assert_eq!(xml.matches("lut3d").count(), 2, "{xml}");
+        assert!(xml.find("clip_a_grade").unwrap() < xml.find("clip_a_blur").unwrap(), "{xml}");
+        assert!(xml.contains("clip_b_grade"), "{xml}");
+    }
+
+    /// A keyed grade's light is a gain that moves, between its input conversion and the rest
+    /// of it, each a LUT; an unkeyed grade stays one LUT.
+    #[test]
+    fn a_keyed_grade_moves_its_light_between_its_luts() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = project(json!({
+            "fps": 30, "bin": { "x": { "source": { "path": "x.mp4" } } },
+            "tracks": [{ "id": "v1", "clips": [
+                { "id": "a", "start": 0, "end": 4, "bin": "x", "effects": [
+                    { "type": "grade", "log": "v-log", "contrast": 1.1, "exposure": 1, "keyframes": [{ "t": 0 }, { "t": 2, "exposure": 0, "temperature": 1 }] }
+                ] }
+            ]}]
+        }));
+        let mut opts = CompileOptions::new(dir.path());
+        opts.logs = vec![PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../library/logs"))];
+        opts.cache_dir = dir.path().join("cache");
+        let xml = compile(&p, &opts).unwrap();
+        let (input, light, rest) = (xml.find("lut3d").unwrap(), xml.find("colorchannelmixer").unwrap(), xml.rfind("lut3d").unwrap());
+        assert!(input < light && light < rest, "{xml}");
+        assert_eq!(std::fs::read_dir(dir.path().join("cache/luts")).unwrap().count(), 2, "the conversion and the rest");
+        // The first key leaves the light out, so it is the static stop up: 2^(1/2.4) a
+        // channel; the second is a degree warmer with no exposure.
+        let one = 2f64.powf(1.0 / 2.4);
+        let warm = grade::light_scale(1.0, 0.0, 0.0);
+        assert!(xml.contains(&format!(r#"<property name="av.rr">0={};60={}</property>"#, num(one), num(warm[0]))), "{xml}");
+        assert!(xml.contains(&format!(r#"<property name="av.bb">0={};60={}</property>"#, num(one), num(warm[2]))), "{xml}");
+    }
+
+    /// An ellipse is four arcs through the middles of its rectangle's sides, and turning it
+    /// turns them about its centre, in pixels — so a circle stays round on a wide frame.
+    #[test]
+    fn an_ellipse_is_four_arcs_and_turns_about_its_centre() {
+        let circle = Mask { shape: MaskShape::Ellipse, x: 0.0, y: 0.0, w: 100.0, h: 100.0, rotation: 0.0, feather: 0.0, invert: false, keyframes: vec![] };
+        let points = |m: &Mask| -> Vec<Vec<[f64; 2]>> { serde_json::from_str(&mask_spline(m, 200.0, 100.0)).unwrap() };
+        let p = points(&circle);
+        assert_eq!(p.len(), 4);
+        assert_eq!(p[0][1], [0.5, 0.5], "the right of a circle at (50, 50) on a 200×100 frame");
+        assert_eq!(p[1][1], [0.25, 1.0], "then its bottom");
+        let turned = points(&Mask { rotation: 90.0, ..circle.clone() });
+        assert!((turned[0][1][0] - 0.25).abs() < 1e-6 && (turned[0][1][1] - 1.0).abs() < 1e-6, "a quarter turn clockwise puts the right at the bottom: {turned:?}");
     }
 
     /// A sound fade is a gain ramp over the clip's own first and last frames, from and to

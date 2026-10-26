@@ -1,0 +1,36 @@
+{
+  "name": "ARRI LogC3 (EI 800) / ARRI Wide Gamut 3",
+  "source": "ARRI, ALEXA Log C Curve: Usage in VFX (2017), EI 800",
+  "signal": "code",
+  "decode": [
+    {
+      "upto": 0.149657834105,
+      "linear": {
+        "slope": 5.367655,
+        "offset": 0.092809
+      }
+    },
+    {
+      "log": {
+        "a": 5.555556,
+        "b": 0.052272,
+        "c": 0.24719,
+        "d": 0.385537
+      }
+    }
+  ],
+  "primaries": [
+    [
+      0.684,
+      0.313
+    ],
+    [
+      0.221,
+      0.848
+    ],
+    [
+      0.0861,
+      -0.102
+    ]
+  ]
+}

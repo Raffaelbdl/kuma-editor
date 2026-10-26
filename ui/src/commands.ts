@@ -90,6 +90,8 @@ export const Cmd = {
   copyClip: "timeline.copy-clip",
   cutClip: "timeline.cut-clip",
   pasteClip: "timeline.paste-clip",
+  pasteEffects: "timeline.paste-effects",
+  matchSelected: "grade.match-selected",
   addTrack: "timeline.add-track",
   previewScale: "preview.scale",
   overlayTogglePlay: "overlay.toggle-play",

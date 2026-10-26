@@ -30,7 +30,11 @@ export type BinSource =
 /** One entry in the project bin: media, a configured overlay, a colour, a sequence or a
  *  folder. `parent` is where it is listed in the browser (a transcript under its media);
  *  absent means the top level, and nothing about rendering reads it. */
-export interface BinItem { name: string; source: BinSource; meta?: MediaMeta | null; parent?: string; order?: number; volume?: number }
+export interface BinItem {
+  name: string; source: BinSource; meta?: MediaMeta | null; parent?: string; order?: number; volume?: number;
+  /** On the source, before every placement's own: a video or image file's grade. */
+  effects?: Effect[];
+}
 
 export type TrackKind = "video" | "audio" | "overlay";
 
@@ -60,6 +64,8 @@ export const ANIMATABLE: Partial<Record<Effect["type"], Record<string, number>>>
   blur: { radius: 0 },
   color: { brightness: 0, contrast: 1, saturation: 1, gamma: 1 },
   volume: { gain: 1 },
+  // A grade's light: the rest of it is one LUT for the whole clip.
+  grade: { temperature: 0, tint: 0, exposure: 0 },
 };
 
 /** What a clip can show and sound — what an effect has to act on to do anything. */
@@ -73,6 +79,7 @@ const EFFECT_STREAMS: Record<Effect["type"], Streams> = {
   blend: { video: true, audio: false },
   blur: { video: true, audio: false },
   color: { video: true, audio: false },
+  grade: { video: true, audio: false },
   fade: { video: true, audio: false },
   audio_fade: { video: false, audio: true },
   volume: { video: false, audio: true },
@@ -131,8 +138,9 @@ export type Effect =
   | { type: "transform"; x?: number; y?: number; scale?: number; rotation?: number; opacity?: number; keyframes?: Keyframe[] }
   | { type: "crop"; left?: number; right?: number; top?: number; bottom?: number; radius?: number; keyframes?: Keyframe[] }
   | { type: "blend"; mode: string }
-  | { type: "blur"; radius: number; keyframes?: Keyframe[] }
-  | { type: "color"; brightness?: number; contrast?: number; saturation?: number; gamma?: number; keyframes?: Keyframe[] }
+  | { type: "blur"; radius: number; keyframes?: Keyframe[]; mask?: Mask }
+  | { type: "color"; brightness?: number; contrast?: number; saturation?: number; gamma?: number; keyframes?: Keyframe[]; mask?: Mask }
+  | ({ type: "grade" } & Grade)
   | { type: "fade"; in?: number; out?: number }
   | { type: "audio_fade"; in?: number; out?: number }
   | { type: "volume"; gain?: number; keyframes?: Keyframe[] }
@@ -140,6 +148,52 @@ export type Effect =
   | { type: "auto_level"; target?: number; window?: number; max_gain?: number; min_gain?: number }
   | { type: "freeze"; t?: number }
   | { type: "mlt"; service: string; properties?: Record<string, string> };
+
+/** Where an effect acts (`kuma_core::Mask`): the rectangle `region` is, in composition
+ *  pixels, or the ellipse inscribed in it. */
+export interface Mask { shape?: "ellipse" | "rectangle"; x: number; y: number; w: number; h: number; rotation?: number; feather?: number; invert?: boolean; keyframes?: Keyframe[] }
+
+/** What a mask's keys may set (`Mask::KEYED`). */
+export const MASK_KEYED = ["x", "y", "w", "h", "rotation"] as const;
+
+/** The shape a mask has `local` seconds into its clip: its keys read as the compiler's
+ *  `rotoscoping` reads them, straight between keys, a field a key leaves out the static one. */
+export function maskAt(m: Mask, local: number): Mask {
+  const keys = m.keyframes ?? [];
+  if (!keys.length) return m;
+  const at = (f: (typeof MASK_KEYED)[number]) => sampleTrack(keys, local, (k) => (k[f] as number | undefined) ?? (m[f] ?? 0));
+  return { ...m, x: at("x"), y: at("y"), w: at("w"), h: at("h"), rotation: at("rotation") };
+}
+
+/** Where `e` acts, when it is limited to a shape (`Effect::mask`). */
+export const maskOf = (e: Effect): Mask | undefined => ("mask" in e ? e.mask : undefined);
+
+/** Whether `e` takes its clip's one place of its kind (`Effect::one_per_clip`): every kind
+ *  but `mlt`, unless masked — a window of its own. */
+export const onePerClip = (e: Effect): boolean => e.type !== "mlt" && !maskOf(e);
+
+/** A colour grade's settings, every one neutral when absent. Mirrors `Grade` in `model.rs`,
+ *  which says what each does; the compiler bakes them into one LUT. */
+export interface Grade {
+  log?: string; input_lut?: string; mask?: Mask; temperature?: number; tint?: number; exposure?: number;
+  lift?: Rgb; gamma?: Rgb; gain?: Rgb; contrast?: number;
+  curve?: [number, number][]; saturation?: number; look?: string; look_amount?: number;
+  blacks?: number; shadows?: number; highlights?: number; whites?: number; vibrance?: number;
+  curve_r?: [number, number][]; curve_g?: [number, number][]; curve_b?: [number, number][];
+  hue_sat?: [number, number][]; hue_hue?: [number, number][]; hue_luma?: [number, number][];
+  luma_sat?: [number, number][]; sat_sat?: [number, number][]; keyframes?: Keyframe[];
+}
+
+/** A rectangle of the picture in composition pixels, as `sample_frames` and
+ *  `measure_color` take one. */
+export interface Region { x: number; y: number; w: number; h: number }
+
+/** What `measure_color` matches a clip's region to: neutral, a colour, or a region at a
+ *  moment of the video as it shows now. */
+export type ColorReference = { neutral: true } | { color: string } | { t: number; region?: Region; sequence?: string };
+
+/** One number per channel, each 0 when absent. */
+export interface Rgb { r?: number; g?: number; b?: number }
 
 /** A placement of a bin entry: when it plays, not what it is. */
 export interface Clip {
@@ -193,6 +247,9 @@ export interface OverlayManifest {
   create?: string;
 }
 /** A font family a `font` var can name, from the project's `fonts/` or a library's. */
+/** A camera log a grade can name (`logs/<id>.json`, `/api/logs`). */
+export interface CameraLog { id: string; name: string }
+
 export interface FontFamily {
   name: string;
   origin: "project" | "library";
@@ -309,7 +366,7 @@ export interface Job {
 /** One part of the project's `.kuma/` cache: entries (a bake is one) and their bytes. */
 export interface CachePart { entries: number; bytes: number }
 /** How big the cache is, by part. */
-export interface CacheUsage { bakes: CachePart; samples: CachePart; thumbs: CachePart; bytes: number }
+export interface CacheUsage { bakes: CachePart; samples: CachePart; thumbs: CachePart; luts: CachePart; bytes: number }
 
 /** One tool call an agent made over MCP (`/api/activity`). A call that started a job is
  *  that job's record — running while it runs, ended with it, cancelled with it — and its

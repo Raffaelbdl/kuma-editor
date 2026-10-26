@@ -1,6 +1,6 @@
 import { api, subscribeEvents } from "./api";
-import type { Activity, BlueprintInfo, LibraryInfo, Clip, HistoryEntry, MarkerInfo, DaemonEvent, FontFamily, Job, Marker, OverlayInfo, PatchOp, Project, Track, TrackKind, Transition } from "./types";
-import { allClips, clipPathOf, fpsValue, freeId, isFileSource, isOverlaySource, nearest, seqDuration, seqPath, sequenceIds, sequenceOf } from "./types";
+import type { Activity, BlueprintInfo, CameraLog, Clip, DaemonEvent, Effect, FontFamily, HistoryEntry, Job, LibraryInfo, Marker, MarkerInfo, OverlayInfo, PatchOp, Project, Region, Track, TrackKind, Transition } from "./types";
+import { allClips, clipPathOf, fpsValue, freeId, isFinal, isFileSource, isOverlaySource, nearest, seqDuration, seqPath, sequenceIds, sequenceOf } from "./types";
 
 /** A clip found in the project: where it is, as the record every edit of it starts from. */
 export interface Found { seq: string; track: Track; ti: number; clip: Clip; ci: number }
@@ -39,6 +39,8 @@ export interface State {
   manifests: Record<string, OverlayInfo>;
   /** Font families `font` vars can name. */
   fonts: FontFamily[];
+  /** The camera logs a grade can name: files, read again when the libraries change. */
+  logs: CameraLog[];
   /** Bumped when a preview render finishes: preview images' cache key. */
   previewStamp: number;
   /** The sequence open for editing. The daemon owns this (the preview compiles it), so it
@@ -52,6 +54,9 @@ export interface State {
   /** What was last copied or cut. Held here, not in the document: copying is not an edit,
    *  so it costs no revision and survives switching sequences. The paste is the edit. */
   clipboard: Clipboard | null;
+  /** Effects copied off a clip, to paste onto others — a grade matched on one shot, onto
+   *  the rest. View state, like the clip clipboard. */
+  effectClipboard: Effect[] | null;
   /** Record mode: while on, changing an animatable parameter writes a key at the playhead
    *  instead of the static value. View state — it is about how the next edit is made. */
   autoKey: boolean;
@@ -83,12 +88,15 @@ export interface State {
   /** Every sequence's markers as the daemon lists them: who left each, and whether it is
    *  waiting for the agent. The open sequence's own are also `store.markers`, the document's. */
   markerList: MarkerInfo[];
+  /** The region a grade is matched to (the reference shot), picked once and matched from
+   *  any clip's grade. View state; nothing saves it. */
+  colorReference: { sequence: string; t: number; region: Region } | null;
 }
 
 type Listener = (s: State) => void;
 
 class Store {
-  state: State = { project: null, blueprints: [], libraries: [], manifests: {}, fonts: [], previewStamp: 0, sequence: "", selection: null, track: null, clipboard: null, autoKey: false, reloading: false, playhead: 0, playing: false, zoom: 60, tab: SEQUENCE_TAB, sequences: [], entries: [], connected: false, jobs: {}, mode: "power", activity: [], history: [], markerList: [] };
+  state: State = { project: null, blueprints: [], libraries: [], manifests: {}, fonts: [], logs: [], previewStamp: 0, sequence: "", selection: null, track: null, clipboard: null, effectClipboard: null, autoKey: false, reloading: false, playhead: 0, playing: false, zoom: 60, tab: SEQUENCE_TAB, sequences: [], entries: [], connected: false, jobs: {}, mode: "power", activity: [], history: [], markerList: [], colorReference: null };
   private listeners = new Set<Listener>();
   private refreshing: Promise<void> | null = null;
   private refreshAgain = false;
@@ -114,6 +122,24 @@ class Store {
     });
   }
 
+  /** Job `id` once it has ended, from the events the daemon sends about it — which carry
+   *  its result, so there is nothing to ask for. */
+  awaitJob(id: number): Promise<Job> {
+    return new Promise((resolve) => {
+      let ended = false;
+      // `select` calls back at once with what the store has, before `stop` is assigned: a
+      // job already over is caught by `ended`.
+      const stop = this.select((s) => [s.jobs[id]], (s) => {
+        const job = s.jobs[id];
+        if (ended || !job || !isFinal(job)) return;
+        ended = true;
+        stop?.();
+        resolve(job);
+      });
+      if (ended) stop();
+    });
+  }
+
   set(partial: Partial<State>) {
     this.state = { ...this.state, ...partial };
     // One panel throwing must not stop the others from updating.
@@ -126,6 +152,7 @@ class Store {
     const [project, { blueprints, libraries }, manifests, seq] = await Promise.all([api.project(), api.libraries(), api.overlays(), api.sequence()]);
     this.set({ project, blueprints, libraries, manifests, sequence: seq.current, sequences: [seq.current] });
     void this.reloadFonts();
+    void this.reloadLogs();
     subscribeEvents((e) => this.onEvent(e), (connected) => {
       this.set({ connected });
       // Events only say what happens from now on: what is already queued or running (or
@@ -204,6 +231,7 @@ class Store {
       // The blueprints, `_vendor/` and fonts the project reads: the fonts are fetched again.
       this.set({ libraries: e.libraries, blueprints: e.blueprints });
       void this.reloadFonts();
+      void this.reloadLogs();
     } else if (e.type === "jobs_cleared") {
       const jobs = { ...this.state.jobs };
       for (const id of e.ids) delete jobs[id];
@@ -270,6 +298,13 @@ class Store {
     }
     link.href = `/api/fonts.css?v=${Date.now()}`;
     this.set({ fonts });
+  }
+
+  /** Re-read the camera logs: a log is a file, not an edit, so nothing else says when one
+   *  arrives — the inspector asks again when its list is opened. */
+  async reloadLogs() {
+    const logs = await api.logs().catch(() => this.state.logs);
+    if (JSON.stringify(logs) !== JSON.stringify(this.state.logs)) this.set({ logs });
   }
 
   /** Re-read the manifests after a folder was edited on disk. */

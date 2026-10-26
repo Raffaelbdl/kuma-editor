@@ -1,0 +1,36 @@
+{
+  "name": "Fujifilm F-Log2 C / F-Gamut C",
+  "source": "Fujifilm, F-Log and F-Log2 Data Sheets",
+  "signal": "code",
+  "decode": [
+    {
+      "below": 0.100686685370811,
+      "linear": {
+        "slope": 8.799461,
+        "offset": 0.092864
+      }
+    },
+    {
+      "log": {
+        "a": 5.555556,
+        "b": 0.064829,
+        "c": 0.245281,
+        "d": 0.384316
+      }
+    }
+  ],
+  "primaries": [
+    [
+      0.7347,
+      0.2653
+    ],
+    [
+      0.0263,
+      0.9737
+    ],
+    [
+      0.1173,
+      -0.0224
+    ]
+  ]
+}

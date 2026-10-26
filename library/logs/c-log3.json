@@ -1,0 +1,45 @@
+{
+  "name": "Canon Log 3 / Cinema Gamut",
+  "source": "Canon, Canon Log Gamma Curves: Canon Log, Canon Log 2 and Canon Log 3 (white paper, 2018)",
+  "signal": "ire",
+  "decode": [
+    {
+      "below": 0.097465473,
+      "log": {
+        "a": -16.648055555555555,
+        "b": 1,
+        "c": -0.36726845,
+        "d": 0.12783901
+      }
+    },
+    {
+      "upto": 0.15277891,
+      "linear": {
+        "slope": 2.1949775555555555,
+        "offset": 0.12512219
+      }
+    },
+    {
+      "log": {
+        "a": 16.648055555555555,
+        "b": 1,
+        "c": 0.36726845,
+        "d": 0.12240537
+      }
+    }
+  ],
+  "primaries": [
+    [
+      0.74,
+      0.27
+    ],
+    [
+      0.17,
+      1.14
+    ],
+    [
+      0.08,
+      -0.1
+    ]
+  ]
+}

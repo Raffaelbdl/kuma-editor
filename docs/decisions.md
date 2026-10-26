@@ -3319,6 +3319,82 @@ kuma's and are fixed here, the rest is listed as open.
   file the daemon saves on every edit. Array changes are sent index by index, so a clip
   inserted mid-track rewrites those after it: larger than it need be, never wrong.
 
+## Colour grading
+
+**A grade is one `avfilter.lut3d` over a LUT kuma computes** — adopted, format version 11.
+`kuma_core::grade` says what each step does to a colour; the compiler samples the whole
+grade on a 33³ grid into `<cache>/luts/<hash>.cube` (`luts.rs`), named by a hash of the
+settings and of every file it reads, so equal grades share a file and a changed one is a new
+path, which is what reloads the preview. One table means one rounding, kuma's maths on every
+machine, and preview, samples and render on one path. Rejected: a stock MLT filter per
+control (each rounds and may convert YUV↔RGB, so five controls band, and what "temperature"
+means is whichever filter was picked), and a colour engine of kuma's own (a second renderer,
+which breaks "what you sample is what renders").
+
+The maths is **append-only in behaviour**, like `_vendor/`: tests pin values computed apart
+from the code, and a new behaviour is a new field, neutral when left out. A grade is SDR:
+exposure and white balance act on light (BT.1886 decoded and re-encoded), the rest on the
+displayed signal, all clamped to 0..1. Steps added since — tonal ranges, vibrance, per-channel
+curves, hue/luma/saturation curves (hue as the vectorscope's angle, in Rec. 709 Y'CbCr, so a
+grey has nothing to move) — are each skipped while neutral, so older grades compute the same
+table. Not done: an HSL qualifier; the hue curves cover most of its use.
+
+**The editor's curve is a pinned copy of the compiler's** (`ui/src/curve.ts`, `grade.rs`):
+the curve field needs it every frame of a drag, and both sides pin the same values. Colour
+fields are kuma's own picker, since `<input type="color">` drops alpha.
+
+**`measure_color` answers in the grade's own units, and a match is solved** — adopted. A
+region's `exposure` is stops from mid grey and its `balance` the `temperature`/`tint` that
+would make a grey its colour, so two shots compare as numbers. A match measures the clip
+without its grade (a copy of the document, never stored), solves exposure, temperature and
+tint through the whole grade, and answers the patch; the rest of the grade is the look and
+stays. The reference is neutral, a colour, or a region elsewhere in the video. Overlays are
+left out of a measurement by default.
+
+**Before and after** — `sample_frames` and `measure_color` take `before`: the document at an
+earlier revision (from the history), or the current one `without` some effects. Both
+versions go through the same compile and melt, so the pair differs only by the edit.
+
+**The grade previews live while dragged** — the daemon renders the frame without that effect
+(a `before` version) and serves the grade as a 33³ byte table (`/api/grade/table`); the
+browser applies it with WebGL, through the effect's mask. The picture is the compiler's, not
+a client copy of it. It covers the whole frame, so a clip that does not fill it previews
+wrong until the edit lands. **Scopes** count the preview's own pixels in the browser, so they
+follow a drag; `measure_color` stays the agent's.
+
+**A camera log is a file** — `logs/<id>.json`, found in the libraries and then the project's
+own `logs/` (which wins), as fonts are; the grade's `log` names it. A file holds the maker's
+decode curve as pieces of the shapes makers publish (linear, log, power, constant, each
+`below`/`upto` a bound) and the gamut's primaries, citing the maker's document — or names the
+maker's `.cube` when only that is published (DJI's D-Log M), which the grade then takes as its
+input. Adding a camera is adding a file. Conversion: decode to scene light, gamut to Rec. 709
+(SMPTE RP 177), tone map with ITU-R BT.2390's EETF on max(R, G, B) (peak capped at 4000 nits
+so the knee stays above mid grey), bring out-of-gamut colours in towards their luminance
+(kuma's own step), encode. A grade takes `log` or `input_lut`, not both. Open: exposure
+before the tone map, which would recover more highlight on log footage.
+
+**A `mask` is a field of the effect it limits** — `grade`, `color` and `blur` take
+`mask: {shape, x, y, w, h, rotation, feather, invert, keyframes}`, the rectangle in the same
+composition pixels as `region`. The compiler wraps the effect's filter in `mask_start`
+(`rotoscoping`, the shape as a spline, feathered) and `mask_apply` (`qtblend`) — MLT core and
+Qt, since frei0r is not in every build. Rejected: a mask effect governing the ones after it
+(an edit can break the pair), and a mask holding a nested effect list. A clip keeps one effect
+of each kind over its whole picture and any number masked, each a window. A mask is not in
+the LUT. Its keys move it in straight lines, which is all `rotoscoping` does, so they take no
+`ease`.
+
+**Keys move a grade's light; the rest holds** — a LUT cannot move, but the light step is a
+gain per channel, on light and so on display values. A keyed grade compiles to its input LUT,
+an animated `avfilter.colorchannelmixer`, then the rest as a LUT (`Grade::keyed_parts`). The
+parts round and clip between them, and MLT interpolates gains rather than stops (half way
+from 0 to 2 EV is about 1.1). A match on a keyed grade answers a key. Rejected: blending two
+LUTs over time (no MLT filter does it) and a LUT per frame.
+
+**A grade on the source** — a video or image bin entry carries `effects` (a `grade`, still
+and whole-picture), applied before every placement's own: a camera log is a fact about the
+file. `volume` on the entry is the precedent. Looking at an entry on its own is the subject
+pipeline below, not done.
+
 ## Still open
 
 Nested sequences are done and the editor is an application now, so this list is the whole
@@ -3327,7 +3403,8 @@ end of its section above. The item this list gained from the sequence work comes
 because it is the part deliberately left out.
 
 - **One pipeline for every bin entry, not just sequences** — agreed direction,
-  **postponed until a feature needs it**, and the largest thing on this list.
+  **postponed until a feature needs it**, and the largest thing on this list. (Grading a
+  source, above, landed without it; looking at that source on its own would need it.)
 
   Today `sample_frames` takes a *sequence* or an *overlay entry*, and the overlay case
   builds a throwaway one-clip project and runs the ordinary path — same bake, same

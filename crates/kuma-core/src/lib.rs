@@ -7,7 +7,10 @@
 //! * The JSON shape is the public contract: it is exported as a JSON Schema so an
 //!   agent can validate its own edits before sending them.
 
+pub mod camera;
+pub mod color;
 pub mod edit;
+pub mod grade;
 pub mod manifest;
 pub mod model;
 pub mod schema;
@@ -20,10 +23,11 @@ pub use model::*;
 pub use manifest::{OverlayManifest, VarSpec, VarType};
 pub use upgrade::{canonical, parse_project, project_text};
 pub use time::{ClipFrames, Fps};
-pub use validate::{is_library, validate, Issue, Severity, ValidationContext, LIBRARY_KINDS};
+pub use validate::{is_library, stays_inside, validate, Issue, Severity, ValidationContext, LIBRARY_KINDS};
 
 /// Current on-disk project format version.
 ///
+/// 11 — the effect kind `grade` is new: a colour grade, compiled as one LUT.
 /// 10 — a project may name the asset `libraries` it uses besides the user's own.
 /// 9 — a marker may carry an `origin`: who left it (the daemon stamps it).
 /// 8 — a sequence carries `effects` on its mix (`volume`, `limiter`, `auto_level`); the
@@ -38,4 +42,4 @@ pub use validate::{is_library, validate, Issue, Severity, ValidationContext, LIB
 ///     keyframed effect now uses.
 /// 2 — keyframes gained `ease` (`linear`, `hold`, `smooth`).
 /// 1 — the first format.
-pub const PROJECT_VERSION: u32 = 10;
+pub const PROJECT_VERSION: u32 = 11;

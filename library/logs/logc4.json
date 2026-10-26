@@ -1,0 +1,37 @@
+{
+  "name": "ARRI LogC4 / ARRI Wide Gamut 4",
+  "source": "ARRI, ARRI LogC4 Logarithmic Color Space: Specification (2022)",
+  "signal": "code",
+  "decode": [
+    {
+      "below": 0,
+      "linear": {
+        "slope": 8.803033210331753,
+        "offset": 0.15895633652241087
+      }
+    },
+    {
+      "log": {
+        "a": 2231.8263090676883,
+        "b": 64,
+        "c": 0.06479541963412931,
+        "d": -0.2959083926825862,
+        "base": 2
+      }
+    }
+  ],
+  "primaries": [
+    [
+      0.7347,
+      0.2653
+    ],
+    [
+      0.1424,
+      0.8576
+    ],
+    [
+      0.0991,
+      -0.0308
+    ]
+  ]
+}

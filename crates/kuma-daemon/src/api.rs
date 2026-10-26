@@ -57,6 +57,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/fonts.css", get(fonts_css))
         .route("/fonts/{slug}/{file}", get(font_file))
         .route("/api/presets/effects", get(effect_presets))
+        .route("/api/logs", get(camera_logs))
         .route("/api/media/probe", get(probe_media))
         .route("/api/bin", post(add_media))
         .route("/api/transcribe", post(transcribe))
@@ -74,6 +75,8 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/sample/job", post(sample_job))
         .route("/api/samples/{*file}", get(sample_file))
         .route("/api/audio/measure", post(measure_audio))
+        .route("/api/color/measure", post(measure_color))
+        .route("/api/grade/table", post(grade_table))
         .route("/api/media/measure", post(measure_media))
         .route("/api/snapshot", get(snapshot))
         .route("/api/cache", get(cache_usage))
@@ -684,6 +687,13 @@ async fn effect_presets(State(st): S) -> Json<Value> {
     Json(json!(out.into_values().collect::<Vec<_>>()))
 }
 
+/// The camera logs a grade can name: `logs/*.json` from every library, then the project's
+/// own (wins on id), each with its name.
+async fn camera_logs(State(st): S) -> ApiResult {
+    let logs = blocking(move || kuma_core::camera::list(&st.config.all_log_dirs())).await?;
+    Ok(Json(json!(logs.into_iter().map(|(id, name)| json!({ "id": id, "name": name })).collect::<Vec<_>>())))
+}
+
 #[derive(Deserialize)]
 struct ThumbsReq {
     /// Blueprints to render. With neither list, everything is rendered.
@@ -1024,7 +1034,7 @@ async fn sample_job(State(st): S, Json(asked): Json<Asked<SampleRequest>>) -> Js
     // The sequence it samples, the master unless named, so the queue can say so; and the
     // moments and region, which the agent's activity shows.
     let sequence = req.overlay.is_none().then(|| req.sequence.clone().unwrap_or_else(|| read(&st.project).master.clone()));
-    let params = json!({ "sequence": sequence, "overlay": req.overlay, "times": req.times, "t0": req.t0, "t1": req.t1, "rect": req.rect });
+    let params = json!({ "sequence": sequence, "overlay": req.overlay, "times": req.times, "t0": req.t0, "t1": req.t1, "rect": req.rect, "before": req.before });
     let id = jobs::spawn_cancellable(st, "sample", params, by, move |progress, cancel| {
         progress(0, "starting");
         jobs::sample(&s2, &req, progress, Some(cancel))
@@ -1039,6 +1049,32 @@ async fn measure_audio(State(st): S, Json(asked): Json<Asked<MeasureRequest>>) -
     let s2 = st.clone();
     let params = json!({ "sequence": req.sequence, "mute": req.mute, "solo": req.solo });
     Json(json!({ "job": jobs::spawn_cancellable(st, "measure", params, by, move |progress, cancel| jobs::measure_audio(&s2, &req, progress, cancel)) }))
+}
+
+/// What a region of the picture is, and with `match` the grade that makes a clip's region
+/// look like a reference, as a cancellable job: it samples frames through melt. The result
+/// is `color::measure`'s.
+async fn measure_color(State(st): S, Json(asked): Json<Asked<crate::color::ColorRequest>>) -> Json<Value> {
+    let (by, req) = asked.split();
+    let s2 = st.clone();
+    let params = json!({ "sequence": req.sequence, "times": req.times, "t0": req.t0, "region": req.region, "clip": req.matching.as_ref().map(|m| &m.clip) });
+    Json(json!({ "job": jobs::spawn_cancellable(st, "measure-color", params, by, move |progress, cancel| crate::color::measure(&s2, &req, progress, cancel)) }))
+}
+
+#[derive(Deserialize)]
+struct GradeTable {
+    grade: kuma_core::Grade,
+    #[serde(default)]
+    size: Option<usize>,
+}
+
+/// A grade as a table of bytes (`size`³ RGB, red fastest): what the editor applies to the
+/// frame while a grade control is dragged, so the live picture is the compiler's maths and
+/// the client keeps no copy of them.
+async fn grade_table(State(st): S, Json(req): Json<GradeTable>) -> Result<Response, ApiError> {
+    let n = req.size.unwrap_or(crate::color::TABLE_SIZE);
+    let bytes = blocking(move || crate::color::table(&st, &req.grade, n)).await?.map_err(ApiError::bad_request)?;
+    Ok(([(header::CONTENT_TYPE, HeaderValue::from_static("application/octet-stream"))], bytes).into_response())
 }
 
 /// How loud one source is and where it is quiet, as a cancellable job: ffmpeg decodes the

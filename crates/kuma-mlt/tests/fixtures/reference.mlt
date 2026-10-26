@@ -134,6 +134,30 @@
       <property name="av.saturation">1.2</property>
       <property name="av.gamma">1</property>
     </filter>
+    <filter id="clip_c2_grade3" in="45" out="179">
+      <property name="mlt_service">avfilter.lut3d</property>
+      <property name="av.file">$CACHE/luts/28d933781bb6bd8fda49728f3500d262.cube</property>
+      <property name="av.interp">tetrahedral</property>
+    </filter>
+    <filter id="clip_c2_mask4" in="45" out="179">
+      <property name="mlt_service">mask_start</property>
+      <property name="filter">rotoscoping</property>
+      <property name="filter.mode">alpha</property>
+      <property name="filter.alpha_operation">min</property>
+      <property name="filter.spline">{&quot;30&quot;:[[[0.761583,0.481664],[0.741481,0.615031],[0.72138,0.748397]],[[0.59697,0.805011],[0.463604,0.741481],[0.330237,0.677952]],[[0.238417,0.518336],[0.258519,0.384969],[0.27862,0.251603]],[[0.40303,0.194989],[0.536396,0.258519],[0.669763,0.322048]]],&quot;90&quot;:[[[0.847299,0.286849],[0.860785,0.422823],[0.874272,0.558797]],[[0.774976,0.703578],[0.639003,0.746202],[0.503029,0.788826]],[[0.381868,0.713151],[0.368381,0.577177],[0.354895,0.441203]],[[0.45419,0.296422],[0.590164,0.253798],[0.726138,0.211174]]]}</property>
+      <property name="filter.feather">15</property>
+      <property name="filter.feather_passes">3</property>
+    </filter>
+    <filter id="clip_c2_light5" in="45" out="179">
+      <property name="mlt_service">avfilter.colorchannelmixer</property>
+      <property name="av.rr">15=0.865537;105=1.036588</property>
+      <property name="av.gg">15=0.865537;105=1.098226</property>
+      <property name="av.bb">15=0.865537;105=1.16353</property>
+    </filter>
+    <filter id="clip_c2_unmask6" in="45" out="179">
+      <property name="mlt_service">mask_apply</property>
+      <property name="transition">qtblend</property>
+    </filter>
   </producer>
   <producer id="clip_c3" in="0" out="29">
     <property name="mlt_service">color</property>
@@ -208,6 +232,24 @@
   </playlist>
   <playlist id="clip_s1">
     <entry producer="clip_s1_seq" in="0" out="119"/>
+    <filter id="clip_s1_mask1" in="0" out="119">
+      <property name="mlt_service">mask_start</property>
+      <property name="filter">rotoscoping</property>
+      <property name="filter.mode">alpha</property>
+      <property name="filter.alpha_operation">min</property>
+      <property name="filter.spline">[[[0,0],[0,0],[0,0]],[[0.333333,0],[0.333333,0],[0.333333,0]],[[0.333333,0.333333],[0.333333,0.333333],[0.333333,0.333333]],[[0,0.333333],[0,0.333333],[0,0.333333]]]</property>
+      <property name="filter.invert">1</property>
+    </filter>
+    <filter id="clip_s1_blur2" in="0" out="119">
+      <property name="mlt_service">avfilter.gblur</property>
+      <property name="av.sigma">3</property>
+      <property name="av.sigmaV">3</property>
+      <property name="av.steps">2</property>
+    </filter>
+    <filter id="clip_s1_unmask3" in="0" out="119">
+      <property name="mlt_service">mask_apply</property>
+      <property name="transition">qtblend</property>
+    </filter>
   </playlist>
   <playlist id="clip_s2_seq">
     <entry producer="seq_intro" in="0" out="179"/>

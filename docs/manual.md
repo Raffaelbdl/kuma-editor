@@ -219,10 +219,32 @@ Values that go together are one row wearing their axis colours (a transform's **
 field. The shapes live in `ui/src/props.ts`, so an effect, an overlay var and a clip's own
 fields are edited the same way; an effect declares which shape each of its fields is, in
 one table in `ui/src/panels/inspector.ts`, and the bounds there are the model's own, so the
-panel cannot offer a value the daemon would refuse.
+panel cannot offer a value the daemon would refuse. Three shapes are drawn rather than typed.
+A **colour** (a colour entry, an overlay's colour var) is a swatch and its hex, opening into
+a saturation/value square, a hue strip and an alpha strip, with **Pick from screen** where the
+browser has an eyedropper (`colorfield.ts`); it keeps `#rrggbbaa`, which the browser's own
+colour input drops, and stays open across the edits it makes. A grade's **wheels** put lift,
+gamma and gain on three colour discs: the puck is their colour, the **Y** under each the
+brightness all three channels share, and a double-click takes the colour out; the R/G/B rows
+under them give the exact numbers. A grade's **curve** is drawn as it bends the picture
+(`curvefield.ts`, the compiler's own monotone cubic, `curve.ts`): press to add a point, drag
+it, double-click to take it out; the ends move up and down only. Its tabs hold the grade's
+other curves on the same plot: red's, green's and blue's own, then saturation, hue and luma
+against hue (which wrap round, with the hues along the foot), and saturation against luma and
+against saturation, each an amount about a level line at none. **Where**, under a grade, a
+colour correction or a blur, limits it to a shape: an ellipse or rectangle in composition
+pixels, turned, feathered or inverted, placed by its numbers or by **Draw** (drag it over the
+frame); **+ window** adds another of the same effect inside a shape of its own, since a clip
+takes one of each over the whole picture and any number masked. **+ key** keys the shape where
+the playhead is; once it has keys its fields (and Draw) write into the key at the playhead, and
+it moves in straight lines between them. A grade's light — temperature, tint, exposure —
+takes keys the way any animated effect's fields do, from the diamond in its head. A video
+or image **bin entry** has **On the source** in its inspector: a grade there (its camera log,
+the grade that matches it to the rest) applies to every clip that places it, before the
+clip's own effects.
 
 **Effects are offered where they can act.** Each effect acts on the picture (transform,
-crop, blur, colour, blend, fade, freeze) or the sound (volume, audio fade, limiter, auto
+crop, blur, colour, grade, blend, fade, freeze) or the sound (volume, audio fade, limiter, auto
 level), so `+ add effect` lists
 only what the selected clip can use: a colour or a still is not offered a volume, a song is not
 offered a picture fade. An effect that got there anyway — by an agent's patch, or on a clip
@@ -461,7 +483,7 @@ claude mcp add --scope user    kuma -- kuma mcp --project /abs/path.kuma.json  #
 `kuma mcp` starts the daemon in-process if none is running on the port, so the browser UI
 and the agent always share one state. Tools: `timeline_guide`, `get_project`, `get_schema`, `apply_edits`,
 `undo`, `redo`, `list_markers`, `validate_project`, `list_presets`, `add_media`, `probe_media`, `reprobe_media`, `unused_entries`,
-`transcribe`, **`sample_frames`**, `measure_audio`, `measure_media`, `bake_overlay`, `render`, `export_subtitles`, `export_chapters`, `job_status`, `cancel_job`,
+`transcribe`, **`sample_frames`**, `measure_audio`, `measure_media`, `measure_color`, `bake_overlay`, `render`, `export_subtitles`, `export_chapters`, `job_status`, `cancel_job`,
 `prune_cache`, `health`, for libraries `list_libraries`, `add_library`, `remove_library`,
 `list_design_systems`, `apply_design_system`, `list_effect_presets`, and for overlays
 `overlay_guide`, `new_overlay`, `check_overlay`, `import_overlay`, `make_overlay_unique`,
@@ -483,7 +505,17 @@ baking anything; `solo` and `mute` (track ids, nested ones too) hear one part al
 measurement, on the copy that is compiled and never on the project. `measure_media` meters
 one source instead, a media entry or a file in the project: loudness, range and true peak, a
 loudness curve over time and its quiet stretches (pauses, gaps between takes, the onset of a
-sound), in the file's own seconds; nothing is stored. The tools that start a job (`render`, `measure_audio`, `measure_media`, `transcribe`,
+sound), in the file's own seconds; nothing is stored. `sample_frames` and `measure_color`
+take `before` to compare: the same moments of the document at an earlier `revision` (the
+history keeps 200), or as it is `without` some effects (by kind, by clip), sampled as a copy
+that is never stored; frames come back as before/after pairs, and a sheet as a row a moment,
+before on the left. `measure_color` reads a region of the
+picture (overlays left out unless asked) as numbers in the grade's own terms — luma levels,
+`exposure` in stops from mid grey, the cast as the `temperature` and `tint` that would make
+it, what is clipped or crushed — and with `match` solves a clip's white balance and exposure
+so its region is neutral or looks like a region elsewhere, measuring the clip without its
+grade on a copy of the project and answering the patch that writes the result
+(`POST /api/color/measure`, `kuma_core::color`). The tools that start a job (`render`, `measure_audio`, `measure_media`, `measure_color`, `transcribe`,
 `bake_overlay`, `sample_frames`) wait `wait_seconds` and then return it still running, with
 its id; `job_status` with that id and its own `wait_seconds` waits again, in calls as short
 as the client needs (Claude Code moves a call that runs past 120 s to the background), and
@@ -675,6 +707,45 @@ sequences included; the picture holds and the sound runs on. It is a tractor of 
 sound and that frame repeated, because MLT's `freeze` filter fetches its frame from the
 wrong producer for a sequence and deadlocks on a still.
 
+**A grade is one LUT kuma computes.** The `grade` effect holds a colour grade — a camera log
+to convert (`kuma_core::camera`: a `logs/<id>.json` file with the maker's curve and gamut, or
+the maker's LUT, found in the libraries and the project's own `logs/` like fonts; tone
+mapped to SDR) or an input
+LUT, white balance, exposure, lift/gamma/gain wheels, contrast, tonal ranges, curves (tone,
+per channel, and against hue, luma and saturation), saturation, vibrance and a
+look LUT — and `kuma_core::grade` says what each does to a colour, in that order. The
+compiler samples the whole grade on a 33³ grid, writes it as one `.cube` under the cache
+(`.kuma/cache/luts/<hash>.cube`, named by a hash of the settings and of the bytes of the
+LUTs it reads) and applies it with one `avfilter.lut3d`, tetrahedral, which is also what
+Kdenlive uses to apply a LUT. So a grade is one filter and one rounding whatever it holds,
+the maths is kuma's rather than whichever filters an MLT build ships, and a changed grade
+is a new path, which is what reloads the preview. The cost: a LUT changes every pixel the
+same way, so on its own a grade cannot vary across the frame or over time: a `mask` limits
+it to a shape (`mask_start`/`mask_apply` around the LUT), and keys on its light (temperature,
+tint, exposure) compile to a moving gain per channel between its input conversion and the
+rest of it, each a LUT; anything else that changes over time is a split. The editor shows its fields in the order the
+colour goes through them; the live overlay preview approximates only its exposure,
+contrast and saturation. LUT files are `.cube` (1D or 3D, any domain) under the project.
+A grade's **Match** row sets its white balance and exposure by measuring: put the playhead on
+the clip, press **Neutral…** and drag over something white or grey in life, or **Set
+reference…** on the shot the others should look like and then **Match…** on each other
+clip, dragging over the same thing (a face, a wall). Each runs `measure_color` and writes the
+result as one undoable edit; the rest of the grade is kept. With several clips selected and a
+reference set, **Match N selected** (or ⌘K *Match Selected Clips to the Colour Reference*)
+matches them all at the reference's region, for shots framed alike, as one edit. **Copying
+an effect**: the copy button in an effect's head, then **Ctrl + Alt + V** (⌘K *Paste Effects
+onto Selected Clips*) puts it on every selected clip that can take it, as one edit — replacing
+the clip's own effect of that kind, since a clip has one of each, and adding it otherwise. **The grade shows while you drag**:
+every grade control previews on the frame at the playhead before it commits, and **Before**,
+held, shows the clip without its grade (`gradepreview.ts`). The frame without the grade is
+the daemon's render of a version of the document (`sample` with `version`), and the grade is
+the daemon's own maths as a 33³ table (`POST /api/grade/table`) applied with WebGL, so what
+you see while dragging is what renders; it covers the frame, which is exact for a clip that
+fills it, and the render replaces it as soon as the engine shows the edit. **Scopes** (`s`,
+on the rail): waveform, RGB parade, vectorscope with the bars' targets and the skin line, and
+histogram, of what the preview shows — the grade being dragged while it is (`panels/scopes.ts`,
+counted by `scopes.ts` from the frame at 320 px wide, at most once an animation frame).
+
 A clip that reads past the end of its source is padded with nothing for the frames the
 source lacks, which show the tracks below and are silent. MLT would otherwise cut the
 entry to what the source has, and every later clip on the track would slide earlier. The
@@ -764,7 +835,7 @@ and the values live with the rest of the project's decisions.
   4K supersampling; byte-identical repeat bakes with one worker.
 - Compiler: dissolves (A/B lanes + luma), wipes (generated PGM lumas), timewarp speed,
   crop, transform, blur, colour correction and volume — each static or keyframed, linear,
-  held or smooth per key — picture and sound fades, blend modes (discrete keyframes on `qtblend`),
+  held or smooth per key — a colour grade as one generated 3D LUT, picture and sound fades, blend modes (discrete keyframes on `qtblend`),
   solid-colour clips, PiP stills, overlay PNG sequences, a sequence's own gain, limiter and
   auto-level, freeze frames; golden-file + DTD + real `melt` render tests.
 - Daemon + MCP end to end: patch/undo/409 on stale revisions, `sample_frames` returning
@@ -811,9 +882,10 @@ and the values live with the rest of the project's decisions.
   `~/.local/share/kuma/models` (`KUMA_WHISPER_MODEL`). `GET /api/health` has the same under
   `whisper`, and the models `model` can name under `whisper_models`; a `model` that is not
   there is refused with the list.
-- **`.kuma/` keeps growing** — superseded bakes and sampled frames are never deleted on
-  their own. `kuma cache prune` (or the job queue's button, or `prune_cache`) removes what
-  the project no longer uses; `--all` empties bakes and frames.
+- **`.kuma/` keeps growing** — superseded bakes, sampled frames and the LUTs of grades
+  since changed (about 1 MB each) are never deleted on their own. `kuma cache prune` (or
+  the job queue's button, or `prune_cache`) removes what the project no longer uses;
+  `--all` empties bakes and frames, and keeps the LUTs of the project's grades.
 - **Bakes or renders load the machine, or you want them faster** — overlay clips bake side
   by side, each in its own hyperframes process with its own Chrome (about 250 MB).
   `KUMA_BAKE_JOBS` sets how many run at once, across everything the daemon bakes; the

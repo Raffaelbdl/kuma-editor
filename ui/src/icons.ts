@@ -40,6 +40,11 @@ const ICONS = {
   "key-open": [shape("polygon", { points: "12,4.5 19.5,12 12,19.5 4.5,12", fill: "none", stroke: "currentColor", "stroke-width": 2.2, "stroke-linejoin": "round" })],
   /** Two links of a chain: a clip that moves with others. Stroked rather than filled,
    *  because a filled chain at 10px is a blob. */
+  /** Copy: one sheet over another. */
+  copy: [
+    shape("rect", { x: 9, y: 9, width: 11, height: 11, rx: 1.5, fill: "none", stroke: "currentColor", "stroke-width": 2 }),
+    shape("path", { d: "M15 9V5.5A1.5 1.5 0 0 0 13.5 4h-8A1.5 1.5 0 0 0 4 5.5v8A1.5 1.5 0 0 0 5.5 15H9", fill: "none", stroke: "currentColor", "stroke-width": 2 }),
+  ],
   link: [
     shape("path", { d: "M10 14a4 4 0 0 0 6 0l3-3a4 4 0 0 0-6-6l-1 1", fill: "none", stroke: "currentColor", "stroke-width": 2.4, "stroke-linecap": "round" }),
     shape("path", { d: "M14 10a4 4 0 0 0-6 0l-3 3a4 4 0 0 0 6 6l1-1", fill: "none", stroke: "currentColor", "stroke-width": 2.4, "stroke-linecap": "round" }),

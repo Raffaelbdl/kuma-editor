@@ -143,6 +143,20 @@ pub fn ffmpeg(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
+/// The pixels of a picture as RGB bytes, row by row: what a measurement of it reads.
+pub fn rgb24(src: &Path) -> Result<Vec<u8>, String> {
+    let out = Command::new("ffmpeg")
+        .args(["-v", "error", "-i"])
+        .arg(src)
+        .args(["-frames:v", "1", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"])
+        .output()
+        .map_err(|e| e.to_string())?;
+    if !out.status.success() {
+        return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
+    }
+    Ok(out.stdout)
+}
+
 /// Peaks per second of source in a [`peaks`] waveform.
 pub const PEAK_RATE: u32 = 100;
 

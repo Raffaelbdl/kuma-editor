@@ -9,7 +9,9 @@
 //! The emitted document is renderable by `melt` and openable by Kdenlive.
 
 pub mod compile;
+mod generated;
 pub mod lumas;
+pub mod luts;
 pub mod melt;
 pub mod presets;
 pub mod xml;

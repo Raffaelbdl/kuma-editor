@@ -40,10 +40,12 @@ pub struct ValidationContext {
     /// If false, nothing on disk is read: media files, overlay folders and overlay vars go
     /// unchecked (the compiler). The daemon passes true.
     pub check_files: bool,
+    /// Where camera logs are found, the project's own `logs/` last (`camera::find`).
+    pub log_dirs: Vec<PathBuf>,
 }
 
 /// What a library holds, by folder: a folder with none of them is not one.
-pub const LIBRARY_KINDS: [&str; 4] = ["blueprints", "presets", "fonts", "design-systems"];
+pub const LIBRARY_KINDS: [&str; 5] = ["blueprints", "presets", "fonts", "design-systems", "logs"];
 
 /// Whether `dir` holds any of [`LIBRARY_KINDS`].
 pub fn is_library(dir: &std::path::Path) -> bool {
@@ -126,6 +128,27 @@ pub fn validate(p: &Project, ctx: &ValidationContext) -> Vec<Issue> {
             }
             // A sequence's own contents are checked below, with every other timeline.
             BinSource::Sequence(_) | BinSource::Folder { .. } => {}
+        }
+        let shows_a_file = matches!(&item.source, BinSource::File { kind, .. } if *kind != MediaKind::Audio);
+        let mut graded = false;
+        for (ei, e) in item.effects.iter().enumerate() {
+            let ep = format!("{ip}/effects/{ei}");
+            let Effect::Grade(g) = e else {
+                issues.push(Issue::error(ep, format!("a bin entry's effects are a `grade` for now; put `{}` on the clips that place it", e.kind())));
+                continue;
+            };
+            if !shows_a_file {
+                issues.push(Issue::error(ep, "only a video or image file takes a grade of its own; grade the clips that place anything else"));
+                continue;
+            }
+            if std::mem::replace(&mut graded, true) {
+                issues.push(Issue::error(ep.clone(), "duplicate `grade` on this entry"));
+            }
+            if g.mask.is_some() || !g.keyframes.is_empty() {
+                issues.push(Issue::error(ep.clone(), "an entry's grade is over the whole picture and holds still: a mask or keys go on a clip's grade"));
+            }
+            check_grade(&mut issues, &ep, g);
+            check_grade_luts(&mut issues, &ep, g, ctx);
         }
         if item.volume != 1.0 && !item.is_timed_media() {
             issues.push(Issue::error(format!("{ip}/volume"), "only a sound or video file, or a sequence, has a volume"));
@@ -306,7 +329,8 @@ fn check_sequence<'a>(
                 }
             }
             // A second effect of these kinds would stack (two volume filters square the
-            // gain) or silently shadow the first (blend); only `mlt` may repeat.
+            // gain) or silently shadow the first (blend); only `mlt` may repeat, and the
+            // masked ones — each a window of its own, stacking being what they are for.
             let mut kinds = HashSet::new();
             // What the clip can show and sound, for the effects that act on neither. Only
             // for an entry that resolves to something placeable (the others are errors
@@ -317,7 +341,7 @@ fn check_sequence<'a>(
             for (ei, e) in c.effects.iter().enumerate() {
                 let ep = format!("{cp}/effects/{ei}");
                 let kind = e.kind();
-                if kind != "mlt" && !kinds.insert(kind) {
+                if e.one_per_clip() && !kinds.insert(kind) {
                     issues.push(Issue::error(ep.clone(), format!("duplicate `{kind}` effect on this clip")));
                 }
                 // A warning, not an error: it renders, and does nothing. The editor does not
@@ -334,6 +358,7 @@ fn check_sequence<'a>(
                             issues.push(Issue::warn(ep.clone(), "fade in + out exceed the clip duration"));
                         }
                     }
+                    Effect::Grade(g) => check_grade_luts(issues, &ep, g, ctx),
                     Effect::Freeze { t } => {
                         // Outside the source the compiler holds the nearest frame: a warning,
                         // not a refusal of whatever edit moved the clip's `in`.
@@ -424,10 +449,9 @@ fn check_sequence<'a>(
                 }
                 if let Some(l) = &x.luma {
                     if !LUMAS.contains(&l.as_str()) {
-                        let lp = std::path::Path::new(l);
-                        if lp.is_absolute() || lp.components().any(|c| !matches!(c, std::path::Component::Normal(_))) {
+                        if !stays_inside(l) {
                             issues.push(Issue::error(format!("{xp}/luma"), "luma path must stay inside the project"));
-                        } else if ctx.check_files && !ctx.root.join(lp).is_file() {
+                        } else if ctx.check_files && !ctx.root.join(l).is_file() {
                             issues.push(Issue::error(format!("{xp}/luma"), format!("unknown luma `{l}`: use one of {LUMAS:?} or a file under the project")));
                         }
                     }
@@ -441,6 +465,31 @@ fn check_sequence<'a>(
 /// order, within `duration`, naming parameters the kind has) and the bounds of its kind,
 /// checked on every sample the effect will be evaluated at.
 fn check_effect(issues: &mut Vec<Issue>, ep: &str, e: &Effect, kind: &str, owner: (&str, f64)) {
+    if let Some(m) = e.mask() {
+        let mp = format!("{ep}/mask");
+        // The shape, and the shape at each key.
+        let shape = |issues: &mut Vec<Issue>, sp: String, s: &Mask| {
+            if ![s.x, s.y, s.w, s.h, s.rotation, s.feather].iter().all(|v| v.is_finite()) {
+                issues.push(Issue::error(sp, "a mask's numbers must be finite"));
+            } else if !(s.w > 0.0 && s.h > 0.0) {
+                issues.push(Issue::error(sp, "a mask's `w` and `h` must be above 0: it is the rectangle `region` is, in composition pixels"));
+            }
+        };
+        shape(issues, mp.clone(), m);
+        if m.feather < 0.0 {
+            issues.push(Issue::error(format!("{mp}/feather"), "a mask's feather is pixels of soft edge, 0 or more"));
+        }
+        check_keyframes(issues, &mp, owner, m.keyframes.iter().map(|k| k.t));
+        for (ki, k) in m.keyframes.iter().enumerate() {
+            shape(issues, format!("{mp}/keyframes/{ki}"), &m.at_key(k));
+            if let Some(name) = k.values.keys().find(|n| !Mask::KEYED.contains(&n.as_str())) {
+                issues.push(Issue::error(format!("{mp}/keyframes/{ki}/{name}"), format!("a mask's keys may set {}; `{name}` holds still", Mask::KEYED.join(", "))));
+            }
+            if k.ease != Ease::Linear {
+                issues.push(Issue::error(format!("{mp}/keyframes/{ki}/ease"), "a mask moves in straight lines between its keys: leave `ease` out"));
+            }
+        }
+    }
     // A key naming a parameter the kind does not have is refused here rather than by serde
     // — the parameters *are* a keyframe's unknown fields — and this error can say what the
     // kind's parameters are.
@@ -516,8 +565,111 @@ fn check_effect(issues: &mut Vec<Issue>, ep: &str, e: &Effect, kind: &str, owner
                 issues.push(Issue::error(ep, "mlt effect needs a service name"));
             }
         }
+        Effect::Grade(g) => check_grade(issues, ep, g),
         Effect::Blend { .. } | Effect::Color { .. } | Effect::Fade { .. } | Effect::AudioFade { .. } | Effect::Freeze { .. } => {}
     }
+}
+
+/// A grade's numbers: within the ranges its fields document, and a curve the compiler can
+/// draw. Its LUT files are checked where the project's root is known, with the clip.
+fn check_grade(issues: &mut Vec<Issue>, ep: &str, g: &Grade) {
+    if g.log.is_some() && g.input_lut.is_some() {
+        issues.push(Issue::error(format!("{ep}/log"), "a grade takes one input: a camera `log` or an `input_lut`, not both"));
+    }
+    let scalars = [
+        ("temperature", g.temperature, Grade::TEMPERATURE),
+        ("tint", g.tint, Grade::TINT),
+        ("exposure", g.exposure, Grade::EXPOSURE),
+        ("contrast", g.contrast, Grade::CONTRAST),
+        ("saturation", g.saturation, Grade::SATURATION),
+        ("look_amount", g.look_amount, Grade::LOOK_AMOUNT),
+        ("blacks", g.blacks, Grade::TONE),
+        ("shadows", g.shadows, Grade::TONE),
+        ("highlights", g.highlights, Grade::TONE),
+        ("whites", g.whites, Grade::TONE),
+        ("vibrance", g.vibrance, Grade::TONE),
+    ];
+    for (name, v, range) in &scalars {
+        if !range.contains(v) {
+            issues.push(Issue::error(format!("{ep}/{name}"), format!("grade {name} must be within {}..{}", range.start(), range.end())));
+        }
+    }
+    // Keys set the light, which is the first three, with the same ranges.
+    for (ki, k) in g.keyframes.iter().enumerate() {
+        for (name, _, range) in &scalars[..Grade::LIGHT.len()] {
+            if k.get(name).is_some_and(|v| !range.contains(&v)) {
+                issues.push(Issue::error(format!("{ep}/keyframes/{ki}/{name}"), format!("grade {name} must be within {}..{}", range.start(), range.end())));
+            }
+        }
+    }
+    let wheel = Grade::WHEEL;
+    for (name, rgb) in [("lift", g.lift), ("gamma", g.gamma), ("gain", g.gain)] {
+        for (ch, v) in ["r", "g", "b"].into_iter().zip(rgb.channels()) {
+            if !wheel.contains(&v) {
+                issues.push(Issue::error(format!("{ep}/{name}/{ch}"), format!("grade {name} must be within {}..{} on each channel", wheel.start(), wheel.end())));
+            }
+        }
+    }
+    let tone = [("curve", &g.curve)].into_iter().chain(g.channel_curves());
+    for (name, points) in tone {
+        check_curve(issues, &format!("{ep}/{name}"), points, 0.0..=1.0, true, "[in, out], each within 0..1");
+    }
+    for (name, points, wraps) in g.hue_curves() {
+        let what = if wraps { "[hue, amount]: hue within 0..1 and below 1, amount within -1..1" } else { "[at, amount]: at within 0..1, amount within -1..1" };
+        check_curve(issues, &format!("{ep}/{name}"), points, Grade::TONE, !wraps, what);
+    }
+}
+
+/// A grade curve's points: at most 32, `x` rising within 0..1 (below 1 for a curve that
+/// wraps, where 1 is 0 again), `y` within `ys`.
+fn check_curve(issues: &mut Vec<Issue>, fp: &str, points: &[[f64; 2]], ys: std::ops::RangeInclusive<f64>, one: bool, what: &str) {
+    if points.len() > 32 {
+        issues.push(Issue::error(fp.to_string(), "a grade's curve takes at most 32 points"));
+    }
+    let mut last = f64::NEG_INFINITY;
+    for (i, [x, y]) in points.iter().enumerate() {
+        if !(0.0..=1.0).contains(x) || (!one && *x == 1.0) || !ys.contains(y) {
+            issues.push(Issue::error(format!("{fp}/{i}"), format!("curve points are {what}")));
+        } else if *x <= last {
+            issues.push(Issue::error(format!("{fp}/{i}"), "curve points must be in order of their first number, no two at the same one"));
+        }
+        last = *x;
+    }
+}
+
+/// A grade's LUT files: `.cube`s under the project that parse. Read only when files are.
+fn check_grade_luts(issues: &mut Vec<Issue>, ep: &str, g: &Grade, ctx: &ValidationContext) {
+    for (field, path) in g.luts() {
+        let fp = format!("{ep}/{field}");
+        if !stays_inside(path) {
+            issues.push(Issue::error(fp, "a LUT path must be relative and stay inside the project"));
+        } else if !path.to_ascii_lowercase().ends_with(".cube") {
+            issues.push(Issue::error(fp, "a LUT must be a `.cube` file"));
+        } else if ctx.check_files {
+            if let Err(e) = crate::grade::Lut::cached(&ctx.root.join(path)) {
+                issues.push(Issue::error(fp, format!("LUT `{path}`: {e}")));
+            }
+        }
+    }
+    if let Some(id) = &g.log {
+        let fp = format!("{ep}/log");
+        if id.is_empty() || !id.chars().all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c)) || id.starts_with('.') {
+            issues.push(Issue::error(fp, "a camera log is named by its file's id: letters, digits, `-`, `_` and `.`"));
+        } else if ctx.check_files {
+            // Its LUT, when it is one, read too: what the grade would apply.
+            if let Err(e) = crate::grade::Inputs::load(&Grade { input_lut: None, look: None, ..g.clone() }, &ctx.root, &ctx.log_dirs) {
+                issues.push(Issue::error(fp, e));
+            }
+        }
+    }
+}
+
+
+/// Whether `path` is relative and never climbs out of the directory it is read from — the
+/// test for a file the project names that must be the project's own (a LUT, a luma).
+pub fn stays_inside(path: &str) -> bool {
+    let p = std::path::Path::new(path);
+    !p.is_absolute() && p.components().all(|c| matches!(c, std::path::Component::Normal(_))) && !path.is_empty()
 }
 
 /// A sequence's own effects, which act on its mix: only the kinds that can, once each, and
@@ -838,6 +990,122 @@ mod tests {
         assert_eq!((warned(0), warned(1), warned(2), warned(3)), (false, true, true, true), "{issues:?}");
     }
 
+    /// A grade's numbers stay in their ranges, its curve rises, and its LUTs are `.cube`s
+    /// inside the project that parse — read only when files are.
+    #[test]
+    fn a_grade_is_held_to_its_ranges_and_its_luts_to_the_project() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("good.cube"), "LUT_1D_SIZE 2\n0 0 0\n1 1 1\n").unwrap();
+        std::fs::write(dir.path().join("short.cube"), "LUT_3D_SIZE 2\n0 0 0\n").unwrap();
+        let grades = json!([
+            { "type": "grade", "temperature": 0.5, "gain": { "r": 0.2 }, "curve": [[0.2, 0.1], [0.8, 0.9]], "input_lut": "good.cube" },
+            { "type": "grade", "exposure": 6, "saturation": -1, "lift": { "g": 1.5 } },
+            { "type": "grade", "curve": [[0.5, 0.5], [0.4, 0.6], [0.9, 1.2]] },
+            { "type": "grade", "input_lut": "../elsewhere.cube", "look": "look.png" },
+            { "type": "grade", "input_lut": "missing.cube", "look": "short.cube" },
+            { "type": "grade", "log": "s-log3-cine", "input_lut": "good.cube", "shadows": 0.5, "keyframes": [{ "t": 0, "exposure": 9 }, { "t": 0.5, "saturation": 1 }], "vibrance": -2, "curve_g": [[0.5, 1.5]],
+              "hue_sat": [[0.2, 0.5], [1.0, 0.2]], "hue_hue": [[0.0, 1.0], [0.6, -0.4]], "sat_sat": [[0.0, 0.5], [1.0, -1.5]] }
+        ]);
+        let tracks: Vec<_> = (0..6).map(|i| json!({ "id": format!("v{i}"), "clips": [
+            { "id": format!("c{i}"), "start": 0, "end": 1, "bin": "x", "effects": [grades[i].clone()] }
+        ] })).collect();
+        let p = project(json!({ "bin": { "x": { "source": { "path": "x.mp4" } } }, "tracks": tracks }));
+        let starter = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../library/logs"));
+        let ctx = ValidationContext { root: dir.path().to_path_buf(), check_files: true, log_dirs: vec![starter] };
+        let issues = validate(&p, &ctx);
+        let on = |ti: usize| -> Vec<String> {
+            let prefix = format!("{}/effects/0/", clip_path("main", ti, 0));
+            issues.iter().filter(|i| i.path.starts_with(&prefix) && i.severity == Severity::Error).map(|i| format!("{} {}", &i.path[prefix.len()..], i.message)).collect()
+        };
+        assert!(on(0).is_empty(), "{:?}", on(0));
+        let paths = |ti: usize| on(ti).into_iter().map(|m| m.split(' ').next().unwrap().to_string()).collect::<Vec<_>>();
+        assert_eq!(paths(1), ["exposure", "saturation", "lift/g"], "{:?}", on(1));
+        assert_eq!(paths(2), ["curve/1", "curve/2"], "{:?}", on(2));
+        assert!(on(3).iter().any(|m| m.starts_with("input_lut") && m.contains("inside the project")) && on(3).iter().any(|m| m.starts_with("look") && m.contains(".cube")), "{:?}", on(3));
+        assert!(on(4).iter().any(|m| m.starts_with("input_lut") && m.contains("missing.cube")) && on(4).iter().any(|m| m.starts_with("look") && m.contains("needs 8 rows")), "{:?}", on(4));
+        // The later steps: a hue curve wraps, so 1 is 0 again; the others reach 1.
+        assert_eq!(paths(5), ["keyframes/1/saturation", "log", "vibrance", "keyframes/0/exposure", "curve_g/0", "hue_sat/1", "sat_sat/1"], "{:?}", on(5));
+        // The compiler's check reads no files, so what is on disk cannot fail it.
+        let unread = validate(&p, &ValidationContext { check_files: false, ..ctx });
+        assert!(!unread.iter().any(|i| i.path.contains("/tracks/4/")), "{unread:?}");
+    }
+
+    /// A clip has one of each kind over its whole picture and any number masked; a mask is
+    /// a rectangle with a size.
+    #[test]
+    fn masked_effects_may_repeat_and_a_mask_has_a_size() {
+        let window = json!({ "x": 10, "y": 10, "w": 100, "h": 80 });
+        let p = project(json!({
+            "bin": { "x": { "source": { "path": "x.mp4" } } },
+            "tracks": [{ "id": "v1", "clips": [
+                { "id": "a", "start": 0, "end": 1, "bin": "x", "effects": [
+                    { "type": "grade", "exposure": 0.5 },
+                    { "type": "grade", "exposure": -0.5, "mask": window },
+                    { "type": "grade", "saturation": 0.5, "mask": { "x": 0, "y": 0, "w": 50, "h": 50, "shape": "rectangle", "invert": true } },
+                    { "type": "blur", "radius": 12, "mask": window },
+                    { "type": "blur", "radius": 2 }
+                ] },
+                { "id": "b", "start": 1, "end": 2, "bin": "x", "effects": [
+                    { "type": "color", "brightness": 0.1, "mask": { "x": 0, "y": 0, "w": 0, "h": 50 } },
+                    { "type": "blur", "radius": 1, "mask": { "x": 0, "y": 0, "w": 5, "h": 5, "feather": -1 } },
+                    { "type": "grade" }, { "type": "grade" }
+                ] },
+                { "id": "c", "start": 2, "end": 3, "bin": "x", "effects": [
+                    { "type": "blur", "radius": 4, "mask": { "x": 0, "y": 0, "w": 50, "h": 50, "keyframes": [
+                        { "t": 0, "x": 10 }, { "t": 0.5, "w": 0, "ease": "smooth" }, { "t": 0.8, "feather": 9 }
+                    ] } }
+                ] }
+            ] }]
+        }));
+        let m = messages(&p);
+        assert_eq!(m.len(), 6, "{m:?}");
+        assert!(m.iter().any(|m| m.contains("straight lines")) && m.iter().any(|m| m.contains("`feather` holds still")), "{m:?}");
+        assert!(m.iter().any(|m| m.contains("`w` and `h` must be above 0")), "{m:?}");
+        assert!(m.iter().any(|m| m.contains("feather")), "{m:?}");
+        assert!(m.iter().any(|m| m.contains("duplicate `grade`")), "two over the whole picture still clash: {m:?}");
+    }
+
+    /// A camera log is a file found by its id: one that is not there, or not an id, is said.
+    #[test]
+    fn a_camera_log_must_be_found() {
+        let dir = tempfile::tempdir().unwrap();
+        let starter = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../library/logs"));
+        let p = project(json!({
+            "bin": { "x": { "source": { "color": "#000" } } },
+            "tracks": [{ "id": "v1", "clips": [
+                { "id": "a", "start": 0, "end": 1, "bin": "x", "effects": [{ "type": "grade", "log": "s-log3" }] },
+                { "id": "b", "start": 1, "end": 2, "bin": "x", "effects": [{ "type": "grade", "log": "d-log-m" }] },
+                { "id": "c", "start": 2, "end": 3, "bin": "x", "effects": [{ "type": "grade", "log": "../s-log3" }] }
+            ] }]
+        }));
+        let ctx = ValidationContext { root: dir.path().to_path_buf(), check_files: true, log_dirs: vec![starter, dir.path().join("logs")] };
+        let m: Vec<String> = validate(&p, &ctx).into_iter().filter(|i| i.severity == Severity::Error).map(|i| format!("{} {}", i.path, i.message)).collect();
+        assert_eq!(m.len(), 2, "{m:?}");
+        assert!(m[0].contains("/clips/1/effects/0/log") && m[0].contains("no camera log `d-log-m`"), "{m:?}");
+        assert!(m[1].contains("/clips/2/effects/0/log") && m[1].contains("named by its file's id"), "{m:?}");
+    }
+
+    /// A picture file's entry takes a grade of its own — once, still, over the whole frame —
+    /// and nothing else does.
+    #[test]
+    fn an_entry_takes_a_still_grade_of_its_own() {
+        let p = project(json!({
+            "bin": {
+                "x": { "source": { "path": "x.mp4" }, "effects": [{ "type": "grade", "log": "s-log3-cine" }] },
+                "y": { "source": { "path": "y.png", "kind": "image" }, "effects": [{ "type": "grade", "exposure": 9 }, { "type": "grade" }] },
+                "z": { "source": { "path": "z.wav", "kind": "audio" }, "effects": [{ "type": "grade" }] },
+                "w": { "source": { "path": "w.mp4" }, "effects": [{ "type": "blur", "radius": 2 }, { "type": "grade", "mask": { "x": 0, "y": 0, "w": 4, "h": 4 } }] },
+                "c": { "source": { "color": "#000" }, "effects": [{ "type": "grade" }] }
+            },
+            "tracks": []
+        }));
+        let m = messages(&p);
+        assert_eq!(m.len(), 6, "{m:?}");
+        for says in ["must be within -5..5", "duplicate `grade` on this entry", "only a video or image file", "put `blur` on the clips", "a mask or keys go on a clip's grade"] {
+            assert!(m.iter().any(|m| m.contains(says)), "{says}: {m:?}");
+        }
+    }
+
     /// A keyframe's parameters are its unknown fields, so the validator is what says a
     /// name is wrong — and it says which names are right.
     #[test]
@@ -972,7 +1240,7 @@ mod tests {
                 { "id": "b", "start": 4, "end": 8, "bin": "tag" }
             ]}]
         }));
-        let ctx = ValidationContext { root: tmp.path().to_path_buf(), check_files: true };
+        let ctx = ValidationContext { root: tmp.path().to_path_buf(), check_files: true, ..Default::default() };
         let m: Vec<_> = validate(&p, &ctx).into_iter().map(|i| i.message).collect();
         assert_eq!(m.iter().filter(|m| m.contains("nope")).count(), 1, "{m:?}");
     }
@@ -1023,7 +1291,7 @@ mod tests {
                 { "id": "g1", "start": 0, "end": 4, "bin": "ghost" }
             ]}]
         }));
-        let daemon = ValidationContext { root: tmp.path().to_path_buf(), check_files: true };
+        let daemon = ValidationContext { root: tmp.path().to_path_buf(), check_files: true, ..Default::default() };
         let bad = |ctx: &ValidationContext| validate(&p, ctx).into_iter().filter(|i| i.severity == Severity::Error && i.path.ends_with("/source/overlay")).count();
         assert_eq!(bad(&daemon), 1);
         // The compiler reads nothing from disk and must stay silent about folders.
@@ -1052,7 +1320,7 @@ mod tests {
         std::fs::create_dir_all(tmp.path().join("house/presets")).unwrap();
         std::fs::create_dir_all(tmp.path().join("plain")).unwrap();
         let p = Project { libraries: ["house", "plain", "gone", "house", " "].map(String::from).to_vec(), ..Default::default() };
-        let ctx = ValidationContext { root: tmp.path().to_path_buf(), check_files: true };
+        let ctx = ValidationContext { root: tmp.path().to_path_buf(), check_files: true, ..Default::default() };
         let found: Vec<(Severity, String)> = validate(&p, &ctx).into_iter().filter(|i| i.path.starts_with("/libraries")).map(|i| (i.severity, i.path)).collect();
         let at = |i: usize| format!("/libraries/{i}");
         assert_eq!(found, [(Severity::Warning, at(1)), (Severity::Warning, at(2)), (Severity::Error, at(3)), (Severity::Error, at(4))]);

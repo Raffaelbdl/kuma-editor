@@ -5,7 +5,7 @@
 import { Cmd, command } from "./commands";
 import { desktop, initDesktop, pickAndAddMedia } from "./desktop";
 import { el } from "./dom";
-import { addTrack, copySelection, createFromBlueprint, creatable, cutSelection, deleteSelectedClips, groupSelection, pasteClipboard, promptNewOverlay, promptNewSequence, splitAt, swapOrientation, transcribe, ungroupSelection } from "./edits";
+import { addTrack, copySelection, createFromBlueprint, creatable, cutSelection, deleteSelectedClips, groupSelection, matchSelectedToReference, pasteClipboard, pasteEffects, promptNewOverlay, promptNewSequence, splitAt, swapOrientation, transcribe, ungroupSelection } from "./edits";
 import { panelCommands, panels } from "./panelhost";
 import { installPalette } from "./palette";
 import { agentPanel } from "./panels/agentpanel";
@@ -17,6 +17,7 @@ import { Library } from "./panels/library";
 import { markersPanel } from "./panels/markers";
 import { Preview } from "./panels/preview";
 import { queuePanel } from "./panels/queue";
+import { scopesPanel } from "./panels/scopes";
 import { mountRail } from "./panels/rail";
 import { mountStatusline } from "./panels/statusline";
 import { mountTopbar } from "./panels/topbar";
@@ -52,6 +53,8 @@ function projectCommands() {
   command(Cmd.copyClip, "Copy Clips", () => copySelection());
   command(Cmd.cutClip, "Cut Clips", () => cutSelection());
   command(Cmd.pasteClip, "Paste Clips", () => pasteClipboard());
+  command(Cmd.pasteEffects, "Paste Effects onto Selected Clips", () => pasteEffects());
+  command(Cmd.matchSelected, "Match Selected Clips to the Colour Reference", () => matchSelectedToReference());
   command(Cmd.group, "Group Clips", () => groupSelection());
   command(Cmd.ungroup, "Ungroup Clips", () => ungroupSelection());
   command(Cmd.addTrack, "Add Track", (kind) => addTrack(kind as TrackKind));
@@ -100,6 +103,8 @@ function registerPanels() {
   panels.register({ id: "markers", letter: "m", key: "The markers: notes on frames, for the agent or for you", title: "markers", body: markers.body, note: markers.note, dock: "side", size: { w: 300, h: 300 } });
   const history = historyPanel();
   panels.register({ id: "history", letter: "h", key: "The history: every step, yours and the agent's", title: "history", body: history.body, tools: history.tools, dock: "side", size: { w: 380, h: 340 } });
+  const scopes = scopesPanel();
+  panels.register({ id: "scopes", letter: "s", title: "scopes", body: scopes.body, tools: scopes.tools, show: scopes.show, dock: "side", size: { w: 360, h: 420 } });
   const queue = queuePanel();
   panels.register({ id: "queue", letter: "r", key: "The render queue", title: "render queue", body: queue.body, tools: queue.tools, dock: "side", size: { w: 330, h: 380 } });
 }

@@ -1,4 +1,4 @@
-import type { Activity, BlueprintInfo, LibraryInfo, HistoryEntry, MarkerInfo, CacheUsage, DaemonEvent, EffectPreset, FontFamily, Issue, Job, LintReport, OverlayInfo, PatchOp, Preset, Project, SequenceState } from "./types";
+import type { Activity, BlueprintInfo, CacheUsage, CameraLog, ColorReference, DaemonEvent, EffectPreset, FontFamily, Grade, HistoryEntry, Issue, Job, LibraryInfo, LintReport, MarkerInfo, OverlayInfo, PatchOp, Preset, Project, Region, SequenceState } from "./types";
 
 async function json<T>(url: string, init?: RequestInit): Promise<T> {
   const r = await fetch(url, { headers: { "content-type": "application/json" }, ...init });
@@ -50,6 +50,8 @@ export const api = {
   openSequence: (sequence: string) =>
     json<{ current: string }>("/api/sequence", { method: "POST", body: JSON.stringify({ sequence }) }),
   fonts: () => json<FontFamily[]>("/api/fonts"),
+  /** The camera logs a grade can name: the libraries' and the project's `logs/`. */
+  logs: () => json<CameraLog[]>("/api/logs"),
   /** Copy a font file (relative to the project, or absolute) into the project's `fonts/`,
    *  or the user library's when `shared`. */
   addFont: (path: string, shared: boolean) =>
@@ -130,6 +132,10 @@ export const api = {
   jobs: (kind?: string) => json<{ jobs: Job[] }>(`/api/jobs${kind ? `?kind=${encodeURIComponent(kind)}` : ""}`),
   /** Forget every finished job, for every window. Running and queued ones stay. */
   clearJobs: () => json<{ cleared: number[] }>("/api/jobs/clear", { method: "POST", body: "{}" }),
+  /** What a region of the picture is, and with `match` the grade that makes a clip's
+   *  region look like a reference (`kuma_daemon::color`), as a job. */
+  measureColor: (req: { times: number[]; region?: Region; sequence?: string; match?: { clip: string; reference: ColorReference } }) =>
+    json<{ job: number }>("/api/color/measure", { method: "POST", body: JSON.stringify({ ...req, origin: "ui: match colour" }) }),
   /** Stop a queued or running render. It reports itself `cancelled` once it has. */
   cancelJob: (id: number) => json<Job>(`/api/jobs/${id}/cancel`, { method: "POST", body: "{}" }),
   cache: () => json<CacheUsage>("/api/cache"),
@@ -144,6 +150,19 @@ export const api = {
    *  `rev` only defeats the browser cache when the iframe is recreated. */
   overlayEntryUrl: (id: string, duration: number, width: number, height: number, rev: number) =>
     `/overlay-entry/${encodeURIComponent(id)}?duration=${duration.toFixed(3)}&width=${width}&height=${height}&rev=${rev}`,
+  /** Frames of the composite, as `sample_frames` renders them; `version` samples another
+   *  version of the document instead (the frame without a clip's grade). */
+  sample: (req: { t0: number; times?: number[]; width?: number; overlays?: boolean; sequence?: string; version?: unknown }) =>
+    json<{ samples: { t: number; frame: number; path: string }[] }>("/api/sample", { method: "POST", body: JSON.stringify(req) }),
+  /** Where a sampled frame is served: the daemon answers paths on its disk. */
+  sampleFile: (path: string) => `/api/samples/${encodeURIComponent(path.split(/[\\/]/).pop()!)}`,
+  /** A grade as a `size`³ RGB table of bytes, red fastest: the compiler's maths, for the
+   *  live preview to apply to a frame. */
+  gradeTable: async (grade: Grade, size: number) => {
+    const r = await fetch("/api/grade/table", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ grade, size }) });
+    if (!r.ok) throw new Error(`grade table: ${r.status}`);
+    return new Uint8Array(await r.arrayBuffer());
+  },
   snapshotUrl: (t: number, width = 960) => `/api/snapshot?t=${t.toFixed(3)}&width=${width}&_=${Date.now()}`,
 };
 

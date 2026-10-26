@@ -24,7 +24,9 @@ fn reference_project_matches_golden_and_the_dtd() {
     opts.cache_dir = std::env::temp_dir().join("kuma-golden-cache");
     opts.bakes.insert("o_c1".into(), bake("/proj/.kuma/bakes/abc/frame_%06d.png", false));
     opts.bakes.insert("o_c2".into(), bake("/proj/.kuma/bakes/def/frame_000001.png", true));
-    let xml = compile(&p, &opts).unwrap();
+    // A grade's LUT is written under the cache, which is wherever the machine keeps its
+    // temporary files; the golden file says where relative to it.
+    let xml = compile(&p, &opts).unwrap().replace(&*opts.cache_dir.to_string_lossy(), "$CACHE");
 
     let golden_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/reference.mlt");
     if std::env::var_os("UPDATE_GOLDEN").is_some() {

@@ -6,7 +6,7 @@
 // screenshot-and-evaluate loop is cheaper than a dependency the rest of the repo does not
 // have. `--screenshot` alone cannot click, and a tab strip is nothing but clicks.
 
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import net from "node:net";
 import os from "node:os";
@@ -177,7 +177,7 @@ export async function driver(url) {
     /** A real key press through the browser's input pipeline — what a page sees as the
      *  person's gesture, which a synthetic `KeyboardEvent` is not (`play()` refuses one). */
     async press(key, code = key, opts = {}) {
-      const vk = { " ": 32, ArrowLeft: 37, ArrowRight: 39 }[key] ?? key.toUpperCase().charCodeAt(0);
+      const vk = { " ": 32, ArrowLeft: 37, ArrowRight: 39, Tab: 9 }[key] ?? key.toUpperCase().charCodeAt(0);
       const base = { key, code, windowsVirtualKeyCode: vk, modifiers: opts.shift ? 8 : 0 };
       await send("Input.dispatchKeyEvent", { type: "keyDown", ...base, ...(key.length === 1 ? { text: key } : {}) });
       await send("Input.dispatchKeyEvent", { type: "keyUp", ...base });
@@ -194,3 +194,15 @@ export async function driver(url) {
     },
   };
 }
+
+/** Whether `bin` runs here: `melt`, `ffmpeg`. A test that needs one skips without it. */
+export const have = (bin) => spawnSync(bin, ["-version"], { stdio: "ignore" }).status === 0;
+
+/** Select a clip the way a click does: press on it, and let go. */
+export const selectClip = (page, id) => page.eval(`(() => { const c = document.querySelector('.clip[data-id="${id}"]'); const r = c.getBoundingClientRect();
+  c.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, clientX: r.left + 20, clientY: r.top + 2 }));
+  window.dispatchEvent(new PointerEvent("pointerup", { bubbles: true })); return true; })()`);
+
+/** Wait for the page to have caught up with the daemon: the status line shows the revision
+ *  it last loaded, so a gesture after this builds its patch on the current one. */
+export const settled = (page) => page.until(`fetch("/api/project").then(r => r.json()).then(p => p.revision).then(rev => document.querySelector("#statusline .rev").textContent.startsWith("r" + rev))`);

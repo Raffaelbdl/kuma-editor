@@ -124,9 +124,9 @@ impl Project {
             clips: Vec::new(),
             transitions: Vec::new(),
         };
-        let main = BinItem {
-            name: "Main".into(),
-            source: BinSource::Sequence(Sequence {
+        let main = BinItem::of(
+            "Main",
+            BinSource::Sequence(Sequence {
                 tracks: vec![
                     track("v1", TrackKind::Video, "Video"),
                     track("o1", TrackKind::Overlay, "Overlays"),
@@ -135,11 +135,7 @@ impl Project {
                 markers: Vec::new(),
                 effects: Vec::new(),
             }),
-            meta: None,
-            parent: None,
-            order: None,
-            volume: 1.0,
-        };
+        );
         Project {
             name: name.into(),
             width,
@@ -327,6 +323,11 @@ impl Project {
         self.bin.get(&clip.bin)
     }
 
+    /// The effects a clip runs, in order: its entry's own, on the source, then its own.
+    pub fn effects_on<'a>(&'a self, clip: &'a Clip) -> impl Iterator<Item = &'a Effect> + Clone {
+        self.item(clip).map_or(&[][..], |i| &i.effects[..]).iter().chain(&clip.effects)
+    }
+
     /// `base` if it is free, else `base-2`, `base-3`… — the shape the editor names bin
     /// entries in, so a minted id reads like one someone typed.
     pub fn free_bin_id(&self, base: &str) -> BinId {
@@ -491,6 +492,19 @@ pub struct BinItem {
     /// levelled once. Timed media only; absent at 1.
     #[serde(default = "one", skip_serializing_if = "is_one")]
     pub volume: f64,
+    /// Effects on the source itself, before every placement's own: what the footage *is*
+    /// — the camera log it was shot in, the grade that makes it match the rest — set once
+    /// for every clip that places it. A video or image file's, and only a `grade` for now,
+    /// over the whole picture and holding still: where and when are the clip's.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub effects: Vec<Effect>,
+}
+
+impl BinItem {
+    /// An entry named `name` holding `source`, everything else as a new entry has it.
+    pub fn of(name: impl Into<String>, source: BinSource) -> BinItem {
+        BinItem { name: name.into(), source, meta: None, parent: None, order: None, volume: 1.0, effects: Vec::new() }
+    }
 }
 
 /// What a bin entry actually is. Exactly one variant.
@@ -900,6 +914,9 @@ pub enum Effect {
         radius: f64,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         keyframes: Vec<Keyframe>,
+        /// Blur only inside this shape (a face, a number plate).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        mask: Option<Mask>,
     },
     /// Basic colour correction. All default to neutral.
     Color {
@@ -913,7 +930,13 @@ pub enum Effect {
         gamma: f64,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         keyframes: Vec<Keyframe>,
+        /// Correct only inside this shape.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        mask: Option<Mask>,
     },
+    /// A colour grade: white balance, exposure, lift/gamma/gain, contrast, a curve and
+    /// saturation, between an optional input LUT and an optional look. See [`Grade`].
+    Grade(Box<Grade>),
     /// Picture fade in/out (opacity), durations in seconds. The sound's is `audio_fade`.
     Fade {
         #[serde(default, rename = "in")]
@@ -988,6 +1011,228 @@ pub enum Effect {
     },
 }
 
+/// Where an effect acts: inside a shape, the picture outside it as it was. The shape is the
+/// rectangle `region` is — composition pixels, `x`/`y` its top-left, `w`/`h` its size — so a
+/// region read off a sampled frame is a mask as it is; an ellipse is the one inscribed in it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Mask {
+    #[serde(default)]
+    pub shape: MaskShape,
+    pub x: f64,
+    pub y: f64,
+    pub w: f64,
+    pub h: f64,
+    /// Degrees, clockwise on screen, about the shape's centre.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub rotation: f64,
+    /// Pixels of soft edge.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub feather: f64,
+    /// Act outside the shape instead.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub invert: bool,
+    /// Where the shape is over time — `x`, `y`, `w`, `h`, `rotation` — `t` from the clip's
+    /// start, a field a key leaves out being the static one. It moves in straight lines
+    /// between keys (what `rotoscoping` does), so a key's `ease` must be left linear.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub keyframes: Vec<Keyframe>,
+}
+
+impl Mask {
+    /// What a mask's key may set.
+    pub const KEYED: [&'static str; 5] = ["x", "y", "w", "h", "rotation"];
+
+    /// The shape as key `k` has it, the static fields filling in what it leaves out.
+    pub fn at_key(&self, k: &Keyframe) -> Mask {
+        Mask { x: k.or("x", self.x), y: k.or("y", self.y), w: k.or("w", self.w), h: k.or("h", self.h), rotation: k.or("rotation", self.rotation), keyframes: Vec::new(), ..self.clone() }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum MaskShape {
+    #[default]
+    Ellipse,
+    Rectangle,
+}
+
+/// A colour grade, the `grade` effect. Every field defaults to neutral, and a grade that is
+/// neutral throughout does nothing. What each one does to a colour, and in which order, is
+/// [`crate::grade`]; the compiler bakes the whole grade into one 3D LUT, so the steps cost
+/// one filter between them and round once.
+///
+/// It works on the picture as it is displayed (Rec. 709 / sRGB-encoded values from 0 to 1),
+/// except white balance and exposure, which act on the light those values stand for.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Grade {
+    /// The camera log the footage was shot in, converted to Rec. 709 before anything else:
+    /// the id of a `logs/<id>.json` in the project or a library (`kuma_core::camera`), what
+    /// the maker's `.cube` would do without the file. Instead of `input_lut`, not as well.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub log: Option<String>,
+    /// A `.cube` LUT under the project, applied first: the technical step that turns the
+    /// footage into the picture the grade starts from (a camera's log into Rec. 709).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_lut: Option<String>,
+    /// White balance, -2..2: warmer (towards amber) above 0, cooler (towards blue) below;
+    /// red and blue a stop apart at ±1, which is about daylight against shade, and tungsten
+    /// against daylight is nearer 1.5.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub temperature: f64,
+    /// -1..1: towards magenta above 0, towards green below.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub tint: f64,
+    /// Stops of light, -5..5: 1 doubles it.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub exposure: f64,
+    /// Raises (or lowers) the shadows per channel, leaving white where it is; -1..1.
+    #[serde(default, skip_serializing_if = "Rgb::is_zero")]
+    pub lift: Rgb,
+    /// Bends the midtones per channel, leaving black and white where they are: above 0
+    /// brightens them; -1..1.
+    #[serde(default, skip_serializing_if = "Rgb::is_zero")]
+    pub gamma: Rgb,
+    /// Scales the highlights per channel, leaving black where it is: 0.1 is 10% more; -1..1.
+    #[serde(default, skip_serializing_if = "Rgb::is_zero")]
+    pub gain: Rgb,
+    /// About mid grey, 0..3: 1 leaves it, 0 is flat grey.
+    #[serde(default = "one", skip_serializing_if = "is_one")]
+    pub contrast: f64,
+    /// A tone curve on all three channels, as `[in, out]` points in 0..1 with `in` rising.
+    /// It passes through `[0, 0]` and `[1, 1]` unless points there say otherwise, and is a
+    /// monotone cubic between points, so it never overshoots them. Empty is a straight line.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub curve: Vec<[f64; 2]>,
+    /// 0..3: 1 leaves it, 0 is black and white.
+    #[serde(default = "one", skip_serializing_if = "is_one")]
+    pub saturation: f64,
+    /// The tones, -1..1 each, moved on luma with every channel alike (so no colour shifts):
+    /// `blacks` and `whites` the ends, `shadows` and `highlights` a third of the way in from
+    /// them; 1 raises that part of the range by a quarter of white, and the far end not at all.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub blacks: f64,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub shadows: f64,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub highlights: f64,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub whites: f64,
+    /// Saturation where there is little of it, -1..1, leaving vivid colours (and so faces
+    /// pushed too far) alone: 1 doubles a grey-ish colour's chroma, -1 takes it out.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub vibrance: f64,
+    /// Red's, green's and blue's own tone curves, after `curve` and like it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub curve_r: Vec<[f64; 2]>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub curve_g: Vec<[f64; 2]>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub curve_b: Vec<[f64; 2]>,
+    /// Curves against a colour's hue, `[hue, amount]` points: hue in turns round the
+    /// vectorscope from +Cb (0..1, `hue` rising, wrapping round), amount -1..1, 0 leaving
+    /// it. Each wraps, so the last point bends towards the first. Against saturation: 1
+    /// doubles the chroma of that hue, -1 greys it. Against hue: ±1 turns it half way round.
+    /// Against luma: ±1 is twice or half the luma of that hue at full saturation, and less
+    /// as there is less, so a grey never moves.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hue_sat: Vec<[f64; 2]>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hue_hue: Vec<[f64; 2]>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hue_luma: Vec<[f64; 2]>,
+    /// Saturation against luma, and against saturation itself: `[at, amount]` points, `at`
+    /// 0..1 rising, amount -1..1 as for `hue_sat`; through `[0, 0]` and `[1, 0]` unless points
+    /// there say otherwise.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub luma_sat: Vec<[f64; 2]>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sat_sat: Vec<[f64; 2]>,
+    /// Grade only inside this shape — a power window. Not part of the grade's colour maths:
+    /// the LUT is the same, applied where the mask lets it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mask: Option<Mask>,
+    /// A `.cube` LUT under the project, applied last: a creative look.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub look: Option<String>,
+    /// How much of the look, 0..1.
+    #[serde(default = "one", skip_serializing_if = "is_one")]
+    pub look_amount: f64,
+    /// Keys for the light — `temperature`, `tint`, `exposure` — when it changes in the shot
+    /// (a walk from shade into sun, a camera's exposure drifting). The rest of the grade
+    /// holds still: what a colour becomes is one LUT, and only the light moves around it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub keyframes: Vec<Keyframe>,
+}
+
+impl Default for Grade {
+    fn default() -> Self {
+        Grade {
+            log: None,
+            input_lut: None,
+            temperature: 0.0,
+            tint: 0.0,
+            exposure: 0.0,
+            lift: Rgb::default(),
+            gamma: Rgb::default(),
+            gain: Rgb::default(),
+            contrast: 1.0,
+            curve: Vec::new(),
+            saturation: 1.0,
+            blacks: 0.0,
+            shadows: 0.0,
+            highlights: 0.0,
+            whites: 0.0,
+            vibrance: 0.0,
+            curve_r: Vec::new(),
+            curve_g: Vec::new(),
+            curve_b: Vec::new(),
+            hue_sat: Vec::new(),
+            hue_hue: Vec::new(),
+            hue_luma: Vec::new(),
+            luma_sat: Vec::new(),
+            sat_sat: Vec::new(),
+            mask: None,
+            look: None,
+            look_amount: 1.0,
+            keyframes: Vec::new(),
+        }
+    }
+}
+
+impl Grade {
+    /// The LUT files it reads, input first: `(field, path)`.
+    pub fn luts(&self) -> impl Iterator<Item = (&'static str, &str)> {
+        [("input_lut", self.input_lut.as_deref()), ("look", self.look.as_deref())].into_iter().filter_map(|(f, p)| Some((f, p?)))
+    }
+}
+
+/// One number per channel, each defaulting to 0.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Rgb {
+    #[serde(default)]
+    pub r: f64,
+    #[serde(default)]
+    pub g: f64,
+    #[serde(default)]
+    pub b: f64,
+}
+
+impl Rgb {
+    pub fn is_zero(&self) -> bool {
+        *self == Rgb::default()
+    }
+    pub fn channels(&self) -> [f64; 3] {
+        [self.r, self.g, self.b]
+    }
+}
+
+fn is_zero(v: &f64) -> bool {
+    *v == 0.0
+}
+
 /// Picture, sound, or both: what an effect acts on, and what a compiled graph carries. A
 /// render is always both; the preview compiles the picture and the sound as two graphs,
 /// so that an edit to one reloads only that one.
@@ -1032,6 +1277,7 @@ impl Effect {
             | Effect::Crop { .. }
             | Effect::Blur { .. }
             | Effect::Color { .. }
+            | Effect::Grade(_)
             | Effect::Fade { .. }
             | Effect::Blend { .. }
             | Effect::Freeze { .. } => Streams::Video,
@@ -1047,6 +1293,30 @@ impl Effect {
         matches!(self, Effect::Volume { .. } | Effect::Limiter { .. } | Effect::AutoLevel { .. })
     }
 
+    /// Where it acts, for an effect that can be limited to a shape and is.
+    pub fn mask(&self) -> Option<&Mask> {
+        match self {
+            Effect::Blur { mask, .. } | Effect::Color { mask, .. } => mask.as_ref(),
+            Effect::Grade(g) => g.mask.as_ref(),
+            _ => None,
+        }
+    }
+
+    /// Whether it takes its clip's one place of its kind. Every kind does but `mlt` — whose
+    /// service could be anything — and a masked effect, which is a window of its own: windows
+    /// stack. A match writes the grade that does.
+    pub fn one_per_clip(&self) -> bool {
+        !matches!(self, Effect::Mlt { .. }) && self.mask().is_none()
+    }
+
+    /// The grade, when this is one.
+    pub fn as_grade(&self) -> Option<&Grade> {
+        match self {
+            Effect::Grade(g) => Some(g),
+            _ => None,
+        }
+    }
+
     /// The `type` this effect is written with — `audio_fade`, `limiter` — for messages.
     pub fn kind(&self) -> &'static str {
         match self {
@@ -1055,6 +1325,7 @@ impl Effect {
             Effect::Blend { .. } => "blend",
             Effect::Blur { .. } => "blur",
             Effect::Color { .. } => "color",
+            Effect::Grade(_) => "grade",
             Effect::Fade { .. } => "fade",
             Effect::AudioFade { .. } => "audio_fade",
             Effect::Volume { .. } => "volume",
@@ -1080,8 +1351,9 @@ impl Effect {
     /// time, so it is an animation already; a blend mode is a choice, and changing it
     /// mid-clip is a cut; `mlt` properties are strings MLT reads, where an animation
     /// string can be written directly; a limiter's and an auto-level's settings say how
-    /// they follow the sound, which moves already; and a freeze's `t` says which frame,
-    /// where a moving one is the clip playing.
+    /// they follow the sound, which moves already; a freeze's `t` says which frame,
+    /// where a moving one is the clip playing. A grade's light moves — a gain per channel
+    /// beside its LUT — and the rest of it is one LUT for the whole clip.
     pub fn animatable(&self) -> &'static [&'static str] {
         match self {
             Effect::Transform { .. } => &["x", "y", "scale", "rotation", "opacity"],
@@ -1089,6 +1361,7 @@ impl Effect {
             Effect::Blur { .. } => &["radius"],
             Effect::Color { .. } => &["brightness", "contrast", "saturation", "gamma"],
             Effect::Volume { .. } => &["gain"],
+            Effect::Grade(_) => &Grade::LIGHT,
             Effect::Blend { .. }
             | Effect::Fade { .. }
             | Effect::AudioFade { .. }
@@ -1107,6 +1380,7 @@ impl Effect {
             | Effect::Blur { keyframes, .. }
             | Effect::Color { keyframes, .. }
             | Effect::Volume { keyframes, .. } => keyframes,
+            Effect::Grade(g) => &g.keyframes,
             Effect::Blend { .. }
             | Effect::Fade { .. }
             | Effect::AudioFade { .. }

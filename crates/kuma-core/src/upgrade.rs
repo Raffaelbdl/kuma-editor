@@ -94,6 +94,11 @@ fn upgrade(v: &mut Value) -> Result<(), String> {
         // so that an older kuma refuses a v10 file rather than drop its libraries on save.
         version = 10;
     }
+    if version == 10 {
+        // 10 → 11: `grade` is a new effect kind, so no older document has one. A stamp, so
+        // that an older kuma refuses a v11 file rather than fail on its first grade.
+        version = 11;
+    }
     v["version"] = Value::from(version);
     Ok(())
 }
@@ -119,7 +124,7 @@ mod tests {
     fn a_version_1_project_still_opens() {
         let p = parse_project(V1).expect("parse");
         assert_eq!(p.version, crate::PROJECT_VERSION);
-        let issues = crate::validate(&p, &crate::ValidationContext { root: std::path::PathBuf::from("."), check_files: false });
+        let issues = crate::validate(&p, &crate::ValidationContext { root: std::path::PathBuf::from("."), check_files: false, ..Default::default() });
         assert!(!crate::validate::has_errors(&issues), "{issues:?}");
     }
 

@@ -376,7 +376,8 @@ the space differently, × closes a panel, and its letter brings it back where it
 off the dock (over the top bar), or *Float* on its tab's right-click, it floats; a floating
 panel dragged onto the dock docks again. *Reset the dock* (⌘K, or a tab's right-click) puts
 everything back. The rail of letters on the left (`b` bin, `p` blueprints, `f` fonts, `m`
-markers, `h` history, `r` render queue) brings a panel to the front, and a status line along the
+markers — the open sequence's, then every other sequence's under its name, as the agent's
+`list_markers` reads them —, `h` history, `r` render queue) brings a panel to the front, and a status line along the
 bottom says the mode, the revision, the selection, the playhead, the frame and what the agent
 is doing. **Den** gives the frame the whole window and shows what the agent
 did and where it looked: the bear (asleep after a minute without a call, looking while it

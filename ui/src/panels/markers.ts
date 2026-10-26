@@ -1,6 +1,8 @@
-// `m` — markers: moments on the open sequence, each with a comment or none. A person's
-// marker with a comment is how the editor writes to the agent: `list_markers` lists it as
-// waiting, with an id the agent answers in `apply_edits`. The agent leaves markers too —
+// `m` — markers: moments on the open sequence, each with a comment or none, then every other
+// sequence's under its name — `list_markers` gives the agent all of them, so a comment left
+// inside a nested sequence is not one the person can no longer see from the sequence that
+// nests it. A person's marker with a comment is how the editor writes to the agent:
+// `list_markers` lists it as waiting, with an id the agent answers in `apply_edits`. The agent leaves markers too —
 // its notes, a TODO, the two edges of a zone — and the daemon stamps who left each
 // (`origin`), so its own are never read back to it as feedback.
 //
@@ -66,11 +68,19 @@ export function markersPanel(): { body: HTMLElement; note: HTMLElement } {
   // The daemon's list: it numbers them, says who left each and which are waiting (`markers.rs`).
   let reading: string | undefined;
   const draw = () => {
-    const markers = markersOn(store.state.markerList, store.state.sequence);
-    const waiting = markers.filter((m) => m.waiting).length;
-    note.textContent = waiting ? `${waiting} waiting` : markers.length ? String(markers.length) : "";
-    if (!markers.length) list.replaceChildren(el("p", "muted tiny", "No markers on this sequence. Press P to leave one at the playhead: with a comment, it is a note for the agent."));
-    else list.replaceChildren(...markers.map((m) => markerCard(m, m.id === reading)));
+    const all = store.state.markerList;
+    const open = store.state.sequence;
+    const here = markersOn(all, open);
+    // The others by sequence, in the daemon's order (the master first, then the bin's).
+    const elsewhere = new Map<string, MarkerInfo[]>();
+    for (const m of all) if (m.sequence !== open) elsewhere.set(m.sequence, [...(elsewhere.get(m.sequence) ?? []), m]);
+    const waiting = all.filter((m) => m.waiting).length;
+    note.textContent = waiting ? `${waiting} waiting` : all.length ? String(all.length) : "";
+    const card = (m: MarkerInfo) => markerCard(m, m.id === reading);
+    list.replaceChildren(
+      ...(here.length ? here.map(card) : [el("p", "muted tiny", "No markers on this sequence. Press P to leave one at the playhead: with a comment, it is a note for the agent.")]),
+      ...[...elsewhere].flatMap(([seq, ms]) => [el("h3", "mk-seq", store.state.project?.bin[seq]?.name || seq), ...ms.map(card)]),
+    );
   };
   store.select((s) => [s.markerList, s.sequence], draw);
   watchAgent((v) => { if (v.marker?.id !== reading) { reading = v.marker?.id; draw(); } });
@@ -104,10 +114,16 @@ function markerCard(m: MarkerInfo, reading: boolean): HTMLElement {
   }
   // Removing is an edit like any other, so it is undoable — and anyone's to make, the
   // agent's notes included.
-  acts.appendChild(button("✕", () => void removeMarkerAt(m.t), "Remove this marker (undoable)", "mk-act mk-remove"));
+  acts.appendChild(button("✕", () => void removeMarkerAt(m.t, m.sequence), "Remove this marker (undoable)", "mk-act mk-remove"));
   acts.onpointerdown = (e) => e.stopPropagation();
   card.appendChild(acts);
-  card.onclick = (e) => { if (!(e.target as HTMLElement).closest("button")) store.seek(m.t); };
+  card.onclick = (e) => { if (!(e.target as HTMLElement).closest("button")) void goTo(m); };
   card.title = `${m.label || "no comment"}\n\n${fmtTime(m.t, store.fps)} — click to go there`;
   return card;
+}
+
+/** The marker's moment: on the open sequence a seek, on another its sequence opened first. */
+async function goTo(m: MarkerInfo) {
+  if (m.sequence !== store.state.sequence) await store.openSequence(m.sequence);
+  if (m.sequence === store.state.sequence) store.seek(m.t);
 }

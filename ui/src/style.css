@@ -850,6 +850,8 @@ button.hist-restore:hover { color: var(--accent-text); }
 .hist-row.refused .rev, .hist-row.refused .hist-what, .hist-row.refused .hist-meta { color: var(--fg-3); }
 
 .mk-list { display: flex; flex-direction: column; gap: 10px; }
+/* Another sequence's markers, under its name. */
+.mk-seq { margin: 6px 0 -4px; }
 .mk-card { display: grid; grid-template-columns: 22px minmax(0, 1fr) auto; gap: 10px; align-items: start; padding: 10px; border: 1px solid var(--line); cursor: pointer; }
 .mk-card:hover { border-color: var(--fg-3); }
 .mk-card.reading { border-color: var(--sel); background: var(--marker-bg); }

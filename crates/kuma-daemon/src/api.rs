@@ -1197,7 +1197,9 @@ async fn events_ws(State(st): S, ws: WebSocketUpgrade) -> Response {
 
 /// Preview transport: text commands in (`seek <secs>`, `play`, `pause`, `reload`,
 /// `scale <f>`), JSON status lines and binary JPEG frames out (8-byte little-endian frame
-/// index, then the JPEG). The socket closes when its engine exits; the client reconnects.
+/// index, then the JPEG). What became of a `play` is said: `playing`, `waiting` (with why)
+/// or `refused` (with why); `engine` is any other engine error. The socket closes when its
+/// engine exits; the client reconnects.
 async fn preview_ws(State(st): S, ws: WebSocketUpgrade) -> Response {
     ws.on_upgrade(move |mut socket| async move {
         async fn say(socket: &mut WebSocket, v: Value) -> bool {
@@ -1236,9 +1238,9 @@ async fn preview_ws(State(st): S, ws: WebSocketUpgrade) -> Response {
                         buf.extend_from_slice(&f.jpeg);
                         if socket.send(Message::Binary(Bytes::from(buf))).await.is_err() { break; }
                     }
-                    Ok(EngineEvent::End) => { if !say(&mut socket, json!({ "end": true })).await { break; } }
                     Ok(EngineEvent::Exited) | Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                    Ok(ev) => if let Some(line) = ev.status() { if !say(&mut socket, line).await { break; } },
                 },
                 msg = socket.recv() => match msg {
                     Some(Ok(Message::Text(t))) => {
@@ -1255,7 +1257,7 @@ async fn preview_ws(State(st): S, ws: WebSocketUpgrade) -> Response {
                             reload_or_break!();
                         } else if let Some(s) = t.strip_prefix("scale ") {
                             if let Ok(v) = s.trim().parse::<f64>() {
-                                *lock(&st.preview.scale) = v.clamp(0.25, 1.0);
+                                st.preview.set_scale(v);
                                 reload_or_break!();
                             }
                         }
@@ -1275,7 +1277,7 @@ async fn preview_ws(State(st): S, ws: WebSocketUpgrade) -> Response {
 
 #[derive(Deserialize, Default)]
 struct PreviewReload {
-    /// Preview resolution as a fraction of the project size (0.25..=1).
+    /// Preview resolution: below 1 is ½, which decodes proxies; 1 is full (`set_scale`).
     #[serde(default)]
     scale: Option<f64>,
     /// Hand the engine the timeline even when it is unchanged (the Reload button).
@@ -1286,7 +1288,7 @@ struct PreviewReload {
 async fn preview_reload(State(st): S, body: Option<Json<PreviewReload>>) -> ApiResult {
     let body = body.map(|b| b.0);
     if let Some(s) = body.as_ref().and_then(|b| b.scale) {
-        *lock(&st.preview.scale) = s.clamp(0.25, 1.0);
+        st.preview.set_scale(s);
     }
     let r = if body.is_some_and(|b| b.force) { preview::reload_forced(&st).await? } else { preview::reload(&st).await? };
     Ok(Json(json!({ "mlt": r.path, "changed": r.changed, "video": r.video, "audio": r.audio, "baked": r.baked, "baking": r.baking, "scale": *lock(&st.preview.scale) })))

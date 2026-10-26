@@ -64,6 +64,9 @@ export interface State {
   reloading: boolean;
   playhead: number;
   playing: boolean;
+  /** Play was pressed and no frame has come back yet: what the preview is waiting on, said
+   *  on the button and the stage. Empty once a frame arrives or playback stops. */
+  starting: string;
   /** pixels per second */
   zoom: number;
   /** Which editor the centre shows: `SEQUENCE_TAB` for the sequence monitor, else the bin
@@ -96,7 +99,7 @@ export interface State {
 type Listener = (s: State) => void;
 
 class Store {
-  state: State = { project: null, blueprints: [], libraries: [], manifests: {}, fonts: [], logs: [], previewStamp: 0, sequence: "", selection: null, track: null, clipboard: null, effectClipboard: null, autoKey: false, reloading: false, playhead: 0, playing: false, zoom: 60, tab: SEQUENCE_TAB, sequences: [], entries: [], connected: false, jobs: {}, mode: "power", activity: [], history: [], markerList: [], colorReference: null };
+  state: State = { project: null, blueprints: [], libraries: [], manifests: {}, fonts: [], logs: [], previewStamp: 0, sequence: "", selection: null, track: null, clipboard: null, effectClipboard: null, autoKey: false, reloading: false, playhead: 0, playing: false, starting: "", zoom: 60, tab: SEQUENCE_TAB, sequences: [], entries: [], connected: false, jobs: {}, mode: "power", activity: [], history: [], markerList: [], colorReference: null };
   private listeners = new Set<Listener>();
   private refreshing: Promise<void> | null = null;
   private refreshAgain = false;
@@ -240,7 +243,9 @@ class Store {
       const { type: _, ...job } = e;
       this.set({ jobs: { ...this.state.jobs, [e.id]: job }, ...(e.kind === "thumbs" && e.state === "done" ? { previewStamp: e.id } : {}) });
       if (e.state === "failed") toast(`${e.kind} failed: ${e.message}`, "err", 12000);
-      else if (e.state === "done" || e.state === "cancelled") toast(`${e.kind} ${e.state}`, "ok", 4000);
+      // A job nobody asked for (a proxy, a preview bake) is the daemon's own errand: only
+      // its failure is news.
+      else if ((e.state === "done" || e.state === "cancelled") && e.asked_by) toast(`${e.kind} ${e.state}`, "ok", 4000);
     }
   }
 

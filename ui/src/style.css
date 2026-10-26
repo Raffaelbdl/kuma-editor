@@ -21,6 +21,9 @@ button:hover { border-color: var(--fg-2); }
    the padding that makes it the height of the buttons beside it (13px/1.4 text). */
 button.icon { padding: 5px 8px; line-height: 0; }
 button.reload.busy svg { animation: spin 0.9s linear infinite; }
+/* Play pressed and no frame back yet: the button shows it was heard (`Preview.play`). */
+button[data-starting="true"] svg { animation: pulse 0.9s ease-in-out infinite; }
+@keyframes pulse { 50% { opacity: 0.3; } }
 @keyframes spin { to { transform: rotate(360deg); } }
 button svg { display: block; }
 input, select, textarea { background: var(--bg-0); border: 1px solid var(--line); border-radius: 0; padding: 3px 6px; width: 100%; }

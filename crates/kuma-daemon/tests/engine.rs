@@ -87,7 +87,7 @@ impl Engine {
                     seen.push((at, Out::Line(l)));
                     return seen;
                 }
-                Ok((_, Out::Line(l))) if l.starts_with("err") => panic!("engine: {l}"),
+                Ok((_, Out::Line(l))) if l.starts_with("err") || l.starts_with("refused") => panic!("engine: {l}"),
                 Ok(m) => seen.push(m),
                 Err(RecvTimeoutError::Timeout) => panic!("no `{prefix}` within {within:?}; saw {:?}", seen.iter().map(|m| &m.1).collect::<Vec<_>>()),
                 Err(RecvTimeoutError::Disconnected) => panic!("engine exited waiting for `{prefix}`"),
@@ -128,6 +128,16 @@ impl Drop for Engine {
     }
 }
 
+/// The built engine, or `None` (said) when it, a display or ffmpeg is missing: skip.
+fn engine_bin() -> Option<PathBuf> {
+    let bin = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../engine/build/kuma-preview");
+    if !bin.is_file() || (headless() && !preview::has_bin("xvfb-run")) || !preview::has_bin("ffmpeg") {
+        eprintln!("preview engine, a display or ffmpeg missing; skipping");
+        return None;
+    }
+    Some(bin)
+}
+
 fn frames(msgs: &[(Instant, Out)]) -> Vec<(Instant, i64)> {
     msgs.iter().filter_map(|(at, m)| if let Out::Frame(f) = m { Some((*at, *f)) } else { None }).collect()
 }
@@ -164,12 +174,7 @@ fn fixture(root: &Path) -> (PathBuf, PathBuf, PathBuf) {
 
 #[test]
 fn the_sound_paces_the_picture_and_a_reload_does_not_stop_it() {
-    let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let bin = repo.join("engine/build/kuma-preview");
-    if !bin.is_file() || (headless() && !preview::has_bin("xvfb-run")) || !preview::has_bin("ffmpeg") {
-        eprintln!("preview engine, a display or ffmpeg missing; skipping");
-        return;
-    }
+    let Some(bin) = engine_bin() else { return };
     let tmp = tempfile::tempdir().unwrap();
     let (video, audio, quiet) = fixture(tmp.path());
     let mut e = Engine::start(&bin);
@@ -218,4 +223,70 @@ fn the_sound_paces_the_picture_and_a_reload_does_not_stop_it() {
     e.send("seek 12");
     let after: Vec<i64> = frames(&e.drain(Duration::from_millis(800))).into_iter().map(|(_, f)| f).collect();
     assert_eq!(after.last(), Some(&12), "a stale frame landed after the seek: {after:?}");
+}
+
+/// A graph as slow to open as a long timeline: hundreds of producers, each opening its file.
+fn slow_graph(root: &Path) -> PathBuf {
+    let media = root.join("clip.mp4");
+    let producers: String = (0..300)
+        .map(|i| format!(r#"<producer id="p{i}" in="0" out="29"><property name="resource">{}</property><property name="mlt_service">avformat</property></producer>"#, media.display()))
+        .collect();
+    let entries: String = (0..300).map(|i| format!(r#"<entry producer="p{i}" in="0" out="0"/>"#)).collect();
+    let path = root.join("slow.mlt");
+    std::fs::write(&path, format!(r#"<?xml version="1.0"?><mlt>{producers}<playlist id="main">{entries}</playlist></mlt>"#)).unwrap();
+    path
+}
+
+#[test]
+fn a_play_never_waits_behind_a_load() {
+    let Some(bin) = engine_bin() else { return };
+    let tmp = tempfile::tempdir().unwrap();
+    let (video, audio, _) = fixture(tmp.path());
+    let slow = slow_graph(tmp.path());
+    let mut e = Engine::start(&bin);
+
+    // Before any timeline is in, a seek is kept and a play is held and said to be, not
+    // refused: the editor asks for both as soon as it connects, while the first load runs.
+    e.send("seek 30");
+    e.send(&format!("load-video {}", slow.display()));
+    e.send("play");
+    e.expect_line("ok waiting", Duration::from_secs(5));
+    e.expect_line("ok play", Duration::from_secs(30));
+    let first = frames(&e.drain(Duration::from_millis(500))).first().map(|(_, f)| *f);
+    assert_eq!(first, Some(30), "playback did not start where the seek asked");
+    e.send("pause");
+
+    e.send(&format!("load-video {}", video.display()));
+    e.expect_line("ok loaded video", Duration::from_secs(20));
+    e.send(&format!("load-audio {}", audio.display()));
+    e.expect_line("ok loaded audio", Duration::from_secs(20));
+    e.send("seek 0");
+    e.frame(0);
+    // An edit reloads a graph, which takes seconds on a long timeline. Play answers at once,
+    // on the graph already held, and the new one is swapped in when it is open.
+    e.send(&format!("load-audio {}", slow.display()));
+    e.send("play");
+    let before = e.expect_line("ok play", Duration::from_secs(5));
+    assert!(!before.iter().any(|(_, m)| matches!(m, Out::Line(l) if l.starts_with("ok loaded"))), "play waited for the load");
+    e.expect_line("ok loaded audio frames=300", Duration::from_secs(30));
+}
+
+#[test]
+fn a_seek_overtaken_by_another_shows_nothing() {
+    let Some(bin) = engine_bin() else { return };
+    let tmp = tempfile::tempdir().unwrap();
+    let (video, _, _) = fixture(tmp.path());
+    let mut e = Engine::start(&bin);
+    e.send(&format!("load-video {}", video.display()));
+    e.expect_line("ok loaded video", Duration::from_secs(20));
+    e.frame(0);
+
+    // A drag: forty positions at once, faster than any of them renders. Only the ones not
+    // already overtaken are drawn, and the last is always where the drag stopped.
+    let drag: String = (1..=40).map(|f| format!("seek {f}\n")).collect();
+    e.stdin.write_all(drag.as_bytes()).unwrap();
+    e.stdin.flush().unwrap();
+    let shown: Vec<i64> = frames(&e.drain(Duration::from_millis(1500))).into_iter().map(|(_, f)| f).collect();
+    assert_eq!(shown.last(), Some(&40), "the drag did not end where it stopped: {shown:?}");
+    assert!(shown.len() < 10, "stale positions were drawn: {shown:?}");
 }

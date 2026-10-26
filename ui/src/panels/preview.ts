@@ -12,6 +12,7 @@ import { api } from "../api";
 import { plural } from "../dom";
 import { Cmd, command } from "../commands";
 import { seekOverlay } from "../overlay";
+import { keysFor } from "../shortcuts";
 import { SEQUENCE_TAB, store, toast } from "../store";
 import type { Clip, Project } from "../types";
 import { binItem, covers, isOverlayClip, maskOf, paramAt, transformAt } from "../types";
@@ -56,6 +57,12 @@ export class Preview {
   /** Timeline time of the last frame the engine sent while playing. */
   private engineT = -1;
   private lastFrame = -1;
+  /** What the badge says when nothing is starting: the engine and its resolution. */
+  private badgeIdle = "";
+  /** Between pressing play and its first frame: the engine has said `playing`, which it
+   *  says before any playback frame, so a frame after it is one. */
+  private engineHeard = false;
+  private slowTimer = 0;
 
   constructor(host: HTMLElement) {
     this.stage = document.createElement("div");
@@ -88,7 +95,8 @@ export class Preview {
     // them — the strip under the stage, a key, the application menu — asks by id.
     command(Cmd.togglePlay, "Play/Pause", () => this.togglePlay());
     command(Cmd.reloadPreview, "Reload Preview", () => this.reloadNow());
-    this.watchBakes();
+    this.watchCacheJobs();
+    store.select((s) => [s.starting], () => this.showBadge());
     command(Cmd.previewScale, "Preview Resolution", (scale) => this.setScale(Number(scale)));
     this.connect();
   }
@@ -118,6 +126,7 @@ export class Preview {
       this.draw(bmp);
       // Paused, this frame answers the seek that asked for it: let the next one go.
       if (!store.state.playing) this.seekAnswered();
+      if (store.state.playing && store.state.starting && this.engineHeard) this.endStart();
       if (store.state.playing) {
         this.engineT = frame / store.fps;
         this.lastSentSeek = this.engineT;
@@ -128,7 +137,9 @@ export class Preview {
       this.wsOk = false;
       this.streaming = false;
       this.resetSeeks();
-      this.badge.textContent = "snapshot (no engine)";
+      this.badgeIdle = "snapshot (no engine)";
+      this.endStart();
+      this.showBadge();
       if (store.state.playing) store.set({ playing: false });
       // A missing engine will not appear by itself: back off instead of respawning it every 3 s.
       setTimeout(() => this.connect(), this.engineError ? 30000 : 3000);
@@ -138,8 +149,9 @@ export class Preview {
   }
 
   /** Daemon status lines: `unavailable` (no engine, socket closes), `ready`, `error`
-   *  (a compile failure; the engine keeps its last timeline), `end`. */
-  private onStatus(j: { unavailable?: string; ready?: boolean; scale?: number; error?: string; end?: boolean }) {
+   *  (a compile failure; the engine keeps its last timeline), `end`; what became of a
+   *  `play` — `playing`, `waiting` (why), `refused` (why); `engine` (any other engine error). */
+  private onStatus(j: { unavailable?: string; ready?: boolean; scale?: number; error?: string; end?: boolean; playing?: boolean; waiting?: string; refused?: string; engine?: string }) {
     if (j.unavailable) {
       // Report a given failure once; the daemon repeats it on every reconnect.
       if (j.unavailable !== this.engineError) toast(`Preview engine unavailable: ${j.unavailable}`, "err", 12000);
@@ -150,14 +162,57 @@ export class Preview {
       this.wsOk = true;
       this.lastFrame = -1;
       this.resetSeeks();
-      this.badge.textContent = `engine · ${Math.round((j.scale ?? 0.5) * 100)}%`;
+      this.badgeIdle = `engine · ${Math.round((j.scale ?? 0.5) * 100)}%`;
+      this.showBadge();
       this.badge.title = "";
       this.sendSeek(store.state.playhead, true);
     } else if (j.error) {
       toast(`Preview: ${j.error}`, "err", 8000);
     } else if (j.end && store.state.playing) {
       store.set({ playing: false }); // the engine paused itself at the end of the timeline
+    } else if (j.playing) {
+      this.engineHeard = true;
+      if (store.state.starting) this.starting("rendering the first frame");
+    } else if (j.waiting) {
+      if (store.state.starting) this.starting(j.waiting);
+    } else if (j.refused) {
+      this.streaming = false;
+      this.endStart();
+      if (store.state.playing) store.set({ playing: false });
+      toast(`Cannot play: ${j.refused}`, "err", 8000);
+    } else if (j.engine) {
+      toast(`Preview engine: ${j.engine}`, "err", 8000);
     }
+  }
+
+  /**
+   * Playback was asked for and no frame has come back: say so at once, on the button and
+   * the stage, and keep saying what it is waiting on. The engine can be busy for seconds —
+   * opening the timeline after an edit, decoding up to a seek in long-GOP footage — and a
+   * play button that flips to "pause" over a still picture reads as a frozen editor.
+   */
+  private beginStart() {
+    this.engineHeard = false;
+    this.starting("waiting for the preview engine");
+    clearTimeout(this.slowTimer);
+    this.slowTimer = window.setTimeout(() => {
+      if (store.state.starting) toast(`Playback has not started yet: ${store.state.starting}. It starts by itself; ${keysFor(Cmd.togglePlay) ?? "the play button"} stops it.`, "", 6000);
+    }, 3000);
+  }
+
+  private starting(why: string) {
+    store.set({ starting: why });
+  }
+
+  private endStart() {
+    clearTimeout(this.slowTimer);
+    if (store.state.starting) store.set({ starting: "" });
+  }
+
+  /** The badge: what playback is waiting on while it starts, else the engine and its size. */
+  private showBadge() {
+    const why = store.state.starting;
+    this.badge.textContent = why ? `starting · ${why}` : this.badgeIdle;
   }
 
   private send(cmd: string) {
@@ -246,12 +301,14 @@ export class Preview {
     this.resetSeeks();
     this.send("play");
     this.streaming = true;
+    this.beginStart();
     return true;
   }
   /** The engine was told to play and has not been told to stop. */
   private streaming = false;
   pause() {
     this.streaming = false;
+    this.endStart();
     this.send("pause");
     this.resetSeeks();
     // The next scrub back to this position must fetch a frame again.
@@ -268,7 +325,7 @@ export class Preview {
   /**
    * The Reload button: the timeline handed to the engine again whether or not it changed —
    * a media file replaced on disk is a change the document cannot see — and what came of
-   * it said, including the nested overlays still baking behind it (`watchBakes`).
+   * it said, including the nested overlays still baking behind it (`watchCacheJobs`).
    */
   private async reloadNow() {
     if (store.state.reloading) return;
@@ -295,15 +352,18 @@ export class Preview {
    * The daemon never makes a compile wait on hyperframes: nested overlays the cache lacks
    * are baked by a `preview-bake` job, and when one ends the preview asks for a reload — as
    * it does after an edit — so they appear. One that would not bake is said once, with why.
+   * Proxies are the same bargain: at ½ a file plays as it is until its `proxy` job ends —
+   * one that found the file needs none (`proxy: null`) changes nothing to reload for.
    */
-  private watchBakes() {
+  private watchCacheJobs() {
     const seen = new Set<number>();
     store.select((s) => [s.jobs], (s) => {
       for (const j of Object.values(s.jobs)) {
-        if (j.kind !== "preview-bake" || seen.has(j.id) || (j.state !== "done" && j.state !== "failed")) continue;
+        if ((j.kind !== "preview-bake" && j.kind !== "proxy") || seen.has(j.id) || (j.state !== "done" && j.state !== "failed")) continue;
         seen.add(j.id);
+        if (j.kind === "proxy" && (j.result as { proxy?: string | null } | null)?.proxy === null) continue;
         this.reload();
-        if (j.state === "failed") toast(`Some nested overlays would not bake, so the preview leaves them out: ${j.message}`, "err", 10000);
+        if (j.state === "failed" && j.kind === "preview-bake") toast(`Some nested overlays would not bake, so the preview leaves them out: ${j.message}`, "err", 10000);
       }
     });
   }

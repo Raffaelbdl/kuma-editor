@@ -7,6 +7,11 @@
 // actually played have reached, dropping frames when it falls behind. Commands arrive on
 // stdin (reader thread) and are applied on the main thread. Without an audio device SDL's
 // dummy driver paces the callback instead, so there is always a clock.
+//
+// Opening a graph is the slow part of an edit (every producer opens its file: seconds on a
+// long timeline), so it happens on a thread of its own and the main thread only swaps the
+// opened graph in. A play or a seek sent just after an edit is answered at once, on the
+// graph already held, instead of waiting behind the load.
 
 #include <Mlt.h>
 #include <SDL.h>
@@ -148,16 +153,31 @@ struct Graph {
 // A graph and the lock its thread holds while pulling from it, so a load can swap it
 // between two frames without stopping playback.
 struct Slot {
+    explicit Slot(const char *name) : name(name) {}
+    const char *name;
     std::mutex m;
     std::unique_ptr<Graph> g;
+    // Loads asked for and loads answered, counted on the main thread: while they differ a
+    // newer graph is on its way.
+    unsigned requested = 0, answered = 0;
+};
+
+// A graph to open on the loader thread.
+struct Load {
+    std::string path;
+    Slot *slot = nullptr;
+    unsigned seq = 0;
 };
 
 // ----------------------------------------------------------------- engine ----------
 
 struct Command {
+    Command(std::string op, std::string arg = "", unsigned gen = 0) : op(std::move(op)), arg(std::move(arg)), gen(gen) {}
     std::string op;
     std::string arg;
-    unsigned gen = 0; // `end` only: the playback that ended
+    unsigned gen = 0; // `end`: the playback that ended; `loaded`: the load it answers
+    std::unique_ptr<Graph> graph; // `loaded` only: the graph opened, or none if it would not open
+    Slot *slot = nullptr;         // `loaded` only
 };
 
 class Engine {
@@ -177,12 +197,20 @@ public:
 
     void run() {
         Mlt::Factory::init();
+        // MLT's Qt module makes its QApplication the first time a Qt service is created,
+        // on whatever thread that is. Qt wants it on the main thread, and graphs open on the
+        // loader's, so make one here first.
+        {
+            Mlt::Profile profile;
+            Mlt::Transition qt(profile, "qtblend");
+        }
         if (!audio_.open()) {
             std::fprintf(stderr, "kuma-preview: cannot open an audio device: %s\n", SDL_GetError());
             return;
         }
         std::thread sound([this] { sound_loop(); });
         std::thread picture([this] { picture_loop(); });
+        std::thread loader([this] { loader_loop(); });
         emit("ok ready");
 
         while (!quit_) {
@@ -190,11 +218,26 @@ public:
             qcv_.wait(l, [this] { return !queue_.empty(); });
             Command c = std::move(queue_.front());
             queue_.pop_front();
+            // A seek another one has already overtaken is not worth a frame: scrubbing
+            // asks faster than a long-GOP source decodes, and showing every position the
+            // pointer passed is how the picture fell seconds behind it.
+            bool overtaken = c.op == "seek" && std::any_of(queue_.begin(), queue_.end(), [](const Command &o) { return o.op == "seek"; });
             l.unlock();
-            apply(c);
+            apply(c, overtaken);
         }
         sound.join();
         picture.join();
+        {
+            std::lock_guard<std::mutex> l(lm_);
+            loads_.clear();
+        }
+        lcv_.notify_all();
+        loader.join();
+        {
+            // A graph the loader opened that was never swapped in dies with the factory up.
+            std::lock_guard<std::mutex> l(qm_);
+            queue_.clear();
+        }
         audio_.set_running(false);
         audio_.close();
         // MLT objects must die before the factory does.
@@ -204,22 +247,34 @@ public:
     }
 
 private:
-    void apply(const Command &c) {
+    void apply(Command &c, bool overtaken) {
         if (c.op == "quit") {
             wake([this] { quit_ = true; });
         } else if (c.op == "load-video") {
-            load(c.arg, video_, "video");
+            load(c.arg, video_);
         } else if (c.op == "load-audio") {
-            load(c.arg, sound_, "audio");
+            load(c.arg, sound_);
+        } else if (c.op == "loaded") {
+            loaded(c);
         } else if (c.op == "seek") {
+            want_play_ = false;
             pause();
-            pos_ = std::max(0, std::min(length_ - 1, std::atoi(c.arg.c_str())));
-            show(pos_);
+            // Before the first graph arrives there is nothing to clamp to: keep the position
+            // asked for, and the load clamps and shows it.
+            int f = std::max(0, std::atoi(c.arg.c_str()));
+            pos_ = length_ > 0 ? std::min(length_ - 1, f) : f;
+            if (!overtaken) show(pos_);
         } else if (c.op == "play") {
-            if (length_ == 0) { emit("err no timeline loaded"); return; }
-            if (pos_ >= length_ - 1) pos_ = 0;
-            play();
+            if (length_ == 0) {
+                // The first timeline is still opening: start when it is in, and say so now
+                // rather than leaving the caller to guess why nothing moves.
+                if (loading()) { want_play_ = true; emit("ok waiting for the timeline to load"); }
+                else emit("refused no timeline loaded");
+                return;
+            }
+            start();
         } else if (c.op == "pause") {
+            want_play_ = false;
             pause();
         } else if (c.op == "end") {
             // From the sound thread: the playback it was pulling for ran out and has been heard.
@@ -233,25 +288,91 @@ private:
         }
     }
 
-    // Replace one graph. Validated first, so a bad file leaves what is loaded, and
-    // playing, untouched; a good one is swapped in between two frames without pausing.
-    void load(const std::string &path, Slot &slot, const char *name) {
-        auto g = Graph::open(path);
-        if (!g) { emit("err cannot load " + path); return; }
-        emit(std::string("ok loaded ") + name + " frames=" + std::to_string(g->length) + " fps=" +
-             std::to_string(g->fps) + " size=" + std::to_string(g->width) + "x" + std::to_string(g->height));
-        fps_ = g->fps;
-        (&slot == &video_ ? video_len_ : sound_len_) = g->length;
-        length_ = std::max(video_len_.load(), sound_len_.load());
+    // Ask the loader thread for a graph; `loaded` swaps it in when it is open.
+    void load(const std::string &path, Slot &slot) {
+        unsigned seq = ++slot.requested;
         {
-            // The old graph is destroyed below, after its lock is released.
-            std::lock_guard<std::mutex> l(slot.m);
-            std::swap(slot.g, g);
+            std::lock_guard<std::mutex> l(lm_);
+            loads_.push_back(Load{path, &slot, seq});
         }
-        if (!playing_) {
-            pos_ = std::max(0, std::min(length_ - 1, pos_.load()));
-            if (&slot == &video_) show(pos_);
+        lcv_.notify_one();
+    }
+
+    // A load is still on its way for one of the graphs.
+    bool loading() const { return video_.requested != video_.answered || sound_.requested != sound_.answered; }
+
+    // Replace one graph with the one the loader opened. Validated there, so a bad file
+    // leaves what is loaded, and playing, untouched; a good one is swapped in between two
+    // frames without pausing.
+    void loaded(Command &c) {
+        Slot &slot = *c.slot;
+        slot.answered = c.gen;
+        std::unique_ptr<Graph> g = std::move(c.graph);
+        if (!g) {
+            emit("err cannot load " + c.arg);
+        } else {
+            emit(std::string("ok loaded ") + slot.name + " frames=" + std::to_string(g->length) + " fps=" +
+                 std::to_string(g->fps) + " size=" + std::to_string(g->width) + "x" + std::to_string(g->height));
+            fps_ = g->fps;
+            (&slot == &video_ ? video_len_ : sound_len_) = g->length;
+            length_ = std::max(video_len_.load(), sound_len_.load());
+            {
+                std::lock_guard<std::mutex> l(slot.m);
+                std::swap(slot.g, g);
+            }
+            // Closing a graph closes every file it opened: the loader does that too.
+            if (g) {
+                {
+                    std::lock_guard<std::mutex> l(lm_);
+                    dead_.push_back(std::move(g));
+                }
+                lcv_.notify_one();
+            }
+            if (!playing_) {
+                pos_ = std::max(0, std::min(length_ - 1, pos_.load()));
+                if (&slot == &video_ && !want_play_) show(pos_);
+            }
         }
+        if (want_play_ && length_ > 0) {
+            want_play_ = false;
+            start();
+        } else if (want_play_ && !loading()) {
+            want_play_ = false;
+            emit("refused no timeline loaded");
+        }
+    }
+
+    // The loader thread: open graphs in the order asked, skipping one a newer load of the
+    // same graph has already replaced, and close the graphs swapped out.
+    void loader_loop() {
+        for (;;) {
+            Load job;
+            std::vector<std::unique_ptr<Graph>> dead;
+            {
+                std::unique_lock<std::mutex> l(lm_);
+                lcv_.wait(l, [this] { return quit_ || !loads_.empty() || !dead_.empty(); });
+                dead.swap(dead_);
+                while (!loads_.empty()) {
+                    Load next = std::move(loads_.front());
+                    loads_.pop_front();
+                    bool newer = std::any_of(loads_.begin(), loads_.end(), [&](const Load &o) { return o.slot == next.slot; });
+                    if (!newer) { job = std::move(next); break; }
+                }
+                if (!job.slot && dead.empty() && quit_) return;
+            }
+            dead.clear();
+            if (!job.slot) continue;
+            Command c{"loaded", job.path, job.seq};
+            c.graph = Graph::open(job.path);
+            c.slot = job.slot;
+            push(std::move(c));
+        }
+    }
+
+    // Play from the paused position, from the start once at the end.
+    void start() {
+        if (pos_ >= length_ - 1) pos_ = 0;
+        play();
     }
 
     void play() {
@@ -260,8 +381,9 @@ private:
         unsigned e = ++epoch_;
         audio_.reset(e);
         audio_.set_running(true);
-        wake([this] { playing_ = true; });
+        // Said before the picture thread wakes, so every frame after it is playback.
         emit("ok play");
+        wake([this] { playing_ = true; });
     }
 
     void pause() {
@@ -405,7 +527,7 @@ private:
         std::fflush(stdout);
     }
 
-    Slot video_, sound_;
+    Slot video_{"video"}, sound_{"audio"};
     // Only `picture` uses the compressor, under the video lock.
     tjhandle jpeg_ = nullptr;
     AudioOut audio_;
@@ -416,6 +538,12 @@ private:
     std::deque<Command> queue_;
     std::mutex wm_; // what the workers wait on: `playing_` and `quit_`
     std::condition_variable wcv_;
+    std::mutex lm_; // the loader's work: graphs to open and graphs to close
+    std::condition_variable lcv_;
+    std::deque<Load> loads_;
+    std::vector<std::unique_ptr<Graph>> dead_;
+    // Main thread only: a play arrived before any timeline had loaded.
+    bool want_play_ = false;
 
     // Written by the main thread; the two workers read them.
     std::atomic<bool> quit_{false};

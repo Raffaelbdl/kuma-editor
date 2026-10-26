@@ -10,12 +10,18 @@ import { fmtTime, store } from "../store";
 import { orientation } from "../types";
 
 /** Play/pause, its icon following the store (swapped only when playing flips: the playhead
- *  ticks 25 times a second). The transport's, and den's rail's. */
+ *  ticks 25 times a second). The transport's, and den's rail's. Between the press and the
+ *  first frame it pulses and its tooltip says what the preview is waiting on. */
 export function playButton(cls: string): HTMLButtonElement {
-  const play = button(icon("play"), () => run(Cmd.togglePlay), `Play/pause (${keysFor(Cmd.togglePlay)})`, cls);
+  const title = `Play/pause (${keysFor(Cmd.togglePlay)})`;
+  const play = button(icon("play"), () => run(Cmd.togglePlay), title, cls);
   store.select((s) => [s.playing], (s) => {
     play.dataset.playing = String(s.playing);
     play.replaceChildren(icon(s.playing ? "pause" : "play"));
+  });
+  store.select((s) => [s.starting], (s) => {
+    play.dataset.starting = String(!!s.starting);
+    play.title = s.starting ? `Starting: ${s.starting} — ${title}` : title;
   });
   return play;
 }
@@ -28,8 +34,10 @@ export function mountTransport(host: HTMLElement): void {
   time.append(now, dur);
 
   const quality = el("select");
-  quality.title = "Preview resolution (a fraction of the project's size)";
-  options(quality, [{ value: "0.5", label: "½ res" }, { value: "0.75", label: "¾ res" }, { value: "1", label: "full res" }]);
+  // One setting for how big and how exact: ½ decodes the proxies of heavy footage (made in
+  // the background, every frame a keyframe, so seeking is instant), full the files themselves.
+  quality.title = "Preview: ½ plays proxies of heavy footage, quick to seek; full plays the files themselves";
+  options(quality, [{ value: "0.5", label: "½ · proxies" }, { value: "1", label: "full · originals" }]);
   quality.onchange = () => run(Cmd.previewScale, Number(quality.value));
 
   // Spins while the reload it asked for is in flight: it can bake.

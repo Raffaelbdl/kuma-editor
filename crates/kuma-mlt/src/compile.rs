@@ -88,6 +88,11 @@ pub struct CompileOptions {
     /// Where camera logs are found, lowest precedence first (`camera::find`): the libraries'
     /// `logs/`, then the project's own, which is all `new` knows of.
     pub logs: Vec<PathBuf>,
+    /// Decode proxies rather than the media: the preview at ½. An entry's own `proxy` comes
+    /// first, then these, the daemon's generated ones by bin id; any other file is decoded
+    /// as it is. Only the picture's graph reads them — the sound always comes from the
+    /// media — and `None` (a render, the preview at full) reads no proxy at all.
+    pub proxies: Option<HashMap<BinId, PathBuf>>,
 }
 
 impl CompileOptions {
@@ -102,6 +107,7 @@ impl CompileOptions {
             size: None,
             sequence: None,
             streams: Streams::Both,
+            proxies: None,
         }
     }
 }
@@ -638,9 +644,13 @@ fn emit_source(ctx: &Ctx, p: &Plan, id: &str, w: &mut XmlWriter) -> Result<(), C
 
     match &ctx.item(clip)?.source {
         BinSource::File { path: media, kind, proxy } => {
-            // Proxies stand in for the media only in a scaled (preview) compile.
-            let source = proxy.as_deref().filter(|_| ctx.opts.size.is_some()).unwrap_or(media);
-            let path = resource_path(&ctx.opts.root, source);
+            // A proxy stands in for the media only when asked, and only for the picture.
+            let proxies = ctx.opts.proxies.as_ref().filter(|_| !ctx.opts.streams.audio());
+            let stand_in = proxies.and_then(|made| {
+                let own = proxy.as_deref().map(|p| resource_path(&ctx.opts.root, p));
+                own.or_else(|| made.get(&clip.bin).map(|p| p.to_string_lossy().into_owned()))
+            });
+            let path = stand_in.unwrap_or_else(|| resource_path(&ctx.opts.root, media));
             let warped = (clip.speed - 1.0).abs() > 1e-9;
             let still = *kind == MediaKind::Image;
             // Plain media goes through a `chain` (MLT 7 avformat with link filters);
@@ -1556,6 +1566,34 @@ mod tests {
         let mut opts = CompileOptions::new("/proj");
         opts.size = Some((540, 960));
         assert!(compile(&p, &opts).unwrap().contains(r#"width="540" height="960""#));
+    }
+
+    /// At ½ the preview's picture decodes a proxy — the entry's own, else the generated
+    /// one — and nothing else does: not the sound, which a generated proxy does not carry,
+    /// not a render, not the preview at full.
+    #[test]
+    fn a_proxy_stands_in_for_the_picture_at_half_and_for_nothing_else() {
+        let p = project(json!({
+            "bin": {
+                "cam": { "source": { "path": "cam.mp4" } },
+                "phone": { "source": { "path": "phone.mp4", "proxy": "phone-small.mp4" } }
+            },
+            "tracks": [{ "id": "v1", "clips": [
+                { "id": "a", "start": 0, "end": 2, "bin": "cam" },
+                { "id": "b", "start": 2, "end": 4, "bin": "phone" }
+            ] }]
+        }));
+        let made = HashMap::from([("cam".to_string(), PathBuf::from("/proj/.kuma/proxies/k1.mp4")), ("phone".to_string(), PathBuf::from("/proj/.kuma/proxies/k2.mp4"))]);
+        let mut opts = CompileOptions::new("/proj");
+        let originals = |xml: &str| xml.contains("/proj/cam.mp4") && xml.contains("/proj/phone.mp4") && !xml.contains("proxies") && !xml.contains("small");
+        assert!(originals(&compile(&p, &opts).unwrap()), "a render decodes the media");
+        opts.proxies = Some(made);
+        opts.streams = Streams::Video;
+        let picture = compile(&p, &opts).unwrap();
+        assert!(picture.contains("/proj/.kuma/proxies/k1.mp4") && picture.contains("/proj/phone-small.mp4"), "{picture}");
+        assert!(!picture.contains("/proj/cam.mp4") && !picture.contains("k2.mp4"), "the entry's own proxy comes first: {picture}");
+        opts.streams = Streams::Audio;
+        assert!(originals(&compile(&p, &opts).unwrap()), "the sound decodes the media");
     }
 
     /// The preview skips handing the engine a timeline when the project compiles to the

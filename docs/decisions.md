@@ -890,7 +890,8 @@ thread shows the frame that count has reached, dropping frames when late, and a 
 finishes after a pause or seek is dropped rather than shown over the seek's. Both threads
 seek by frame index into graphs of the same document, which is why speed and nested
 sequences need nothing of their own here: the compiler already put them in both.
-`load-video` and `load-audio` swap a graph between frames without pausing.
+`load-video` and `load-audio` swap a graph between frames without pausing, and open it
+on a thread of their own (see *Play answers at once* below).
 `kuma-daemon/tests/engine.rs` pins the pacing, frame by frame, and was checked to fail
 with a picture that runs free.
 
@@ -918,6 +919,89 @@ Not built, recorded for when the video half is too slow:
 - **Cheaper, available now:** decoder threads (the avformat producer's `threads`
   property, which changes speed and not output), JPEG encoding off the pull thread, and
   caching heavy nested sequences the way bakes cache overlays.
+
+**Play answers at once, and says so** — adopted, after "the play button toggles, but
+nothing starts" (issue 35). Measured on a 45-clip, two-track 1080p timeline: opening the
+picture's graph took 1.6 s and the sound's 1.3 s, and the engine did it on the thread
+that reads commands, so a play sent after an edit — every edit reloads a graph, and so
+does every finished `preview-bake` — waited behind both: 3.5 s from the press to `ok
+play`. Meanwhile the UI had flipped the button to "pause" over a still picture and heard
+nothing back, because the daemon logged the engine's `ok play` and `err` lines and
+forwarded neither. Two changes:
+
+- **Graphs open on a loader thread**; the command thread only swaps the opened graph in.
+  A play or seek after an edit is answered on the graph already held (2 ms to `ok play`,
+  measured), and the new graph lands between two frames as before. Loads of one graph
+  queued behind each other open only the newest, so a burst of edits opens one graph,
+  and the graph swapped out is closed there too. MLT's Qt module makes its
+  `QApplication` with the first Qt service, so the engine makes a `qtblend` on the main
+  thread first. A play before any timeline is open is held (`ok waiting …`) rather than
+  refused, and a seek before it is kept rather than clamped to frame 0.
+  `a_play_never_waits_behind_a_load` pins both, with a graph of 300 producers; it fails
+  on the old engine.
+- **The socket says what became of a play**: `playing`, `waiting` (why), `refused` (why),
+  and `engine` for its other errors, at most one every 5 s since a broken frame repeats.
+  Between the press and the first frame the button pulses and the stage badge says what
+  it waits on — the engine, the timeline loading, the first frame — and after 3 s a toast
+  says it again; a refusal turns the button back off with the reason. This is the half
+  that matters whatever the cause: the first frame after a seek into long-GOP footage
+  still costs about a second (decoding from the keyframe), and an engine starved by
+  bakes is slow too, but neither is silent any more.
+
+Not done: the first frame of a play still renders behind the producers a load is
+opening (MLT serialises avformat opens and seeks), about a second in the measurement
+above; and a seek's frame is still rendered on the command thread, so a play sent behind
+a slow seek waits for it.
+
+**Proxies, and ½ means them** — adopted, after "even the clips start black; moving the
+cursor does not show the frame I want" on phone footage. Long-GOP footage keeps a whole
+picture only every few seconds, so a seek decodes from the last one: measured on 4K 10-bit
+HEVC with a keyframe every 4 s, 2.6–3.8 s to a clip's first frame, and playback froze 2.7 s
+at every cut, because each clip has a decoder of its own that starts cold. The preview
+resolution did not help: MLT decodes at the file's size and scales after.
+
+- **What a proxy is.** The file's first video stream at half the project's frame, fitted as
+  the preview fits the file, constant rate (phones record a variable one), every frame a
+  keyframe and no B-frames, x264 quality 28, no sound. Measured on grainy 1080p at about
+  49 Mbit/s: 4 Mbit/s at 540p (1.8 GB an hour, 8% of the original) and 14.6 Mbit/s at
+  1080p (6.5 GB, a 4K project's). A keyframe every 15 frames was 40% smaller at 540p but
+  makes a seek decode up to 15 frames (≈150 ms at 1080p); every frame a keyframe is what
+  makes a seek one decode. End to end on the HEVC timeline, a seek went from 0.6–2.9 s to
+  20–33 ms.
+- **Which files.** Only footage slow to seek: not a codec that is all keyframes already
+  (ProRes, DNxHR, MJPEG, PNG…), not 720p or smaller, not one with alpha (a proxy would
+  lose it), not one no bigger than the proxy. The verdict is a `.none` marker, so a file is
+  probed once. An entry's own `proxy` (the document field, for a proxy the camera made)
+  still wins over a generated one.
+- **½ means proxies, full means originals** — one setting instead of Kdenlive's two
+  (monitor resolution and a proxy switch, independent there). ½ shows a proxy made for
+  exactly that size, so nothing is stretched; full is for judging the real thing. ¾ is
+  gone: it decoded the originals and still was not exact. The daemon snaps any scale it
+  is sent to one of the two (`PreviewHandle::set_scale`), so no client can ask for a
+  size proxies were not made for.
+- **Cache, not document**, like a bake: `.kuma/proxies/<key>.mp4`, the key a hash of the
+  file's path, length and modification time (not its bytes: gigabytes), the size it is
+  made for and a version. A replaced file, or a project resized, makes new ones; a prune
+  drops the old. Written under a `.tmp-` name and renamed, so a crash leaves nothing a
+  later compile would read — Kdenlive writes the final name directly and reuses any
+  non-empty file there.
+- **Made behind the compile**, as nested overlays are baked: a compile at ½ uses the
+  proxies the cache has, and the rest play as they are while one `proxy` job at a time
+  makes the next, entries placed in a sequence first. Each job starts the next as it ends,
+  so the cache fills with no editor open; clients reload when one ends. ffmpeg runs under
+  `nice`: the preview engine is what the person is waiting on. A file whose proxy fails or
+  is cancelled is not tried again until a forced reload; a cancel also stops the chain.
+- **Only the picture's graph reads a proxy.** The sound is cheap to seek and keeps its
+  exact timing from the file, so proxies carry none.
+
+Also from that report: the engine now **skips a seek another one has overtaken** — it was
+drawing every position a drag passed, seconds behind the pointer on slow footage.
+`a_seek_overtaken_by_another_shows_nothing` was checked to fail without it.
+
+Not done, in order of what is next: encode proxies on the graphics card when there is one
+(VAAPI, NVENC, VideoToolbox — Kdenlive's default where available); MLT's own hardware
+decoding (`hwaccel`, present in 7.22) to make full tolerable; one decoder per file rather
+than per clip, so a cut within one file starts warm.
 
 **An overlay off the playhead is hidden by `visibility`, never `display`** — adopted, after
 a template rendered one size in the editor and another in the render. `display: none` gives

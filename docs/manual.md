@@ -575,8 +575,10 @@ file, and gone when the daemon stops:
   the marker at the same time of the same sequence before the edit if there was one (so a
   client writing the whole array back re-attributes nothing, and an older file's marker
   stays without), else the edit's (`ui` when it has none). A marker without an `origin` is
-  read as a person's. Undo, redo and restore put documents back as they were. What is
-  session state is whether one is answered: `GET /api/markers` lists every marker of every
+  read as a person's. Undo, redo and restore put documents back as they were. What is not
+  the document's is whether one is answered — the daemon keeps it in
+  `.kuma/answers/<project file name>`, so it survives a restart, and drops a marker's answer
+  when the marker is deleted or moved: `GET /api/markers` lists every marker of every
   sequence, the master's first, each in time order —
   `{"id", "sequence", "index", "t", "label", "color", "origin", "author", "waiting", "done", "done_by"}`
   with `id` `<sequence>@<t to 3 decimals>`, `index` its number in its sequence, `author`

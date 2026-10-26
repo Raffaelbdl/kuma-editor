@@ -429,6 +429,52 @@ async fn markers_are_listed_answered_and_ticked() {
     assert_eq!(sent[6], json!({ "type": "markers", "markers": markers() }), "the last list sent is the list");
 }
 
+/// A daemon started again on the project still knows which markers were answered, and by
+/// whom; an untick is kept as much as a tick, and the document is not what keeps them.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_answers_outlive_the_daemon() {
+    let (state, addr, _dir) = daemon().await;
+    let r = post(&addr, "/api/project/patch", json!({ "patch": [{ "op": "replace", "path": "/bin/black/name", "value": "Ink" }], "origin": "mcp: quieter HUD", "answers": ["main@8.600"] }));
+    post(&addr, "/api/markers/done", json!({ "id": "main@1.000", "done": true }));
+    post(&addr, "/api/markers/done", json!({ "id": "intro@0.500", "done": true }));
+    post(&addr, "/api/markers/done", json!({ "id": "intro@0.500", "done": false }));
+    let ticked = revision(&state);
+    let text = std::fs::read_to_string(&state.config.project_file).unwrap();
+    assert!(!text.contains("done"), "nothing of it in the document");
+
+    let again = AppState::load(state.config.clone()).unwrap();
+    let done: Vec<(String, Option<u64>, Option<String>)> = again.marker_list().into_iter().map(|m| (m.id, m.done, m.done_by)).collect();
+    assert_eq!(
+        done,
+        [
+            ("main@1.000".into(), Some(ticked), Some("user".into())),
+            ("main@3.000".into(), None, None),
+            ("main@8.600".into(), r["revision"].as_u64(), Some("agent".into())),
+            ("intro@0.500".into(), None, None)
+        ]
+    );
+}
+
+/// Deleting an answered marker deletes its answer: one put back at that moment starts
+/// unanswered, now and after a restart.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_deleted_marker_takes_its_answer_with_it() {
+    let (state, addr, _dir) = daemon().await;
+    let dark = || get(&addr, "/api/markers")["markers"].as_array().unwrap().iter().find(|m| m["id"] == "main@1.000").cloned();
+    post(&addr, "/api/markers/done", json!({ "id": "main@1.000", "done": true }));
+    assert!(dark().unwrap()["done"].is_u64());
+
+    // The file's markers are 8.6, 1, 3: "too dark" is the second.
+    post(&addr, "/api/project/patch", json!({ "patch": [{ "op": "remove", "path": "/bin/main/source/markers/1" }] }));
+    assert!(dark().is_none());
+    post(&addr, "/api/project/patch", json!({ "patch": [{ "op": "add", "path": "/bin/main/source/markers/-", "value": { "t": 1.0, "label": "a new note" } }] }));
+    let fresh = dark().unwrap();
+    assert_eq!((&fresh["done"], &fresh["waiting"]), (&Value::Null, &json!(true)), "the new marker is not the old one's answer");
+
+    let again = AppState::load(state.config.clone()).unwrap();
+    assert!(again.marker_list().iter().all(|m| m.done.is_none()), "and the file forgot it too");
+}
+
 /// The markers are sent when an edit, an undo or a redo changes one, and not for an edit
 /// that leaves them alone.
 #[tokio::test(flavor = "multi_thread")]

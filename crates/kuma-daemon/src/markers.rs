@@ -6,9 +6,11 @@
 //! origin into it as the edit lands. Seen from here it is listed with an id an edit can
 //! name, who left it, and whether one has answered it. Markers have no id of their own, so
 //! the id is derived from where the marker is (`<sequence>@<t>`), and whether it is done is
-//! session state here, never written into the document.
+//! the daemon's, never written into the document: kept in a file beside it ([`save`],
+//! [`load`]) so a restart does not reopen what was answered.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
+use std::path::Path;
 
 use kuma_core::{BinId, BinSource, Marker, Project, Sequence};
 use serde::{Deserialize, Serialize};
@@ -50,7 +52,7 @@ pub struct MarkerInfo {
 }
 
 /// How a marker was answered.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Done {
     pub revision: u64,
     pub by: String,
@@ -59,6 +61,37 @@ pub struct Done {
 /// Which markers are done, by id. The latest answer wins: an edit naming a marker, a tick,
 /// or an untick, which forgets both.
 pub type Answers = HashMap<String, Done>;
+
+/// The answers kept in `path` for the markers `p` has: none when there is no file, or one
+/// that does not read (said, not fatal: it costs the ticks, never the project). An answer
+/// whose marker is gone — deleted, or moved, which changes its id — is dropped.
+pub fn load(path: &Path, p: &Project) -> Answers {
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Answers::new(),
+        Err(e) => {
+            tracing::warn!("markers' answers not read from {}: {e}", path.display());
+            return Answers::new();
+        }
+    };
+    match serde_json::from_str::<Answers>(&text) {
+        Ok(mut answers) => {
+            answers.retain(|id, _| exists(p, id));
+            answers
+        }
+        Err(e) => {
+            tracing::warn!("markers' answers in {} not understood: {e}", path.display());
+            Answers::new()
+        }
+    }
+}
+
+/// Write `answers` to `path`, replacing it atomically, in id order so the file is the same
+/// for the same answers.
+pub fn save(path: &Path, answers: &Answers) -> anyhow::Result<()> {
+    let sorted: BTreeMap<_, _> = answers.iter().collect();
+    crate::jobs::write_atomic(path, &serde_json::to_vec_pretty(&sorted)?)
+}
 
 /// Every marker in `p`: the master's first, then the other sequences' in bin order.
 pub fn list(p: &Project, answers: &Answers) -> Vec<MarkerInfo> {
@@ -227,5 +260,30 @@ mod tests {
         assert_eq!(markers(&fresh, "main")[0].origin.as_deref(), Some("ui"), "the editor's default");
         stamp(&before, &mut fresh, "mcp");
         assert_eq!(markers(&fresh, "main")[0].origin.as_deref(), Some("ui"), "stamped once");
+    }
+
+    /// What is saved is read back, less the answers whose marker is gone; no file, or one
+    /// that does not parse, is no answers.
+    #[test]
+    fn answers_are_kept_for_the_markers_still_there() {
+        let p: Project = serde_json::from_value(json!({
+            "master": "main",
+            "bin": { "main": { "source": { "tracks": [], "markers": [{ "t": 1.0, "label": "too dark" }] } } }
+        }))
+        .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("answers").join("t.kuma.json");
+        assert!(load(&path, &p).is_empty(), "nothing kept yet");
+        let answers: Answers = [
+            ("main@1.000".to_string(), Done { revision: 4, by: "agent".into() }),
+            ("main@2.000".to_string(), Done { revision: 5, by: "user".into() }),
+        ]
+        .into();
+        save(&path, &answers).unwrap();
+        let back = load(&path, &p);
+        assert_eq!(back.len(), 1, "the marker at 2s is gone");
+        assert_eq!(back["main@1.000"], Done { revision: 4, by: "agent".into() });
+        std::fs::write(&path, "not json").unwrap();
+        assert!(load(&path, &p).is_empty());
     }
 }

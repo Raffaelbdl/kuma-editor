@@ -42,6 +42,13 @@ impl Config {
     pub fn thumbs_dir(&self) -> PathBuf {
         self.cache_dir().join("thumbs")
     }
+    /// Which of this project's markers are answered (`markers::Answers`), so a restart does
+    /// not reopen them. Named after the project file, since projects may share a folder;
+    /// never pruned, since nothing makes it again.
+    pub fn answers_file(&self) -> PathBuf {
+        let name = self.project_file.file_name().map_or_else(|| "project".into(), |n| n.to_string_lossy().into_owned());
+        self.cache_dir().join("answers").join(name)
+    }
     /// The preview's proxies of heavy footage (`proxies.rs`).
     pub fn proxies_dir(&self) -> PathBuf {
         self.cache_dir().join("proxies")
@@ -339,7 +346,8 @@ pub struct AppState {
     pub history: Mutex<History>,
     /// The agent's recent tool calls, as the MCP server reports them.
     pub activity: Mutex<crate::activity::Activity>,
-    /// Which markers are done, by id. Session state like the history it is derived from.
+    /// Which markers are done, by id. Not the document's, but kept beside it
+    /// (`Config::answers_file`) so a restart does not reopen what was answered.
     answers: Mutex<crate::markers::Answers>,
 }
 
@@ -418,6 +426,7 @@ impl AppState {
         let baker = Baker::discover(&config.repo_root, config.bakes_dir());
         let transcriber = Transcriber::discover(&config.repo_root, config.libraries.user.join("models"));
         let (events, _) = broadcast::channel(256);
+        let answers = crate::markers::load(&config.answers_file(), &project);
         let st = AppState {
             blueprints: RwLock::new(Blueprints { loaded: BTreeMap::new(), errors: Vec::new() }),
             project: RwLock::new(project),
@@ -432,7 +441,7 @@ impl AppState {
             cache_users: RwLock::new(()),
             history: Mutex::new(History::default()),
             activity: Mutex::new(Default::default()),
-            answers: Mutex::new(Default::default()),
+            answers: Mutex::new(answers),
             config,
         };
         // The revision it opened at can be restored like any it makes.
@@ -604,7 +613,11 @@ impl AppState {
         push(&mut lock(&self.undo));
         let answered = self.record(entry);
         if answered || markers_differ {
-            self.send_markers(&lock(&self.answers));
+            let mut answers = lock(&self.answers);
+            if markers_differ {
+                self.forget_gone(&mut answers);
+            }
+            self.send_markers(&answers);
         }
         lock(&self.history).keep(revision, next);
     }
@@ -619,6 +632,7 @@ impl AppState {
             for id in &entry.answers {
                 answers.insert(id.clone(), crate::markers::Done { revision, by: entry.author.clone() });
             }
+            self.keep_answers(&answers);
         }
         lock(&self.history).push(entry.clone());
         let _ = self.events.send(Event::History(entry));
@@ -706,8 +720,31 @@ impl AppState {
         } else {
             answers.remove(id);
         }
+        self.keep_answers(&answers);
         self.send_markers(&answers);
         true
+    }
+
+    /// Drop the answers whose marker the document no longer has — deleted, or moved, which
+    /// changes its id — so a marker added later at that moment starts unanswered, and keep
+    /// what is left. Undoing the deletion brings the marker back unanswered.
+    fn forget_gone(&self, answers: &mut crate::markers::Answers) {
+        let before = answers.len();
+        {
+            let p = read(&self.project);
+            answers.retain(|id, _| crate::markers::exists(&p, id));
+        }
+        if answers.len() != before {
+            self.keep_answers(answers);
+        }
+    }
+
+    /// Write the answers to disk, under their lock so the file ends as the last change left
+    /// them. A failure costs the next restart these answers, never the edit or the tick.
+    fn keep_answers(&self, answers: &crate::markers::Answers) {
+        if let Err(e) = crate::markers::save(&self.config.answers_file(), answers) {
+            tracing::warn!("markers' answers not kept: {e:#}");
+        }
     }
 
     /// Undo/redo swap whole snapshots; the revision keeps increasing so clients never

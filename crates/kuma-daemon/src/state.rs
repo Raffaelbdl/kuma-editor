@@ -46,8 +46,7 @@ impl Config {
     /// not reopen them. Named after the project file, since projects may share a folder;
     /// never pruned, since nothing makes it again.
     pub fn answers_file(&self) -> PathBuf {
-        let name = self.project_file.file_name().map_or_else(|| "project".into(), |n| n.to_string_lossy().into_owned());
-        self.cache_dir().join("answers").join(name)
+        self.cache_dir().join("answers").join(self.project_file.file_name().unwrap_or_default())
     }
     /// The preview's proxies of heavy footage (`proxies.rs`).
     pub fn proxies_dir(&self) -> PathBuf {
@@ -611,32 +610,27 @@ impl AppState {
     /// committed document) to restore.
     fn landed(&self, revision: u64, next: Snapshot, entry: history::Entry, markers_differ: bool, push: impl FnOnce(&mut UndoStack)) {
         push(&mut lock(&self.undo));
-        let answered = self.record(entry);
-        if answered || markers_differ {
-            let mut answers = lock(&self.answers);
-            if markers_differ {
-                self.forget_gone(&mut answers);
-            }
-            self.send_markers(&answers);
+        let (answered, by) = (entry.answers.clone(), entry.author.clone());
+        self.record(entry);
+        if !answered.is_empty() || markers_differ {
+            // An entry naming markers answers them; a marker the step took away takes its
+            // answer with it, so one put back at that moment starts unanswered.
+            self.change_answers(|answers, p| {
+                let answering = !answered.is_empty();
+                for id in answered {
+                    answers.insert(id, crate::markers::Done { revision, by: by.clone() });
+                }
+                let forgot = markers_differ && crate::markers::forget_gone(answers, p);
+                answering || forgot
+            });
         }
         lock(&self.history).keep(revision, next);
     }
 
-    /// Append to the history and tell every client; an entry naming markers answers them.
-    /// Returns whether it did, for the caller to send the markers once with whatever else
-    /// changed them.
-    fn record(&self, entry: history::Entry) -> bool {
-        let answering = entry.revision.filter(|_| !entry.answers.is_empty());
-        if let Some(revision) = answering {
-            let mut answers = lock(&self.answers);
-            for id in &entry.answers {
-                answers.insert(id.clone(), crate::markers::Done { revision, by: entry.author.clone() });
-            }
-            self.keep_answers(&answers);
-        }
+    /// Append to the history and tell every client.
+    fn record(&self, entry: history::Entry) {
         lock(&self.history).push(entry.clone());
         let _ = self.events.send(Event::History(entry));
-        answering.is_some()
     }
 
     /// Every marker, the master's first, each with who left it and whether it is done:
@@ -707,44 +701,34 @@ impl AppState {
     /// Tick a marker done, or untick it. `origin` says who (`ui`, `cli: …`), read as an
     /// edit's author is, so a tick from anywhere but the editor is not taken for a person's.
     pub fn tick_marker(&self, id: &str, done: bool, origin: &str) -> bool {
-        let mut answers = lock(&self.answers);
-        let revision = {
-            let p = read(&self.project);
-            if !crate::markers::exists(&p, id) {
-                return false;
-            }
-            p.revision
-        };
-        if done {
-            answers.insert(id.to_string(), crate::markers::Done { revision, by: crate::history::author(origin).into() });
-        } else {
-            answers.remove(id);
+        if !crate::markers::exists(&read(&self.project), id) {
+            return false;
         }
-        self.keep_answers(&answers);
-        self.send_markers(&answers);
+        self.change_answers(|answers, p| {
+            if done {
+                answers.insert(id.to_string(), crate::markers::Done { revision: p.revision, by: crate::history::author(origin).into() });
+                true
+            } else {
+                answers.remove(id).is_some()
+            }
+        });
         true
     }
 
-    /// Drop the answers whose marker the document no longer has — deleted, or moved, which
-    /// changes its id — so a marker added later at that moment starts unanswered, and keep
-    /// what is left. Undoing the deletion brings the marker back unanswered.
-    fn forget_gone(&self, answers: &mut crate::markers::Answers) {
-        let before = answers.len();
-        {
-            let p = read(&self.project);
-            answers.retain(|id, _| crate::markers::exists(&p, id));
+    /// The one way the answers change: `f` changes them under their lock, given the document
+    /// as it is, and says whether it did — if so they are written to disk, so the file is
+    /// always what the daemon holds — then the markers are sent. A failed write costs the
+    /// next restart these answers, never the edit or the tick.
+    fn change_answers(&self, f: impl FnOnce(&mut crate::markers::Answers, &Project) -> bool) {
+        let mut answers = lock(&self.answers);
+        // The document is let go of before `send_markers` reads it again.
+        let changed = f(&mut answers, &read(&self.project));
+        if changed {
+            if let Err(e) = crate::markers::save(&self.config.answers_file(), &answers) {
+                tracing::warn!("markers' answers not kept: {e:#}");
+            }
         }
-        if answers.len() != before {
-            self.keep_answers(answers);
-        }
-    }
-
-    /// Write the answers to disk, under their lock so the file ends as the last change left
-    /// them. A failure costs the next restart these answers, never the edit or the tick.
-    fn keep_answers(&self, answers: &crate::markers::Answers) {
-        if let Err(e) = crate::markers::save(&self.config.answers_file(), answers) {
-            tracing::warn!("markers' answers not kept: {e:#}");
-        }
+        self.send_markers(&answers);
     }
 
     /// Undo/redo swap whole snapshots; the revision keeps increasing so clients never

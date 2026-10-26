@@ -9,7 +9,7 @@
 //! the daemon's, never written into the document: kept in a file beside it ([`save`],
 //! [`load`]) so a restart does not reopen what was answered.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use kuma_core::{BinId, BinSource, Marker, Project, Sequence};
@@ -59,38 +59,37 @@ pub struct Done {
 }
 
 /// Which markers are done, by id. The latest answer wins: an edit naming a marker, a tick,
-/// or an untick, which forgets both.
-pub type Answers = HashMap<String, Done>;
+/// or an untick, which forgets both. In id order, so the file [`save`] writes is the same for
+/// the same answers.
+pub type Answers = BTreeMap<String, Done>;
 
 /// The answers kept in `path` for the markers `p` has: none when there is no file, or one
 /// that does not read (said, not fatal: it costs the ticks, never the project). An answer
 /// whose marker is gone — deleted, or moved, which changes its id — is dropped.
 pub fn load(path: &Path, p: &Project) -> Answers {
-    let text = match std::fs::read_to_string(path) {
-        Ok(text) => text,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Answers::new(),
-        Err(e) => {
-            tracing::warn!("markers' answers not read from {}: {e}", path.display());
-            return Answers::new();
-        }
-    };
-    match serde_json::from_str::<Answers>(&text) {
-        Ok(mut answers) => {
-            answers.retain(|id, _| exists(p, id));
-            answers
-        }
-        Err(e) => {
-            tracing::warn!("markers' answers in {} not understood: {e}", path.display());
-            Answers::new()
-        }
+    if !path.exists() {
+        return Answers::new();
     }
+    let read = || anyhow::Ok(serde_json::from_str(&std::fs::read_to_string(path)?)?);
+    let mut answers = read().unwrap_or_else(|e| {
+        tracing::warn!("markers' answers not read from {}: {e:#}", path.display());
+        Answers::new()
+    });
+    forget_gone(&mut answers, p);
+    answers
 }
 
-/// Write `answers` to `path`, replacing it atomically, in id order so the file is the same
-/// for the same answers.
+/// Write `answers` to `path`, replacing it atomically.
 pub fn save(path: &Path, answers: &Answers) -> anyhow::Result<()> {
-    let sorted: BTreeMap<_, _> = answers.iter().collect();
-    crate::jobs::write_atomic(path, &serde_json::to_vec_pretty(&sorted)?)
+    crate::jobs::write_atomic(path, &serde_json::to_vec_pretty(answers)?)
+}
+
+/// Drop the answers whose marker `p` no longer has — deleted, or moved, which changes its
+/// id — so a marker put later at that moment starts unanswered. Whether it dropped any.
+pub fn forget_gone(answers: &mut Answers, p: &Project) -> bool {
+    let before = answers.len();
+    answers.retain(|id, _| exists(p, id));
+    answers.len() != before
 }
 
 /// Every marker in `p`: the master's first, then the other sequences' in bin order.

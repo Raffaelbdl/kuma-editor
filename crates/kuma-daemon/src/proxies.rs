@@ -12,13 +12,14 @@
 //! once. Until its proxy is there a file is decoded as it is.
 
 use std::collections::{HashMap, HashSet};
-use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
+use anyhow::Context;
 use kuma_core::{BinId, BinSource, MediaKind, Project};
+use kuma_overlay::media::Probe;
 use sha2::{Digest, Sha256};
 
 use crate::preview::has_bin;
@@ -63,9 +64,8 @@ pub fn target(project: &Project) -> (u32, u32) {
 pub fn key(file: &Path, target: (u32, u32)) -> Option<String> {
     let meta = std::fs::metadata(file).ok()?;
     let modified = meta.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?.as_nanos();
-    let path = std::fs::canonicalize(file).unwrap_or_else(|_| file.to_path_buf());
     let mut h = Sha256::new();
-    h.update(format!("{VERSION}\n{}\n{} {modified}\n{}x{}", path.display(), meta.len(), target.0, target.1).as_bytes());
+    h.update(format!("{VERSION}\n{}\n{} {modified}\n{}x{}", file.display(), meta.len(), target.0, target.1).as_bytes());
     Some(hex::encode(h.finalize())[..24].to_string())
 }
 
@@ -87,67 +87,84 @@ fn lookup(dir: &Path, key: &str) -> Cached {
     }
 }
 
-/// A video entry of the bin with no proxy of its own: its id, file and key. Entries some
-/// sequence places come first, since those are what the preview shows.
-fn videos(state: &AppState, project: &Project, target: (u32, u32)) -> Vec<(BinId, PathBuf, String)> {
-    let placed: HashSet<&str> = project.all_clips().map(|(_, _, c)| c.bin.as_str()).collect();
-    let mut out: Vec<(BinId, PathBuf, String)> = project
-        .bin
-        .iter()
-        .filter_map(|(id, item)| match &item.source {
-            BinSource::File { path, kind: MediaKind::Video, proxy: None } => {
-                let file = crate::jobs::resolve_path(state, Path::new(path));
-                let key = key(&file, target)?;
-                Some((id.clone(), file, key))
-            }
-            _ => None,
-        })
-        .collect();
-    out.sort_by_key(|(id, ..)| !placed.contains(id.as_str()));
-    out
+/// A video of the bin with no proxy of its own: its entry, file and key.
+type Video = (BinId, PathBuf, String);
+
+fn videos<'p>(state: &'p AppState, project: &'p Project, target: (u32, u32)) -> impl Iterator<Item = Video> + 'p {
+    project.bin.iter().filter_map(move |(id, item)| match &item.source {
+        BinSource::File { path, kind: MediaKind::Video, proxy: None } => {
+            let file = crate::jobs::resolve_path(state, Path::new(path));
+            let key = key(&file, target)?;
+            Some((id.clone(), file, key))
+        }
+        _ => None,
+    })
 }
 
-/// The proxies the cache has for the bin, by entry: what the preview's picture decodes at ½.
-pub fn ready(state: &AppState, project: &Project) -> HashMap<BinId, PathBuf> {
+/// The bin's videos as the cache has them, looked at once per compile.
+#[derive(Default)]
+pub struct Scan {
+    /// The proxies to decode, by entry.
+    pub ready: HashMap<BinId, PathBuf>,
+    /// The files not looked at yet, those a sequence places first: they are what the
+    /// preview shows.
+    missing: Vec<Video>,
+    target: (u32, u32),
+}
+
+pub fn scan(state: &AppState, project: &Project) -> Scan {
     let dir = state.config.proxies_dir();
-    videos(state, project, target(project))
-        .into_iter()
-        .filter_map(|(id, _, key)| match lookup(&dir, &key) {
-            Cached::Ready(path) => Some((id, path)),
-            _ => None,
-        })
-        .collect()
+    let target = target(project);
+    let mut scan = Scan { target, ..Scan::default() };
+    for (id, file, key) in videos(state, project, target) {
+        match lookup(&dir, &key) {
+            Cached::Ready(path) => drop(scan.ready.insert(id, path)),
+            Cached::NotNeeded => {}
+            Cached::Unknown => scan.missing.push((id, file, key)),
+        }
+    }
+    let placed: HashSet<&str> = project.all_clips().map(|(_, _, c)| c.bin.as_str()).collect();
+    scan.missing.sort_by_key(|(id, ..)| !placed.contains(id.as_str()));
+    scan
 }
 
 /// Keys of every proxy (or marker) the bin can use now: what a prune keeps.
 pub fn live(state: &AppState, project: &Project) -> HashSet<String> {
-    videos(state, project, target(project)).into_iter().map(|(.., key)| key).collect()
+    videos(state, project, target(project)).map(|(.., key)| key).collect()
 }
 
-/// Start a `proxy` job for the next video the cache knows nothing about, unless one is
-/// running, the preview is at full (which reads no proxies), or ffmpeg is missing. Each
-/// job starts the next as it ends, so the cache fills whether or not an editor is open.
+/// ffmpeg and ffprobe are there to make proxies with: looked for once.
+fn tools() -> bool {
+    static FOUND: OnceLock<bool> = OnceLock::new();
+    *FOUND.get_or_init(|| has_bin("ffmpeg") && has_bin("ffprobe"))
+}
+
+/// Look at the bin again and start the next proxy: what a job does as it ends.
 pub fn make_next(state: &Arc<AppState>) {
-    if *lock(&state.preview.scale) >= 1.0 || !has_bin("ffmpeg") || !has_bin("ffprobe") {
+    let scan = scan(state, &read(&state.project));
+    start(state, scan);
+}
+
+/// Start a `proxy` job for the first file `scan` found nothing for, unless one is running,
+/// the preview is at full (which reads no proxies), or ffmpeg is missing. Each job starts
+/// the next as it ends, so the cache fills whether or not an editor is open.
+pub fn start(state: &Arc<AppState>, scan: Scan) {
+    if *lock(&state.preview.scale) >= 1.0 || !tools() {
         return;
     }
-    let project = read(&state.project).clone();
-    let target = target(&project);
-    let dir = state.config.proxies_dir();
     let (id, file, key) = {
         let mut making = lock(&state.preview.making);
         if making.running {
             return;
         }
-        let next = videos(state, &project, target).into_iter().find(|(.., key)| !making.skip.contains(key) && matches!(lookup(&dir, key), Cached::Unknown));
-        let Some(next) = next else { return };
+        let Some(next) = scan.missing.into_iter().find(|(.., key)| !making.skip.contains(key)) else { return };
         making.running = true;
         next
     };
-    let st = state.clone();
+    let (st, dir, target) = (state.clone(), state.config.proxies_dir(), scan.target);
     let params = serde_json::json!({ "bin": id, "path": file });
     crate::jobs::spawn_cancellable(state.clone(), "proxy", params, None, move |progress, cancel| {
-        let made = make(&dir, &file, &key, target, progress, cancel);
+        let made = make(&dir, &file, &key, target, progress, cancel).with_context(|| format!("{}", file.display()));
         let stopped = cancel.load(Ordering::SeqCst);
         {
             let mut making = lock(&st.preview.making);
@@ -168,84 +185,44 @@ pub fn make_next(state: &Arc<AppState>) {
 fn make(dir: &Path, file: &Path, key: &str, target: (u32, u32), progress: &dyn Fn(u8, &str), cancel: &AtomicBool) -> anyhow::Result<serde_json::Value> {
     progress(0, "probing");
     std::fs::create_dir_all(dir)?;
-    let video = probe(file).map_err(|e| anyhow::anyhow!("{}: {e}", file.display()))?;
-    if let Some(why) = video.needs_none(target) {
-        std::fs::write(dir.join(format!("{key}.none")), &why)?;
+    let probe = kuma_overlay::media::probe(file).map_err(anyhow::Error::msg)?;
+    if let Some(why) = needs_none(&probe, target) {
+        std::fs::write(dir.join(format!("{key}.none")), why)?;
         return Ok(serde_json::json!({ "proxy": null, "why": why }));
     }
-    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
-    let scratch = Scratch(dir.join(format!("{key}.tmp-{}-{nanos:x}.mp4", std::process::id())));
-    encode(file, &scratch.0, &video, target, progress, cancel)?;
+    // Under a `.tmp-` name until it is whole (`is_in_flight`); dropped on any error.
+    let scratch = tempfile::Builder::new().prefix(&format!("{key}.tmp-")).suffix(".mp4").tempfile_in(dir)?;
+    encode(file, scratch.path(), &probe, target, progress, cancel)?;
     let done = dir.join(format!("{key}.mp4"));
-    std::fs::rename(&scratch.0, &done)?;
+    scratch.persist(&done)?;
     Ok(serde_json::json!({ "proxy": done }))
 }
 
-/// Scratch output: removed unless it was renamed into place.
-struct Scratch(PathBuf);
-
-impl Drop for Scratch {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.0);
+/// Why `probe` needs no proxy, or `None` when it does.
+fn needs_none(probe: &Probe, target: (u32, u32)) -> Option<&'static str> {
+    let Some(codec) = probe.codec.as_deref() else { return Some("it has no picture") };
+    let pixels = probe.meta.width.unwrap_or(0) as u64 * probe.meta.height.unwrap_or(0) as u64;
+    if INTRA.contains(&codec) {
+        Some("every frame is a keyframe already")
+    } else if probe.meta.alpha {
+        Some("it has an alpha channel, which a proxy would lose")
+    } else if pixels <= SMALL || pixels <= target.0 as u64 * target.1 as u64 {
+        Some("it is small enough to decode as it is")
+    } else {
+        None
     }
-}
-
-/// What deciding on and making a proxy needs to know of a file's first video stream.
-struct Video {
-    codec: String,
-    pix_fmt: String,
-    pixels: u64,
-    /// The rate the proxy is made at: constant, since phones record a variable one.
-    fps: String,
-    duration: f64,
-}
-
-impl Video {
-    /// Why this file needs no proxy, or `None` when it does.
-    fn needs_none(&self, target: (u32, u32)) -> Option<String> {
-        if INTRA.contains(&self.codec.as_str()) {
-            Some(format!("{} has every frame a keyframe", self.codec))
-        } else if kuma_overlay::media::has_alpha(&self.pix_fmt) {
-            Some("it has an alpha channel, which a proxy would lose".into())
-        } else if self.pixels <= SMALL || self.pixels <= target.0 as u64 * target.1 as u64 {
-            Some("it is small enough to decode as it is".into())
-        } else {
-            None
-        }
-    }
-}
-
-fn probe(file: &Path) -> Result<Video, String> {
-    let out = Command::new("ffprobe")
-        .args(["-v", "error", "-select_streams", "v:0", "-print_format", "json"])
-        .args(["-show_entries", "stream=codec_name,pix_fmt,width,height,avg_frame_rate,r_frame_rate:format=duration"])
-        .arg(file)
-        .output()
-        .map_err(|e| format!("ffprobe: {e}"))?;
-    if !out.status.success() {
-        return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());
-    }
-    let v: serde_json::Value = serde_json::from_slice(&out.stdout).map_err(|e| e.to_string())?;
-    let s = v["streams"].get(0).ok_or("no video stream")?;
-    let text = |k: &str| s[k].as_str().unwrap_or_default().to_string();
-    let rate = |k: &str| Some(text(k)).filter(|r| !r.is_empty() && !r.starts_with('0'));
-    Ok(Video {
-        codec: text("codec_name"),
-        pix_fmt: text("pix_fmt"),
-        pixels: s["width"].as_u64().unwrap_or(0) * s["height"].as_u64().unwrap_or(0),
-        fps: rate("avg_frame_rate").or_else(|| rate("r_frame_rate")).unwrap_or_else(|| "30".into()),
-        duration: v["format"]["duration"].as_str().and_then(|d| d.parse().ok()).unwrap_or(0.0),
-    })
 }
 
 /// Encode the proxy: the first video stream, no sound (the sound graph reads the media),
 /// fitted inside `target` as the preview fits the file into the frame, at a constant
 /// rate, every frame a keyframe. Quality 28 was measured at about 4 Mbit/s at 540p, 8% of a
 /// phone's 4K. Run at low priority: the preview engine is what the person is waiting on.
-fn encode(file: &Path, out: &Path, video: &Video, target: (u32, u32), progress: &dyn Fn(u8, &str), cancel: &AtomicBool) -> anyhow::Result<()> {
+fn encode(file: &Path, out: &Path, probe: &Probe, target: (u32, u32), progress: &dyn Fn(u8, &str), cancel: &AtomicBool) -> anyhow::Result<()> {
     let (tw, th) = target;
     let fit = format!("min(1,min({tw}/iw,{th}/ih))");
     let scale = format!("scale=w='trunc(iw*{fit}/2)*2':h='trunc(ih*{fit}/2)*2'");
+    let fps = probe.meta.fps.map_or_else(|| "30".to_string(), |f| format!("{}/{}", f.num, f.den));
+    let duration = probe.meta.duration.unwrap_or(0.0);
     let mut cmd = if has_bin("nice") {
         let mut c = Command::new("nice");
         c.args(["-n", "10", "ffmpeg"]);
@@ -253,32 +230,27 @@ fn encode(file: &Path, out: &Path, video: &Video, target: (u32, u32), progress: 
     } else {
         Command::new("ffmpeg")
     };
-    cmd.args(["-v", "error", "-y", "-nostdin", "-nostats", "-progress", "pipe:1", "-i"])
+    cmd.args(["-v", "error", "-y", "-nostdin", "-nostats", "-progress", "pipe:2", "-i"])
         .arg(file)
-        .args(["-map", "0:v:0", "-an", "-sn", "-dn", "-vf", &scale, "-fps_mode", "cfr", "-r", &video.fps])
+        .args(["-map", "0:v:0", "-an", "-sn", "-dn", "-vf", &scale, "-fps_mode", "cfr", "-r", &fps])
         .args(["-c:v", "libx264", "-preset", "veryfast", "-crf", "28", "-g", "1", "-bf", "0", "-pix_fmt", "yuv420p", "-f", "mp4"])
-        .arg(out)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    let mut child = cmd.spawn().map_err(|e| anyhow::anyhow!("ffmpeg: {e}"))?;
-    let stdout = child.stdout.take().unwrap();
-    for line in BufReader::new(stdout).lines() {
-        let Ok(line) = line else { break };
-        if cancel.load(Ordering::SeqCst) {
-            let _ = child.kill();
-            break;
+        .arg(out);
+    // Progress comes as `key=value` lines beside ffmpeg's own errors, on stderr.
+    let mut errors = Vec::new();
+    let code = kuma_mlt::melt::run_cancellable(cmd, cancel, |line| match line.split_once('=') {
+        Some(("out_time_us", us)) => {
+            let done = us.parse::<f64>().unwrap_or(0.0) / 1e6;
+            progress(if duration > 0.0 { (done / duration * 100.0).clamp(0.0, 99.0) as u8 } else { 0 }, "making a proxy");
         }
-        if let Some(us) = line.strip_prefix("out_time_us=").and_then(|v| v.parse::<f64>().ok()) {
-            let percent = if video.duration > 0.0 { (us / 1e6 / video.duration * 100.0).clamp(0.0, 99.0) as u8 } else { 0 };
-            progress(percent, "making a proxy");
-        }
-    }
-    let out = child.wait_with_output()?;
-    if cancel.load(Ordering::SeqCst) {
-        anyhow::bail!("cancelled");
-    }
-    if !out.status.success() {
-        anyhow::bail!("ffmpeg: {}", String::from_utf8_lossy(&out.stderr).trim());
+        Some((key, _)) if key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') => {}
+        _ => errors.push(line.to_string()),
+    })
+    .map_err(|e| match e {
+        kuma_mlt::MeltError::Cancelled => anyhow::anyhow!("cancelled"),
+        e => anyhow::anyhow!("ffmpeg: {e}"),
+    })?;
+    if code != Some(0) {
+        anyhow::bail!("ffmpeg: {}", errors.join("\n"));
     }
     Ok(())
 }

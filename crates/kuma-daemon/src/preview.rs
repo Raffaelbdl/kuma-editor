@@ -5,7 +5,7 @@
 //!   → `load-video <path.mlt>` | `load-audio <path.mlt>` | `seek <frame>` | `play` | `pause` | `quit`
 //!   ← `ok …` | `err …` | `frame <frame> <len>` followed by `<len>` JPEG bytes
 //!
-//! Frames, what became of a `play` (`ok play`, `ok waiting …`, `err no timeline loaded`),
+//! Frames, what became of a `play` (`ok play`, `ok waiting …`, `refused …`),
 //! the engine's other errors, `ok end` and the engine's exit are fanned out to every
 //! preview socket, so a client never has to guess why pressing play showed nothing. A
 //! socket is bound to one engine process: when it exits every socket closes and the UI
@@ -50,13 +50,29 @@ pub enum EngineEvent {
     Exited,
 }
 
+impl EngineEvent {
+    /// The status line a preview socket says for this event: every one but a frame, which
+    /// goes as bytes, and the engine's exit, which closes the socket.
+    pub fn status(&self) -> Option<serde_json::Value> {
+        use serde_json::json;
+        Some(match self {
+            EngineEvent::End => json!({ "end": true }),
+            EngineEvent::Playing => json!({ "playing": true }),
+            EngineEvent::Waiting(why) => json!({ "waiting": why }),
+            EngineEvent::Refused(why) => json!({ "refused": why }),
+            EngineEvent::Error(e) => json!({ "engine": e }),
+            EngineEvent::Frame(_) | EngineEvent::Exited => return None,
+        })
+    }
+}
+
 pub struct PreviewHandle {
     inner: Mutex<Option<Arc<Engine>>>,
     /// Serializes `ensure` so two first connections cannot both spawn an engine.
     starting: AsyncMutex<()>,
     /// Why the engine is not running, for the UI and `/api/health`.
     pub last_error: Mutex<Option<String>>,
-    /// Preview resolution as a fraction of the project size (0.25..=1.0).
+    /// Preview resolution as a fraction of the project size: 0.5 or 1 (`set_scale`).
     pub scale: Mutex<f64>,
     /// The picture's graph and the sound's, each reloaded only when an edit changes it.
     halves: [Half; 2],
@@ -151,6 +167,13 @@ pub struct Engine {
 const MAX_FRAME_BYTES: usize = 64 << 20;
 
 impl PreviewHandle {
+    /// Set the preview's one resolution setting: ½, which decodes proxies, or full, which
+    /// decodes the media. Anything short of full is ½, since proxies are made for exactly
+    /// that size (`proxies::target`).
+    pub fn set_scale(&self, scale: f64) {
+        *lock(&self.scale) = if scale < 1.0 { 0.5 } else { 1.0 };
+    }
+
     pub fn get(&self) -> Option<Arc<Engine>> {
         lock(&self.inner).clone()
     }
@@ -239,11 +262,11 @@ impl PreviewHandle {
                         break;
                     }
                     let _ = events.send(EngineEvent::Frame(PreviewFrame { frame: f, jpeg: Arc::new(buf) }));
+                } else if let Some(why) = l.strip_prefix("refused ") {
+                    let _ = events.send(EngineEvent::Refused(why.to_string()));
                 } else if let Some(e) = l.strip_prefix("err ") {
                     tracing::warn!("preview engine: {e}");
-                    if e == "no timeline loaded" {
-                        let _ = events.send(EngineEvent::Refused(e.to_string()));
-                    } else if said.is_none_or(|t| t.elapsed() >= std::time::Duration::from_secs(5)) {
+                    if said.is_none_or(|t| t.elapsed() >= std::time::Duration::from_secs(5)) {
                         said = Some(std::time::Instant::now());
                         let _ = events.send(EngineEvent::Error(e.to_string()));
                     }
@@ -340,7 +363,7 @@ async fn compile_and_load(state: &Arc<AppState>) -> anyhow::Result<(usize, Vec<S
     let st = state.clone();
     let fresh = tokio::task::spawn_blocking(move || {
         let project = read(&st.project).clone();
-        let scale = (*lock(&st.preview.scale)).clamp(0.25, 1.0);
+        let scale = *lock(&st.preview.scale);
         let even = |v: f64| ((v.round() as u32).max(2)) & !1;
         let (w, h) = (even(project.width as f64 * scale), even(project.height as f64 * scale));
         // The engine loads one compiled file, so editing a sub-sequence means previewing
@@ -350,7 +373,8 @@ async fn compile_and_load(state: &Arc<AppState>) -> anyhow::Result<(usize, Vec<S
         opts.size = Some((w, h));
         opts.sequence = Some(sequence.clone());
         // ½ decodes proxies, full the media: one setting for how big and how exact.
-        opts.proxies = (scale < 1.0).then(|| crate::proxies::ready(&st, &project));
+        let proxies = (scale < 1.0).then(|| crate::proxies::scan(&st, &project));
+        opts.proxies = proxies.as_ref().map(|p| p.ready.clone());
         st.preview.compiles.fetch_add(1, Ordering::SeqCst);
         // Each graph is written, and later sent, only when it differs from the one held.
         let mut fresh = Vec::new();
@@ -374,10 +398,10 @@ async fn compile_and_load(state: &Arc<AppState>) -> anyhow::Result<(usize, Vec<S
                 fresh.push((i, crate::jobs::write_compiled(&st, &xml, half.name)?, stamp));
             }
         }
-        Ok::<_, anyhow::Error>((fresh, report))
+        Ok::<_, anyhow::Error>((fresh, report, proxies))
     })
     .await??;
-    let (fresh, report) = fresh;
+    let (fresh, report, proxies) = fresh;
     // Only once the engine has actually been told, so a failed send does not leave us
     // believing it holds something it never received.
     for (i, path, stamp) in fresh {
@@ -387,7 +411,9 @@ async fn compile_and_load(state: &Arc<AppState>) -> anyhow::Result<(usize, Vec<S
         half.loads.fetch_add(1, Ordering::SeqCst);
     }
     bake_behind(state, &report.1);
-    crate::proxies::make_next(state);
+    if let Some(proxies) = proxies {
+        crate::proxies::start(state, proxies);
+    }
     Ok(report)
 }
 

@@ -88,7 +88,7 @@ fn only_footage_slow_to_seek_gets_a_proxy_every_frame_a_keyframe() {
     assert_eq!(jobs[0].params["bin"], "phone", "what a sequence places comes first");
 
     let project = state.project.read().unwrap().clone();
-    let ready = proxies::ready(&state, &project);
+    let ready = proxies::scan(&state, &project).ready;
     assert_eq!(ready.keys().collect::<Vec<_>>(), vec!["phone"], "only the long-GOP 1080p file needs one");
     let proxy = &ready["phone"];
     assert_eq!(probe(proxy, "-show_entries stream=codec_name,width,height"), "h264,960,540", "half the frame");
@@ -108,7 +108,7 @@ fn only_footage_slow_to_seek_gets_a_proxy_every_frame_a_keyframe() {
     let phone = _dir.path().join("phone.mp4");
     let f = std::fs::File::options().append(true).open(&phone).unwrap();
     f.set_modified(std::time::SystemTime::now() + Duration::from_secs(5)).unwrap();
-    assert!(proxies::ready(&state, &project).is_empty(), "a changed file is not read through its old proxy");
+    assert!(proxies::scan(&state, &project).ready.is_empty(), "a changed file is not read through its old proxy");
     let pruned = kuma_daemon::cache::prune(&state, false, &|_, _| {}).unwrap();
     assert_eq!(pruned.freed.proxies.entries, 1);
 }

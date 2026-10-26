@@ -976,7 +976,9 @@ resolution did not help: MLT decodes at the file's size and scales after.
 - **½ means proxies, full means originals** — one setting instead of Kdenlive's two
   (monitor resolution and a proxy switch, independent there). ½ shows a proxy made for
   exactly that size, so nothing is stretched; full is for judging the real thing. ¾ is
-  gone: it decoded the originals and still was not exact.
+  gone: it decoded the originals and still was not exact. The daemon snaps any scale it
+  is sent to one of the two (`PreviewHandle::set_scale`), so no client can ask for a
+  size proxies were not made for.
 - **Cache, not document**, like a bake: `.kuma/proxies/<key>.mp4`, the key a hash of the
   file's path, length and modification time (not its bytes: gigabytes), the size it is
   made for and a version. A replaced file, or a project resized, makes new ones; a prune

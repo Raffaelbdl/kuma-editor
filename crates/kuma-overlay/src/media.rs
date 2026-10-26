@@ -10,11 +10,16 @@ use serde::Deserialize;
 pub struct Probe {
     pub meta: MediaMeta,
     pub kind: MediaKind,
+    /// The picture's codec as ffprobe names it (`h264`, `prores`), when there is a picture.
+    #[serde(default)]
+    pub codec: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 struct FfStream {
     codec_type: String,
+    #[serde(default)]
+    codec_name: Option<String>,
     #[serde(default)]
     disposition: Disposition,
     #[serde(default)]
@@ -93,7 +98,7 @@ pub fn probe(path: &Path) -> Result<Probe, String> {
         has_audio: audio,
         alpha: video.and_then(|v| v.pix_fmt.as_deref()).is_some_and(has_alpha),
     };
-    Ok(Probe { meta, kind })
+    Ok(Probe { meta, kind, codec: video.and_then(|v| v.codec_name.clone()) })
 }
 
 /// Whether frames in pixel format `pix_fmt` carry an alpha channel, read from the name the

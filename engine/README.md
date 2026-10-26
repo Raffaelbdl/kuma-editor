@@ -26,7 +26,7 @@ Dependencies (Debian/Ubuntu): `libmlt++-dev libmlt-dev libsdl2-dev libturbojpeg0
 ← ok <what> | err <message>
 ← ok play                 playback started
 ← ok waiting <why>        a play held until the first timeline is open, then `ok play`
-← err no timeline loaded  a play refused: nothing to play, nothing loading
+← refused <why>           a play refused: nothing to play, nothing loading
 ← frame <frame> <bytes>\n<bytes of JPEG>      one composited frame, JPEG, profile size
 ```
 

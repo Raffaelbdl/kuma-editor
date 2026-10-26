@@ -153,9 +153,10 @@ struct Graph {
 // A graph and the lock its thread holds while pulling from it, so a load can swap it
 // between two frames without stopping playback.
 struct Slot {
+    explicit Slot(const char *name) : name(name) {}
+    const char *name;
     std::mutex m;
     std::unique_ptr<Graph> g;
-    const char *name = "";
     // Loads asked for and loads answered, counted on the main thread: while they differ a
     // newer graph is on its way.
     unsigned requested = 0, answered = 0;
@@ -181,10 +182,7 @@ struct Command {
 
 class Engine {
 public:
-    Engine() : jpeg_(tjInitCompress()) {
-        video_.name = "video";
-        sound_.name = "audio";
-    }
+    Engine() : jpeg_(tjInitCompress()) {}
     ~Engine() {
         if (jpeg_) tjDestroy(jpeg_);
     }
@@ -271,7 +269,7 @@ private:
                 // The first timeline is still opening: start when it is in, and say so now
                 // rather than leaving the caller to guess why nothing moves.
                 if (loading()) { want_play_ = true; emit("ok waiting for the timeline to load"); }
-                else emit("err no timeline loaded");
+                else emit("refused no timeline loaded");
                 return;
             }
             start();
@@ -340,7 +338,7 @@ private:
             start();
         } else if (want_play_ && !loading()) {
             want_play_ = false;
-            emit("err no timeline loaded");
+            emit("refused no timeline loaded");
         }
     }
 
@@ -383,8 +381,9 @@ private:
         unsigned e = ++epoch_;
         audio_.reset(e);
         audio_.set_running(true);
-        wake([this] { playing_ = true; });
+        // Said before the picture thread wakes, so every frame after it is playback.
         emit("ok play");
+        wake([this] { playing_ = true; });
     }
 
     void pause() {
@@ -528,7 +527,7 @@ private:
         std::fflush(stdout);
     }
 
-    Slot video_, sound_;
+    Slot video_{"video"}, sound_{"audio"};
     // Only `picture` uses the compressor, under the video lock.
     tjhandle jpeg_ = nullptr;
     AudioOut audio_;

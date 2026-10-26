@@ -87,7 +87,7 @@ impl Engine {
                     seen.push((at, Out::Line(l)));
                     return seen;
                 }
-                Ok((_, Out::Line(l))) if l.starts_with("err") => panic!("engine: {l}"),
+                Ok((_, Out::Line(l))) if l.starts_with("err") || l.starts_with("refused") => panic!("engine: {l}"),
                 Ok(m) => seen.push(m),
                 Err(RecvTimeoutError::Timeout) => panic!("no `{prefix}` within {within:?}; saw {:?}", seen.iter().map(|m| &m.1).collect::<Vec<_>>()),
                 Err(RecvTimeoutError::Disconnected) => panic!("engine exited waiting for `{prefix}`"),
@@ -128,6 +128,16 @@ impl Drop for Engine {
     }
 }
 
+/// The built engine, or `None` (said) when it, a display or ffmpeg is missing: skip.
+fn engine_bin() -> Option<PathBuf> {
+    let bin = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../engine/build/kuma-preview");
+    if !bin.is_file() || (headless() && !preview::has_bin("xvfb-run")) || !preview::has_bin("ffmpeg") {
+        eprintln!("preview engine, a display or ffmpeg missing; skipping");
+        return None;
+    }
+    Some(bin)
+}
+
 fn frames(msgs: &[(Instant, Out)]) -> Vec<(Instant, i64)> {
     msgs.iter().filter_map(|(at, m)| if let Out::Frame(f) = m { Some((*at, *f)) } else { None }).collect()
 }
@@ -164,12 +174,7 @@ fn fixture(root: &Path) -> (PathBuf, PathBuf, PathBuf) {
 
 #[test]
 fn the_sound_paces_the_picture_and_a_reload_does_not_stop_it() {
-    let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let bin = repo.join("engine/build/kuma-preview");
-    if !bin.is_file() || (headless() && !preview::has_bin("xvfb-run")) || !preview::has_bin("ffmpeg") {
-        eprintln!("preview engine, a display or ffmpeg missing; skipping");
-        return;
-    }
+    let Some(bin) = engine_bin() else { return };
     let tmp = tempfile::tempdir().unwrap();
     let (video, audio, quiet) = fixture(tmp.path());
     let mut e = Engine::start(&bin);
@@ -234,12 +239,7 @@ fn slow_graph(root: &Path) -> PathBuf {
 
 #[test]
 fn a_play_never_waits_behind_a_load() {
-    let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let bin = repo.join("engine/build/kuma-preview");
-    if !bin.is_file() || (headless() && !preview::has_bin("xvfb-run")) || !preview::has_bin("ffmpeg") {
-        eprintln!("preview engine, a display or ffmpeg missing; skipping");
-        return;
-    }
+    let Some(bin) = engine_bin() else { return };
     let tmp = tempfile::tempdir().unwrap();
     let (video, audio, _) = fixture(tmp.path());
     let slow = slow_graph(tmp.path());
@@ -273,12 +273,7 @@ fn a_play_never_waits_behind_a_load() {
 
 #[test]
 fn a_seek_overtaken_by_another_shows_nothing() {
-    let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let bin = repo.join("engine/build/kuma-preview");
-    if !bin.is_file() || (headless() && !preview::has_bin("xvfb-run")) || !preview::has_bin("ffmpeg") {
-        eprintln!("preview engine, a display or ffmpeg missing; skipping");
-        return;
-    }
+    let Some(bin) = engine_bin() else { return };
     let tmp = tempfile::tempdir().unwrap();
     let (video, _, _) = fixture(tmp.path());
     let mut e = Engine::start(&bin);

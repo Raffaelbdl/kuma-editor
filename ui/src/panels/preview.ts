@@ -348,15 +348,18 @@ export class Preview {
    * The daemon never makes a compile wait on hyperframes: nested overlays the cache lacks
    * are baked by a `preview-bake` job, and when one ends the preview asks for a reload — as
    * it does after an edit — so they appear. One that would not bake is said once, with why.
+   * Proxies are the same bargain: at ½ a file plays as it is until its `proxy` job ends.
    */
   private watchBakes() {
     const seen = new Set<number>();
     store.select((s) => [s.jobs], (s) => {
       for (const j of Object.values(s.jobs)) {
-        if (j.kind !== "preview-bake" || seen.has(j.id) || (j.state !== "done" && j.state !== "failed")) continue;
+        if ((j.kind !== "preview-bake" && j.kind !== "proxy") || seen.has(j.id) || (j.state !== "done" && j.state !== "failed")) continue;
         seen.add(j.id);
         this.reload();
-        if (j.state === "failed") toast(`Some nested overlays would not bake, so the preview leaves them out: ${j.message}`, "err", 10000);
+        if (j.state !== "failed") continue;
+        if (j.kind === "proxy") toast(`No proxy for ${(j.params as { path?: string }).path ?? "a file"}, so ½ plays it as it is: ${j.message}`, "err", 10000);
+        else toast(`Some nested overlays would not bake, so the preview leaves them out: ${j.message}`, "err", 10000);
       }
     });
   }

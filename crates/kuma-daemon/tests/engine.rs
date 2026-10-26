@@ -270,3 +270,28 @@ fn a_play_never_waits_behind_a_load() {
     assert!(!before.iter().any(|(_, m)| matches!(m, Out::Line(l) if l.starts_with("ok loaded"))), "play waited for the load");
     e.expect_line("ok loaded audio frames=300", Duration::from_secs(30));
 }
+
+#[test]
+fn a_seek_overtaken_by_another_shows_nothing() {
+    let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let bin = repo.join("engine/build/kuma-preview");
+    if !bin.is_file() || (headless() && !preview::has_bin("xvfb-run")) || !preview::has_bin("ffmpeg") {
+        eprintln!("preview engine, a display or ffmpeg missing; skipping");
+        return;
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    let (video, _, _) = fixture(tmp.path());
+    let mut e = Engine::start(&bin);
+    e.send(&format!("load-video {}", video.display()));
+    e.expect_line("ok loaded video", Duration::from_secs(20));
+    e.frame(0);
+
+    // A drag: forty positions at once, faster than any of them renders. Only the ones not
+    // already overtaken are drawn, and the last is always where the drag stopped.
+    let drag: String = (1..=40).map(|f| format!("seek {f}\n")).collect();
+    e.stdin.write_all(drag.as_bytes()).unwrap();
+    e.stdin.flush().unwrap();
+    let shown: Vec<i64> = frames(&e.drain(Duration::from_millis(1500))).into_iter().map(|(_, f)| f).collect();
+    assert_eq!(shown.last(), Some(&40), "the drag did not end where it stopped: {shown:?}");
+    assert!(shown.len() < 10, "stale positions were drawn: {shown:?}");
+}

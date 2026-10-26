@@ -366,7 +366,7 @@ export interface Job {
 /** One part of the project's `.kuma/` cache: entries (a bake is one) and their bytes. */
 export interface CachePart { entries: number; bytes: number }
 /** How big the cache is, by part. */
-export interface CacheUsage { bakes: CachePart; samples: CachePart; thumbs: CachePart; luts: CachePart; bytes: number }
+export interface CacheUsage { bakes: CachePart; samples: CachePart; thumbs: CachePart; luts: CachePart; proxies: CachePart; bytes: number }
 
 /** One tool call an agent made over MCP (`/api/activity`). A call that started a job is
  *  that job's record — running while it runs, ended with it, cancelled with it — and its

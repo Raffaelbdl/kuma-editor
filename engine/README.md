@@ -19,7 +19,7 @@ Dependencies (Debian/Ubuntu): `libmlt++-dev libmlt-dev libsdl2-dev libturbojpeg0
 ```
 → load-video <path.mlt>  replace the picture's graph (keeps position and playback)
 → load-audio <path.mlt>  replace the sound's graph (keeps position and playback)
-→ seek <frame>           show that frame (pauses)
+→ seek <frame>           show that frame (pauses); not shown if a later seek is already queued
 → play | pause           playback paced by the audio device
 → quit
 

@@ -165,6 +165,11 @@ before checking a UI change by eye: it lists the traps (stale `ui/dist`, leftove
 - `.kuma/` is pruned only when asked (`cache.rs`), keeping the bakes `jobs::bake_request`
   yields — build a clip's `BakeRequest` nowhere else. Readers of bakes or samples hold
   `cache_users` shared; writers name scratch `.tmp-…` (`is_in_flight`) until renamed.
+- **½ means proxies, full means originals**: the preview's one resolution setting also
+  decides what it decodes. A proxy (`proxies.rs`) is cache like a bake — keyed by the file
+  as it is and the size it is made for, made by a background `proxy` job, never an edit —
+  and only the preview's picture at ½ reads it (`CompileOptions::proxies`): never the
+  sound, a render, a sample, or the preview at full.
 - Alpha intermediates are PNG sequences (straight alpha). Assert `pix_fmt` on any encode.
 - All state lives in the daemon. The UI and MCP are thin clients; every mutation is a
   revision-checked JSON Patch that is validated atomically and undoable.

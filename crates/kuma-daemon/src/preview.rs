@@ -69,6 +69,8 @@ pub struct PreviewHandle {
     pending: AtomicBool,
     /// The background bake of nested overlays the cache did not have.
     behind: Mutex<Behind>,
+    /// The background making of proxies (`proxies.rs`).
+    pub making: Mutex<crate::proxies::Making>,
 }
 
 /// A compile never waits on hyperframes: it uses the bakes the cache holds and hands the
@@ -94,6 +96,7 @@ impl Default for PreviewHandle {
             compiling: AsyncMutex::new(()),
             pending: AtomicBool::new(false),
             behind: Mutex::new(Behind::default()),
+            making: Mutex::new(Default::default()),
         }
     }
 }
@@ -322,6 +325,7 @@ pub async fn reload_forced(state: &Arc<AppState>) -> anyhow::Result<Reloaded> {
         *lock(&half.loaded) = None;
     }
     lock(&state.preview.behind).tried.clear();
+    lock(&state.preview.making).clear();
     reload(state).await
 }
 
@@ -345,6 +349,8 @@ async fn compile_and_load(state: &Arc<AppState>) -> anyhow::Result<(usize, Vec<S
         let mut opts = crate::jobs::compile_options(&st);
         opts.size = Some((w, h));
         opts.sequence = Some(sequence.clone());
+        // ½ decodes proxies, full the media: one setting for how big and how exact.
+        opts.proxies = (scale < 1.0).then(|| crate::proxies::ready(&st, &project));
         st.preview.compiles.fetch_add(1, Ordering::SeqCst);
         // Each graph is written, and later sent, only when it differs from the one held.
         let mut fresh = Vec::new();
@@ -381,6 +387,7 @@ async fn compile_and_load(state: &Arc<AppState>) -> anyhow::Result<(usize, Vec<S
         half.loads.fetch_add(1, Ordering::SeqCst);
     }
     bake_behind(state, &report.1);
+    crate::proxies::make_next(state);
     Ok(report)
 }
 

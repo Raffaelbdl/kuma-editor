@@ -42,6 +42,10 @@ impl Config {
     pub fn thumbs_dir(&self) -> PathBuf {
         self.cache_dir().join("thumbs")
     }
+    /// The preview's proxies of heavy footage (`proxies.rs`).
+    pub fn proxies_dir(&self) -> PathBuf {
+        self.cache_dir().join("proxies")
+    }
     /// Where compiles write what they generate: wipe lumas, and grades' LUTs.
     pub fn compile_cache_dir(&self) -> PathBuf {
         self.cache_dir().join("cache")

@@ -953,6 +953,54 @@ opening (MLT serialises avformat opens and seeks), about a second in the measure
 above; and a seek's frame is still rendered on the command thread, so a play sent behind
 a slow seek waits for it.
 
+**Proxies, and ½ means them** — adopted, after "even the clips start black; moving the
+cursor does not show the frame I want" on phone footage. Long-GOP footage keeps a whole
+picture only every few seconds, so a seek decodes from the last one: measured on 4K 10-bit
+HEVC with a keyframe every 4 s, 2.6–3.8 s to a clip's first frame, and playback froze 2.7 s
+at every cut, because each clip has a decoder of its own that starts cold. The preview
+resolution did not help: MLT decodes at the file's size and scales after.
+
+- **What a proxy is.** The file's first video stream at half the project's frame, fitted as
+  the preview fits the file, constant rate (phones record a variable one), every frame a
+  keyframe and no B-frames, x264 quality 28, no sound. Measured on grainy 1080p at about
+  49 Mbit/s: 4 Mbit/s at 540p (1.8 GB an hour, 8% of the original) and 14.6 Mbit/s at
+  1080p (6.5 GB, a 4K project's). A keyframe every 15 frames was 40% smaller at 540p but
+  makes a seek decode up to 15 frames (≈150 ms at 1080p); every frame a keyframe is what
+  makes a seek one decode. End to end on the HEVC timeline, a seek went from 0.6–2.9 s to
+  20–33 ms.
+- **Which files.** Only footage slow to seek: not a codec that is all keyframes already
+  (ProRes, DNxHR, MJPEG, PNG…), not 720p or smaller, not one with alpha (a proxy would
+  lose it), not one no bigger than the proxy. The verdict is a `.none` marker, so a file is
+  probed once. An entry's own `proxy` (the document field, for a proxy the camera made)
+  still wins over a generated one.
+- **½ means proxies, full means originals** — one setting instead of Kdenlive's two
+  (monitor resolution and a proxy switch, independent there). ½ shows a proxy made for
+  exactly that size, so nothing is stretched; full is for judging the real thing. ¾ is
+  gone: it decoded the originals and still was not exact.
+- **Cache, not document**, like a bake: `.kuma/proxies/<key>.mp4`, the key a hash of the
+  file's path, length and modification time (not its bytes: gigabytes), the size it is
+  made for and a version. A replaced file, or a project resized, makes new ones; a prune
+  drops the old. Written under a `.tmp-` name and renamed, so a crash leaves nothing a
+  later compile would read — Kdenlive writes the final name directly and reuses any
+  non-empty file there.
+- **Made behind the compile**, as nested overlays are baked: a compile at ½ uses the
+  proxies the cache has, and the rest play as they are while one `proxy` job at a time
+  makes the next, entries placed in a sequence first. Each job starts the next as it ends,
+  so the cache fills with no editor open; clients reload when one ends. ffmpeg runs under
+  `nice`: the preview engine is what the person is waiting on. A file whose proxy fails or
+  is cancelled is not tried again until a forced reload; a cancel also stops the chain.
+- **Only the picture's graph reads a proxy.** The sound is cheap to seek and keeps its
+  exact timing from the file, so proxies carry none.
+
+Also from that report: the engine now **skips a seek another one has overtaken** — it was
+drawing every position a drag passed, seconds behind the pointer on slow footage.
+`a_seek_overtaken_by_another_shows_nothing` was checked to fail without it.
+
+Not done, in order of what is next: encode proxies on the graphics card when there is one
+(VAAPI, NVENC, VideoToolbox — Kdenlive's default where available); MLT's own hardware
+decoding (`hwaccel`, present in 7.22) to make full tolerable; one decoder per file rather
+than per clip, so a cut within one file starts warm.
+
 **An overlay off the playhead is hidden by `visibility`, never `display`** — adopted, after
 a template rendered one size in the editor and another in the render. `display: none` gives
 an iframe a **0×0 viewport**, and a template is allowed to measure itself — fitting a line

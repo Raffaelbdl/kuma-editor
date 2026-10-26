@@ -220,8 +220,12 @@ public:
             qcv_.wait(l, [this] { return !queue_.empty(); });
             Command c = std::move(queue_.front());
             queue_.pop_front();
+            // A seek another one has already overtaken is not worth a frame: scrubbing
+            // asks faster than a long-GOP source decodes, and showing every position the
+            // pointer passed is how the picture fell seconds behind it.
+            bool overtaken = c.op == "seek" && std::any_of(queue_.begin(), queue_.end(), [](const Command &o) { return o.op == "seek"; });
             l.unlock();
-            apply(c);
+            apply(c, overtaken);
         }
         sound.join();
         picture.join();
@@ -245,7 +249,7 @@ public:
     }
 
 private:
-    void apply(Command &c) {
+    void apply(Command &c, bool overtaken) {
         if (c.op == "quit") {
             wake([this] { quit_ = true; });
         } else if (c.op == "load-video") {
@@ -261,7 +265,7 @@ private:
             // asked for, and the load clamps and shows it.
             int f = std::max(0, std::atoi(c.arg.c_str()));
             pos_ = length_ > 0 ? std::min(length_ - 1, f) : f;
-            show(pos_);
+            if (!overtaken) show(pos_);
         } else if (c.op == "play") {
             if (length_ == 0) {
                 // The first timeline is still opening: start when it is in, and say so now

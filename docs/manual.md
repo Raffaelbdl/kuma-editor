@@ -607,7 +607,7 @@ kuma measure-audio                         # loudness (LUFS), true peak, per cha
 kuma measure-audio --solo va,vb            # the same with only those tracks heard (nested ones too); --mute bed leaves one out
 kuma measure-media voice --range 0,60      # one source: LUFS, range, true peak, a loudness curve, pauses (--silence-db -35 --silence-min 0.15)
 kuma bake                                  # bake all overlay clips (cached by content)
-kuma cache                                 # how big .kuma/ is: bakes, sampled frames, thumbnails
+kuma cache                                 # how big .kuma/ is: bakes, sampled frames, thumbnails, proxies
 kuma cache prune                           # delete what the project no longer uses (--all: every bake and frame)
 kuma compile > timeline.mlt                # inspect the MLT graph (or open it in Kdenlive); baked overlays included, --bake bakes the rest
 kuma render --sequence intro               # render one nested sequence instead of the master
@@ -872,9 +872,18 @@ and the values live with the rest of the project's decisions.
   `cmake -S engine -B engine/build && cmake --build engine/build -j` (needs `libmlt++-dev
   libsdl2-dev libturbojpeg0-dev`). Without it the preview falls back to single-frame
   snapshots (scrubbing works, playback does not).
-- **Preview looks soft** — the engine defaults to half resolution for speed; pick
-  `preview ¾` or `preview full` in the transport bar. Snapshots are requested at the
-  stage's device-pixel width.
+- **Preview looks soft** — the preview defaults to `½ · proxies`: half the frame, and
+  heavy footage played through its proxy. Pick `full · originals` in the transport bar to
+  see the files themselves at full size; seeking long-GOP footage is slow there. Snapshots
+  are requested at the stage's device-pixel width.
+- **Scrubbing phone or camera footage is slow, or clips start late** — that footage keeps
+  a whole picture only every few seconds, and a seek decodes from the last one (2–3 s on 4K
+  HEVC). At `½ · proxies` kuma makes a proxy of each such file in the background (a
+  `proxy` job in the queue): half the frame, every frame a keyframe, so a seek takes tens
+  of milliseconds. Until its proxy is done a file plays as it is. Files that seek fast
+  already (ProRes, DNxHR, MJPEG, anything 720p or smaller, anything with alpha) get none.
+  Proxies live in `.kuma/proxies/`, about 2 GB per hour of footage for a 1080p project and
+  6.5 GB for a 4K one; renders and `sample_frames` never read them.
 - **No display** (SSH, CI) — MLT's Qt module needs X11; install `xvfb` and kuma wraps
   `melt`/the engine in `xvfb-run` automatically.
 - **"Transcribe" fails with "is not runnable" or "no whisper model"** — `kuma doctor`
@@ -920,7 +929,8 @@ and the values live with the rest of the project's decisions.
   `sample_frames` to see the exact result. Blend modes on overlays are exact only in export.
 - Audio in dissolves is summed (not crossfaded) on the main tractor; the A/B lane
   crossfade is applied within the transition range only.
-- No proxies/preview chunk cache yet — heavy timelines will scrub below real time.
+- No preview chunk cache yet — a timeline heavy with effects plays below real time. Proxies
+  cover decoding at `½ · proxies` only; `full · originals` decodes the files themselves.
 - `.mlt` output opens in Kdenlive as a clip/timeline import; Kdenlive's own project
   scaffolding (`main_bin`, `kdenlive:` properties) is not emitted.
 - Overlays bake at full frame size; there is no per-overlay bake region yet.

@@ -17,6 +17,7 @@ pub mod markers;
 pub mod media;
 pub mod overlays;
 pub mod preview;
+pub mod proxies;
 pub mod running;
 pub mod state;
 

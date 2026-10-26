@@ -517,8 +517,9 @@ pub enum BinSource {
         path: String,
         #[serde(default)]
         kind: MediaKind,
-        /// Optional low-resolution stand-in used instead of `path` when compiling for
-        /// preview (never for renders or samples).
+        /// Optional low-resolution stand-in decoded instead of `path` by the preview's
+        /// picture at ½, before any proxy the daemon generated (never at full, for the
+        /// sound, for renders or for samples).
         #[serde(default)]
         proxy: Option<String>,
     },

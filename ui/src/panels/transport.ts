@@ -34,8 +34,10 @@ export function mountTransport(host: HTMLElement): void {
   time.append(now, dur);
 
   const quality = el("select");
-  quality.title = "Preview resolution (a fraction of the project's size)";
-  options(quality, [{ value: "0.5", label: "½ res" }, { value: "0.75", label: "¾ res" }, { value: "1", label: "full res" }]);
+  // One setting for how big and how exact: ½ decodes the proxies of heavy footage (made in
+  // the background, every frame a keyframe, so seeking is instant), full the files themselves.
+  quality.title = "Preview: ½ plays proxies of heavy footage, quick to seek; full plays the files themselves";
+  options(quality, [{ value: "0.5", label: "½ · proxies" }, { value: "1", label: "full · originals" }]);
   quality.onchange = () => run(Cmd.previewScale, Number(quality.value));
 
   // Spins while the reload it asked for is in flight: it can bake.

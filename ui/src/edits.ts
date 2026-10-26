@@ -11,7 +11,7 @@ import { startJob, store, toast } from "./store";
 import type { ClipboardEntry, Found } from "./store";
 import type { MenuItem } from "./menu";
 import type { BinItem, BinSource, Clip, ColorReference, Effect, Grade, Marker, OverlayManifest, OverlaySource, PatchOp, Project, Region, Track, TrackKind, Transition } from "./types";
-import { LUMAS, actsOn, binItem, onePerClip, binPath, childrenOf, clipPathOf, clipStreams, covers, hasAudio, isFileSource, isOverlaySource, isTimedMedia, itemKind, orientation, parentOf, seqDuration, shiftEffect, trackFor, trackPathOf, trimEffect, wouldNest, wouldRecurse } from "./types";
+import { LUMAS, actsOn, binItem, onePerClip, binPath, seqPath, sequenceOf, childrenOf, clipPathOf, clipStreams, covers, hasAudio, isFileSource, isOverlaySource, isTimedMedia, itemKind, orientation, parentOf, seqDuration, shiftEffect, trackFor, trackPathOf, trimEffect, wouldNest, wouldRecurse } from "./types";
 
 /** Clip ids are minted by kind: `o1` for an overlay, `c1` for anything else. */
 const clipPrefix = (kind: TrackKind) => (kind === "overlay" ? "o" : "c");
@@ -763,21 +763,25 @@ export async function deleteSelectedClips() {
 const at = (t: number) => `${t.toFixed(2)}s`;
 
 /**
- * Write the open sequence's markers whole, sorted by time so the file reads the way the
- * timeline does. Whole rather than one op per marker because a move reorders them: the
- * index a marker was drawn with names it only until the next edit. `add` rather than
- * `replace`, since a sequence written without the field is valid and `replace` would
- * refuse it.
+ * Write a sequence's markers whole (the open one's unless named), sorted by time so the
+ * file reads the way the timeline does. Whole rather than one op per marker because a move
+ * reorders them: the index a marker was drawn with names it only until the next edit. `add`
+ * rather than `replace`, since a sequence written without the field is valid and `replace`
+ * would refuse it.
  */
-async function writeMarkers(ms: Marker[], note: string) {
-  await store.patch([{ op: "add", path: `${store.seqPath}/markers`, value: [...ms].sort((a, b) => a.t - b.t) }], note);
+async function writeMarkers(ms: Marker[], note: string, seq = store.state.sequence) {
+  await store.patch([{ op: "add", path: `${seqPath(seq)}/markers`, value: [...ms].sort((a, b) => a.t - b.t) }], note);
 }
 
-/** Change marker `i` of the open sequence, or remove it when `change` is null. */
-async function patchMarker(i: number, change: Partial<Marker> | null, note: string) {
-  const ms = store.markers;
+/** The markers of `seq` as the document has them. */
+const markersOf = (seq: string): Marker[] => (store.state.project && sequenceOf(store.state.project, seq)?.markers) ?? [];
+
+/** Change marker `i` of a sequence (the open one's unless named), or remove it when
+ *  `change` is null. */
+async function patchMarker(i: number, change: Partial<Marker> | null, note: string, seq = store.state.sequence) {
+  const ms = markersOf(seq);
   if (!ms[i]) return;
-  await writeMarkers(change ? ms.map((x, k) => (k === i ? { ...x, ...change } : x)) : ms.filter((_, k) => k !== i), note);
+  await writeMarkers(change ? ms.map((x, k) => (k === i ? { ...x, ...change } : x)) : ms.filter((_, k) => k !== i), note, seq);
 }
 
 /** Ask for the comment of the marker at `t`. Null only when cancelled: an empty comment
@@ -790,8 +794,8 @@ async function askComment(t: number, value: string, ok: string): Promise<string 
   return sent ? input.value.trim() : null;
 }
 
-/** Which marker is on `t`'s frame, or -1. */
-const markerAt = (t: number): number => store.markers.findIndex((m) => Math.abs(m.t - t) < store.halfFrame);
+/** Which marker of a sequence (the open one's unless named) is on `t`'s frame, or -1. */
+const markerAt = (t: number, seq = store.state.sequence): number => markersOf(seq).findIndex((m) => Math.abs(m.t - t) < store.halfFrame);
 
 /** The comment of the marker on `t`'s frame, if there is one: what the marker field starts
  *  from, so a marker on a frame that has one edits it rather than stacking a second. */
@@ -827,12 +831,13 @@ export const moveMarker = (i: number, t: number) => patchMarker(i, { t }, `move 
 
 export const removeMarker = (i: number) => patchMarker(i, null, `remove marker at ${at(store.markers[i]?.t ?? 0)}`);
 
-/** Remove the marker on `t`'s frame — whoever left it — from the markers panel, which knows
- *  a marker by its time, not by where it sits in the document's array. */
-export async function removeMarkerAt(t: number) {
-  const i = markerAt(t);
+/** Remove the marker on `t`'s frame of `seq` — whoever left it — from the markers panel,
+ *  which knows a marker by its sequence and time, not by where it sits in the document's
+ *  array, and lists every sequence's, not only the open one's. */
+export async function removeMarkerAt(t: number, seq = store.state.sequence) {
+  const i = markerAt(t, seq);
   if (i < 0) { toast("That marker is gone already", "err"); return; }
-  await removeMarker(i);
+  await patchMarker(i, null, `remove marker at ${at(t)}`, seq);
 }
 
 // ---------- transitions ----------

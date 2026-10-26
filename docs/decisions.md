@@ -3319,6 +3319,31 @@ by the daemon for the session, and the latest of an answer, a tick and an untick
 edit of the note, and an agent's undo would reopen it. The costs are known: moving a marker
 changes its id, and a restart forgets which were answered.
 
+**The answers outlive the daemon** — adopted, revising the last cost above: a person ticked
+markers, restarted, and found them waiting again. The answers are now kept in a file beside
+the document rather than in it, `.kuma/answers/<project file name>` (projects may share a
+folder), written atomically on every answer, tick and untick, and read when the daemon
+starts. It is in `.kuma/` but is not cache: no prune touches it, since nothing makes it
+again. Asked again whether `done` should go into the marker itself, the answer was the same
+as before, for the same reason (a tick would be an undoable edit, and an agent's undo would
+reopen what it answered). An answer goes with its marker: when an edit, undo or redo leaves
+a marker id with no marker (deleted, or moved), its answer is dropped and the file
+rewritten, so a marker put later at the same moment starts unanswered instead of inheriting
+a stale tick, and an answer a file kept for a marker gone since is dropped as it is read.
+The cost: undoing a deletion brings the marker back unanswered.
+
+**The markers panel lists what the agent reads** — adopted. The panel listed the open
+sequence's markers only, while `list_markers` gives the agent every sequence's. On a master
+that nests its acts, a person's comments inside the acts were invisible from the master and
+taken for deleted, while the agent kept reading them as waiting. Now the panel lists the
+open sequence's markers first, then every other sequence's under its name, in the daemon's
+order; a click on one opens its sequence at its moment, its ✕ removes it from the sequence
+it is on, and the rail's `m` has its dot for a comment waiting anywhere. The timeline, the
+den's rail and ⌘K still show the open sequence's only: they are places on this timeline, and
+a nested sequence's time is not this one's. Drawing a nested marker on the master's ruler,
+at each placement of its sequence, was rejected for now: a sequence placed twice, or cut
+inside its placement, gives one marker several moments or none.
+
 **Fonts are bundled** — adopted. JetBrains Mono (chrome), IBM Plex Sans (sentences people and
 agents wrote) and Silkscreen (labels, the rail's letters, the wordmark) are woff2 files under
 `ui/src/fonts/` with their OFL licences, latin only: nothing is fetched at runtime.

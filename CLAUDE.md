@@ -198,7 +198,7 @@ before checking a UI change by eye: it lists the traps (stale `ui/dist`, leftove
   reports once it has ended, and a report may never slow or fail a tool —
   steps and refused patches as `/api/history`, markers and their answers as `/api/markers`.
   All session state: none of it is in the project file, and a marker's done-ness never edits
-  it. Who left a marker is in the document (`origin`), and the daemon stamps it as the edit
+  it (it is kept beside it, `.kuma/answers/`, so a restart keeps it). Who left a marker is in the document (`origin`), and the daemon stamps it as the edit
   that added it lands — never a client — so the agent's own markers are not read back to it
   as requests.
 - Do not add a dependency on `mlt-sys`, `ffmpeg-next` or `wgpu` without a reason written

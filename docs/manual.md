@@ -376,7 +376,8 @@ the space differently, × closes a panel, and its letter brings it back where it
 off the dock (over the top bar), or *Float* on its tab's right-click, it floats; a floating
 panel dragged onto the dock docks again. *Reset the dock* (⌘K, or a tab's right-click) puts
 everything back. The rail of letters on the left (`b` bin, `p` blueprints, `f` fonts, `m`
-markers, `h` history, `r` render queue) brings a panel to the front, and a status line along the
+markers — the open sequence's, then every other sequence's under its name, as the agent's
+`list_markers` reads them —, `h` history, `r` render queue) brings a panel to the front, and a status line along the
 bottom says the mode, the revision, the selection, the playhead, the frame and what the agent
 is doing. **Den** gives the frame the whole window and shows what the agent
 did and where it looked: the bear (asleep after a minute without a call, looking while it
@@ -575,8 +576,10 @@ file, and gone when the daemon stops:
   the marker at the same time of the same sequence before the edit if there was one (so a
   client writing the whole array back re-attributes nothing, and an older file's marker
   stays without), else the edit's (`ui` when it has none). A marker without an `origin` is
-  read as a person's. Undo, redo and restore put documents back as they were. What is
-  session state is whether one is answered: `GET /api/markers` lists every marker of every
+  read as a person's. Undo, redo and restore put documents back as they were. What is not
+  the document's is whether one is answered — the daemon keeps it in
+  `.kuma/answers/<project file name>`, so it survives a restart, and drops a marker's answer
+  when the marker is deleted or moved: `GET /api/markers` lists every marker of every
   sequence, the master's first, each in time order —
   `{"id", "sequence", "index", "t", "label", "color", "origin", "author", "waiting", "done", "done_by"}`
   with `id` `<sequence>@<t to 3 decimals>`, `index` its number in its sequence, `author`

@@ -2,7 +2,6 @@
 // are the keys — the same ones that summon the panels in den — and each is a command: a
 // docked panel comes to the front of its group, a closed one goes back where it was.
 
-import { waitingOn } from "../agent";
 import { Cmd, run } from "../commands";
 import { el } from "../dom";
 import { icon } from "../icons";
@@ -46,7 +45,8 @@ export function mountRail(host: HTMLElement): void {
   };
   document.addEventListener("kuma:panels", markLock);
   markLock();
-  // `m` has a dot while a marker on the open sequence is waiting for the agent.
+  // `m` has a dot while a marker on any sequence is waiting for the agent: the panel lists
+  // them all, as `list_markers` does.
   const markers = keys.find((b) => b.dataset.panel === "markers");
-  store.select((s) => [s.markerList, s.sequence], (s) => markers?.classList.toggle("flag", waitingOn(s.markerList, s.sequence).length > 0));
+  store.select((s) => [s.markerList], (s) => markers?.classList.toggle("flag", s.markerList.some((m) => m.waiting)));
 }

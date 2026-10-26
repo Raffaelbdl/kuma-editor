@@ -91,6 +91,11 @@ impl Config {
     pub fn overlays_dir(&self) -> PathBuf {
         self.project_root().join("overlays")
     }
+    /// Every library's `logs/` plus the project's own, lowest precedence first: where a
+    /// grade's camera log is found (`camera::find`).
+    pub fn all_log_dirs(&self) -> Vec<PathBuf> {
+        self.libraries.dirs().iter().map(|d| d.join("logs")).chain([self.project_root().join("logs")]).collect()
+    }
     /// Every library's `presets/` plus the project's own, lowest precedence first.
     pub fn all_preset_dirs(&self) -> Vec<PathBuf> {
         self.libraries.dirs().iter().map(|d| d.join("presets")).chain([self.project_root().join("presets")]).collect()
@@ -514,7 +519,7 @@ impl AppState {
 
     pub fn validation_context(&self) -> ValidationContext {
         // Files are checked, so a missing overlay folder is an error now, not at render.
-        ValidationContext { root: self.config.project_root(), check_files: true }
+        ValidationContext { root: self.config.project_root(), check_files: true, log_dirs: self.config.all_log_dirs() }
     }
 
     pub fn save(&self) -> anyhow::Result<()> {

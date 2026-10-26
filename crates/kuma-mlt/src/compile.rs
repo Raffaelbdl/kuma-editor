@@ -85,6 +85,9 @@ pub struct CompileOptions {
     /// exactly what the full graph plays of its stream, which `tests/render.rs` checks
     /// frame by frame and sample by sample.
     pub streams: Streams,
+    /// Where camera logs are found, lowest precedence first (`camera::find`): the libraries'
+    /// `logs/`, then the project's own, which is all `new` knows of.
+    pub logs: Vec<PathBuf>,
 }
 
 impl CompileOptions {
@@ -92,6 +95,7 @@ impl CompileOptions {
         let root = root.into();
         CompileOptions {
             cache_dir: root.join(".kuma").join("cache"),
+            logs: vec![root.join("logs")],
             root,
             bakes: HashMap::new(),
             unbaked: UnbakedPolicy::Skip,
@@ -285,7 +289,7 @@ fn grade_luts(project: &Project, order: &[BinId], opts: &CompileOptions) -> Resu
     for g in clips.flat_map(|c| project.effects_on(c)).filter_map(Effect::as_grade) {
         for g in luts::parts(g) {
             if let std::collections::hash_map::Entry::Vacant(slot) = luts.entry(grade_key(&g)) {
-                slot.insert(luts::resolve(&g, &opts.root, &opts.cache_dir).map_err(|e| CompileError::Internal(format!("grade: {e}")))?);
+                slot.insert(luts::resolve(&g, &opts.root, &opts.logs, &opts.cache_dir).map_err(|e| CompileError::Internal(format!("grade: {e}")))?);
             }
         }
     }
@@ -1256,6 +1260,7 @@ mod tests {
         }));
         let mut opts = CompileOptions::new(dir.path());
         opts.cache_dir = dir.path().join("cache");
+        opts.logs = vec![PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../library/logs"))];
         let xml = compile(&p, &opts).unwrap();
         assert_eq!(xml.matches("lut3d").count(), 2, "{xml}");
         assert!(xml.find("clip_a_grade").unwrap() < xml.find("clip_a_blur").unwrap(), "{xml}");
@@ -1276,6 +1281,7 @@ mod tests {
             ]}]
         }));
         let mut opts = CompileOptions::new(dir.path());
+        opts.logs = vec![PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../library/logs"))];
         opts.cache_dir = dir.path().join("cache");
         let xml = compile(&p, &opts).unwrap();
         let (input, light, rest) = (xml.find("lut3d").unwrap(), xml.find("colorchannelmixer").unwrap(), xml.rfind("lut3d").unwrap());

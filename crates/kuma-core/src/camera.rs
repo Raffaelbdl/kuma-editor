@@ -1,5 +1,24 @@
-//! Camera log footage into Rec. 709: a grade's `log` step, computed here rather than read
-//! from the camera maker's `.cube`, so footage converts without a file to find first.
+//! Camera log footage into Rec. 709: a grade's `log` step, computed from the camera maker's
+//! published curve rather than read from their `.cube`, so footage converts without a file
+//! to find first.
+//!
+//! A camera log is a file, not code: `logs/<id>.json` in a library or the project (the
+//! project's own wins, as with fonts), which the grade names by id. The file holds the curve
+//! that decodes the signal to scene light — pieces of the shapes makers publish (linear, log,
+//! power, constant), each up to a bound — the primaries of the camera's gamut, and where the
+//! numbers come from:
+//!
+//! ```json
+//! { "name": "Sony S-Log3 / S-Gamut3.Cine", "source": "Sony, Technical Summary …",
+//!   "signal": "code",
+//!   "decode": [{ "below": 0.1673, "linear": { "slope": 6.62, "offset": 0.0928 } },
+//!              { "log": { "a": 5.26, "b": 0.0526, "c": 0.2556, "d": 0.4105, "base": 10 } }],
+//!   "primaries": [[0.766, 0.275], [0.225, 0.8], [0.089, -0.087]] }
+//! ```
+//!
+//! — or, for a maker who publishes only a LUT, `{ "name": …, "lut": "file.cube" }`, the
+//! `.cube` beside the file: that LUT is then the grade's input. The starter set
+//! (`library/logs/`) holds the curves below.
 //!
 //! A frame reaches the grade as display R'G'B' from 0 to 1 — the camera's limited-range
 //! signal, expanded. Each channel is decoded with the camera's published curve to scene light
@@ -10,11 +29,13 @@
 //! a camera holds above white roll off into it instead of clipping.
 //!
 //! Like the rest of the grade this is **append-only in behaviour**: footage converts the same
-//! every time it compiles, so a constant here changing re-grades finished videos.
+//! every time it compiles, so a constant here — or a number in a starter log — changing
+//! re-grades finished videos. A log file's bytes are part of the name of the LUT it compiles
+//! to, so an edited one is a new grade, as an edited `.cube` is.
 //!
-//! The curves, primaries, tone map and gamut compression are FilmCraft's
-//! (`crates/color/src/{log,spaces,transform}.rs`), themselves from the makers' published
-//! specifications, used under the MIT licence:
+//! The starter set's curves and primaries, and the tone map and gamut compression here, are
+//! FilmCraft's (`crates/color/src/{log,spaces,transform}.rs`), themselves from the makers'
+//! published specifications, used under the MIT licence:
 //!
 //! > Copyright (c) 2026 ArtCraft Team and the FilmCraft contributors
 //! >
@@ -34,90 +55,181 @@
 //! > OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 //! > DEALINGS IN THE SOFTWARE.
 
-use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+use serde::Deserialize;
 
 use crate::grade::encode;
 
-/// A camera's log encoding and the gamut it records in.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "kebab-case")]
-pub enum CameraLog {
-    /// Sony S-Log3, S-Gamut3.Cine: what Sony's cameras offer first.
-    SLog3Cine,
-    /// Sony S-Log3, S-Gamut3.
-    SLog3,
-    /// Panasonic V-Log, V-Gamut.
-    VLog,
-    /// Canon Log 2, Cinema Gamut.
-    CLog2,
-    /// Canon Log 3, Cinema Gamut.
-    CLog3,
-    /// ARRI LogC3 (EI 800), ARRI Wide Gamut 3.
-    Logc3,
-    /// ARRI LogC4, ARRI Wide Gamut 4.
-    Logc4,
-    /// Apple Log (iPhone 15 Pro and later), Rec. 2020 primaries.
-    AppleLog,
-    /// DJI D-Log, D-Gamut.
-    DLog,
-    /// Fujifilm F-Log, F-Gamut (Rec. 2020 primaries).
-    FLog,
-    /// Fujifilm F-Log2, F-Gamut.
-    FLog2,
-    /// Fujifilm F-Log2 C, F-Gamut C.
-    FLog2c,
+/// A log file as written: a curve and a gamut, or a LUT.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LogFile {
+    name: String,
+    /// Where the numbers come from: the maker's document.
+    #[serde(default)]
+    #[allow(dead_code)]
+    source: String,
+    #[serde(default)]
+    signal: Signal,
+    #[serde(default)]
+    decode: Vec<Piece>,
+    primaries: Option<[[f64; 2]; 3]>,
+    /// The gamut's white, D65 when left out.
+    white: Option<[f64; 2]>,
+    /// A `.cube` beside this file, instead of a curve and a gamut.
+    lut: Option<String>,
 }
 
-impl CameraLog {
-    pub const ALL: [CameraLog; 12] = [
-        CameraLog::SLog3Cine,
-        CameraLog::SLog3,
-        CameraLog::VLog,
-        CameraLog::CLog2,
-        CameraLog::CLog3,
-        CameraLog::Logc3,
-        CameraLog::Logc4,
-        CameraLog::AppleLog,
-        CameraLog::DLog,
-        CameraLog::FLog,
-        CameraLog::FLog2,
-        CameraLog::FLog2c,
-    ];
+/// How a curve's formula reads the signal.
+#[derive(Debug, Clone, Copy, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum Signal {
+    /// 10-bit code values over 1023, as Sony, Panasonic, ARRI, DJI and Fujifilm write theirs.
+    #[default]
+    Code,
+    /// IRE, code 64 as 0 and 940 as 1, as Canon and Apple write theirs.
+    Ire,
+}
 
-    fn curve(self) -> Curve {
-        match self {
-            CameraLog::SLog3Cine | CameraLog::SLog3 => Curve::SLog3,
-            CameraLog::VLog => Curve::VLog,
-            CameraLog::CLog2 => Curve::CLog2,
-            CameraLog::CLog3 => Curve::CLog3,
-            CameraLog::Logc3 => Curve::LogC3,
-            CameraLog::Logc4 => Curve::LogC4,
-            CameraLog::AppleLog => Curve::AppleLog,
-            CameraLog::DLog => Curve::DLog,
-            CameraLog::FLog => Curve::FLog,
-            CameraLog::FLog2 | CameraLog::FLog2c => Curve::FLog2,
-        }
+/// One piece of a curve, for signals below (or up to) its bound; the last has none.
+#[derive(Debug, Clone, Deserialize)]
+struct Piece {
+    below: Option<f64>,
+    upto: Option<f64>,
+    #[serde(flatten)]
+    shape: Shape,
+}
+
+/// What a piece makes of a signal `y`, written as the makers write the encoding.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum Shape {
+    /// `y = slope·x + offset`.
+    Linear { slope: f64, offset: f64 },
+    /// `y = c·log_base(a·x + b) + d`.
+    Log {
+        a: f64,
+        b: f64,
+        c: f64,
+        d: f64,
+        #[serde(default = "ten")]
+        base: f64,
+    },
+    /// `y = scale·(x − from)^power`.
+    Power { scale: f64, power: f64, from: f64 },
+    /// `x = constant`, whatever the signal.
+    Constant(f64),
+}
+
+fn ten() -> f64 {
+    10.0
+}
+
+impl Piece {
+    fn holds(&self, y: f64) -> bool {
+        self.below.is_none_or(|b| y < b) && self.upto.is_none_or(|u| y <= u)
     }
 
-    /// The gamut's primaries, (x, y) of red, green and blue, all with a D65 white.
-    fn primaries(self) -> [[f64; 2]; 3] {
-        match self {
-            CameraLog::SLog3Cine => [[0.766, 0.275], [0.225, 0.800], [0.089, -0.087]],
-            CameraLog::SLog3 => [[0.730, 0.280], [0.140, 0.855], [0.100, -0.050]],
-            CameraLog::VLog => [[0.730, 0.280], [0.165, 0.840], [0.100, -0.030]],
-            CameraLog::CLog2 | CameraLog::CLog3 => [[0.740, 0.270], [0.170, 1.140], [0.080, -0.100]],
-            CameraLog::Logc3 => [[0.6840, 0.3130], [0.2210, 0.8480], [0.0861, -0.1020]],
-            CameraLog::Logc4 => [[0.7347, 0.2653], [0.1424, 0.8576], [0.0991, -0.0308]],
-            CameraLog::AppleLog | CameraLog::FLog | CameraLog::FLog2 => BT2020,
-            CameraLog::DLog => [[0.71, 0.31], [0.21, 0.88], [0.09, -0.08]],
-            CameraLog::FLog2c => [[0.7347, 0.2653], [0.0263, 0.9737], [0.1173, -0.0224]],
+    fn decode(&self, y: f64) -> f64 {
+        match self.shape {
+            Shape::Linear { slope, offset } => (y - offset) / slope,
+            Shape::Log { a, b, c, d, base } => (base.powf((y - d) / c) - b) / a,
+            Shape::Power { scale, power, from } => (y / scale).powf(1.0 / power) + from,
+            Shape::Constant(x) => x,
         }
     }
+}
+
+/// A camera log, read: a curve to convert with, or the LUT the maker gives instead.
+#[derive(Debug, Clone)]
+pub enum Log {
+    Curve(Arc<Conversion>),
+    /// The `.cube` to take as the grade's input.
+    Lut(PathBuf),
+}
+
+/// The file the log `id` is in: `<dir>/<id>.json` in the last of `dirs` that has one — the
+/// project's own `logs/` last, so it wins.
+pub fn find(id: &str, dirs: &[PathBuf]) -> Option<PathBuf> {
+    dirs.iter().rev().map(|d| d.join(format!("{id}.json"))).find(|p| p.is_file())
+}
+
+/// Every log in `dirs`, by id, with its name: what the editor offers. Later directories win.
+pub fn list(dirs: &[PathBuf]) -> Vec<(String, String)> {
+    let mut found = std::collections::BTreeMap::new();
+    for dir in dirs {
+        let Ok(entries) = std::fs::read_dir(dir) else { continue };
+        for path in entries.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "json")) {
+            let Some(id) = path.file_stem().map(|s| s.to_string_lossy().into_owned()) else { continue };
+            if let Ok(text) = std::fs::read(&path) {
+                if let Ok(file) = serde_json::from_slice::<LogFile>(&text) {
+                    found.insert(id, file.name);
+                }
+            }
+        }
+    }
+    found.into_iter().collect()
+}
+
+/// The log in the file at `path`, read once and remembered as long as the file does not
+/// change (`grade::remembered`) — or why it will not read.
+pub fn load(path: &Path) -> Result<Log, String> {
+    crate::grade::remembered(path, |p| parse(&std::fs::read(p).map_err(|e| e.to_string())?, p.parent().unwrap_or(Path::new("."))))
+}
+
+/// What a log is made of, for naming what it compiles to: its file's bytes, and its LUT's
+/// when it is one.
+pub fn bytes(path: &Path) -> Result<Vec<u8>, String> {
+    let mut bytes = std::fs::read(path).map_err(|e| e.to_string())?;
+    if let Log::Lut(cube) = parse(&bytes, path.parent().unwrap_or(Path::new(".")))? {
+        bytes.extend(std::fs::read(&cube).map_err(|e| format!("{}: {e}", cube.display()))?);
+    }
+    Ok(bytes)
+}
+
+/// A log file's bytes, read, its LUT (when it names one) resolved against `folder`.
+pub fn parse(bytes: &[u8], folder: &Path) -> Result<Log, String> {
+    let file: LogFile = serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
+    if let Some(lut) = &file.lut {
+        if !file.decode.is_empty() || file.primaries.is_some() {
+            return Err("a log is a `lut`, or a `decode` curve with its `primaries`, not both".into());
+        }
+        if !crate::validate::stays_inside(lut) {
+            return Err(format!("`lut` `{lut}` must be relative and stay beside the log"));
+        }
+        return Ok(Log::Lut(folder.join(lut)));
+    }
+    let primaries = file.primaries.ok_or("a log needs the `primaries` of its gamut")?;
+    let Some((last, rest)) = file.decode.split_last() else { return Err("a log needs a `decode` curve".into()) };
+    if last.below.is_some() || last.upto.is_some() {
+        return Err("the last piece of `decode` takes every signal past the others: give it no bound".into());
+    }
+    let mut bound = f64::NEG_INFINITY;
+    for (i, p) in rest.iter().enumerate() {
+        let b = match (p.below, p.upto) {
+            (Some(b), None) | (None, Some(b)) => b,
+            _ => return Err(format!("`decode` piece {i}: one of `below` or `upto`")),
+        };
+        if b <= bound {
+            return Err(format!("`decode` piece {i}: bounds must rise"));
+        }
+        bound = b;
+    }
+    let well_formed = file.decode.iter().all(|p| match p.shape {
+        Shape::Linear { slope, offset } => slope != 0.0 && offset.is_finite(),
+        Shape::Log { a, b, c, d, base } => a != 0.0 && c != 0.0 && base > 0.0 && base != 1.0 && b.is_finite() && d.is_finite(),
+        Shape::Power { scale, power, from } => scale != 0.0 && power != 0.0 && from.is_finite(),
+        Shape::Constant(x) => x.is_finite(),
+    });
+    if !well_formed {
+        return Err("a `decode` piece has a number that divides by nothing or is not finite".into());
+    }
+    Ok(Log::Curve(Arc::new(Conversion::new(file.signal, file.decode, primaries, file.white.unwrap_or(D65)))))
 }
 
 const BT709: [[f64; 2]; 3] = [[0.640, 0.330], [0.300, 0.600], [0.150, 0.060]];
-const BT2020: [[f64; 2]; 3] = [[0.708, 0.292], [0.170, 0.797], [0.131, 0.046]];
 const D65: [f64; 2] = [0.3127, 0.3290];
 
 /// BT.2408's HDR reference white, which scene light 1.0 is taken to be for the tone map.
@@ -125,128 +237,50 @@ const REFERENCE_WHITE_NITS: f64 = 203.0;
 /// The most a log curve's peak is taken to be, so the knee starts above mid grey.
 const LOG_PEAK_NITS: f64 = 4000.0;
 
-/// A camera log, ready to convert colours with: its gamut matrix and tone map worked out once.
+/// A camera log's curve, ready to convert colours with: its gamut matrix and tone map
+/// worked out once.
 #[derive(Debug, Clone)]
 pub struct Conversion {
-    curve: Curve,
+    signal: Signal,
+    pieces: Vec<Piece>,
     matrix: Mat3,
     tone: ToneMap,
 }
 
 impl Conversion {
-    pub fn new(log: CameraLog) -> Self {
-        let curve = log.curve();
-        let matrix = mul(&inverse(&npm(BT709, D65)), &npm(log.primaries(), D65));
-        let peak = (curve.peak_linear() * REFERENCE_WHITE_NITS).clamp(REFERENCE_WHITE_NITS, LOG_PEAK_NITS);
-        Conversion { curve, matrix, tone: ToneMap::new(peak) }
+    fn new(signal: Signal, pieces: Vec<Piece>, primaries: [[f64; 2]; 3], white: [f64; 2]) -> Self {
+        let matrix = mul(&inverse(&npm(BT709, D65)), &npm(primaries, white));
+        let mut c = Conversion { signal, pieces, matrix, tone: ToneMap::new(REFERENCE_WHITE_NITS) };
+        // The light of the top of the signal, code 1023: what the tone map rolls off from.
+        let top = c.decode(match signal {
+            Signal::Code => 1.0,
+            Signal::Ire => (1023.0 - 64.0) / 876.0,
+        });
+        c.tone = ToneMap::new((top * REFERENCE_WHITE_NITS).clamp(REFERENCE_WHITE_NITS, LOG_PEAK_NITS));
+        c
     }
 
-    /// The display-encoded Rec. 709 colour the log-encoded `c` stands for.
-    pub fn apply(&self, c: [f64; 3]) -> [f64; 3] {
-        let light = c.map(|v| self.curve.decode(self.curve.signal(v)));
-        let light = mul_vec(&self.matrix, light);
-        let light = self.tone.apply(light);
-        gamut_compress(light).map(|v| encode(v.clamp(0.0, 1.0)))
-    }
-}
-
-/// A log curve, `decode(signal) → scene light`.
-#[derive(Debug, Clone, Copy, PartialEq)]
-enum Curve {
-    SLog3,
-    VLog,
-    CLog2,
-    CLog3,
-    LogC3,
-    LogC4,
-    AppleLog,
-    DLog,
-    FLog,
-    FLog2,
-}
-
-impl Curve {
-    /// Whether the curve's formula is written in IRE (code 64 → 0, 940 → 1), as Canon's and
-    /// Apple's are; the others are written in 10-bit code values over 1023.
-    fn ire(self) -> bool {
-        matches!(self, Curve::CLog2 | Curve::CLog3 | Curve::AppleLog)
+    /// The scene light the curve's signal `y` stands for.
+    fn decode(&self, y: f64) -> f64 {
+        self.pieces.iter().find(|p| p.holds(y)).map_or(0.0, |p| p.decode(y))
     }
 
     /// The curve's signal for a display value, which is the limited-range signal expanded:
     /// 0 is code 64 and 1 is code 940.
-    fn signal(self, v: f64) -> f64 {
-        if self.ire() { v } else { (64.0 + 876.0 * v) / 1023.0 }
-    }
-
-    /// The scene light of the top of the signal, code 1023.
-    fn peak_linear(self) -> f64 {
-        self.decode(if self.ire() { (1023.0 - 64.0) / 876.0 } else { 1.0 })
-    }
-
-    fn decode(self, y: f64) -> f64 {
-        match self {
-            Curve::SLog3 => {
-                if y >= 171.210_294_692_9 / 1023.0 {
-                    10f64.powf((y * 1023.0 - 420.0) / 261.5) * (0.18 + 0.01) - 0.01
-                } else {
-                    (y * 1023.0 - 95.0) * 0.011_25 / (171.210_294_692_9 - 95.0)
-                }
-            }
-            Curve::VLog => {
-                if y < 0.181 { (y - 0.125) / 5.6 } else { 10f64.powf((y - 0.598_206) / 0.241_514) - 0.008_73 }
-            }
-            Curve::CLog2 => {
-                let x = if y < 0.092_864_125 {
-                    -(10f64.powf((0.092_864_125 - y) / 0.241_360_77) - 1.0) / 87.099_375_46
-                } else {
-                    (10f64.powf((y - 0.092_864_125) / 0.241_360_77) - 1.0) / 87.099_375_46
-                };
-                x * 0.9
-            }
-            Curve::CLog3 => {
-                let x = if y < 0.097_465_473 {
-                    -(10f64.powf((0.127_839_01 - y) / 0.367_268_45) - 1.0) / 14.983_25
-                } else if y <= 0.152_778_91 {
-                    (y - 0.125_122_19) / 1.975_479_8
-                } else {
-                    (10f64.powf((y - 0.122_405_37) / 0.367_268_45) - 1.0) / 14.983_25
-                };
-                x * 0.9
-            }
-            Curve::LogC3 => {
-                let (cut, a, b, c, d, e, f) = (0.010_591, 5.555_556, 0.052_272, 0.247_190, 0.385_537, 5.367_655, 0.092_809);
-                if y > e * cut + f { (10f64.powf((y - d) / c) - b) / a } else { (y - f) / e }
-            }
-            Curve::LogC4 => {
-                let a = (2f64.powi(18) - 16.0) / 117.45;
-                let b = (1023.0 - 95.0) / 1023.0;
-                let c = 95.0 / 1023.0;
-                let s = (7.0 * std::f64::consts::LN_2 * 2f64.powf(7.0 - 14.0 * c / b)) / (a * b);
-                let t = (2f64.powf(14.0 * (-c / b) + 6.0) - 64.0) / a;
-                if y >= 0.0 { (2f64.powf(14.0 * (y - c) / b + 6.0) - 64.0) / a } else { y * s + t }
-            }
-            Curve::AppleLog => {
-                let (r0, rt, c, beta, gamma, delta) = (-0.056_410_88, 0.01, 47.287_112_36, 0.009_640_52, 0.085_504_79, 0.693_369_45);
-                if y >= c * (rt - r0) * (rt - r0) {
-                    2f64.powf((y - delta) / gamma) - beta
-                } else if y >= 0.0 {
-                    (y / c).sqrt() + r0
-                } else {
-                    r0
-                }
-            }
-            Curve::DLog => {
-                if y <= 0.14 { (y - 0.0929) / 6.025 } else { (10f64.powf(3.896_16 * y - 2.277_52) - 0.0108) / 0.9892 }
-            }
-            Curve::FLog => fujifilm(0.555_556, 0.009_468, 0.344_676, 0.790_453, 8.735_631, 0.092_864, 0.100_537_775_223_865, y),
-            Curve::FLog2 => fujifilm(5.555_556, 0.064_829, 0.245_281, 0.384_316, 8.799_461, 0.092_864, 0.100_686_685_370_811, y),
+    fn signal(&self, v: f64) -> f64 {
+        match self.signal {
+            Signal::Code => (64.0 + 876.0 * v) / 1023.0,
+            Signal::Ire => v,
         }
     }
-}
 
-#[allow(clippy::too_many_arguments)]
-fn fujifilm(a: f64, b: f64, c: f64, d: f64, e: f64, f: f64, cut: f64, y: f64) -> f64 {
-    if y >= cut { 10f64.powf((y - d) / c) / a - b / a } else { (y - f) / e }
+    /// The display-encoded Rec. 709 colour the log-encoded `c` stands for.
+    pub fn apply(&self, c: [f64; 3]) -> [f64; 3] {
+        let light = c.map(|v| self.decode(self.signal(v)));
+        let light = mul_vec(&self.matrix, light);
+        let light = self.tone.apply(light);
+        gamut_compress(light).map(|v| encode(v.clamp(0.0, 1.0)))
+    }
 }
 
 type Mat3 = [[f64; 3]; 3];
@@ -373,29 +407,42 @@ fn gamut_compress(c: [f64; 3]) -> [f64; 3] {
 mod tests {
     use super::*;
 
+    /// The starter set, where it ships.
+    fn starter() -> Vec<PathBuf> {
+        vec![PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../library/logs"))]
+    }
+
+    fn curve(id: &str) -> Arc<Conversion> {
+        match load(&find(id, &starter()).unwrap_or_else(|| panic!("no `{id}`"))).unwrap() {
+            Log::Curve(c) => c,
+            Log::Lut(_) => panic!("`{id}` is a curve"),
+        }
+    }
+
     /// The makers' published points: a curve that decodes these to their reflectances
     /// reads the footage as the camera wrote it (FilmCraft's own reference values).
     #[test]
     fn each_curve_decodes_its_makers_published_points() {
-        let code = |c: Curve, cv: f64| c.decode(cv / 1023.0);
-        let ire = |c: Curve, pct: f64| c.decode(pct / 100.0);
+        let code = |id: &str, cv: f64| curve(id).decode(cv / 1023.0);
+        let ire = |id: &str, pct: f64| curve(id).decode(pct / 100.0);
         let close = |got: f64, want: f64, tol: f64, what: &str| assert!((got - want).abs() <= tol, "{what}: {got} not {want}");
-        close(code(Curve::SLog3, 95.0), 0.0, 1e-9, "S-Log3 black");
-        close(code(Curve::SLog3, 420.0), 0.18, 1e-9, "S-Log3 grey");
-        close(code(Curve::VLog, 433.0), 0.18, 0.002, "V-Log grey");
-        close(code(Curve::LogC3, 400.0), 0.18, 0.002, "LogC3 grey");
-        close(Curve::LogC4.decode(0.2784), 0.18, 0.001, "LogC4 grey");
-        close(ire(Curve::CLog3, 34.3), 0.18, 0.003, "Canon Log 3 grey");
-        close(Curve::AppleLog.decode(0.488), 0.18, 0.001, "Apple Log grey");
-        close(Curve::DLog.decode(0.398), 0.18, 0.003, "D-Log grey");
-        close(code(Curve::FLog, 470.0), 0.18, 0.002, "F-Log grey");
-        close(code(Curve::FLog2, 400.0), 0.18, 0.002, "F-Log2 grey");
+        close(code("s-log3", 95.0), 0.0, 1e-9, "S-Log3 black");
+        close(code("s-log3", 420.0), 0.18, 1e-9, "S-Log3 grey");
+        close(code("v-log", 433.0), 0.18, 0.002, "V-Log grey");
+        close(code("logc3", 400.0), 0.18, 0.002, "LogC3 grey");
+        close(curve("logc4").decode(0.2784), 0.18, 0.001, "LogC4 grey");
+        close(ire("c-log3", 34.3), 0.18, 0.003, "Canon Log 3 grey");
+        close(curve("apple-log").decode(0.488), 0.18, 0.001, "Apple Log grey");
+        close(curve("d-log").decode(0.398), 0.18, 0.003, "D-Log grey");
+        close(code("f-log", 470.0), 0.18, 0.002, "F-Log grey");
+        close(code("f-log2", 400.0), 0.18, 0.002, "F-Log2 grey");
         // Every curve rises.
-        for c in CameraLog::ALL.map(CameraLog::curve) {
+        for (id, _) in list(&starter()) {
+            let c = curve(&id);
             let mut last = f64::NEG_INFINITY;
             for i in 0..=100 {
                 let v = c.decode(i as f64 / 100.0);
-                assert!(v > last, "{c:?} at {i}");
+                assert!(v > last, "{id} at {i}");
                 last = v;
             }
         }
@@ -405,30 +452,20 @@ mod tests {
     fn mid_grey_comes_out_mid_grey_and_white_rolls_off() {
         let grey = encode(0.18);
         // S-Log3's grey is code 420, which is (420 − 64) / 876 once expanded.
-        let s = Conversion::new(CameraLog::SLog3Cine);
-        let v = (420.0 - 64.0) / 876.0;
-        let out = s.apply([v; 3]);
+        let s = curve("s-log3-cine");
+        let out = s.apply([(420.0 - 64.0) / 876.0; 3]);
         assert!(out.iter().all(|c| (c - grey).abs() < 1e-6), "{out:?} not {grey}");
         // A neutral stays neutral through the gamut matrix, whatever the camera.
-        for log in CameraLog::ALL {
-            let out = Conversion::new(log).apply([0.6; 3]);
-            assert!((out[0] - out[1]).abs() < 1e-6 && (out[1] - out[2]).abs() < 1e-6, "{log:?}: {out:?}");
+        let all = list(&starter());
+        assert_eq!(all.len(), 12, "{all:?}");
+        for (id, _) in all {
+            let out = curve(&id).apply([0.6; 3]);
+            assert!((out[0] - out[1]).abs() < 1e-6 && (out[1] - out[2]).abs() < 1e-6, "{id}: {out:?}");
         }
         // 90% white sits under white, and the top of the signal reaches it.
         let white = s.apply([(598.0 - 64.0) / 876.0; 3])[0];
         assert!(white > grey && white < 1.0, "{white}");
         assert!((s.apply([1.0; 3])[0] - 1.0).abs() < 1e-3);
-    }
-
-    /// The editor offers each by name, in its own table: a log added here and not there could
-    /// only be typed.
-    #[test]
-    fn the_editor_offers_every_log() {
-        let inspector = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../ui/src/panels/inspector.ts")).unwrap();
-        for log in CameraLog::ALL {
-            let name = serde_json::to_string(&log).unwrap();
-            assert!(inspector.contains(&format!("{name}:")), "{name} is missing from CAMERA_LOGS");
-        }
     }
 
     /// The values footage has always converted to. If one has to change, the change
@@ -437,14 +474,40 @@ mod tests {
     fn each_log_keeps_the_values_it_has_always_given() {
         let c = [0.55, 0.42, 0.33];
         // Worked out apart from this code, from FilmCraft's formulas.
-        let want: [(CameraLog, [f64; 3]); 3] = [
-            (CameraLog::SLog3Cine, [0.788968430923, 0.40427914021, 0.300270827988]),
-            (CameraLog::VLog, [0.793945843013, 0.371598961737, 0.301356151667]),
-            (CameraLog::AppleLog, [0.677229665181, 0.323861309216, 0.261714563666]),
+        let want = [
+            ("s-log3-cine", [0.788968430923, 0.40427914021, 0.300270827988]),
+            ("v-log", [0.793945843013, 0.371598961737, 0.301356151667]),
+            ("apple-log", [0.677229665181, 0.323861309216, 0.261714563666]),
         ];
-        for (log, w) in want {
-            let got = Conversion::new(log).apply(c);
-            assert!((0..3).all(|i| (got[i] - w[i]).abs() < 1e-8), "{log:?}: {got:?} not {w:?}");
+        for (id, w) in want {
+            let got = curve(id).apply(c);
+            assert!((0..3).all(|i| (got[i] - w[i]).abs() < 1e-8), "{id}: {got:?} not {w:?}");
+        }
+    }
+
+    /// A log is found where it is, the project's own winning; one a maker gives as a LUT is
+    /// that LUT; and a file that cannot be a curve says why.
+    #[test]
+    fn a_log_is_a_file_found_by_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().join("logs");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(project.join("d-log-m.json"), r#"{ "name": "DJI D-Log M", "lut": "dlogm.cube" }"#).unwrap();
+        std::fs::write(project.join("s-log3.json"), r#"{ "name": "Mine", "lut": "mine.cube" }"#).unwrap();
+        let dirs = [starter(), vec![project.clone()]].concat();
+        assert!(matches!(load(&find("d-log-m", &dirs).unwrap()).unwrap(), Log::Lut(p) if p == project.join("dlogm.cube")));
+        assert_eq!(find("s-log3", &dirs).unwrap(), project.join("s-log3.json"), "the project's own wins");
+        assert!(list(&dirs).contains(&("d-log-m".into(), "DJI D-Log M".into())));
+        assert!(find("no-such-log", &dirs).is_none());
+        for (text, says) in [
+            (r#"{ "name": "x", "decode": [{ "log": { "a": 1, "b": 0, "c": 1, "d": 0 } }] }"#, "primaries"),
+            (r#"{ "name": "x", "primaries": [[0,0],[0,1],[1,0]], "decode": [{ "below": 0.1, "linear": { "slope": 1, "offset": 0 } }] }"#, "no bound"),
+            (r#"{ "name": "x", "primaries": [[0,0],[0,1],[1,0]], "decode": [{ "below": 0.2, "constant": 0 }, { "below": 0.1, "constant": 0 }, { "constant": 1 }] }"#, "rise"),
+            (r#"{ "name": "x", "primaries": [[0,0],[0,1],[1,0]], "decode": [{ "linear": { "slope": 0, "offset": 0 } }] }"#, "divides by nothing"),
+            (r#"{ "name": "x", "lut": "../elsewhere.cube" }"#, "stay beside"),
+        ] {
+            let e = parse(text.as_bytes(), &project).unwrap_err();
+            assert!(e.contains(says), "{text}: {e}");
         }
     }
 }

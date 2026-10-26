@@ -891,6 +891,7 @@ pub(crate) fn bake_request<'a>(r: &'a crate::overlays::Resolved, vars: &'a serde
 pub fn compile_options(state: &AppState) -> CompileOptions {
     let mut opts = CompileOptions::new(state.config.project_root());
     opts.cache_dir = state.config.compile_cache_dir();
+    opts.logs = state.config.all_log_dirs();
     opts
 }
 

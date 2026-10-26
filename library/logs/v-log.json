@@ -1,0 +1,36 @@
+{
+  "name": "Panasonic V-Log / V-Gamut",
+  "source": "Panasonic, V-Log/V-Gamut Reference Manual (rev. 1.0, 2014)",
+  "signal": "code",
+  "decode": [
+    {
+      "below": 0.181,
+      "linear": {
+        "slope": 5.6,
+        "offset": 0.125
+      }
+    },
+    {
+      "log": {
+        "a": 1,
+        "b": 0.00873,
+        "c": 0.241514,
+        "d": 0.598206
+      }
+    }
+  ],
+  "primaries": [
+    [
+      0.73,
+      0.28
+    ],
+    [
+      0.165,
+      0.84
+    ],
+    [
+      0.1,
+      -0.03
+    ]
+  ]
+}

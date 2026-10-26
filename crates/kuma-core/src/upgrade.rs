@@ -124,7 +124,7 @@ mod tests {
     fn a_version_1_project_still_opens() {
         let p = parse_project(V1).expect("parse");
         assert_eq!(p.version, crate::PROJECT_VERSION);
-        let issues = crate::validate(&p, &crate::ValidationContext { root: std::path::PathBuf::from("."), check_files: false });
+        let issues = crate::validate(&p, &crate::ValidationContext { root: std::path::PathBuf::from("."), check_files: false, ..Default::default() });
         assert!(!crate::validate::has_errors(&issues), "{issues:?}");
     }
 

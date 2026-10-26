@@ -73,7 +73,8 @@ pub fn live_luts(state: &AppState, project: &Project) -> HashSet<String> {
             seen.push(g);
         }
     }
-    seen.iter().filter_map(|g| kuma_mlt::luts::name(g, &root).ok().flatten()).collect()
+    let logs = state.config.all_log_dirs();
+    seen.iter().filter_map(|g| kuma_mlt::luts::name(g, &root, &logs).ok().flatten()).collect()
 }
 
 /// Keys of the bakes the project still wants: every overlay clip in every sequence (the

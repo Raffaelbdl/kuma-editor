@@ -112,7 +112,7 @@ impl Grade {
     /// which is a gain on display values too, so this is the grade's own maths; the parts
     /// round and clip to the frame's range between them, as one LUT does not.
     pub fn keyed_parts(&self) -> (Option<Grade>, Grade) {
-        let input = (self.log.is_some() || self.input_lut.is_some()).then(|| Grade { log: self.log, input_lut: self.input_lut.clone(), ..Grade::default() });
+        let input = (self.log.is_some() || self.input_lut.is_some()).then(|| Grade { log: self.log.clone(), input_lut: self.input_lut.clone(), ..Grade::default() });
         let rest = Grade { log: None, input_lut: None, temperature: 0.0, tint: 0.0, exposure: 0.0, mask: None, keyframes: Vec::new(), ..self.clone() };
         (input, rest)
     }
@@ -167,20 +167,7 @@ impl Lut {
     /// the live preview asks for a grade's table at the rate a control is dragged; a 65³
     /// `.cube` takes tens of milliseconds to parse.
     pub fn cached(path: &std::path::Path) -> Result<Arc<Lut>, String> {
-        type Seen = std::collections::HashMap<std::path::PathBuf, ((u64, Option<std::time::SystemTime>), Result<Arc<Lut>, String>)>;
-        static SEEN: std::sync::OnceLock<std::sync::Mutex<Seen>> = std::sync::OnceLock::new();
-        let meta = std::fs::metadata(path).map_err(|e| e.to_string())?;
-        let stamp = (meta.len(), meta.modified().ok());
-        let seen = SEEN.get_or_init(Default::default);
-        let lock = || seen.lock().unwrap_or_else(|p| p.into_inner());
-        if let Some((at, read)) = lock().get(path) {
-            if *at == stamp {
-                return read.clone();
-            }
-        }
-        let read = Lut::load(path).map(|(_, lut)| Arc::new(lut));
-        lock().insert(path.to_path_buf(), (stamp, read.clone()));
-        read
+        remembered(path, |p| Lut::load(p).map(|(_, lut)| Arc::new(lut)))
     }
 
     /// Parse a `.cube` file's bytes, which are text (stray non-UTF-8 bytes are in comments
@@ -295,13 +282,58 @@ impl Lut {
     }
 }
 
+/// What `load` makes of the file at `path`, remembered as long as the file's size and time
+/// do not change — failures too, so a broken file is not read again on every edit. One store
+/// for every kind of file a grade reads, each kind by its own type.
+pub(crate) fn remembered<T: Clone + Send + 'static>(path: &std::path::Path, load: impl FnOnce(&std::path::Path) -> Result<T, String>) -> Result<T, String> {
+    type Stamp = (u64, Option<std::time::SystemTime>);
+    type Seen = std::collections::HashMap<(std::any::TypeId, std::path::PathBuf), (Stamp, Box<dyn std::any::Any + Send>)>;
+    static SEEN: std::sync::OnceLock<std::sync::Mutex<Seen>> = std::sync::OnceLock::new();
+    let meta = std::fs::metadata(path).map_err(|e| e.to_string())?;
+    let stamp = (meta.len(), meta.modified().ok());
+    let key = (std::any::TypeId::of::<T>(), path.to_path_buf());
+    let lock = || SEEN.get_or_init(Default::default).lock().unwrap_or_else(|p| p.into_inner());
+    if let Some((at, read)) = lock().get(&key) {
+        if let Some(read) = read.downcast_ref::<Result<T, String>>().filter(|_| *at == stamp) {
+            return read.clone();
+        }
+    }
+    let read = load(path);
+    lock().insert(key, (stamp, Box::new(read.clone())));
+    read
+}
+
+/// The files a grade reads, read: its camera log's curve, its input LUT (or the LUT its log
+/// is), and its look.
+#[derive(Debug, Clone, Default)]
+pub struct Inputs {
+    pub log: Option<Arc<crate::camera::Conversion>>,
+    pub input: Option<Arc<Lut>>,
+    pub look: Option<Arc<Lut>>,
+}
+
+impl Inputs {
+    /// `grade`'s files: its LUTs under `root`, its log found in `log_dirs` (the project's own
+    /// `logs/` last), each remembered while it does not change.
+    pub fn load(grade: &Grade, root: &std::path::Path, log_dirs: &[std::path::PathBuf]) -> Result<Inputs, String> {
+        let lut = |path: &str| Lut::cached(&root.join(path)).map_err(|e| format!("LUT `{path}`: {e}"));
+        let mut inputs = Inputs { input: grade.input_lut.as_deref().map(lut).transpose()?, look: grade.look.as_deref().map(lut).transpose()?, log: None };
+        if let Some(id) = &grade.log {
+            let path = crate::camera::find(id, log_dirs).ok_or_else(|| format!("no camera log `{id}`: add `logs/{id}.json` to the project or a library"))?;
+            match crate::camera::load(&path).map_err(|e| format!("camera log `{id}`: {e}"))? {
+                crate::camera::Log::Curve(c) => inputs.log = Some(c),
+                crate::camera::Log::Lut(cube) => inputs.input = Some(Lut::cached(&cube).map_err(|e| format!("camera log `{id}`'s LUT: {e}"))?),
+            }
+        }
+        Ok(inputs)
+    }
+}
+
 /// A grade ready to apply: its numbers, its LUTs parsed, and its curve's tangents.
 #[derive(Debug, Clone)]
 pub struct Grading<'a> {
     grade: &'a Grade,
-    log: Option<crate::camera::Conversion>,
-    input: Option<Arc<Lut>>,
-    look: Option<Arc<Lut>>,
+    inputs: Inputs,
     curve: Option<Curve>,
     /// Red's, green's and blue's own curves.
     channels: [Option<Curve>; 3],
@@ -313,12 +345,11 @@ pub struct Grading<'a> {
 }
 
 impl<'a> Grading<'a> {
-    /// `input` and `look` are the grade's LUT files, parsed; the caller reads them, since
+    /// `inputs` are the grade's files, read ([`Inputs::load`]); the caller reads them, since
     /// where a path resolves is the project's business.
-    pub fn new(grade: &'a Grade, input: Option<Arc<Lut>>, look: Option<Arc<Lut>>) -> Self {
+    pub fn new(grade: &'a Grade, inputs: Inputs) -> Self {
         let [curve, r, g, b, hue @ ..] = Grading::curves(grade);
-        let log = grade.log.map(crate::camera::Conversion::new);
-        Grading { grade, log, input, look, curve, channels: [r, g, b], hue, light: light_gains(grade.temperature, grade.tint, grade.exposure) }
+        Grading { grade, inputs, curve, channels: [r, g, b], hue, light: light_gains(grade.temperature, grade.tint, grade.exposure) }
     }
 
     /// Every curve of `grade`, `None` for one that changes nothing: the master curve, red's,
@@ -343,7 +374,7 @@ impl<'a> Grading<'a> {
     /// Step 1 alone: the camera log or the input LUT. It comes before the light, so a match
     /// converts its pixels once and tries each light on what came out.
     pub(crate) fn input(&self, c: [f64; 3]) -> [f64; 3] {
-        match (&self.log, &self.input) {
+        match (&self.inputs.log, &self.inputs.input) {
             (Some(log), _) => log.apply(c),
             (None, Some(lut)) => lut.apply(c),
             (None, None) => c,
@@ -396,7 +427,7 @@ impl<'a> Grading<'a> {
             let k = 1.0 + g.vibrance * (1.0 - spread);
             c = c.map(|v| y + (v - y) * k);
         }
-        if let Some(look) = self.look.as_ref().filter(|_| g.look_amount != 0.0) {
+        if let Some(look) = self.inputs.look.as_ref().filter(|_| g.look_amount != 0.0) {
             let l = look.apply(c.map(|v| v.clamp(0.0, 1.0)));
             c = std::array::from_fn(|i| c[i] + (l[i] - c[i]) * g.look_amount);
         }
@@ -571,13 +602,13 @@ mod tests {
     }
 
     fn graded(g: &Grade, c: [f64; 3]) -> [f64; 3] {
-        Grading::new(g, None, None).apply(c)
+        Grading::new(g, Inputs::default()).apply(c)
     }
 
     #[test]
     fn a_default_grade_is_neutral_and_changes_nothing() {
         let g = Grade::default();
-        let grading = Grading::new(&g, None, None);
+        let grading = Grading::new(&g, Inputs::default());
         assert!(g.is_neutral());
         for c in [[0.0, 0.0, 0.0], [0.25, 0.5, 0.75], [1.0, 1.0, 1.0]] {
             assert!(close(grading.apply(c), c));
@@ -658,32 +689,37 @@ mod tests {
         assert!(flat.is_neutral());
     }
 
+    /// `g` on `c`, its camera log read from the starter set.
+    fn logged(g: &Grade, c: [f64; 3]) -> [f64; 3] {
+        let starter = [std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../library/logs"))];
+        Grading::new(g, Inputs::load(g, std::path::Path::new("."), &starter).unwrap()).apply(c)
+    }
+
     #[test]
     fn a_camera_log_comes_first_and_is_never_neutral() {
-        use crate::camera::{CameraLog, Conversion};
-        let g = Grade { log: Some(CameraLog::SLog3Cine), saturation: 0.0, ..Grade::default() };
-        assert!(!Grade { log: Some(CameraLog::VLog), ..Grade::default() }.is_neutral());
+        let log = |id: &str| Some(id.to_string());
+        let g = Grade { log: log("s-log3-cine"), saturation: 0.0, ..Grade::default() };
+        assert!(!Grade { log: log("v-log"), ..Grade::default() }.is_neutral());
         // The conversion, then the rest of the grade on what it gave.
         let c = [0.55, 0.42, 0.33];
-        let converted = Conversion::new(CameraLog::SLog3Cine).apply(c);
+        let converted = logged(&Grade { log: log("s-log3-cine"), ..Grade::default() }, c);
         let y = luma(converted);
-        assert!(close(graded(&g, c), [y; 3]), "{:?}", graded(&g, c));
+        assert!(close(logged(&g, c), [y; 3]), "{:?}", logged(&g, c));
     }
 
     /// A keyed grade's parts — input, a gain, the rest — make what the grade makes, for a
     /// colour none of them clips.
     #[test]
     fn a_keyed_grade_in_parts_is_the_grade() {
-        use crate::camera::CameraLog;
-        let g = Grade { log: Some(CameraLog::VLog), temperature: 0.4, tint: -0.2, exposure: 0.3, lift: Rgb { r: 0.02, g: 0.0, b: -0.02 }, contrast: 1.2, saturation: 0.9, ..Grade::default() };
+        let g = Grade { log: Some("v-log".into()), temperature: 0.4, tint: -0.2, exposure: 0.3, lift: Rgb { r: 0.02, g: 0.0, b: -0.02 }, contrast: 1.2, saturation: 0.9, ..Grade::default() };
         let (input, rest) = g.keyed_parts();
         let input = input.unwrap();
         assert!(rest.log.is_none() && rest.temperature == 0.0 && rest.contrast == 1.2);
         let scale = light_scale(g.temperature, g.tint, g.exposure);
         for c in [[0.4, 0.42, 0.38], [0.3, 0.35, 0.45]] {
-            let mid = graded(&input, c);
+            let mid = logged(&input, c);
             let parts = graded(&rest, std::array::from_fn(|i| mid[i] * scale[i]));
-            assert!(close(parts, graded(&g, c)), "{c:?}: {parts:?} vs {:?}", graded(&g, c));
+            assert!(close(parts, logged(&g, c)), "{c:?}: {parts:?} vs {:?}", logged(&g, c));
         }
     }
 
@@ -785,7 +821,7 @@ mod tests {
     #[test]
     fn the_grid_is_the_grade_sampled() {
         let g = Grade { saturation: 0.5, gain: Rgb { r: 0.1, g: 0.0, b: -0.1 }, ..Grade::default() };
-        let lut_text = Grading::new(&g, None, None).cube();
+        let lut_text = Grading::new(&g, Inputs::default()).cube();
         assert!(lut_text.contains("LUT_3D_SIZE 33\n"));
         let back = Lut::parse(&lut_text).unwrap();
         // On a grid point the file says exactly what the grade does, to its six places.
@@ -798,10 +834,10 @@ mod tests {
         let invert = Arc::new(Lut::parse("LUT_1D_SIZE 2\n1 1 1\n0 0 0\n").unwrap());
         // Input first: inverted black is white, which a gain cannot raise past 1.
         let g = Grade { gain: Rgb { r: -0.5, g: -0.5, b: -0.5 }, ..Grade::default() };
-        assert!(close(Grading::new(&g, Some(invert.clone()), None).apply([0.0; 3]), [0.5; 3]));
+        assert!(close(Grading::new(&g, Inputs { input: Some(invert.clone()), ..Inputs::default() }).apply([0.0; 3]), [0.5; 3]));
         // The look last, and by its amount: half of an inverted grey is that grey.
         let g = Grade { look_amount: 0.5, ..Grade::default() };
-        assert!(close(Grading::new(&g, None, Some(invert)).apply([0.2; 3]), [0.5; 3]));
+        assert!(close(Grading::new(&g, Inputs { look: Some(invert), ..Inputs::default() }).apply([0.2; 3]), [0.5; 3]));
         // Whether a grade with a look changes anything is in its settings, not its file.
         assert!(Grade { look: Some("off.cube".into()), look_amount: 0.0, ..Grade::default() }.is_neutral());
         assert!(!Grade { look: Some("on.cube".into()), ..Grade::default() }.is_neutral());

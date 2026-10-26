@@ -1,0 +1,42 @@
+{
+  "name": "Apple Log / Rec. 2020",
+  "source": "Apple, Apple Log Profile white paper (2023)",
+  "signal": "ire",
+  "decode": [
+    {
+      "below": 0,
+      "constant": -0.05641088
+    },
+    {
+      "below": 0.20855531595464202,
+      "power": {
+        "scale": 47.28711236,
+        "power": 2,
+        "from": -0.05641088
+      }
+    },
+    {
+      "log": {
+        "a": 1,
+        "b": 0.00964052,
+        "c": 0.08550479,
+        "d": 0.69336945,
+        "base": 2
+      }
+    }
+  ],
+  "primaries": [
+    [
+      0.708,
+      0.292
+    ],
+    [
+      0.17,
+      0.797
+    ],
+    [
+      0.131,
+      0.046
+    ]
+  ]
+}

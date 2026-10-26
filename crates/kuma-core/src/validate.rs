@@ -40,10 +40,12 @@ pub struct ValidationContext {
     /// If false, nothing on disk is read: media files, overlay folders and overlay vars go
     /// unchecked (the compiler). The daemon passes true.
     pub check_files: bool,
+    /// Where camera logs are found, the project's own `logs/` last (`camera::find`).
+    pub log_dirs: Vec<PathBuf>,
 }
 
 /// What a library holds, by folder: a folder with none of them is not one.
-pub const LIBRARY_KINDS: [&str; 4] = ["blueprints", "presets", "fonts", "design-systems"];
+pub const LIBRARY_KINDS: [&str; 5] = ["blueprints", "presets", "fonts", "design-systems", "logs"];
 
 /// Whether `dir` holds any of [`LIBRARY_KINDS`].
 pub fn is_library(dir: &std::path::Path) -> bool {
@@ -649,6 +651,17 @@ fn check_grade_luts(issues: &mut Vec<Issue>, ep: &str, g: &Grade, ctx: &Validati
             }
         }
     }
+    if let Some(id) = &g.log {
+        let fp = format!("{ep}/log");
+        if id.is_empty() || !id.chars().all(|c| c.is_ascii_alphanumeric() || "-_.".contains(c)) || id.starts_with('.') {
+            issues.push(Issue::error(fp, "a camera log is named by its file's id: letters, digits, `-`, `_` and `.`"));
+        } else if ctx.check_files {
+            // Its LUT, when it is one, read too: what the grade would apply.
+            if let Err(e) = crate::grade::Inputs::load(&Grade { input_lut: None, look: None, ..g.clone() }, &ctx.root, &ctx.log_dirs) {
+                issues.push(Issue::error(fp, e));
+            }
+        }
+    }
 }
 
 
@@ -997,7 +1010,8 @@ mod tests {
             { "id": format!("c{i}"), "start": 0, "end": 1, "bin": "x", "effects": [grades[i].clone()] }
         ] })).collect();
         let p = project(json!({ "bin": { "x": { "source": { "path": "x.mp4" } } }, "tracks": tracks }));
-        let ctx = ValidationContext { root: dir.path().to_path_buf(), check_files: true };
+        let starter = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../library/logs"));
+        let ctx = ValidationContext { root: dir.path().to_path_buf(), check_files: true, log_dirs: vec![starter] };
         let issues = validate(&p, &ctx);
         let on = |ti: usize| -> Vec<String> {
             let prefix = format!("{}/effects/0/", clip_path("main", ti, 0));
@@ -1206,7 +1220,7 @@ mod tests {
                 { "id": "b", "start": 4, "end": 8, "bin": "tag" }
             ]}]
         }));
-        let ctx = ValidationContext { root: tmp.path().to_path_buf(), check_files: true };
+        let ctx = ValidationContext { root: tmp.path().to_path_buf(), check_files: true, ..Default::default() };
         let m: Vec<_> = validate(&p, &ctx).into_iter().map(|i| i.message).collect();
         assert_eq!(m.iter().filter(|m| m.contains("nope")).count(), 1, "{m:?}");
     }
@@ -1257,7 +1271,7 @@ mod tests {
                 { "id": "g1", "start": 0, "end": 4, "bin": "ghost" }
             ]}]
         }));
-        let daemon = ValidationContext { root: tmp.path().to_path_buf(), check_files: true };
+        let daemon = ValidationContext { root: tmp.path().to_path_buf(), check_files: true, ..Default::default() };
         let bad = |ctx: &ValidationContext| validate(&p, ctx).into_iter().filter(|i| i.severity == Severity::Error && i.path.ends_with("/source/overlay")).count();
         assert_eq!(bad(&daemon), 1);
         // The compiler reads nothing from disk and must stay silent about folders.
@@ -1286,7 +1300,7 @@ mod tests {
         std::fs::create_dir_all(tmp.path().join("house/presets")).unwrap();
         std::fs::create_dir_all(tmp.path().join("plain")).unwrap();
         let p = Project { libraries: ["house", "plain", "gone", "house", " "].map(String::from).to_vec(), ..Default::default() };
-        let ctx = ValidationContext { root: tmp.path().to_path_buf(), check_files: true };
+        let ctx = ValidationContext { root: tmp.path().to_path_buf(), check_files: true, ..Default::default() };
         let found: Vec<(Severity, String)> = validate(&p, &ctx).into_iter().filter(|i| i.path.starts_with("/libraries")).map(|i| (i.severity, i.path)).collect();
         let at = |i: usize| format!("/libraries/{i}");
         assert_eq!(found, [(Severity::Warning, at(1)), (Severity::Warning, at(2)), (Severity::Error, at(3)), (Severity::Error, at(4))]);

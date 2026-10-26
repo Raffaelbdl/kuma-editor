@@ -57,6 +57,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/fonts.css", get(fonts_css))
         .route("/fonts/{slug}/{file}", get(font_file))
         .route("/api/presets/effects", get(effect_presets))
+        .route("/api/logs", get(camera_logs))
         .route("/api/media/probe", get(probe_media))
         .route("/api/bin", post(add_media))
         .route("/api/transcribe", post(transcribe))
@@ -684,6 +685,13 @@ async fn effect_presets(State(st): S) -> Json<Value> {
         }
     }
     Json(json!(out.into_values().collect::<Vec<_>>()))
+}
+
+/// The camera logs a grade can name: `logs/*.json` from every library, then the project's
+/// own (wins on id), each with its name.
+async fn camera_logs(State(st): S) -> ApiResult {
+    let logs = blocking(move || kuma_core::camera::list(&st.config.all_log_dirs())).await?;
+    Ok(Json(json!(logs.into_iter().map(|(id, name)| json!({ "id": id, "name": name })).collect::<Vec<_>>())))
 }
 
 #[derive(Deserialize)]

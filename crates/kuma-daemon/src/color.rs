@@ -8,10 +8,9 @@
 //! the patch that writes it; applying it is the caller's edit.
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
 
 use kuma_core::color::{match_light, ColorStats, Target};
-use kuma_core::grade::Lut;
+use kuma_core::grade::Inputs;
 use kuma_core::manifest::Region;
 use kuma_core::{Effect, Grade, Project};
 use serde::Deserialize;
@@ -179,9 +178,10 @@ fn measure_frames(state: &AppState, doc: Project, req: &SampleRequest, region: R
         .collect()
 }
 
-/// A grade's LUT, read from the project (`Lut::cached`).
-fn lut(state: &AppState, path: Option<&str>) -> anyhow::Result<Option<Arc<Lut>>> {
-    path.map(|path| Lut::cached(&state.config.project_root().join(path)).map_err(|e| anyhow::anyhow!("LUT `{path}`: {e}"))).transpose()
+/// A grade's files read: its LUTs from the project, its camera log from the project or a
+/// library (`Inputs::load`).
+fn inputs(state: &AppState, grade: &Grade) -> anyhow::Result<Inputs> {
+    Inputs::load(grade, &state.config.project_root(), &state.config.all_log_dirs()).map_err(|e| anyhow::anyhow!(e))
 }
 
 /// The most points a side the editor's preview table may have, and what it gets by default:
@@ -193,7 +193,7 @@ pub const TABLE_SIZE: usize = 33;
 /// apply to a frame while a control is dragged (`Grading::table_rgb8`).
 pub fn table(state: &AppState, grade: &Grade, n: usize) -> anyhow::Result<Vec<u8>> {
     anyhow::ensure!((2..=TABLE_MOST).contains(&n), "a table has 2 to {TABLE_MOST} points a side");
-    let grading = kuma_core::grade::Grading::new(grade, lut(state, grade.input_lut.as_deref())?, lut(state, grade.look.as_deref())?);
+    let grading = kuma_core::grade::Grading::new(grade, inputs(state, grade)?);
     Ok(grading.table_rgb8(n))
 }
 
@@ -259,7 +259,7 @@ pub fn measure(state: &AppState, req: &ColorRequest, progress: &dyn Fn(u8, &str)
             (Target::like(&px).ok_or_else(|| anyhow::anyhow!("the reference region is empty"))?, json!({ "t": t, "sequence": seq, "region": r, "stats": stats }))
         }
     };
-    let matched = match_light(&at.grade, lut(state, at.grade.input_lut.as_deref())?, lut(state, at.grade.look.as_deref())?, &spread(ungraded, MATCH_PIXELS), aim)
+    let matched = match_light(&at.grade, inputs(state, &at.grade)?, &spread(ungraded, MATCH_PIXELS), aim)
         .ok_or_else(|| anyhow::anyhow!("the region has no pixels"))?;
     let effects = format!("/bin/{}/source/tracks/{}/clips/{}/effects", at.sequence, at.track, at.clip);
     // A grade whose light is keyed takes the answer as a key at the moment measured (the

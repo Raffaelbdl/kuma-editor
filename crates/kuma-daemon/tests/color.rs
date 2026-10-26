@@ -35,12 +35,10 @@ fn fixture() -> (Arc<AppState>, tempfile::TempDir) {
     let dir = tempfile::tempdir().unwrap();
     let project_file = dir.path().join("t.kuma.json");
     std::fs::write(&project_file, PROJECT).unwrap();
-    let config = Config {
-        project_file,
-        repo_root: std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."),
-        libraries: Libraries::new(dir.path().join("library")),
-        bind: "127.0.0.1:0".parse().unwrap(),
-    };
+    let repo_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    // The starter set, for its camera logs.
+    let libraries = Libraries { starter: Some(repo_root.join("library")), ..Libraries::new(dir.path().join("library")) };
+    let config = Config { project_file, repo_root, libraries, bind: "127.0.0.1:0".parse().unwrap() };
     (Arc::new(AppState::load(config).unwrap()), dir)
 }
 
@@ -212,7 +210,7 @@ fn a_grade_table_is_the_grade_at_every_point() {
     }
     let warm = kuma_core::Grade { temperature: 0.5, ..Default::default() };
     let table = kuma_daemon::color::table(&state, &warm, n).unwrap();
-    let grading = kuma_core::grade::Grading::new(&warm, None, None);
+    let grading = kuma_core::grade::Grading::new(&warm, Default::default());
     let want = grading.apply([0.5, 0.5, 0.5]).map(|v| (v * 255.0).round() as u8);
     let mid = (2 * n * n + 2 * n + 2) * 3;
     assert_eq!(&table[mid..mid + 3], &want);

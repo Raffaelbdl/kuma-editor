@@ -1,0 +1,36 @@
+{
+  "name": "Fujifilm F-Log2 / F-Gamut",
+  "source": "Fujifilm, GFX ETERNA Technical Guide white paper v1.01 (2026), F-Log and F-Log2 formulas",
+  "signal": "code",
+  "decode": [
+    {
+      "below": 0.100686685370811,
+      "linear": {
+        "slope": 8.799461,
+        "offset": 0.092864
+      }
+    },
+    {
+      "log": {
+        "a": 5.555556,
+        "b": 0.064829,
+        "c": 0.245281,
+        "d": 0.384316
+      }
+    }
+  ],
+  "primaries": [
+    [
+      0.708,
+      0.292
+    ],
+    [
+      0.17,
+      0.797
+    ],
+    [
+      0.131,
+      0.046
+    ]
+  ]
+}

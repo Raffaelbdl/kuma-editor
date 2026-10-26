@@ -12,7 +12,7 @@ use std::borrow::Borrow;
 
 use serde::Serialize;
 
-use crate::grade::{decode, luma, Grading, Lut, MID_GREY};
+use crate::grade::{decode, luma, Grading, Inputs, MID_GREY};
 use crate::model::Grade;
 
 /// The least light a channel is taken to have, so a black region has a balance and an
@@ -195,11 +195,11 @@ pub struct Matched {
 /// difference the light still shows, read in the grade's own units (as [`ColorStats`]
 /// reads a cast), and tries again: exact in one step for a grade of white balance and
 /// exposure alone, and a few steps more when its other settings bend the light after them.
-pub fn match_light(grade: &Grade, input: Option<std::sync::Arc<Lut>>, look: Option<std::sync::Arc<Lut>>, pixels: &[[f64; 3]], target: Target) -> Option<Matched> {
+pub fn match_light(grade: &Grade, inputs: Inputs, pixels: &[[f64; 3]], target: Target) -> Option<Matched> {
     if pixels.is_empty() {
         return None;
     }
-    let mut grading = Grading::new(grade, input, look);
+    let mut grading = Grading::new(grade, inputs);
     // Step 1 is before the light being solved: once, not on every try.
     let pixels: Vec<[f64; 3]> = pixels.iter().map(|p| grading.input(*p)).collect();
     let (mut t, mut m, mut e) = (grade.temperature, grade.tint, grade.exposure);
@@ -257,12 +257,12 @@ mod tests {
     fn a_grey_through_a_white_balance_reads_back_as_that_balance() {
         for (t, m) in [(0.4, 0.0), (-0.3, 0.2), (0.7, -0.5)] {
             let g = Grade { temperature: t, tint: m, ..Grade::default() };
-            let px = Grading::new(&g, None, None).apply([encode(MID_GREY); 3]);
+            let px = Grading::new(&g, Inputs::default()).apply([encode(MID_GREY); 3]);
             let b = ColorStats::of([px]).unwrap().balance;
             assert!((b.temperature - t).abs() < 1e-9 && (b.tint - m).abs() < 1e-9, "({t}, {m}) read as {b:?}");
         }
         // Exposure: a stop more light is a stop up.
-        let lit = Grading::new(&Grade { exposure: 1.0, ..Grade::default() }, None, None).apply([encode(MID_GREY); 3]);
+        let lit = Grading::new(&Grade { exposure: 1.0, ..Grade::default() }, Inputs::default()).apply([encode(MID_GREY); 3]);
         assert!((ColorStats::of([lit]).unwrap().exposure - 1.0).abs() < 1e-9);
     }
 
@@ -271,9 +271,9 @@ mod tests {
     fn a_match_brings_a_region_to_another_regions_light() {
         let reference = vec![[encode(0.2), encode(0.2), encode(0.2)]; 10];
         let wrong = Grade { temperature: -0.4, tint: 0.1, exposure: -0.8, ..Grade::default() };
-        let off = Grading::new(&wrong, None, None);
+        let off = Grading::new(&wrong, Inputs::default());
         let shot: Vec<_> = reference.iter().map(|p| off.apply(*p)).collect();
-        let m = match_light(&Grade::default(), None, None, &shot, Target::like(&reference).unwrap()).unwrap();
+        let m = match_light(&Grade::default(), Inputs::default(), &shot, Target::like(&reference).unwrap()).unwrap();
         assert!(m.reached, "{m:?}");
         assert!((m.grade.temperature - 0.4).abs() < 0.01 && (m.grade.tint + 0.1).abs() < 0.01 && (m.grade.exposure - 0.8).abs() < 0.01, "{:?}", m.grade);
         let want = ColorStats::of(&reference).unwrap();
@@ -281,7 +281,7 @@ mod tests {
 
         // The grade's other settings stay, and the match works through them.
         let styled = Grade { gain: Rgb { r: 0.0, g: 0.0, b: 0.1 }, saturation: 0.8, contrast: 1.2, ..Grade::default() };
-        let m = match_light(&styled, None, None, &shot, Target::like(&reference).unwrap()).unwrap();
+        let m = match_light(&styled, Inputs::default(), &shot, Target::like(&reference).unwrap()).unwrap();
         assert!(m.reached, "{m:?}");
         assert_eq!((m.grade.gain, m.grade.saturation, m.grade.contrast), (styled.gain, 0.8, 1.2));
     }
@@ -289,10 +289,10 @@ mod tests {
     #[test]
     fn neutral_takes_the_cast_away_and_leaves_the_light() {
         let warmer = Grade { temperature: 0.5, ..Grade::default() };
-        let warm = Grading::new(&warmer, None, None);
+        let warm = Grading::new(&warmer, Inputs::default());
         let wall = vec![warm.apply([encode(0.5); 3]); 10];
         let before = ColorStats::of(&wall).unwrap();
-        let m = match_light(&Grade::default(), None, None, &wall, Target::Neutral).unwrap();
+        let m = match_light(&Grade::default(), Inputs::default(), &wall, Target::Neutral).unwrap();
         assert!(m.reached && m.grade.exposure == 0.0, "{m:?}");
         assert!(m.after.balance.temperature.abs() < 0.03 && m.after.balance.tint.abs() < 0.03, "{:?}", m.after.balance);
         assert!((m.after.exposure - before.exposure).abs() < 0.05, "brightness kept: {} → {}", before.exposure, m.after.exposure);
@@ -302,7 +302,7 @@ mod tests {
     fn a_target_out_of_reach_says_so() {
         // Clipped white cannot be made brighter, and nothing reaches a colour that bright.
         let white = vec![[1.0; 3]; 4];
-        let m = match_light(&Grade::default(), None, None, &white, Target::Light([3.0; 3])).unwrap();
+        let m = match_light(&Grade::default(), Inputs::default(), &white, Target::Light([3.0; 3])).unwrap();
         assert!(!m.reached && m.grade.exposure <= 5.0);
     }
 

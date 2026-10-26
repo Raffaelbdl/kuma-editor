@@ -116,6 +116,11 @@ describe("the inspector's curve, wheels and colour picker", { skip: why ? `skipp
     await page.eval(pick(""));
     await page.until(`${GRADE}.then(e => !("log" in e))`);
     await settled(page);
+    // A log is a file: one put in the project's `logs/` is offered once the list is opened.
+    fs.mkdirSync(path.join(tmp, "logs"), { recursive: true });
+    fs.writeFileSync(path.join(tmp, "logs", "my-camera.json"), JSON.stringify({ name: "My camera", lut: "mine.cube" }));
+    await page.eval(`document.querySelector('#inspector [data-prop="log"] select').dispatchEvent(new FocusEvent("focus")), true`);
+    await page.until(`[...document.querySelectorAll('#inspector [data-prop="log"] option')].some(o => o.value === "my-camera" && o.textContent === "My camera")`);
   });
 
   it("turns a wheel's colour without moving its brightness, and a double-click takes the colour out", async () => {

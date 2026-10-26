@@ -1,5 +1,5 @@
 import { api, subscribeEvents } from "./api";
-import type { Activity, BlueprintInfo, LibraryInfo, Clip, Effect, HistoryEntry, MarkerInfo, DaemonEvent, FontFamily, Job, Marker, OverlayInfo, PatchOp, Project, Region, Track, TrackKind, Transition } from "./types";
+import type { Activity, BlueprintInfo, CameraLog, Clip, DaemonEvent, Effect, FontFamily, HistoryEntry, Job, LibraryInfo, Marker, MarkerInfo, OverlayInfo, PatchOp, Project, Region, Track, TrackKind, Transition } from "./types";
 import { allClips, clipPathOf, fpsValue, freeId, isFinal, isFileSource, isOverlaySource, nearest, seqDuration, seqPath, sequenceIds, sequenceOf } from "./types";
 
 /** A clip found in the project: where it is, as the record every edit of it starts from. */
@@ -39,6 +39,8 @@ export interface State {
   manifests: Record<string, OverlayInfo>;
   /** Font families `font` vars can name. */
   fonts: FontFamily[];
+  /** The camera logs a grade can name: files, read again when the libraries change. */
+  logs: CameraLog[];
   /** Bumped when a preview render finishes: preview images' cache key. */
   previewStamp: number;
   /** The sequence open for editing. The daemon owns this (the preview compiles it), so it
@@ -94,7 +96,7 @@ export interface State {
 type Listener = (s: State) => void;
 
 class Store {
-  state: State = { project: null, blueprints: [], libraries: [], manifests: {}, fonts: [], previewStamp: 0, sequence: "", selection: null, track: null, clipboard: null, effectClipboard: null, autoKey: false, reloading: false, playhead: 0, playing: false, zoom: 60, tab: SEQUENCE_TAB, sequences: [], entries: [], connected: false, jobs: {}, mode: "power", activity: [], history: [], markerList: [], colorReference: null };
+  state: State = { project: null, blueprints: [], libraries: [], manifests: {}, fonts: [], logs: [], previewStamp: 0, sequence: "", selection: null, track: null, clipboard: null, effectClipboard: null, autoKey: false, reloading: false, playhead: 0, playing: false, zoom: 60, tab: SEQUENCE_TAB, sequences: [], entries: [], connected: false, jobs: {}, mode: "power", activity: [], history: [], markerList: [], colorReference: null };
   private listeners = new Set<Listener>();
   private refreshing: Promise<void> | null = null;
   private refreshAgain = false;
@@ -150,6 +152,7 @@ class Store {
     const [project, { blueprints, libraries }, manifests, seq] = await Promise.all([api.project(), api.libraries(), api.overlays(), api.sequence()]);
     this.set({ project, blueprints, libraries, manifests, sequence: seq.current, sequences: [seq.current] });
     void this.reloadFonts();
+    void this.reloadLogs();
     subscribeEvents((e) => this.onEvent(e), (connected) => {
       this.set({ connected });
       // Events only say what happens from now on: what is already queued or running (or
@@ -228,6 +231,7 @@ class Store {
       // The blueprints, `_vendor/` and fonts the project reads: the fonts are fetched again.
       this.set({ libraries: e.libraries, blueprints: e.blueprints });
       void this.reloadFonts();
+      void this.reloadLogs();
     } else if (e.type === "jobs_cleared") {
       const jobs = { ...this.state.jobs };
       for (const id of e.ids) delete jobs[id];
@@ -294,6 +298,13 @@ class Store {
     }
     link.href = `/api/fonts.css?v=${Date.now()}`;
     this.set({ fonts });
+  }
+
+  /** Re-read the camera logs: a log is a file, not an edit, so nothing else says when one
+   *  arrives — the inspector asks again when its list is opened. */
+  async reloadLogs() {
+    const logs = await api.logs().catch(() => this.state.logs);
+    if (JSON.stringify(logs) !== JSON.stringify(this.state.logs)) this.set({ logs });
   }
 
   /** Re-read the manifests after a folder was edited on disk. */

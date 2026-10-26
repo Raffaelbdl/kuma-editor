@@ -1065,6 +1065,26 @@ mod tests {
         assert!(m.iter().any(|m| m.contains("duplicate `grade`")), "two over the whole picture still clash: {m:?}");
     }
 
+    /// A camera log is a file found by its id: one that is not there, or not an id, is said.
+    #[test]
+    fn a_camera_log_must_be_found() {
+        let dir = tempfile::tempdir().unwrap();
+        let starter = PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../library/logs"));
+        let p = project(json!({
+            "bin": { "x": { "source": { "color": "#000" } } },
+            "tracks": [{ "id": "v1", "clips": [
+                { "id": "a", "start": 0, "end": 1, "bin": "x", "effects": [{ "type": "grade", "log": "s-log3" }] },
+                { "id": "b", "start": 1, "end": 2, "bin": "x", "effects": [{ "type": "grade", "log": "d-log-m" }] },
+                { "id": "c", "start": 2, "end": 3, "bin": "x", "effects": [{ "type": "grade", "log": "../s-log3" }] }
+            ] }]
+        }));
+        let ctx = ValidationContext { root: dir.path().to_path_buf(), check_files: true, log_dirs: vec![starter, dir.path().join("logs")] };
+        let m: Vec<String> = validate(&p, &ctx).into_iter().filter(|i| i.severity == Severity::Error).map(|i| format!("{} {}", i.path, i.message)).collect();
+        assert_eq!(m.len(), 2, "{m:?}");
+        assert!(m[0].contains("/clips/1/effects/0/log") && m[0].contains("no camera log `d-log-m`"), "{m:?}");
+        assert!(m[1].contains("/clips/2/effects/0/log") && m[1].contains("named by its file's id"), "{m:?}");
+    }
+
     /// A picture file's entry takes a grade of its own — once, still, over the whole frame —
     /// and nothing else does.
     #[test]

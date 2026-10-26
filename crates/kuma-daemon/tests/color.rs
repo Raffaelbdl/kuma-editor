@@ -37,7 +37,8 @@ fn fixture() -> (Arc<AppState>, tempfile::TempDir) {
     std::fs::write(&project_file, PROJECT).unwrap();
     let repo_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
     // The starter set, for its camera logs.
-    let libraries = Libraries { starter: Some(repo_root.join("library")), ..Libraries::new(dir.path().join("library")) };
+    let mut libraries = Libraries::new(dir.path().join("library"));
+    libraries.starter = Some(repo_root.join("library"));
     let config = Config { project_file, repo_root, libraries, bind: "127.0.0.1:0".parse().unwrap() };
     (Arc::new(AppState::load(config).unwrap()), dir)
 }

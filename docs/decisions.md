@@ -3485,11 +3485,30 @@ the matte would be a table the preview asks for, never a field of the document.
 only with the maker's `.cube` found, downloaded and put under the project, and the agent
 could not do that for a person. The conversion is a function of the colour, so it is one
 more step of the grade's LUT: decode the camera's curve to scene light, turn its gamut into
-Rec. 709's primaries, tone map with BT.2390's EETF on max(R, G, B), pull out-of-gamut colours
-in (ACES's reference gamut compression), encode for BT.1886. The curves, primaries and both
-operators are FilmCraft's (MIT, its notice kept in `camera.rs`), from the makers' published
-specifications; tests check each curve against the makers' reference points and pin the
-whole conversion with values computed apart from the code.
+Rec. 709's primaries, tone map with BT.2390's EETF on max(R, G, B), bring colours outside
+Rec. 709 in towards the grey of their luminance, encode for BT.1886. Tests check each curve
+against the makers' reference points and pin the whole conversion with values computed
+apart from the code.
+
+**A camera log is a file, and every number has a primary source** — adopted, replacing the
+first version, which held twelve curves as code ported from FilmCraft. Two reasons. Adding a
+camera should be adding a file — `logs/<id>.json`, found in the libraries and then the
+project's own `logs/` (which wins), as fonts are — so "add the log for my camera" is an
+agent writing one file, not a change to kuma. And none of the conversion should rest on
+another editor's code: each curve and gamut is the maker's own published document, named in
+the file's `source`; PQ is SMPTE ST 2084, the tone map ITU-R BT.2390, white BT.2408's, the
+gamut matrix SMPTE RP 177's; the one step with no standard behind it — bringing a colour
+outside Rec. 709 in — is kuma's own, and the plainest there is (just far enough towards the
+grey of its luminance, keeping hue and luminance), where the first version had another
+editor's tuning of ACES's gamut compression.
+
+A file's curve is pieces of the shapes makers publish — linear, log of any base, power,
+constant — each for signals `below` (or `upto`) a bound, written as the maker writes the
+encoding so a document's constants go in as they are printed. The twelve starter files
+reproduce the curves they replaced to within 5·10⁻¹⁵. A maker who publishes only a LUT
+(DJI's D-Log M, so far) is a file naming that `.cube` beside it, which the grade then takes
+as its input. A log's bytes are hashed into the name of the LUT its grade compiles to, so an
+edited log is a new grade; a starter log is append-only in behaviour, like `_vendor/`.
 
 Choices: a grade takes `log` *or* `input_lut`, never both — a maker's input LUT is that same
 conversion, and two of them stacked is always a mistake. The signal is read as the camera's

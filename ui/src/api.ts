@@ -1,4 +1,4 @@
-import type { Activity, BlueprintInfo, LibraryInfo, HistoryEntry, MarkerInfo, CacheUsage, ColorReference, DaemonEvent, EffectPreset, FontFamily, Grade, Issue, Job, LintReport, OverlayInfo, PatchOp, Preset, Project, Region, SequenceState } from "./types";
+import type { Activity, BlueprintInfo, CacheUsage, CameraLog, ColorReference, DaemonEvent, EffectPreset, FontFamily, Grade, HistoryEntry, Issue, Job, LibraryInfo, LintReport, MarkerInfo, OverlayInfo, PatchOp, Preset, Project, Region, SequenceState } from "./types";
 
 async function json<T>(url: string, init?: RequestInit): Promise<T> {
   const r = await fetch(url, { headers: { "content-type": "application/json" }, ...init });
@@ -50,6 +50,8 @@ export const api = {
   openSequence: (sequence: string) =>
     json<{ current: string }>("/api/sequence", { method: "POST", body: JSON.stringify({ sequence }) }),
   fonts: () => json<FontFamily[]>("/api/fonts"),
+  /** The camera logs a grade can name: the libraries' and the project's `logs/`. */
+  logs: () => json<CameraLog[]>("/api/logs"),
   /** Copy a font file (relative to the project, or absolute) into the project's `fonts/`,
    *  or the user library's when `shared`. */
   addFont: (path: string, shared: boolean) =>

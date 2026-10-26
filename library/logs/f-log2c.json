@@ -1,6 +1,6 @@
 {
   "name": "Fujifilm F-Log2 C / F-Gamut C",
-  "source": "Fujifilm, GFX ETERNA Technical Guide white paper v1.01 (2026), F-Log and F-Log2 formulas",
+  "source": "Fujifilm, F-Log and F-Log2 Data Sheets",
   "signal": "code",
   "decode": [
     {

@@ -33,27 +33,11 @@
 //! re-grades finished videos. A log file's bytes are part of the name of the LUT it compiles
 //! to, so an edited one is a new grade, as an edited `.cube` is.
 //!
-//! The starter set's curves and primaries, and the tone map and gamut compression here, are
-//! FilmCraft's (`crates/color/src/{log,spaces,transform}.rs`), themselves from the makers'
-//! published specifications, used under the MIT licence:
-//!
-//! > Copyright (c) 2026 ArtCraft Team and the FilmCraft contributors
-//! >
-//! > Permission is hereby granted, free of charge, to any person obtaining a copy of this
-//! > software and associated documentation files (the "Software"), to deal in the Software
-//! > without restriction, including without limitation the rights to use, copy, modify, merge,
-//! > publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons
-//! > to whom the Software is furnished to do so, subject to the following conditions:
-//! >
-//! > The above copyright notice and this permission notice shall be included in all copies or
-//! > substantial portions of the Software.
-//! >
-//! > THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED,
-//! > INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR
-//! > PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE
-//! > FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
-//! > OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
-//! > DEALINGS IN THE SOFTWARE.
+//! Where it all comes from, so each number can be checked against its source: every curve
+//! and gamut in the starter set is the camera maker's own published document, named in the
+//! file's `source`; PQ is SMPTE ST 2084, the tone map ITU-R BT.2390's EETF, white BT.2408's
+//! reference white, the gamut matrix SMPTE RP 177's derivation. How a colour outside
+//! Rec. 709 is brought in is kuma's own: towards the grey of its luminance, just far enough.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -229,12 +213,17 @@ pub fn parse(bytes: &[u8], folder: &Path) -> Result<Log, String> {
     Ok(Log::Curve(Arc::new(Conversion::new(file.signal, file.decode, primaries, file.white.unwrap_or(D65)))))
 }
 
+/// Rec. 709's primaries and D65, its white (ITU-R BT.709).
 const BT709: [[f64; 2]; 3] = [[0.640, 0.330], [0.300, 0.600], [0.150, 0.060]];
 const D65: [f64; 2] = [0.3127, 0.3290];
 
-/// BT.2408's HDR reference white, which scene light 1.0 is taken to be for the tone map.
+/// Scene light 1.0 as display light: ITU-R BT.2408's HDR reference white, 203 cd/m².
 const REFERENCE_WHITE_NITS: f64 = 203.0;
-/// The most a log curve's peak is taken to be, so the knee starts above mid grey.
+/// The brightest a curve's top is taken to be. A log curve's top is often tens of times
+/// white; taken whole, BT.2390's knee would start below mid grey and darken the middle of
+/// the picture. Capped here, the knee starts above mid grey for every curve (at 4000 cd/m²
+/// it starts at 0.46 of the range in PQ, mid grey being 0.43), and what is brighter still
+/// is white.
 const LOG_PEAK_NITS: f64 = 4000.0;
 
 /// A camera log's curve, ready to convert colours with: its gamut matrix and tone map
@@ -279,128 +268,127 @@ impl Conversion {
         let light = c.map(|v| self.decode(self.signal(v)));
         let light = mul_vec(&self.matrix, light);
         let light = self.tone.apply(light);
-        gamut_compress(light).map(|v| encode(v.clamp(0.0, 1.0)))
+        into_gamut(light).map(|v| encode(v.clamp(0.0, 1.0)))
     }
 }
 
 type Mat3 = [[f64; 3]; 3];
 
-/// RGB → XYZ for primaries `p` and white `w` (SMPTE RP 177).
-fn npm(p: [[f64; 2]; 3], w: [f64; 2]) -> Mat3 {
-    let xyz = |c: [f64; 2]| [c[0] / c[1], 1.0, (1.0 - c[0] - c[1]) / c[1]];
-    let (r, g, b) = (xyz(p[0]), xyz(p[1]), xyz(p[2]));
-    let m = [[r[0], g[0], b[0]], [r[1], g[1], b[1]], [r[2], g[2], b[2]]];
-    let s = mul_vec(&inverse(&m), xyz(w));
-    std::array::from_fn(|i| std::array::from_fn(|j| m[i][j] * s[j]))
+/// The matrix taking linear RGB with `primaries` and `white` to CIE XYZ, white at Y = 1:
+/// SMPTE RP 177's normalised primary matrix — the primaries' XYZ as columns, each scaled so
+/// the three add up to the white.
+fn npm(primaries: [[f64; 2]; 3], white: [f64; 2]) -> Mat3 {
+    let xyz = |[x, y]: [f64; 2]| [x / y, 1.0, (1.0 - x - y) / y];
+    let columns = primaries.map(xyz);
+    let p: Mat3 = std::array::from_fn(|row| std::array::from_fn(|col| columns[col][row]));
+    let scale = mul_vec(&inverse(&p), xyz(white));
+    std::array::from_fn(|row| std::array::from_fn(|col| p[row][col] * scale[col]))
 }
 
 fn mul(a: &Mat3, b: &Mat3) -> Mat3 {
-    std::array::from_fn(|i| std::array::from_fn(|j| (0..3).map(|k| a[i][k] * b[k][j]).sum()))
+    std::array::from_fn(|row| std::array::from_fn(|col| (0..3).map(|k| a[row][k] * b[k][col]).sum()))
 }
 
 fn mul_vec(m: &Mat3, v: [f64; 3]) -> [f64; 3] {
-    std::array::from_fn(|i| m[i][0] * v[0] + m[i][1] * v[1] + m[i][2] * v[2])
+    std::array::from_fn(|row| (0..3).map(|k| m[row][k] * v[k]).sum())
 }
 
+/// The inverse of `m`: its adjugate over its determinant.
 fn inverse(m: &Mat3) -> Mat3 {
-    let [[a, b, c], [d, e, f], [g, h, i]] = *m;
-    let k = 1.0 / (a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g));
-    [
-        [(e * i - f * h) * k, (c * h - b * i) * k, (b * f - c * e) * k],
-        [(f * g - d * i) * k, (a * i - c * g) * k, (c * d - a * f) * k],
-        [(d * h - e * g) * k, (b * g - a * h) * k, (a * e - b * d) * k],
-    ]
+    // Cofactor of row r, column c, with the rows and columns after them wrapping round,
+    // which takes care of the signs.
+    let cofactor = |r: usize, c: usize| {
+        let (r1, r2, c1, c2) = ((r + 1) % 3, (r + 2) % 3, (c + 1) % 3, (c + 2) % 3);
+        m[r1][c1] * m[r2][c2] - m[r1][c2] * m[r2][c1]
+    };
+    let det: f64 = (0..3).map(|c| m[0][c] * cofactor(0, c)).sum();
+    std::array::from_fn(|row| std::array::from_fn(|col| cofactor(col, row) / det))
 }
 
-/// SMPTE ST 2084's constants.
-const PQ_M1: f64 = 0.159_301_758_125;
-const PQ_M2: f64 = 78.84375;
-const PQ_C1: f64 = 0.8359375;
-const PQ_C2: f64 = 18.8515625;
-const PQ_C3: f64 = 18.6875;
+/// SMPTE ST 2084's (PQ) constants.
+const PQ_M1: f64 = 2610.0 / 16384.0;
+const PQ_M2: f64 = 2523.0 / 4096.0 * 128.0;
+const PQ_C1: f64 = 3424.0 / 4096.0;
+const PQ_C2: f64 = 2413.0 / 4096.0 * 32.0;
+const PQ_C3: f64 = 2392.0 / 4096.0 * 32.0;
 
-/// SMPTE ST 2084: a PQ signal's light, as a fraction of 10 000 nits, and back.
-fn pq_eotf(e: f64) -> f64 {
-    let p = e.max(0.0).powf(1.0 / PQ_M2);
-    ((p - PQ_C1).max(0.0) / (PQ_C2 - PQ_C3 * p)).powf(1.0 / PQ_M1)
-}
-
-fn pq_inverse_eotf(y: f64) -> f64 {
-    let p = y.max(0.0).powf(PQ_M1);
-    ((PQ_C1 + PQ_C2 * p) / (1.0 + PQ_C3 * p)).powf(PQ_M2)
-}
-
-/// A PQ signal for `nits`.
+/// ST 2084's signal for `nits` of display light, 0 to 10 000.
 fn pq(nits: f64) -> f64 {
-    pq_inverse_eotf((nits / 10_000.0).clamp(0.0, 1.0))
+    let y = (nits / 10_000.0).clamp(0.0, 1.0).powf(PQ_M1);
+    ((PQ_C1 + PQ_C2 * y) / (1.0 + PQ_C3 * y)).powf(PQ_M2)
 }
 
-/// Scene light peaking at `peak` nits onto SDR white: ITU-R BT.2390's EETF (a Hermite knee
-/// in the PQ domain) on max(R, G, B), as a ratio. Its knee is the peak's, worked out once.
+/// ST 2084's display light, in nits, for the signal `e`.
+fn pq_nits(e: f64) -> f64 {
+    let p = e.max(0.0).powf(1.0 / PQ_M2);
+    10_000.0 * ((p - PQ_C1).max(0.0) / (PQ_C2 - PQ_C3 * p)).powf(1.0 / PQ_M1)
+}
+
+/// Light up to `peak` nits brought down to white: the EETF of ITU-R BT.2390 (§5.4), worked
+/// in PQ, from a source peaking at `peak` to a display peaking at reference white, with no
+/// black lift. It is applied to the brightest of a colour's three channels and the others
+/// scaled with it, as SMPTE ST 2094-40 tone maps (`maxRGB`), so a colour keeps its hue and
+/// saturation as it is brought down.
 #[derive(Debug, Clone)]
 struct ToneMap {
     peak: f64,
-    /// The peak as a PQ signal, white as a fraction of it, and where the knee starts.
-    top: f64,
-    most: f64,
-    ks: f64,
+    /// The source peak in PQ; the target's, as a fraction of it (BT.2390's `maxLum`); and
+    /// where the knee starts (`KS`).
+    source: f64,
+    max_lum: f64,
+    knee: f64,
 }
 
 impl ToneMap {
     fn new(peak: f64) -> Self {
-        let top = pq(peak);
-        let most = pq(REFERENCE_WHITE_NITS) / top;
-        ToneMap { peak, top, most, ks: 1.5 * most - 0.5 }
+        let source = pq(peak);
+        let max_lum = pq(REFERENCE_WHITE_NITS) / source;
+        ToneMap { peak, source, max_lum, knee: 1.5 * max_lum - 0.5 }
     }
 
     fn apply(&self, c: [f64; 3]) -> [f64; 3] {
-        let m = c[0].max(c[1]).max(c[2]);
-        if m <= 0.0 {
+        let brightest = c[0].max(c[1]).max(c[2]);
+        if brightest <= 0.0 {
             return c;
         }
-        let nits = m * REFERENCE_WHITE_NITS;
-        let k = if nits >= self.peak { 1.0 / m } else { self.eetf(nits) / nits };
+        let nits = brightest * REFERENCE_WHITE_NITS;
+        let k = if nits >= self.peak { 1.0 / brightest } else { self.eetf(nits) / nits };
         c.map(|v| v * k)
     }
 
-    /// `nits` from a display peaking at `peak` onto one peaking at white.
+    /// BT.2390's curve: unchanged below the knee, then a Hermite spline from the knee to
+    /// the target's peak.
     fn eetf(&self, nits: f64) -> f64 {
-        if REFERENCE_WHITE_NITS >= self.peak {
-            return nits.max(0.0).min(self.peak.max(REFERENCE_WHITE_NITS));
+        // A source no brighter than white has nothing to bring down.
+        if self.max_lum >= 1.0 {
+            return nits;
         }
-        let (top, most, ks) = (self.top, self.most, self.ks);
-        let e1 = (pq(nits) / top).min(1.0);
-        let e2 = if e1 < ks {
+        let e1 = (pq(nits) / self.source).min(1.0);
+        let e2 = if e1 < self.knee {
             e1
         } else {
-            let t = (e1 - ks) / (1.0 - ks);
+            let t = (e1 - self.knee) / (1.0 - self.knee);
             let (t2, t3) = (t * t, t * t * t);
-            (2.0 * t3 - 3.0 * t2 + 1.0) * ks + (t3 - 2.0 * t2 + t) * (1.0 - ks) + (-2.0 * t3 + 3.0 * t2) * most
+            (2.0 * t3 - 3.0 * t2 + 1.0) * self.knee + (t3 - 2.0 * t2 + t) * (1.0 - self.knee) + (-2.0 * t3 + 3.0 * t2) * self.max_lum
         };
-        pq_eotf(e2 * top) * 10_000.0
+        pq_nits(e2 * self.source)
     }
 }
 
-/// Colours outside the gamut (a channel below 0 after the matrix) pulled towards grey, after
-/// the ACES Reference Gamut Compression (threshold 0.8, limit 1.25, power 1.2): those inside
-/// 80% of the boundary keep their values.
-fn gamut_compress(c: [f64; 3]) -> [f64; 3] {
-    const TH: f64 = 0.8;
-    const LIM: f64 = 1.25;
-    const P: f64 = 1.2;
-    let ach = c[0].max(c[1]).max(c[2]);
-    if ach <= 1e-9 {
-        return c.map(|v| v.max(0.0));
+/// A colour the camera's wider gamut puts outside Rec. 709 — a channel below nothing once
+/// it is Rec. 709's — moved towards the grey of its own luminance just far enough to come
+/// inside, keeping its luminance and hue. A colour already inside is left as it is.
+fn into_gamut(c: [f64; 3]) -> [f64; 3] {
+    let least = c[0].min(c[1]).min(c[2]);
+    if least >= 0.0 {
+        return c;
     }
-    let s = (LIM - TH) / (((LIM - TH) / (1.0 - TH)).powf(P) - 1.0).powf(1.0 / P);
-    c.map(|v| {
-        let d = (ach - v) / ach;
-        if d < TH {
-            return v;
-        }
-        let x = (d - TH) / s;
-        ach - (TH + s * x / (1.0 + x.powf(P)).powf(1.0 / P)) * ach
-    })
+    let y = crate::grade::luma(c);
+    if y <= 0.0 {
+        return [0.0; 3];
+    }
+    let keep = y / (y - least);
+    c.map(|v| y + (v - y) * keep)
 }
 
 #[cfg(test)]
@@ -419,8 +407,8 @@ mod tests {
         }
     }
 
-    /// The makers' published points: a curve that decodes these to their reflectances
-    /// reads the footage as the camera wrote it (FilmCraft's own reference values).
+    /// The makers' published points — the code values their documents give for black, 18%
+    /// grey and 90% white — decode to those reflectances.
     #[test]
     fn each_curve_decodes_its_makers_published_points() {
         let code = |id: &str, cv: f64| curve(id).decode(cv / 1023.0);
@@ -472,14 +460,15 @@ mod tests {
     /// re-grades every video shot in that log.
     #[test]
     fn each_log_keeps_the_values_it_has_always_given() {
-        let c = [0.55, 0.42, 0.33];
-        // Worked out apart from this code, from FilmCraft's formulas.
+        // Worked out apart from this code, from the files and the standards.
         let want = [
-            ("s-log3-cine", [0.788968430923, 0.40427914021, 0.300270827988]),
-            ("v-log", [0.793945843013, 0.371598961737, 0.301356151667]),
-            ("apple-log", [0.677229665181, 0.323861309216, 0.261714563666]),
+            ("s-log3-cine", [0.55, 0.42, 0.33], [0.788968430923, 0.40427914021, 0.255912754195]),
+            ("v-log", [0.55, 0.42, 0.33], [0.793945843013, 0.368742250574, 0.255687751465]),
+            ("apple-log", [0.55, 0.42, 0.33], [0.677229665181, 0.322539190092, 0.228363462642]),
+            // A red past Rec. 709's: brought in until green is nothing.
+            ("s-log3-cine", [0.7, 0.3, 0.25], [0.825397156196, 0.0, 0.258730375702]),
         ];
-        for (id, w) in want {
+        for (id, c, w) in want {
             let got = curve(id).apply(c);
             assert!((0..3).all(|i| (got[i] - w[i]).abs() < 1e-8), "{id}: {got:?} not {w:?}");
         }

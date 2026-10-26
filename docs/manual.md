@@ -708,7 +708,9 @@ sound and that frame repeated, because MLT's `freeze` filter fetches its frame f
 wrong producer for a sequence and deadlocks on a still.
 
 **A grade is one LUT kuma computes.** The `grade` effect holds a colour grade — a camera log
-to convert (`kuma_core::camera`: the makers' curves and gamuts, tone mapped to SDR) or an input
+to convert (`kuma_core::camera`: a `logs/<id>.json` file with the maker's curve and gamut, or
+the maker's LUT, found in the libraries and the project's own `logs/` like fonts; tone
+mapped to SDR) or an input
 LUT, white balance, exposure, lift/gamma/gain wheels, contrast, tonal ranges, curves (tone,
 per channel, and against hue, luma and saturation), saturation, vibrance and a
 look LUT — and `kuma_core::grade` says what each does to a colour, in that order. The

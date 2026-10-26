@@ -85,7 +85,8 @@ is also what makes it cheap: nothing is baked.
   the shadows, where noise lives. Log footage (flat, grey, washed out
   straight from the camera) wants converting before anything else — on the bin entry
   (`/bin/<id>/effects: [{"type": "grade", "log": …}]`), so every clip of it converts and a
-  split cannot lose it: `log` names the camera's
+  split cannot lose it: `log` names the camera's (a file, `logs/<id>.json` — see "A camera
+  kuma lacks" below)
   (`s-log3-cine`, `v-log`, `logc3`, `apple-log`, `d-log`, … — kuma does the maker's maths, mid
   grey to mid grey, highlights rolled off), or the maker's `.cube` as `input_lut`; a creative `.cube` goes in `look`,
   softened by `look_amount`. Sample a frame of each clip side by side after grading, and
@@ -105,6 +106,21 @@ is also what makes it cheap: nothing is baked.
   frames where it turns (`times`), read its region off each, and give the mask a key per
   frame, `keyframes: [{t, x, y}, …]` (`t` from the clip's start; straight lines between, so
   a curved path wants more keys). Check frames *between* the keys before rendering.
+- **A camera kuma lacks.** A camera log is a file in the project's `logs/` (or a library's),
+  named by its id, so adding one is writing that file — no change to kuma. From the maker's
+  published document (the white paper giving the encoding formula and the gamut's
+  primaries), write the curve that turns the signal into scene light as pieces, each for
+  signals `below` (or `upto`) a bound and the last unbounded, in the shapes makers print
+  them — `"linear": {slope, offset}` for `y = slope·x + offset`, `"log": {a, b, c, d, base}`
+  for `y = c·log_base(a·x + b) + d`, `"power": {scale, power, from}` for
+  `y = scale·(x − from)^power`, `"constant": x` — with `"signal": "code"` (10-bit code over
+  1023) or `"ire"` as the document writes it, the three `primaries` as (x, y), and the
+  document in `source`. Check it: the document's code value for 18% grey must decode to 0.18
+  (sample a grey card shot in that log after; `measure_color` reads `exposure` ≈ 0). A maker
+  who publishes only a LUT — DJI's D-Log M, on the Osmo Pocket 3, Action 4 and recent drones,
+  is one — is `{"name": "DJI D-Log M", "source": "DJI's D-Log M to Rec.709 LUT", "lut":
+  "dlogm-rec709.cube"}` with the maker's `.cube` beside it; get the `.cube` from the maker's
+  download page and ask the person for it if you cannot. Never invent a curve's numbers.
 - **Grade by measuring.** `measure_color` with a `region` on something that should match in
   life (a face, a white wall, a grey shirt — never the whole frame, whose content differs)
   gives its `exposure` and `balance` as grade numbers; compare shots by those. To fix one,

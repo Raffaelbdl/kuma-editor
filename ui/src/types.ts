@@ -247,6 +247,9 @@ export interface OverlayManifest {
   create?: string;
 }
 /** A font family a `font` var can name, from the project's `fonts/` or a library's. */
+/** A camera log a grade can name (`logs/<id>.json`, `/api/logs`). */
+export interface CameraLog { id: string; name: string }
+
 export interface FontFamily {
   name: string;
   origin: "project" | "library";

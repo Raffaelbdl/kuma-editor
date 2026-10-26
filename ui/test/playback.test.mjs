@@ -79,4 +79,41 @@ describe("playback", { skip: why ? `skipping: ${why}` : false }, () => {
     await page.until(`fetch("/api/sequence").then(r => r.json()).then(j => j.current === "main")`);
     await page.until(`${SENT} === "play pause" && ${PLAYING} === "false"`);
   });
+
+  // Play used to flip the button to "pause" over a still picture for as long as the engine
+  // took to start — seconds behind a reload — which read as a frozen editor.
+  const STARTING = `document.querySelector("#transport button.icon[data-playing]")?.dataset.starting`;
+  const BADGE = `document.querySelector(".stage .badge").textContent`;
+  const say = (j) => page.eval(`(window.__engineSocket.onmessage({ data: ${JSON.stringify(JSON.stringify(j))} }), true)`);
+  /** A real JPEG at `frame`, framed as the daemon frames one. */
+  const frame = (f) => page.eval(`(async () => {
+    const c = document.createElement("canvas"); c.width = 16; c.height = 9;
+    const jpeg = await new Promise((r) => c.toBlob(r, "image/jpeg")).then((b) => b.arrayBuffer());
+    const buf = new Uint8Array(8 + jpeg.byteLength);
+    new DataView(buf.buffer).setBigInt64(0, BigInt(${f}), true);
+    buf.set(new Uint8Array(jpeg), 8);
+    window.__engineSocket.onmessage({ data: buf.buffer });
+    return true;
+  })()`);
+
+  it("says it is starting, and what on, until the first frame", async () => {
+    await key(" ", "Space");
+    await page.until(`${PLAYING} === "true" && ${STARTING} === "true" && ${BADGE}.startsWith("starting")`);
+    await say({ waiting: "for the timeline to load" });
+    await page.until(`${BADGE}.includes("for the timeline to load")`);
+    await say({ playing: true });
+    await page.until(`${BADGE}.includes("rendering the first frame")`);
+    await frame(3);
+    await page.until(`${STARTING} === "false" && ${PLAYING} === "true" && ${BADGE}.startsWith("engine")`);
+    await key(" ", "Space");
+    await page.until(`${PLAYING} === "false"`);
+  });
+
+  it("turns back off when the engine refuses to play, and says why", async () => {
+    await key(" ", "Space");
+    await page.until(`${PLAYING} === "true" && ${STARTING} === "true"`);
+    await say({ refused: "no timeline loaded" });
+    await page.until(`${PLAYING} === "false" && ${STARTING} === "false"`);
+    await page.until(`[...document.querySelectorAll("#toasts .toast")].some((t) => t.textContent.includes("no timeline loaded"))`);
+  });
 });

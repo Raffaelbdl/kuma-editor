@@ -219,3 +219,54 @@ fn the_sound_paces_the_picture_and_a_reload_does_not_stop_it() {
     let after: Vec<i64> = frames(&e.drain(Duration::from_millis(800))).into_iter().map(|(_, f)| f).collect();
     assert_eq!(after.last(), Some(&12), "a stale frame landed after the seek: {after:?}");
 }
+
+/// A graph as slow to open as a long timeline: hundreds of producers, each opening its file.
+fn slow_graph(root: &Path) -> PathBuf {
+    let media = root.join("clip.mp4");
+    let producers: String = (0..300)
+        .map(|i| format!(r#"<producer id="p{i}" in="0" out="29"><property name="resource">{}</property><property name="mlt_service">avformat</property></producer>"#, media.display()))
+        .collect();
+    let entries: String = (0..300).map(|i| format!(r#"<entry producer="p{i}" in="0" out="0"/>"#)).collect();
+    let path = root.join("slow.mlt");
+    std::fs::write(&path, format!(r#"<?xml version="1.0"?><mlt>{producers}<playlist id="main">{entries}</playlist></mlt>"#)).unwrap();
+    path
+}
+
+#[test]
+fn a_play_never_waits_behind_a_load() {
+    let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let bin = repo.join("engine/build/kuma-preview");
+    if !bin.is_file() || (headless() && !preview::has_bin("xvfb-run")) || !preview::has_bin("ffmpeg") {
+        eprintln!("preview engine, a display or ffmpeg missing; skipping");
+        return;
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    let (video, audio, _) = fixture(tmp.path());
+    let slow = slow_graph(tmp.path());
+    let mut e = Engine::start(&bin);
+
+    // Before any timeline is in, a seek is kept and a play is held and said to be, not
+    // refused: the editor asks for both as soon as it connects, while the first load runs.
+    e.send("seek 30");
+    e.send(&format!("load-video {}", slow.display()));
+    e.send("play");
+    e.expect_line("ok waiting", Duration::from_secs(5));
+    e.expect_line("ok play", Duration::from_secs(30));
+    let first = frames(&e.drain(Duration::from_millis(500))).first().map(|(_, f)| *f);
+    assert_eq!(first, Some(30), "playback did not start where the seek asked");
+    e.send("pause");
+
+    e.send(&format!("load-video {}", video.display()));
+    e.expect_line("ok loaded video", Duration::from_secs(20));
+    e.send(&format!("load-audio {}", audio.display()));
+    e.expect_line("ok loaded audio", Duration::from_secs(20));
+    e.send("seek 0");
+    e.frame(0);
+    // An edit reloads a graph, which takes seconds on a long timeline. Play answers at once,
+    // on the graph already held, and the new one is swapped in when it is open.
+    e.send(&format!("load-audio {}", slow.display()));
+    e.send("play");
+    let before = e.expect_line("ok play", Duration::from_secs(5));
+    assert!(!before.iter().any(|(_, m)| matches!(m, Out::Line(l) if l.starts_with("ok loaded"))), "play waited for the load");
+    e.expect_line("ok loaded audio frames=300", Duration::from_secs(30));
+}

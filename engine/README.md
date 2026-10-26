@@ -24,6 +24,9 @@ Dependencies (Debian/Ubuntu): `libmlt++-dev libmlt-dev libsdl2-dev libturbojpeg0
 → quit
 
 ← ok <what> | err <message>
+← ok play                 playback started
+← ok waiting <why>        a play held until the first timeline is open, then `ok play`
+← err no timeline loaded  a play refused: nothing to play, nothing loading
 ← frame <frame> <bytes>\n<bytes of JPEG>      one composited frame, JPEG, profile size
 ```
 
@@ -33,12 +36,15 @@ about three frames of sound in the ring, from the audio graph, or silence when t
 none, so the clock always runs. The picture's thread shows the frame the samples played so
 far have reached: ahead of it, it waits; behind it, it skips to it, so a slow picture drops
 frames and never slows the sound. A load swaps its graph between two frames without
-pausing, and one that fails leaves the current graph playing. A frame the picture's
+pausing, and one that fails leaves the current graph playing. Graphs open on a loader
+thread — every producer opens its file, which is seconds on a long timeline — so a seek
+or play sent just after a load is answered at once on the graph already held; loads of
+one graph queued behind each other open only the newest. A frame the picture's
 thread finishes after a pause or seek is dropped, so the seek's frame is always the last.
 When no device can be opened (no sound server in CI) the engine reopens with SDL's
 `dummy` driver, which still paces the callback in real time. The daemon forwards `frame`
-lines and `ok end` to every preview socket. `crates/kuma-daemon/tests/engine.rs` drives
-the protocol with real media.
+lines, `ok end`, what became of a play and the engine's errors to every preview socket.
+`crates/kuma-daemon/tests/engine.rs` drives the protocol with real media.
 
 MLT's Qt module (qtblend, qtcrop) needs an X display, so the daemon starts the engine
 under `xvfb-run -a` when `DISPLAY` is unset.

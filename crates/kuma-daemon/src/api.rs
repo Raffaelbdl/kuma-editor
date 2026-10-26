@@ -1197,7 +1197,9 @@ async fn events_ws(State(st): S, ws: WebSocketUpgrade) -> Response {
 
 /// Preview transport: text commands in (`seek <secs>`, `play`, `pause`, `reload`,
 /// `scale <f>`), JSON status lines and binary JPEG frames out (8-byte little-endian frame
-/// index, then the JPEG). The socket closes when its engine exits; the client reconnects.
+/// index, then the JPEG). What became of a `play` is said: `playing`, `waiting` (with why)
+/// or `refused` (with why); `engine` is any other engine error. The socket closes when its
+/// engine exits; the client reconnects.
 async fn preview_ws(State(st): S, ws: WebSocketUpgrade) -> Response {
     ws.on_upgrade(move |mut socket| async move {
         async fn say(socket: &mut WebSocket, v: Value) -> bool {
@@ -1237,6 +1239,10 @@ async fn preview_ws(State(st): S, ws: WebSocketUpgrade) -> Response {
                         if socket.send(Message::Binary(Bytes::from(buf))).await.is_err() { break; }
                     }
                     Ok(EngineEvent::End) => { if !say(&mut socket, json!({ "end": true })).await { break; } }
+                    Ok(EngineEvent::Playing) => { if !say(&mut socket, json!({ "playing": true })).await { break; } }
+                    Ok(EngineEvent::Waiting(why)) => { if !say(&mut socket, json!({ "waiting": why })).await { break; } }
+                    Ok(EngineEvent::Refused(why)) => { if !say(&mut socket, json!({ "refused": why })).await { break; } }
+                    Ok(EngineEvent::Error(e)) => { if !say(&mut socket, json!({ "engine": e })).await { break; } }
                     Ok(EngineEvent::Exited) | Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
                 },

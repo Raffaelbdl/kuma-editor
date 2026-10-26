@@ -5,7 +5,9 @@
 //!   → `load-video <path.mlt>` | `load-audio <path.mlt>` | `seek <frame>` | `play` | `pause` | `quit`
 //!   ← `ok …` | `err …` | `frame <frame> <len>` followed by `<len>` JPEG bytes
 //!
-//! Frames, `ok end` and the engine's exit are fanned out to every preview socket. A
+//! Frames, what became of a `play` (`ok play`, `ok waiting …`, `err no timeline loaded`),
+//! the engine's other errors, `ok end` and the engine's exit are fanned out to every
+//! preview socket, so a client never has to guess why pressing play showed nothing. A
 //! socket is bound to one engine process: when it exits every socket closes and the UI
 //! reconnects, which starts a fresh engine. Until the engine is built, `snapshot`
 //! (single frame via melt) is the fallback the UI uses.
@@ -33,6 +35,15 @@ pub struct PreviewFrame {
 #[derive(Debug, Clone)]
 pub enum EngineEvent {
     Frame(PreviewFrame),
+    /// Playback started: the engine's answer to `play`.
+    Playing,
+    /// A `play` the engine holds until the timeline it is loading is in, and why.
+    Waiting(String),
+    /// A `play` the engine refused, so nothing is playing.
+    Refused(String),
+    /// Something else the engine could not do: a graph that would not open, a frame it
+    /// could not render. At most one every few seconds, since a broken frame repeats.
+    Error(String),
     /// Playback ran off the end of the timeline and the engine paused itself.
     End,
     /// The engine process is gone; reconnect to get a new one.
@@ -204,6 +215,7 @@ impl PreviewHandle {
             let mut rd = BufReader::new(stdout);
             let mut line = String::new();
             let mut ready = false;
+            let mut said: Option<std::time::Instant> = None;
             loop {
                 line.clear();
                 match rd.read_line(&mut line).await {
@@ -226,6 +238,16 @@ impl PreviewHandle {
                     let _ = events.send(EngineEvent::Frame(PreviewFrame { frame: f, jpeg: Arc::new(buf) }));
                 } else if let Some(e) = l.strip_prefix("err ") {
                     tracing::warn!("preview engine: {e}");
+                    if e == "no timeline loaded" {
+                        let _ = events.send(EngineEvent::Refused(e.to_string()));
+                    } else if said.is_none_or(|t| t.elapsed() >= std::time::Duration::from_secs(5)) {
+                        said = Some(std::time::Instant::now());
+                        let _ = events.send(EngineEvent::Error(e.to_string()));
+                    }
+                } else if l == "ok play" {
+                    let _ = events.send(EngineEvent::Playing);
+                } else if let Some(w) = l.strip_prefix("ok waiting ") {
+                    let _ = events.send(EngineEvent::Waiting(w.to_string()));
                 } else if l == "ok end" {
                     let _ = events.send(EngineEvent::End);
                 } else if l.starts_with("ok ready") {

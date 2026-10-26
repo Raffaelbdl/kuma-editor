@@ -890,7 +890,8 @@ thread shows the frame that count has reached, dropping frames when late, and a 
 finishes after a pause or seek is dropped rather than shown over the seek's. Both threads
 seek by frame index into graphs of the same document, which is why speed and nested
 sequences need nothing of their own here: the compiler already put them in both.
-`load-video` and `load-audio` swap a graph between frames without pausing.
+`load-video` and `load-audio` swap a graph between frames without pausing, and open it
+on a thread of their own (see *Play answers at once* below).
 `kuma-daemon/tests/engine.rs` pins the pacing, frame by frame, and was checked to fail
 with a picture that runs free.
 
@@ -918,6 +919,39 @@ Not built, recorded for when the video half is too slow:
 - **Cheaper, available now:** decoder threads (the avformat producer's `threads`
   property, which changes speed and not output), JPEG encoding off the pull thread, and
   caching heavy nested sequences the way bakes cache overlays.
+
+**Play answers at once, and says so** — adopted, after "the play button toggles, but
+nothing starts" (issue 35). Measured on a 45-clip, two-track 1080p timeline: opening the
+picture's graph took 1.6 s and the sound's 1.3 s, and the engine did it on the thread
+that reads commands, so a play sent after an edit — every edit reloads a graph, and so
+does every finished `preview-bake` — waited behind both: 3.5 s from the press to `ok
+play`. Meanwhile the UI had flipped the button to "pause" over a still picture and heard
+nothing back, because the daemon logged the engine's `ok play` and `err` lines and
+forwarded neither. Two changes:
+
+- **Graphs open on a loader thread**; the command thread only swaps the opened graph in.
+  A play or seek after an edit is answered on the graph already held (2 ms to `ok play`,
+  measured), and the new graph lands between two frames as before. Loads of one graph
+  queued behind each other open only the newest, so a burst of edits opens one graph,
+  and the graph swapped out is closed there too. MLT's Qt module makes its
+  `QApplication` with the first Qt service, so the engine makes a `qtblend` on the main
+  thread first. A play before any timeline is open is held (`ok waiting …`) rather than
+  refused, and a seek before it is kept rather than clamped to frame 0.
+  `a_play_never_waits_behind_a_load` pins both, with a graph of 300 producers; it fails
+  on the old engine.
+- **The socket says what became of a play**: `playing`, `waiting` (why), `refused` (why),
+  and `engine` for its other errors, at most one every 5 s since a broken frame repeats.
+  Between the press and the first frame the button pulses and the stage badge says what
+  it waits on — the engine, the timeline loading, the first frame — and after 3 s a toast
+  says it again; a refusal turns the button back off with the reason. This is the half
+  that matters whatever the cause: the first frame after a seek into long-GOP footage
+  still costs about a second (decoding from the keyframe), and an engine starved by
+  bakes is slow too, but neither is silent any more.
+
+Not done: the first frame of a play still renders behind the producers a load is
+opening (MLT serialises avformat opens and seeks), about a second in the measurement
+above; and a seek's frame is still rendered on the command thread, so a play sent behind
+a slow seek waits for it.
 
 **An overlay off the playhead is hidden by `visibility`, never `display`** — adopted, after
 a template rendered one size in the editor and another in the render. `display: none` gives

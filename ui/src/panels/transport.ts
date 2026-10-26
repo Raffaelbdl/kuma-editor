@@ -10,12 +10,18 @@ import { fmtTime, store } from "../store";
 import { orientation } from "../types";
 
 /** Play/pause, its icon following the store (swapped only when playing flips: the playhead
- *  ticks 25 times a second). The transport's, and den's rail's. */
+ *  ticks 25 times a second). The transport's, and den's rail's. Between the press and the
+ *  first frame it pulses and its tooltip says what the preview is waiting on. */
 export function playButton(cls: string): HTMLButtonElement {
-  const play = button(icon("play"), () => run(Cmd.togglePlay), `Play/pause (${keysFor(Cmd.togglePlay)})`, cls);
+  const title = `Play/pause (${keysFor(Cmd.togglePlay)})`;
+  const play = button(icon("play"), () => run(Cmd.togglePlay), title, cls);
   store.select((s) => [s.playing], (s) => {
     play.dataset.playing = String(s.playing);
     play.replaceChildren(icon(s.playing ? "pause" : "play"));
+  });
+  store.select((s) => [s.starting], (s) => {
+    play.dataset.starting = String(!!s.starting);
+    play.title = s.starting ? `Starting: ${s.starting} — ${title}` : title;
   });
   return play;
 }

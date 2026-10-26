@@ -66,6 +66,8 @@ export const FAKE_ENGINE = `(() => {
     if (!String(url).includes("/api/preview/ws")) return new Real(url, protocols);
     const ws = { readyState: 0, binaryType: "blob", onopen: null, onmessage: null, onclose: null, onerror: null,
       send(m) { window.__engine.push(String(m)); }, close() {} };
+    // What the engine says back, for a test to put words in its mouth.
+    window.__engineSocket = ws;
     setTimeout(() => {
       ws.readyState = 1;
       ws.onopen?.({});

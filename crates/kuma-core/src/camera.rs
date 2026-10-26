@@ -51,10 +51,9 @@ use crate::grade::encode;
 #[serde(deny_unknown_fields)]
 struct LogFile {
     name: String,
-    /// Where the numbers come from: the maker's document.
-    #[serde(default)]
-    #[allow(dead_code)]
-    source: String,
+    /// Where the numbers come from: the maker's document. For people; nothing reads it.
+    #[serde(default, rename = "source")]
+    _source: String,
     #[serde(default)]
     signal: Signal,
     #[serde(default)]
@@ -75,6 +74,16 @@ enum Signal {
     Code,
     /// IRE, code 64 as 0 and 940 as 1, as Canon and Apple write theirs.
     Ire,
+}
+
+impl Signal {
+    /// The 10-bit code value `code` as the curve reads it.
+    fn of_code(self, code: f64) -> f64 {
+        match self {
+            Signal::Code => code / 1023.0,
+            Signal::Ire => (code - 64.0) / 876.0,
+        }
+    }
 }
 
 /// One piece of a curve, for signals below (or up to) its bound; the last has none.
@@ -109,6 +118,11 @@ enum Shape {
 
 fn ten() -> f64 {
     10.0
+}
+
+/// The scene light the signal `y` stands for: the first piece that holds it decodes it.
+fn decode(pieces: &[Piece], y: f64) -> f64 {
+    pieces.iter().find(|p| p.holds(y)).map_or(0.0, |p| p.decode(y))
 }
 
 impl Piece {
@@ -146,11 +160,9 @@ pub fn list(dirs: &[PathBuf]) -> Vec<(String, String)> {
     for dir in dirs {
         let Ok(entries) = std::fs::read_dir(dir) else { continue };
         for path in entries.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "json")) {
-            let Some(id) = path.file_stem().map(|s| s.to_string_lossy().into_owned()) else { continue };
-            if let Ok(text) = std::fs::read(&path) {
-                if let Ok(file) = serde_json::from_slice::<LogFile>(&text) {
-                    found.insert(id, file.name);
-                }
+            let file = std::fs::read(&path).ok().and_then(|text| serde_json::from_slice::<LogFile>(&text).ok());
+            if let (Some(id), Some(file)) = (path.file_stem(), file) {
+                found.insert(id.to_string_lossy().into_owned(), file.name);
             }
         }
     }
@@ -160,21 +172,21 @@ pub fn list(dirs: &[PathBuf]) -> Vec<(String, String)> {
 /// The log in the file at `path`, read once and remembered as long as the file does not
 /// change (`grade::remembered`) — or why it will not read.
 pub fn load(path: &Path) -> Result<Log, String> {
-    crate::grade::remembered(path, |p| parse(&std::fs::read(p).map_err(|e| e.to_string())?, p.parent().unwrap_or(Path::new("."))))
+    crate::grade::remembered(path, |p| parse(&std::fs::read(p).map_err(|e| e.to_string())?, p))
 }
 
 /// What a log is made of, for naming what it compiles to: its file's bytes, and its LUT's
 /// when it is one.
 pub fn bytes(path: &Path) -> Result<Vec<u8>, String> {
     let mut bytes = std::fs::read(path).map_err(|e| e.to_string())?;
-    if let Log::Lut(cube) = parse(&bytes, path.parent().unwrap_or(Path::new(".")))? {
+    if let Log::Lut(cube) = parse(&bytes, path)? {
         bytes.extend(std::fs::read(&cube).map_err(|e| format!("{}: {e}", cube.display()))?);
     }
     Ok(bytes)
 }
 
-/// A log file's bytes, read, its LUT (when it names one) resolved against `folder`.
-pub fn parse(bytes: &[u8], folder: &Path) -> Result<Log, String> {
+/// The bytes of the log file at `path`, read; its LUT, when it names one, is beside it.
+pub fn parse(bytes: &[u8], path: &Path) -> Result<Log, String> {
     let file: LogFile = serde_json::from_slice(bytes).map_err(|e| e.to_string())?;
     if let Some(lut) = &file.lut {
         if !file.decode.is_empty() || file.primaries.is_some() {
@@ -183,7 +195,7 @@ pub fn parse(bytes: &[u8], folder: &Path) -> Result<Log, String> {
         if !crate::validate::stays_inside(lut) {
             return Err(format!("`lut` `{lut}` must be relative and stay beside the log"));
         }
-        return Ok(Log::Lut(folder.join(lut)));
+        return Ok(Log::Lut(path.with_file_name(lut)));
     }
     let primaries = file.primaries.ok_or("a log needs the `primaries` of its gamut")?;
     let Some((last, rest)) = file.decode.split_last() else { return Err("a log needs a `decode` curve".into()) };
@@ -239,33 +251,16 @@ pub struct Conversion {
 impl Conversion {
     fn new(signal: Signal, pieces: Vec<Piece>, primaries: [[f64; 2]; 3], white: [f64; 2]) -> Self {
         let matrix = mul(&inverse(&npm(BT709, D65)), &npm(primaries, white));
-        let mut c = Conversion { signal, pieces, matrix, tone: ToneMap::new(REFERENCE_WHITE_NITS) };
         // The light of the top of the signal, code 1023: what the tone map rolls off from.
-        let top = c.decode(match signal {
-            Signal::Code => 1.0,
-            Signal::Ire => (1023.0 - 64.0) / 876.0,
-        });
-        c.tone = ToneMap::new((top * REFERENCE_WHITE_NITS).clamp(REFERENCE_WHITE_NITS, LOG_PEAK_NITS));
-        c
+        let top = decode(&pieces, signal.of_code(1023.0));
+        let tone = ToneMap::new((top * REFERENCE_WHITE_NITS).clamp(REFERENCE_WHITE_NITS, LOG_PEAK_NITS));
+        Conversion { signal, pieces, matrix, tone }
     }
 
-    /// The scene light the curve's signal `y` stands for.
-    fn decode(&self, y: f64) -> f64 {
-        self.pieces.iter().find(|p| p.holds(y)).map_or(0.0, |p| p.decode(y))
-    }
-
-    /// The curve's signal for a display value, which is the limited-range signal expanded:
-    /// 0 is code 64 and 1 is code 940.
-    fn signal(&self, v: f64) -> f64 {
-        match self.signal {
-            Signal::Code => (64.0 + 876.0 * v) / 1023.0,
-            Signal::Ire => v,
-        }
-    }
-
-    /// The display-encoded Rec. 709 colour the log-encoded `c` stands for.
+    /// The display-encoded Rec. 709 colour the log-encoded `c` stands for. A display value
+    /// is the camera's limited-range signal expanded: 0 is code 64 and 1 is code 940.
     pub fn apply(&self, c: [f64; 3]) -> [f64; 3] {
-        let light = c.map(|v| self.decode(self.signal(v)));
+        let light = c.map(|v| decode(&self.pieces, self.signal.of_code(64.0 + 876.0 * v)));
         let light = mul_vec(&self.matrix, light);
         let light = self.tone.apply(light);
         into_gamut(light).map(|v| encode(v.clamp(0.0, 1.0)))
@@ -411,17 +406,17 @@ mod tests {
     /// grey and 90% white — decode to those reflectances.
     #[test]
     fn each_curve_decodes_its_makers_published_points() {
-        let code = |id: &str, cv: f64| curve(id).decode(cv / 1023.0);
-        let ire = |id: &str, pct: f64| curve(id).decode(pct / 100.0);
+        let code = |id: &str, cv: f64| decode(&curve(id).pieces, cv / 1023.0);
+        let ire = |id: &str, pct: f64| decode(&curve(id).pieces, pct / 100.0);
         let close = |got: f64, want: f64, tol: f64, what: &str| assert!((got - want).abs() <= tol, "{what}: {got} not {want}");
         close(code("s-log3", 95.0), 0.0, 1e-9, "S-Log3 black");
         close(code("s-log3", 420.0), 0.18, 1e-9, "S-Log3 grey");
         close(code("v-log", 433.0), 0.18, 0.002, "V-Log grey");
         close(code("logc3", 400.0), 0.18, 0.002, "LogC3 grey");
-        close(curve("logc4").decode(0.2784), 0.18, 0.001, "LogC4 grey");
+        close(decode(&curve("logc4").pieces, 0.2784), 0.18, 0.001, "LogC4 grey");
         close(ire("c-log3", 34.3), 0.18, 0.003, "Canon Log 3 grey");
-        close(curve("apple-log").decode(0.488), 0.18, 0.001, "Apple Log grey");
-        close(curve("d-log").decode(0.398), 0.18, 0.003, "D-Log grey");
+        close(decode(&curve("apple-log").pieces, 0.488), 0.18, 0.001, "Apple Log grey");
+        close(decode(&curve("d-log").pieces, 0.398), 0.18, 0.003, "D-Log grey");
         close(code("f-log", 470.0), 0.18, 0.002, "F-Log grey");
         close(code("f-log2", 400.0), 0.18, 0.002, "F-Log2 grey");
         // Every curve rises.
@@ -429,7 +424,7 @@ mod tests {
             let c = curve(&id);
             let mut last = f64::NEG_INFINITY;
             for i in 0..=100 {
-                let v = c.decode(i as f64 / 100.0);
+                let v = decode(&c.pieces, i as f64 / 100.0);
                 assert!(v > last, "{id} at {i}");
                 last = v;
             }
@@ -495,7 +490,7 @@ mod tests {
             (r#"{ "name": "x", "primaries": [[0,0],[0,1],[1,0]], "decode": [{ "linear": { "slope": 0, "offset": 0 } }] }"#, "divides by nothing"),
             (r#"{ "name": "x", "lut": "../elsewhere.cube" }"#, "stay beside"),
         ] {
-            let e = parse(text.as_bytes(), &project).unwrap_err();
+            let e = parse(text.as_bytes(), &project.join("x.json")).unwrap_err();
             assert!(e.contains(says), "{text}: {e}");
         }
     }

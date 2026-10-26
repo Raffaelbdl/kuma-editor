@@ -26,8 +26,10 @@
 //! is neutral, so a grade without them comes out as it always did.
 
 use std::fmt::Write;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use crate::camera::{self, Log};
 use crate::model::Grade;
 
 /// The edge of the grid a grade is written as: 33³ is what grading tools exchange, and
@@ -156,7 +158,7 @@ impl Lut {
     /// Parse a `.cube`'s text. Keywords it does not know are skipped, as the format says.
     /// Read and parse a `.cube` file, its bytes alongside (what the compiler hashes): the
     /// one way every reader of a grade's LUTs reads one, so they agree on what reads.
-    pub fn load(path: &std::path::Path) -> Result<(Vec<u8>, Lut), String> {
+    pub fn load(path: &Path) -> Result<(Vec<u8>, Lut), String> {
         let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
         let lut = Lut::from_bytes(&bytes)?;
         Ok((bytes, lut))
@@ -166,7 +168,7 @@ impl Lut {
     /// change — or why it will not read. Every edit validates every grade on every clip, and
     /// the live preview asks for a grade's table at the rate a control is dragged; a 65³
     /// `.cube` takes tens of milliseconds to parse.
-    pub fn cached(path: &std::path::Path) -> Result<Arc<Lut>, String> {
+    pub fn cached(path: &Path) -> Result<Arc<Lut>, String> {
         remembered(path, |p| Lut::load(p).map(|(_, lut)| Arc::new(lut)))
     }
 
@@ -285,9 +287,9 @@ impl Lut {
 /// What `load` makes of the file at `path`, remembered as long as the file's size and time
 /// do not change — failures too, so a broken file is not read again on every edit. One store
 /// for every kind of file a grade reads, each kind by its own type.
-pub(crate) fn remembered<T: Clone + Send + 'static>(path: &std::path::Path, load: impl FnOnce(&std::path::Path) -> Result<T, String>) -> Result<T, String> {
+pub(crate) fn remembered<T: Clone + Send + 'static>(path: &Path, load: impl FnOnce(&Path) -> Result<T, String>) -> Result<T, String> {
     type Stamp = (u64, Option<std::time::SystemTime>);
-    type Seen = std::collections::HashMap<(std::any::TypeId, std::path::PathBuf), (Stamp, Box<dyn std::any::Any + Send>)>;
+    type Seen = std::collections::HashMap<(std::any::TypeId, PathBuf), (Stamp, Box<dyn std::any::Any + Send>)>;
     static SEEN: std::sync::OnceLock<std::sync::Mutex<Seen>> = std::sync::OnceLock::new();
     let meta = std::fs::metadata(path).map_err(|e| e.to_string())?;
     let stamp = (meta.len(), meta.modified().ok());
@@ -307,7 +309,7 @@ pub(crate) fn remembered<T: Clone + Send + 'static>(path: &std::path::Path, load
 /// is), and its look.
 #[derive(Debug, Clone, Default)]
 pub struct Inputs {
-    pub log: Option<Arc<crate::camera::Conversion>>,
+    pub log: Option<Arc<camera::Conversion>>,
     pub input: Option<Arc<Lut>>,
     pub look: Option<Arc<Lut>>,
 }
@@ -315,14 +317,14 @@ pub struct Inputs {
 impl Inputs {
     /// `grade`'s files: its LUTs under `root`, its log found in `log_dirs` (the project's own
     /// `logs/` last), each remembered while it does not change.
-    pub fn load(grade: &Grade, root: &std::path::Path, log_dirs: &[std::path::PathBuf]) -> Result<Inputs, String> {
+    pub fn load(grade: &Grade, root: &Path, log_dirs: &[PathBuf]) -> Result<Inputs, String> {
         let lut = |path: &str| Lut::cached(&root.join(path)).map_err(|e| format!("LUT `{path}`: {e}"));
         let mut inputs = Inputs { input: grade.input_lut.as_deref().map(lut).transpose()?, look: grade.look.as_deref().map(lut).transpose()?, log: None };
         if let Some(id) = &grade.log {
-            let path = crate::camera::find(id, log_dirs).ok_or_else(|| format!("no camera log `{id}`: add `logs/{id}.json` to the project or a library"))?;
-            match crate::camera::load(&path).map_err(|e| format!("camera log `{id}`: {e}"))? {
-                crate::camera::Log::Curve(c) => inputs.log = Some(c),
-                crate::camera::Log::Lut(cube) => inputs.input = Some(Lut::cached(&cube).map_err(|e| format!("camera log `{id}`'s LUT: {e}"))?),
+            let path = camera::find(id, log_dirs).ok_or_else(|| format!("no camera log `{id}`: add `logs/{id}.json` to the project or a library"))?;
+            match camera::load(&path).map_err(|e| format!("camera log `{id}`: {e}"))? {
+                Log::Curve(c) => inputs.log = Some(c),
+                Log::Lut(cube) => inputs.input = Some(Lut::cached(&cube).map_err(|e| format!("camera log `{id}`'s LUT: {e}"))?),
             }
         }
         Ok(inputs)
@@ -691,8 +693,8 @@ mod tests {
 
     /// `g` on `c`, its camera log read from the starter set.
     fn logged(g: &Grade, c: [f64; 3]) -> [f64; 3] {
-        let starter = [std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../library/logs"))];
-        Grading::new(g, Inputs::load(g, std::path::Path::new("."), &starter).unwrap()).apply(c)
+        let starter = [PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../library/logs"))];
+        Grading::new(g, Inputs::load(g, Path::new("."), &starter).unwrap()).apply(c)
     }
 
     #[test]

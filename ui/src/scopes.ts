@@ -1,6 +1,6 @@
 // What the scopes panel draws, counted from a frame's pixels: a waveform of luma, the RGB
-// parade, a vectorscope and a histogram — the four a grade is read with, Kdenlive's and
-// FilmCraft's alike. Pure, with no imports, so a test can load it without a browser.
+// parade, a vectorscope and a histogram — the four a grade is read with. Pure, with no
+// imports, so a test can load it without a browser.
 
 /** Rec. 709 luma weights, as the grade's maths uses them. */
 const LUMA = [0.2126, 0.7152, 0.0722] as const;

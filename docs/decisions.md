@@ -3319,292 +3319,81 @@ kuma's and are fixed here, the rest is listed as open.
   file the daemon saves on every edit. Array changes are sent index by index, so a clip
   inserted mid-track rewrites those after it: larger than it need be, never wrong.
 
-## Colour grading: one LUT kuma computes
+## Colour grading
 
-**A grade is one `avfilter.lut3d` over a LUT kuma writes** — adopted, format version 11.
-The `grade` effect (`Grade` in `model.rs`) holds an input LUT, white balance, exposure,
-lift/gamma/gain, contrast, a curve, saturation and a look; `kuma_core::grade` says what each
-does to a colour; the compiler samples the whole thing on a 33³ grid into
-`<cache>/luts/<hash>.cube` and applies that (`luts.rs`, beside the generated lumas).
+**A grade is one `avfilter.lut3d` over a LUT kuma computes** — adopted, format version 11.
+`kuma_core::grade` says what each step does to a colour; the compiler samples the whole
+grade on a 33³ grid into `<cache>/luts/<hash>.cube` (`luts.rs`), named by a hash of the
+settings and of every file it reads, so equal grades share a file and a changed one is a new
+path, which is what reloads the preview. One table means one rounding, kuma's maths on every
+machine, and preview, samples and render on one path. Rejected: a stock MLT filter per
+control (each rounds and may convert YUV↔RGB, so five controls band, and what "temperature"
+means is whichever filter was picked), and a colour engine of kuma's own (a second renderer,
+which breaks "what you sample is what renders").
 
-Three ways were weighed, after reading two editors that grade:
+The maths is **append-only in behaviour**, like `_vendor/`: tests pin values computed apart
+from the code, and a new behaviour is a new field, neutral when left out. A grade is SDR:
+exposure and white balance act on light (BT.1886 decoded and re-encoded), the rest on the
+displayed signal, all clamped to 0..1. Steps added since — tonal ranges, vibrance, per-channel
+curves, hue/luma/saturation curves (hue as the vectorscope's angle, in Rec. 709 Y'CbCr, so a
+grey has nothing to move) — are each skipped while neutral, so older grades compute the same
+table. Not done: an HSL qualifier; the hue curves cover most of its use.
 
-- *Stock MLT filters, one per control* — Kdenlive's way (`lift_gamma_gain`,
-  `avfilter.colortemperature`, `avfilter.curves`, `avfilter.lut3d`, frei0r's). Turned down
-  as the model: each filter rounds to 8 bits and may convert YUV↔RGB on the way, so a grade
-  of five controls rounds five times and bands; what "temperature" or a curve means is
-  whichever filter was picked, and frei0r is not in every MLT build; and every new service
-  is one more to check for thread-safety in parallel renders.
-- *A colour engine of kuma's own* — FilmCraft's way (storytold/filmcraft, MIT/Apache: Rust
-  decoders, a wgpu compositor, float grading in linear light, HDR and log). Turned down:
-  it is a second renderer, and "what you sample is what renders" holds because there is one.
-  A native MLT module would keep one renderer but has to be found by every melt at run time,
-  and its frames still arrive in MLT's 8-bit formats.
-- *Kuma's maths, MLT's filter* — this. Everything in a grade that is a function of the
-  colour alone becomes one table, so the maths is kuma's (in f64, tested, the same on every
-  machine), the picture is rounded once, MLT applies it with a filter Kdenlive already uses,
-  and preview, `sample_frames` and render stay one path. The file is named by a hash of the
-  settings and of the bytes of the LUTs it reads, so equal grades share a file, an edited
-  `.cube` is a new grade, and a changed grade changes the compiled document — which is what
-  `preview::reload` compares, so nothing on the client had to learn about grades.
+**The editor's curve is a pinned copy of the compiler's** (`ui/src/curve.ts`, `grade.rs`):
+the curve field needs it every frame of a drag, and both sides pin the same values. Colour
+fields are kuma's own picker, since `<input type="color">` drops alpha.
 
-What it costs, on purpose: a LUT treats every pixel alike, so nothing spatial is in a grade
-(a vignette, a sharpen, a keyed secondary with a blurred matte — those are filters after
-it), and it is one table per clip, so a grade takes no keyframes; grading two halves of a
-shot differently is a split. (Since amended: masks limit an effect to a shape, and a grade's
-light takes keys — both below.) Exposure and white balance act on light (BT.1886's 2.4 gamma
-decoded and re-encoded), the rest on the displayed signal, and everything is clamped to
-0..1 — this is SDR grading. Log footage goes through its maker's `.cube` as `input_lut`;
-grading log or HDR in float is what a native module would buy, and nothing has asked for it.
+**`measure_color` answers in the grade's own units, and a match is solved** — adopted. A
+region's `exposure` is stops from mid grey and its `balance` the `temperature`/`tint` that
+would make a grey its colour, so two shots compare as numbers. A match measures the clip
+without its grade (a copy of the document, never stored), solves exposure, temperature and
+tint through the whole grade, and answers the patch; the rest of the grade is the look and
+stays. The reference is neutral, a colour, or a region elsewhere in the video. Overlays are
+left out of a measurement by default.
 
-The maths is **append-only in behaviour**, like `_vendor/`: a grade is recomputed on every
-compile, so a step that starts returning something else re-grades finished videos. The
-tests pin values computed independently of the code (`grade.rs`); a new behaviour is a new
-field. The render test checks melt's pixels against the maths (within 3 of 255 after the
-YUV round trip, measured within 1), and the reference project carries a grade, so the golden
-file and the parallel-frames check cover it.
+**Before and after** — `sample_frames` and `measure_color` take `before`: the document at an
+earlier revision (from the history), or the current one `without` some effects. Both
+versions go through the same compile and melt, so the pair differs only by the edit.
 
-Still open here: a scopes panel, and grading on a bin entry rather than a placement, which
-is the *one pipeline for every bin entry* item below.
+**The grade previews live while dragged** — the daemon renders the frame without that effect
+(a `before` version) and serves the grade as a 33³ byte table (`/api/grade/table`); the
+browser applies it with WebGL, through the effect's mask. The picture is the compiler's, not
+a client copy of it. It covers the whole frame, so a clip that does not fill it previews
+wrong until the edit lands. **Scopes** count the preview's own pixels in the browser, so they
+follow a drag; `measure_color` stays the agent's.
 
-**The curve field draws the compiler's curve, from a copy pinned to it** — adopted. The
-editor needs the curve every frame of a drag, so it cannot ask the daemon; `ui/src/curve.ts`
-is a port of `Curve` in `grade.rs`, and both sides pin the same table of values
-(`the_curve_draws_what_the_editor_draws`, `ui/test/curve.test.mjs`), so a change to either
-fails until both agree. The UI's maths modules (`curve.ts`, `color.ts`) import nothing, which
-lets Node run their tests directly with no browser. Colour fields are kuma's own picker rather
-than `<input type="color">`, which cannot hold alpha and silently cut `#rrggbbaa` to
-`#rrggbb` on every edit; the hues they paint are inline data, not theme colours.
+**A camera log is a file** — `logs/<id>.json`, found in the libraries and then the project's
+own `logs/` (which wins), as fonts are; the grade's `log` names it. A file holds the maker's
+decode curve as pieces of the shapes makers publish (linear, log, power, constant, each
+`below`/`upto` a bound) and the gamut's primaries, citing the maker's document — or names the
+maker's `.cube` when only that is published (DJI's D-Log M), which the grade then takes as its
+input. Adding a camera is adding a file. Conversion: decode to scene light, gamut to Rec. 709
+(SMPTE RP 177), tone map with ITU-R BT.2390's EETF on max(R, G, B) (peak capped at 4000 nits
+so the knee stays above mid grey), bring out-of-gamut colours in towards their luminance
+(kuma's own step), encode. A grade takes `log` or `input_lut`, not both. Open: exposure
+before the tone map, which would recover more highlight on log footage.
 
-## Measuring colour, and matching a grade to a reference
+**A `mask` is a field of the effect it limits** — `grade`, `color` and `blur` take
+`mask: {shape, x, y, w, h, rotation, feather, invert, keyframes}`, the rectangle in the same
+composition pixels as `region`. The compiler wraps the effect's filter in `mask_start`
+(`rotoscoping`, the shape as a spline, feathered) and `mask_apply` (`qtblend`) — MLT core and
+Qt, since frei0r is not in every build. Rejected: a mask effect governing the ones after it
+(an edit can break the pair), and a mask holding a nested effect list. A clip keeps one effect
+of each kind over its whole picture and any number masked, each a window. A mask is not in
+the LUT. Its keys move it in straight lines, which is all `rotoscoping` does, so they take no
+`ease`.
 
-**`measure_color` says a region in the grade's own units, and matching is solved, not
-guessed** — adopted. FilmCraft's `scopes.read` gives an agent levels to check a grade
-without looking; kuma's answer goes one step further because the grade's maths are its own.
-White balance and exposure are gains on light, so a region's mean light *is* a grade:
-`exposure` is its light in stops from mid grey, and `balance` the `temperature` and `tint`
-that turn a grey into its colour, solved in closed form (t = log2(r/b), m = log2(r·b/g²) on
-decoded light). Two shots compare as numbers, and the difference is the edit.
+**Keys move a grade's light; the rest holds** — a LUT cannot move, but the light step is a
+gain per channel, on light and so on display values. A keyed grade compiles to its input LUT,
+an animated `avfilter.colorchannelmixer`, then the rest as a LUT (`Grade::keyed_parts`). The
+parts round and clip between them, and MLT interpolates gains rather than stops (half way
+from 0 to 2 EV is about 1.1). A match on a keyed grade answers a key. Rejected: blending two
+LUTs over time (no MLT filter does it) and a LUT per frame.
 
-A match (`match: {clip, reference}`) measures the clip **without its grade**, on a copy of
-the project that lacks it, so the answer does not chase its own previous answer; then it
-iterates the closed form through the whole grade (`kuma_core::color::match_light`): exact in
-one step for white balance and exposure alone, a few more when contrast, a curve or a LUT
-bend the light after them. Only exposure, temperature and tint are solved — the rest of the
-grade is the look, and stays. The reference is a region elsewhere in the video as it shows
-now (`{t, region?}`), a colour, or neutral (white balance only, brightness kept): what a
-colourist does with a grey card, a white wall or the hero shot. It answers the predicted
-`after`, whether it was `reached`, and the patch, and stores nothing; applying is the
-caller's edit, so an agent's match is an ordinary undoable patch and the editor's is too.
-The daemon test applies the patch and renders: the clip lands within 4/255 of its reference,
-and kuma's prediction within 3/255 of melt's pixels.
-
-Measured with overlays out by default: a title over a face is not the face's colour. The
-region is the user's to choose, and the docs say why: a match of whole frames matches their
-content, not their light.
-
-`temperature` widened to ±2 on the way (from ±1): the first realistic test, a tungsten-warm
-clip, measured 1.77 and could not be reached. Widening a range changes what no existing value
-means, so it re-grades nothing; the maths' append-only rule is about meaning, not bounds.
-
-In the editor, a grade has **Neutral…**, **Set reference…** and **Match…**: each drags a
-rectangle over the frame (`regionpick.ts`, a sheet over the preview stage in composition
-pixels, Escape to cancel) at the playhead, runs the job and writes the grade's light. The
-reference is view state, kept until another is set, so one hero shot can be matched from
-every clip's grade in turn.
-
-## Before and after, for an agent
-
-**`sample_frames` and `measure_color` take `before`** — adopted. An agent that grades (or
-edits anything) needs to see what the edit did, at more than the one moment it aimed at. The
-"before" is a document, built the way a match builds its ungraded copy and never stored:
-either the document at an earlier revision — the history already keeps the last 200 whole
-documents for restore — or the current one `without` some effects, by kind and by clip. The
-same frames of both go through the same path (compile, melt, the frame cache), so the pair
-differs only by the edit. A sheet lays them out a row per moment, before on the left, and the
-MCP tool says which is which. Asking for a `before` that takes nothing out (a misspelt kind,
-a clip that is not there) is refused rather than answered with two identical pictures.
-
-## The grade, live
-
-**While a grade control is dragged, the frame shows it; Before, held, shows the clip
-without it** — adopted. Grading by committing and waiting for a reload is grading blind, and
-both reference editors update as you drag. The preview could not keep its own copy of the
-grade maths (the rule that dropped `engineKey`: no client model of what the compiler does), so
-the daemon supplies both halves: the frame without the clip's grade, rendered as a version of
-the document through the ordinary sample path, and the grade being dragged as a 33³ table of
-bytes from `Grading`, the maths the `.cube` comes from (`POST /api/grade/table`, LUT files
-remembered by size and time so a drag does not reparse them). The browser applies the table
-to the frame with WebGL, one request in flight and the latest value winning, over the engine's
-frame and under the live overlays. Measured in a browser: the dragged picture was within one
-level of the render that replaced it.
-
-What it does not do: it covers the whole frame, so a clip that does not fill it (picture in
-picture, a crop) previews its grade on everything until the edit lands; overlays nested in
-the sequence are left out of the frame it starts from. Widgets report values while dragging
-through an `input` callback (`NumberOpts.input`, and the curve and wheel fields), which is a
-preview hook and never an edit.
-
-**Scopes read the preview, not the daemon** — adopted. The four a grade is read with
-(waveform, parade, vectorscope, histogram), counted in the browser from whatever the preview
-shows: the engine's frame, or the grade being dragged. They have to follow a drag, which a
-round trip per frame could not; and they read pixels already on screen, so there is nothing
-to keep in agreement. `measure_color` stays the agent's, in numbers. A panel in a window of
-its own has no preview to read, and says so.
-
-## More of the grade: tones, vibrance, and curves on colour
-
-**Each new control is a step of the one LUT, neutral when left out** — adopted. FilmCraft and
-Resolve both grade with more than lift, gamma and gain: tonal ranges (blacks, shadows,
-highlights, whites), vibrance, per-channel curves, and curves against hue, luma and
-saturation, which is how a sky is darkened or a shirt greyed without a mask. All of it is
-a function of the colour alone, so it fits the LUT as it is: a field each, applied in the
-order the module documents, skipped while neutral so every grade made before them computes
-the same table (the existing pins did not move; new ones pin the new steps, worked out apart
-from the code).
-
-Choices that would be expensive to change, since the maths is append-only: tones move luma
-with every channel alike, by four smooth bumps that sum to at most one (`0.25` of white at
-full), so they never shift a colour; the hue curves read hue as the vectorscope's angle from
-+Cb, the axis the scopes panel draws, and act in Rec. 709 Y'CbCr — chroma turned and scaled,
-luma scaled by `2^(amount·saturation)` — so a grey has nothing for them to move; every one
-of them is read at the colour as it arrives, so their order among themselves does not
-matter. A hue curve wraps (the monotone cubic through its points repeated a turn either
-side), and its points stop below 1, which is 0 again. The editor draws them with its copy of
-the curve maths, pinned to the same values as the compiler's.
-
-Not done: a qualifier (an HSL key, with a matte to see it by). It is a function of the
-colour too and would fit the LUT, but most of what it is used for — one hue more or less
-saturated, turned, darker — the hue curves already do, without a second grade inside the
-first. Worth adding when a range of saturation or luma *within* a hue needs its own grade;
-the matte would be a table the preview asks for, never a field of the document.
-
-## Camera log, converted by kuma
-
-**`log` names the camera; kuma does the maker's maths** — adopted. Log footage was usable
-only with the maker's `.cube` found, downloaded and put under the project, and the agent
-could not do that for a person. The conversion is a function of the colour, so it is one
-more step of the grade's LUT: decode the camera's curve to scene light, turn its gamut into
-Rec. 709's primaries, tone map with BT.2390's EETF on max(R, G, B), bring colours outside
-Rec. 709 in towards the grey of their luminance, encode for BT.1886. Tests check each curve
-against the makers' reference points and pin the whole conversion with values computed
-apart from the code.
-
-**A camera log is a file, and every number has a primary source** — adopted, replacing the
-first version, which held twelve curves as code ported from FilmCraft. Two reasons. Adding a
-camera should be adding a file — `logs/<id>.json`, found in the libraries and then the
-project's own `logs/` (which wins), as fonts are — so "add the log for my camera" is an
-agent writing one file, not a change to kuma. And none of the conversion should rest on
-another editor's code: each curve and gamut is the maker's own published document, named in
-the file's `source`; PQ is SMPTE ST 2084, the tone map ITU-R BT.2390, white BT.2408's, the
-gamut matrix SMPTE RP 177's; the one step with no standard behind it — bringing a colour
-outside Rec. 709 in — is kuma's own, and the plainest there is (just far enough towards the
-grey of its luminance, keeping hue and luminance), where the first version had another
-editor's tuning of ACES's gamut compression.
-
-A file's curve is pieces of the shapes makers publish — linear, log of any base, power,
-constant — each for signals `below` (or `upto`) a bound, written as the maker writes the
-encoding so a document's constants go in as they are printed. The twelve starter files
-reproduce the curves they replaced to within 5·10⁻¹⁵. A maker who publishes only a LUT
-(DJI's D-Log M, so far) is a file naming that `.cube` beside it, which the grade then takes
-as its input. A log's bytes are hashed into the name of the LUT its grade compiles to, so an
-edited log is a new grade; a starter log is append-only in behaviour, like `_vendor/`.
-
-Choices: a grade takes `log` *or* `input_lut`, never both — a maker's input LUT is that same
-conversion, and two of them stacked is always a mistake. The signal is read as the camera's
-limited range expanded (code 64 is 0, 940 is 1), which is what MLT hands the filter. The
-grade's other steps then work on the converted picture as they do on any Rec. 709 clip; an
-exposure that acts on scene light *before* the tone map would recover more highlight, and is
-the open question if log footage turns out to be graded mostly by exposure.
-
-## Masks: where an effect acts
-
-**A `mask` is a field of the effect it limits, not an effect of its own** — adopted. A
-power window (a grade on a face, a sky, the edge of the frame) and a blur over a face or a
-number plate are the same thing: one effect, inside a shape, the rest of the picture as it
-was. So `grade`, `color` and `blur` — the effects that change the picture's colour or detail
-in place — take `mask: {shape, x, y, w, h, rotation, feather, invert}`, and the compiler
-wraps that effect's filter in MLT's `mask_start` / `mask_apply` pair.
-
-Rejected: a `mask` effect followed by the effects it governs, closed by an `unmask` — a
-pair that an edit to the list can break, reorder or leave open, with an effect's meaning
-depending on what sits above it. And a mask holding a list of effects: a second, nested
-effect list, which every effect editor, copy and paste, preset and keyframe path would have
-to learn. Several windows on one clip are several effects, each with its own; the list is
-already how kuma stacks things. Transforms, crops, fades and blends take none: they are
-about where the picture is and how much of it shows, which a crop or an overlay says better.
-
-Choices that would be expensive to change:
-
-- **The shape is the same rectangle `region` is**: composition pixels, `x`/`y` its top-left,
-  `w`/`h` its size, so a region an agent reads off `sample_frames` or measures with
-  `measure_color` is a mask as it is, and the ellipse is the one inscribed in it. `rotation`
-  (degrees, about its centre) and `feather` (pixels of soft edge) follow; `invert` masks the
-  outside instead. The coordinates are the frame's as the effects before this one left it —
-  a transform above it moves the picture, not the mask.
-- **`rotoscoping` cuts the shape, `qtblend` puts it back**: the shape is written as the Bézier
-  spline `rotoscoping` takes (an ellipse as four arcs), which feathers by blurring the matte;
-  `mask_apply` composites the effect's result through the matte over the frame from before
-  it. Both ship with MLT's core and Qt modules; the `frei0r` services Shotcut's masks default
-  to are not in every build (the Debian one kuma is tested on has none). The feather scales
-  with the preview size like every pixel quantity in the compiler (`Ctx::scale`).
-- **A mask is not in the LUT**: a grade's LUT is what happens to a colour, a mask is where,
-  and they stay apart — the masked grade's LUT is the same file the unmasked one would use.
-  The live grade preview (`gradepreview.ts`) draws the table through the same shape, so a
-  masked grade previews where it applies.
-
-Masks move (added with keyed grades): `mask.keyframes` are keys like an effect's — `t` from
-the clip's start, the fields that change (`x`, `y`, `w`, `h`, `rotation`), the static ones
-filling in — compiled to the spline-per-frame object `rotoscoping` takes. It moves in straight
-lines between them and nothing else, so a mask's key refuses an `ease` rather than ignore one;
-feather, shape and invert hold still. The editor writes into the key at the playhead once a
-mask has keys, and the live preview draws the shape where it is at the playhead. They are
-the mask's own keys, not the effect's: a blur's radius and its mask's path are two
-animations, and either can be still.
-
-## A grade's light, keyed
-
-**Keys move a grade's temperature, tint and exposure; the rest holds** — adopted. Light that
-changes within a shot (out of shade into sun, an auto-exposure drifting) was a split per
-step, which shows. A LUT is a file and cannot move, but step 2 of the grade is a gain per
-channel on light, and BT.1886 being a power law, a gain on light is a gain on the display
-values (`grade::light_scale`). So a keyed grade compiles to its input conversion (a LUT,
-when it has one), an `avfilter.colorchannelmixer` whose `rr`/`gg`/`bb` are animated like any
-keyed property, then the rest of the grade as a LUT with its light taken out
-(`Grade::keyed_parts`, tested to make what the whole grade makes). An unkeyed grade still
-compiles to one LUT, so no finished video changes.
-
-What it costs: the parts round to the frame's bytes and clip to its range between them, as
-one LUT does not — a highlight pushed past white by the exposure and pulled back by a gain
-comes back flat. And MLT interpolates the gains, not the stops: half way between keys 0 and 2
-EV the light is about 1.1 EV, not 1. A `match` on a keyed grade answers a key at the moment
-it measured rather than static values the keys would override.
-
-Rejected: blending two LUTs over time (MLT has no filter that mixes two `lut3d`s, and the
-`mask_start` trick blends against the ungraded frame, not between two grades), and a LUT per
-frame (a megabyte of `.cube` a frame, for what a gain does exactly).
-
-## A grade on the source
-
-**A video or image entry carries `effects` of its own — a `grade`, for now — applied before
-every placement's** — adopted. A camera log is a fact about the file, not about where it is
-cut: every clip of S-Log3 footage needs the same conversion, and the grade that matches one
-camera to the others is the same on every shot from it. On the clip, that was one edit per
-placement and a split that copies it; on the entry it is set once, and the model already
-said so ("what is shown lives on the entry"), with `volume` the precedent — a source
-levelled once for every placement. The compiler puts the entry's effects before the clip's
-own on each placement (`emit_filters`); the LUT pre-pass and the cache's prune read them as
-they read the clips'.
-
-Narrow on purpose: a `grade` only, over the whole picture and holding still. A mask is
-*where* in the frame and keys are *when* in the cut, and both are a placement's. Other kinds
-can join when one needs to — the list is a list so that adding one is not a format change.
-A match measures a clip and writes the clip's grade, which acts on what the entry's made.
-
-What it does not do: look at the entry on its own. Grading a source is still seen through a
-clip that places it, at the playhead. That is the subject pipeline in the list below, which
-this does not need and does not start — but it is the feature that list item was waiting
-for, and the next thing a colourist working source by source will ask for.
+**A grade on the source** — a video or image bin entry carries `effects` (a `grade`, still
+and whole-picture), applied before every placement's own: a camera log is a fact about the
+file. `volume` on the entry is the precedent. Looking at an entry on its own is the subject
+pipeline below, not done.
 
 ## Still open
 
@@ -3614,8 +3403,8 @@ end of its section above. The item this list gained from the sequence work comes
 because it is the part deliberately left out.
 
 - **One pipeline for every bin entry, not just sequences** — agreed direction,
-  **postponed until a feature needs it**, and the largest thing on this list. (A grade on the
-  source, above, landed without it; looking at that source on its own is what would need it.)
+  **postponed until a feature needs it**, and the largest thing on this list. (Grading a
+  source, above, landed without it; looking at that source on its own would need it.)
 
   Today `sample_frames` takes a *sequence* or an *overlay entry*, and the overlay case
   builds a throwaway one-clip project and runs the ordinary path — same bake, same

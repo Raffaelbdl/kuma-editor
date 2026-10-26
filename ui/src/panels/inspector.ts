@@ -527,6 +527,29 @@ function keyRow(anim: Animation, id: string, follow: (fn: () => void) => void): 
   return wrap;
 }
 
+/** Where focus is inside `host`, as a way to put it back once `host` is rebuilt: the
+ *  element at the same place — the same child of the same child, down from `host` — when it
+ *  is the same kind of element in the same property row, with its text selected as it was.
+ *  Null when focus is elsewhere. */
+function focusIn(host: HTMLElement): (() => void) | null {
+  const at = document.activeElement;
+  if (!(at instanceof HTMLElement) || at === host || !host.contains(at)) return null;
+  const path: number[] = [];
+  for (let n: Element = at; n !== host; n = n.parentElement!) path.unshift([...n.parentElement!.children].indexOf(n));
+  const row = (e: Element) => e.closest<HTMLElement>("[data-prop]")?.dataset.prop;
+  const prop = row(at);
+  const range = at instanceof HTMLInputElement || at instanceof HTMLTextAreaElement ? [at.selectionStart, at.selectionEnd, at.selectionDirection] as const : null;
+  return () => {
+    let n: Element | undefined = host;
+    for (const i of path) n = n?.children[i];
+    if (!(n instanceof HTMLElement) || n.tagName !== at.tagName || row(n) !== prop) return;
+    n.focus({ preventScroll: true });
+    if (range && (n instanceof HTMLInputElement || n instanceof HTMLTextAreaElement) && range[0] !== null) {
+      try { n.setSelectionRange(range[0], range[1], range[2] ?? undefined); } catch { /* a type with no selection */ }
+    }
+  };
+}
+
 export class Inspector {
   /** Subscriptions this render made — keyed values following the playhead — dropped when
    *  the panel is rebuilt, or they would pile up one per render. */
@@ -541,7 +564,24 @@ export class Inspector {
     store.select((s) => [s.project, s.selection, s.manifests, s.fonts, s.blueprints, s.sequence, playheadInClip(), s.previewStamp, s.colorReference], panels.lazily("inspector", () => this.render()).run);
   }
 
+  /** The panel rebuilt from the document — which every edit changes, so it runs as a field
+   *  commits. Tab commits one field and moves to the next, which the rebuild would throw
+   *  away: for the same selection, the focus, the text selected in it and the scroll are
+   *  put back where they were. */
   private render() {
+    const sel = JSON.stringify(store.state.selection);
+    const focus = this.shown === sel ? focusIn(this.host) : null;
+    const scroll = this.shown === sel ? this.host.scrollTop : 0;
+    this.build();
+    this.shown = sel;
+    this.host.scrollTop = scroll;
+    focus?.();
+  }
+
+  /** The selection the panel last showed, to tell a rebuild of it from a new one. */
+  private shown = "";
+
+  private build() {
     for (const stop of this.off) stop();
     this.off = [];
     const sel = store.state.selection;

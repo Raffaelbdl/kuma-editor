@@ -177,7 +177,7 @@ export async function driver(url) {
     /** A real key press through the browser's input pipeline — what a page sees as the
      *  person's gesture, which a synthetic `KeyboardEvent` is not (`play()` refuses one). */
     async press(key, code = key, opts = {}) {
-      const vk = { " ": 32, ArrowLeft: 37, ArrowRight: 39 }[key] ?? key.toUpperCase().charCodeAt(0);
+      const vk = { " ": 32, ArrowLeft: 37, ArrowRight: 39, Tab: 9 }[key] ?? key.toUpperCase().charCodeAt(0);
       const base = { key, code, windowsVirtualKeyCode: vk, modifiers: opts.shift ? 8 : 0 };
       await send("Input.dispatchKeyEvent", { type: "keyDown", ...base, ...(key.length === 1 ? { text: key } : {}) });
       await send("Input.dispatchKeyEvent", { type: "keyUp", ...base });

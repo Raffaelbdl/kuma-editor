@@ -149,6 +149,23 @@ describe("the inspector's property fields", { skip: why ? `skipping: ${why}` : f
     await effectIs("y", -42.5);
     assert.equal(await page.eval(reads(".effect .num.axis-y")), "-42.5");
   });
+  it("keeps the field Tab moved to, through the rebuild the edit causes", async () => {
+    const x = `document.querySelector(".effect .num.axis-x input")`;
+    const y = `document.querySelector(".effect .num.axis-y input")`;
+    const was = Number(await page.eval(`${x}.value`));
+    await page.eval(`(() => { const i = ${x}; i.focus(); i.value = "7"; return true; })()`);
+    // A real Tab: the edit commits as X loses focus, and Y has it when the panel rebuilds.
+    await page.press("Tab");
+    await effectIs("x", 7);
+    await page.until(`document.activeElement === ${y}`, 3000);
+    // Typing goes on where it was: the rebuilt Y has the focus, its text selected.
+    assert.equal(await page.eval(`${y}.selectionStart === 0 && ${y}.selectionEnd === ${y}.value.length`), true);
+    await page.eval(`${y}.blur(), true`);
+    // X as it was, for the cases after this one.
+    await page.eval(`(() => { const i = ${x}; i.value = "${was}"; i.dispatchEvent(new Event("change", { bubbles: true })); return true; })()`);
+    await effectIs("x", was);
+  });
+
   it("records a key instead of a value while auto-key is on", async () => {
     // Shift+R toggles it: R is the render queue's letter now.
     const REC = `window.dispatchEvent(new KeyboardEvent("keydown", { key: "R", shiftKey: true, bubbles: true }))`;

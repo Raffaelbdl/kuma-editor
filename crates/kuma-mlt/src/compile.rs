@@ -93,6 +93,10 @@ pub struct CompileOptions {
     /// as it is. Only the picture's graph reads them — the sound always comes from the
     /// media — and `None` (a render, the preview at full) reads no proxy at all.
     pub proxies: Option<HashMap<BinId, PathBuf>>,
+    /// The graph is held open and seeked back and forth — the preview engine's — rather
+    /// than read once from start to end, as a render or a sample is. Animated bakes then
+    /// come through a reader that can seek backwards, at a higher decode cost.
+    pub scrubbed: bool,
 }
 
 impl CompileOptions {
@@ -108,6 +112,7 @@ impl CompileOptions {
             sequence: None,
             streams: Streams::Both,
             proxies: None,
+            scrubbed: false,
         }
     }
 }
@@ -689,6 +694,17 @@ fn emit_source(ctx: &Ctx, p: &Plan, id: &str, w: &mut XmlWriter) -> Result<(), C
             if bake.is_still {
                 w.property("mlt_service", "pixbuf");
                 w.property("ttl", "1");
+            } else if ctx.opts.scrubbed {
+                // ffmpeg's image2 demuxer cannot seek backwards in a sequence (MLT 7.22,
+                // FFmpeg 6.1): after one it serves the frame it was on for good, so in the
+                // preview a nested overlay played once and then stayed on its last,
+                // transparent frame. `qimage` reads one file per frame (`ttl`, from
+                // `frame_000001`), seeks anywhere and gives `avformat`'s pixels exactly, at
+                // about twice the decode time — which a render, reading once in order,
+                // has no reason to pay.
+                w.property("mlt_service", "qimage");
+                w.property("ttl", "1");
+                w.property("begin", "1");
             } else {
                 w.property("mlt_service", "avformat");
                 // A bake has one frame per timeline frame, but an image sequence has no

@@ -375,6 +375,8 @@ async fn compile_and_load(state: &Arc<AppState>) -> anyhow::Result<(usize, Vec<S
         // ½ decodes proxies, full the media: one setting for how big and how exact.
         let proxies = (scale < 1.0).then(|| crate::proxies::scan(&st, &project));
         opts.proxies = proxies.as_ref().map(|p| p.ready.clone());
+        // The engine holds the graph and seeks it anywhere, backwards included.
+        opts.scrubbed = true;
         st.preview.compiles.fetch_add(1, Ordering::SeqCst);
         // Each graph is written, and later sent, only when it differs from the one held.
         let mut fresh = Vec::new();

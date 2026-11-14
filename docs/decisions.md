@@ -647,6 +647,27 @@ live DOM, and the render test's bake was a box that does not move. The compiler 
 MLT's own sequence readers (`pixbuf`/`qimage` with a `%06d` resource) were measured frame
 exact too, by seek and in sequence; `force_fps` was kept as the one-line change.
 
+**The preview reads animated bakes with `qimage`, a render with `avformat`** — adopted,
+after a nested sequence's overlays played once in the preview and were gone the second
+time. ffmpeg's image2 demuxer cannot seek backwards in a sequence (MLT 7.22, FFmpeg 6.1):
+after one backward seek the `avformat` producer serves the frame it had reached for every
+position, paused or playing, and a finished overlay's last frame is transparent. Nothing
+on the producer helps — `force_fps` or not, `seekable=0`, `seek_threshold`,
+`noimagecache` — and only the engine is hurt, since it is the one reader that holds a graph
+and seeks it: a render and a sample read once, in order, from a fresh process.
+- `CompileOptions::scrubbed`, set by the preview compile, reads an animated bake with
+  `qimage` (`ttl=1`, `begin=1`), one file per frame. It gives `avformat`'s pixels exactly
+  (PSNR ∞ on a real 1080p bake; `pixbuf` came within 57 dB), so the preview still shows the
+  render.
+- Renders keep `avformat`: `qimage` and `pixbuf` decode a 1080p PNG at about half its speed
+  (174 frames over a colour: 2.0 s against 4.4 s with four frame threads, 3.6 against 6.1
+  with one). On the runwiththewind master the engine delivered about 5% fewer frames
+  playing; the golden file is unchanged.
+- `a_baked_overlay_seeks_backwards` (kuma-daemon `tests/engine.rs`) seeks a bake whose frame
+  k is grey 4k forward, back and forward again through the engine; it fails on `avformat`
+  at the first backward seek. `a_scrubbed_graph_reads_animated_bakes_with_qimage` pins
+  which graph gets which reader.
+
 The frame cache of `sample_frames` is keyed on the compiled document, like the preview,
 rather than on the project revision and the bake paths: under the old key, a kuma that
 compiles differently kept serving frames an older one had sampled, which is how this bug

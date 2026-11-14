@@ -89,3 +89,32 @@ fn unbaked_overlays_skip_or_fail_by_policy() {
     opts.unbaked = UnbakedPolicy::Error;
     assert!(matches!(compile(&p, &opts), Err(CompileError::Unbaked(id)) if id == "o_c1"));
 }
+
+/// An animated bake is read by `avformat` in a graph read once in order (a render, a
+/// sample: the golden file) and by `qimage` in one the preview engine holds and seeks, since
+/// ffmpeg's image2 demuxer cannot seek backwards. Nothing else differs, and a still is
+/// `pixbuf` either way. `tests/engine.rs` in kuma-daemon plays the seeks themselves.
+#[test]
+fn a_scrubbed_graph_reads_animated_bakes_with_qimage() {
+    let p = reference_project();
+    let mut opts = CompileOptions::new("/proj");
+    opts.cache_dir = std::env::temp_dir().join("kuma-golden-cache");
+    opts.bakes.insert("o_c1".into(), bake("/proj/.kuma/bakes/abc/frame_%06d.png", false));
+    opts.bakes.insert("o_c2".into(), bake("/proj/.kuma/bakes/def/frame_000001.png", true));
+    let rendered = compile(&p, &opts).unwrap();
+    opts.scrubbed = true;
+    let scrubbed = compile(&p, &opts).unwrap();
+
+    let animated = |xml: &str| {
+        let at = xml.find(r#"<producer id="clip_o_c1""#).expect("the animated bake is in the graph");
+        xml[at..at + xml[at..].find("</producer>").unwrap()].to_string()
+    };
+    assert!(animated(&rendered).contains(r#"<property name="mlt_service">avformat</property>"#), "{}", animated(&rendered));
+    let seekable = animated(&scrubbed);
+    for prop in [r#"name="mlt_service">qimage<"#, r#"name="ttl">1<"#, r#"name="begin">1<"#] {
+        assert!(seekable.contains(prop), "{prop} missing from\n{seekable}");
+    }
+    assert!(!seekable.contains("force_fps"), "{seekable}");
+    // Only that producer changes.
+    assert_eq!(rendered.replace(&animated(&rendered), ""), scrubbed.replace(&seekable, ""));
+}

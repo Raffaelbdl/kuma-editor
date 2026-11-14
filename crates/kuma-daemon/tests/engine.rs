@@ -15,7 +15,16 @@ use serde_json::json;
 #[derive(Debug)]
 enum Out {
     Line(String),
-    Frame(i64),
+    Frame(i64, Jpeg),
+}
+
+/// A frame's picture, kept for a test that looks at it; printed as its size.
+struct Jpeg(Vec<u8>);
+
+impl std::fmt::Debug for Jpeg {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "<{} bytes>", self.0.len())
+    }
 }
 
 struct Engine {
@@ -57,7 +66,7 @@ impl Engine {
                     let mut jpeg = vec![0u8; n];
                     rd.read_exact(&mut jpeg).unwrap();
                     assert_eq!(&jpeg[..2], &[0xff, 0xd8], "frame {f} is not a JPEG");
-                    Out::Frame(f)
+                    Out::Frame(f, Jpeg(jpeg))
                 } else {
                     Out::Line(l)
                 };
@@ -106,8 +115,16 @@ impl Engine {
     }
 
     fn frame(&mut self, want: i64) {
+        self.picture(want);
+    }
+
+    /// The next message, which must be frame `want`: its picture.
+    fn picture(&mut self, want: i64) -> Vec<u8> {
         match self.out.recv_timeout(Duration::from_secs(10)) {
-            Ok((_, Out::Frame(f))) => assert_eq!(f, want),
+            Ok((_, Out::Frame(f, Jpeg(jpeg)))) => {
+                assert_eq!(f, want);
+                jpeg
+            }
             other => panic!("expected frame {want}, got {other:?}"),
         }
     }
@@ -139,7 +156,7 @@ fn engine_bin() -> Option<PathBuf> {
 }
 
 fn frames(msgs: &[(Instant, Out)]) -> Vec<(Instant, i64)> {
-    msgs.iter().filter_map(|(at, m)| if let Out::Frame(f) = m { Some((*at, *f)) } else { None }).collect()
+    msgs.iter().filter_map(|(at, m)| if let Out::Frame(f, _) = m { Some((*at, *f)) } else { None }).collect()
 }
 
 /// Two seconds of moving picture and a tone, compiled as the preview compiles it: a video
@@ -289,4 +306,65 @@ fn a_seek_overtaken_by_another_shows_nothing() {
     let shown: Vec<i64> = frames(&e.drain(Duration::from_millis(1500))).into_iter().map(|(_, f)| f).collect();
     assert_eq!(shown.last(), Some(&40), "the drag did not end where it stopped: {shown:?}");
     assert!(shown.len() < 10, "stale positions were drawn: {shown:?}");
+}
+
+/// The grey level at the middle of a JPEG the engine sent.
+fn grey_at_centre(root: &Path, jpeg: &[u8]) -> i64 {
+    let file = root.join("seen.jpg");
+    std::fs::write(&file, jpeg).unwrap();
+    let out = Command::new("ffmpeg")
+        .args(["-v", "error", "-i"])
+        .arg(&file)
+        .args(["-vf", "crop=1:1:iw/2:ih/2,format=gray", "-f", "rawvideo", "-"])
+        .output()
+        .unwrap();
+    out.stdout[0] as i64
+}
+
+/// A baked overlay seeks backwards as it seeks forwards. Bakes were read by MLT's
+/// `avformat` producer, and ffmpeg's image2 demuxer cannot go back in a sequence: after
+/// one backward seek it serves the frame it had reached for every position, playing or
+/// paused. A render reads once in order and keeps that reader; the preview's does not. In the preview that is an overlay of a nested sequence that plays once and is
+/// gone the second time, since a finished overlay's last frame is transparent. Frame k of
+/// this bake is grey level 4k, so each frame the engine sends says which one it read.
+#[test]
+fn a_baked_overlay_seeks_backwards() {
+    let Some(bin) = engine_bin() else { return };
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    std::fs::create_dir_all(root.join("bake")).unwrap();
+    let pattern = root.join("bake/frame_%06d.png");
+    kuma_overlay::media::ffmpeg(&[
+        "-f", "lavfi", "-i", "color=c=black:size=320x180:rate=30:duration=2,format=gray,geq=lum='N*4',format=rgba",
+        "-pix_fmt", "rgba", "-start_number", "1", &pattern.to_string_lossy(),
+    ].map(String::from))
+    .expect("ffmpeg");
+    let p: kuma_core::Project = serde_json::from_value(json!({
+        "fps": 30, "width": 320, "height": 180,
+        "bin": {
+            "tag": { "source": { "overlay": "overlays/tag" } },
+            "main": { "source": { "tracks": [
+                { "id": "o1", "kind": "overlay", "clips": [ { "id": "o", "start": 0, "end": 2, "bin": "tag" } ] }
+            ] } }
+        }
+    }))
+    .unwrap();
+    let mut opts = CompileOptions::new(root);
+    opts.streams = Streams::Video;
+    opts.scrubbed = true; // as the preview compiles it
+    opts.bakes.insert("o".into(), kuma_mlt::OverlayBake { resource: pattern, is_still: false });
+    let video = root.join("video.mlt");
+    std::fs::write(&video, compile(&p, &opts).unwrap()).unwrap();
+
+    let mut e = Engine::start(&bin);
+    e.send(&format!("load-video {}", video.display()));
+    e.expect_line("ok loaded video frames=60", Duration::from_secs(20));
+    e.frame(0);
+    // Forward, back, and forward again from there: what playing past an overlay, going back
+    // and playing it again asks of the producer.
+    for f in [45i64, 15, 30, 5, 50] {
+        e.send(&format!("seek {f}"));
+        let grey = grey_at_centre(root, &e.picture(f));
+        assert!((grey - 4 * f).abs() <= 4, "timeline frame {f} shows bake frame ≈{}", grey / 4);
+    }
 }

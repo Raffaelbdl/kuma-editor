@@ -95,17 +95,12 @@ struct Located {
 }
 
 fn locate(doc: &Project, id: &str) -> anyhow::Result<Located> {
-    for (seq_id, seq) in doc.sequences() {
-        for (ti, track) in seq.tracks.iter().enumerate() {
-            if let Some((ci, c)) = track.clips.iter().enumerate().find(|(_, c)| c.id == id) {
-                // The grade over the whole picture: a masked one is a window, not the clip's.
-                let graded_at = c.effects.iter().position(|e| e.as_grade().is_some() && e.one_per_clip());
-                let grade = graded_at.and_then(|ei| c.effects[ei].as_grade()).cloned().unwrap_or_default();
-                return Ok(Located { sequence: seq_id.clone(), track: ti, clip: ci, start: c.start, end: c.end, grade, graded_at });
-            }
-        }
-    }
-    anyhow::bail!("no clip `{id}`")
+    let (sequence, ti, ci) = doc.clip_index(id).ok_or_else(|| anyhow::anyhow!("no clip `{id}`"))?;
+    let (_, _, c) = doc.find_clip(id).ok_or_else(|| anyhow::anyhow!("no clip `{id}`"))?;
+    // The grade over the whole picture: a masked one is a window, not the clip's.
+    let graded_at = c.effects.iter().position(|e| e.as_grade().is_some() && e.one_per_clip());
+    let grade = graded_at.and_then(|ei| c.effects[ei].as_grade()).cloned().unwrap_or_default();
+    Ok(Located { sequence, track: ti, clip: ci, start: c.start, end: c.end, grade, graded_at })
 }
 
 /// `grade` with `solved`'s light as a key `t` seconds into the clip: the key on that frame

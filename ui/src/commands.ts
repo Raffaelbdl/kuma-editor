@@ -75,6 +75,8 @@ export const Cmd = {
   newTitle: "project.new-title",
   swapOrientation: "project.swap-orientation",
   transcribe: "project.transcribe",
+  syncAudio: "project.sync-audio",
+  normalizeAudio: "project.normalize-audio",
   addMedia: "project.add-media",
   reloadPreview: "preview.reload",
   togglePlay: "preview.toggle-play",

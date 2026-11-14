@@ -14,6 +14,7 @@ pub mod lint;
 pub mod loudness;
 pub mod media;
 pub mod scaffold;
+pub mod sync;
 pub mod transcribe;
 
 pub use bake::{copy_dir, is_in_flight, BakeError, BakeRequest, Baker, BakeResult};

@@ -27,6 +27,8 @@ pub use validate::{is_library, stays_inside, validate, Issue, Severity, Validati
 
 /// Current on-disk project format version.
 ///
+/// 12 — the sound effect kinds `high_pass`, `eq` and `compressor` are new, and a sound
+///     file's bin entry may carry a chain of them (and `limiter`) on its source.
 /// 11 — the effect kind `grade` is new: a colour grade, compiled as one LUT.
 /// 10 — a project may name the asset `libraries` it uses besides the user's own.
 /// 9 — a marker may carry an `origin`: who left it (the daemon stamps it).
@@ -42,4 +44,4 @@ pub use validate::{is_library, stays_inside, validate, Issue, Severity, Validati
 ///     keyframed effect now uses.
 /// 2 — keyframes gained `ease` (`linear`, `hold`, `smooth`).
 /// 1 — the first format.
-pub const PROJECT_VERSION: u32 = 11;
+pub const PROJECT_VERSION: u32 = 12;

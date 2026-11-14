@@ -99,6 +99,12 @@ fn upgrade(v: &mut Value) -> Result<(), String> {
         // that an older kuma refuses a v11 file rather than fail on its first grade.
         version = 11;
     }
+    if version == 11 {
+        // 11 → 12: `high_pass`, `eq` and `compressor` are new kinds, and an entry's sound
+        // effects are new, so no older document has one. A stamp, so that an older kuma
+        // refuses a v12 file rather than fail on its first sound effect.
+        version = 12;
+    }
     v["version"] = Value::from(version);
     Ok(())
 }
@@ -132,7 +138,7 @@ mod tests {
     /// the current version too, not on 3-as-of-when-it-was-written.
     #[test]
     fn every_older_version_climbs_to_the_current_one() {
-        for from in [1, 2, 3, 4, 5, 6, 7, 8] {
+        for from in [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11] {
             let text = V1.replace("\"version\": 1", &format!("\"version\": {from}"));
             assert_eq!(parse_project(&text).expect("parse").version, crate::PROJECT_VERSION, "from {from}");
         }

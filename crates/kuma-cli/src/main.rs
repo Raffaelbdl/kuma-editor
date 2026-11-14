@@ -152,6 +152,25 @@ enum Cmd {
         #[arg(long)]
         silence_min: Option<f64>,
     },
+    /// Line mic recordings up with the camera clips that heard the same scene: places each
+    /// mic under its clip, mutes the camera's sound and groups the two, as one edit.
+    SyncAudio {
+        /// `CLIP=AUDIO` pairs: a camera clip id and the bin id of the mic recording.
+        #[arg(required = true)]
+        pairs: Vec<String>,
+        /// Only measure the offsets; change nothing.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Bring a media entry to an integrated loudness by setting its `volume`, measured
+    /// through the entry's own effects (Audacity's Loudness Normalization).
+    NormalizeAudio {
+        /// Bin id of the media entry.
+        bin: String,
+        /// LUFS, e.g. -20.
+        #[arg(long, allow_hyphen_values = true)]
+        target: f64,
+    },
     /// Show how big the project's `.kuma/` cache is, or prune it.
     Cache {
         #[command(subcommand)]
@@ -605,6 +624,35 @@ async fn main() -> anyhow::Result<()> {
                 None => {
                     let state = open(&cli)?;
                     tokio::task::spawn_blocking(move || kuma_daemon::jobs::measure_media(&state, &req, &|p, m| eprintln!("[{p:3}%] {m}"), &Default::default())).await??
+                }
+            };
+            println!("{}", serde_json::to_string_pretty(&out)?);
+        }
+        Cmd::SyncAudio { pairs, dry_run } => {
+            let pairs = pairs
+                .iter()
+                .map(|p| {
+                    let (clip, audio) = p.split_once('=').ok_or_else(|| anyhow::anyhow!("`{p}` is not `CLIP=AUDIO`"))?;
+                    Ok(kuma_daemon::sound::SyncPair { clip: clip.to_string(), audio: audio.to_string(), track: None })
+                })
+                .collect::<anyhow::Result<Vec<_>>>()?;
+            let req = kuma_daemon::sound::SyncRequest { pairs, dry_run: *dry_run, origin: "cli: sync-audio".into() };
+            let out = match on_daemon(&cli, "/api/audio/sync", "sync-audio", serde_json::to_value(&req)?).await? {
+                Some(out) => out,
+                None => {
+                    let state = open(&cli)?;
+                    tokio::task::spawn_blocking(move || kuma_daemon::sound::sync(&state, &req, &|p, m| eprintln!("[{p:3}%] {m}"), &Default::default())).await??
+                }
+            };
+            println!("{}", serde_json::to_string_pretty(&out)?);
+        }
+        Cmd::NormalizeAudio { bin, target } => {
+            let req = kuma_daemon::sound::NormalizeRequest { bin: bin.clone(), target: *target, origin: "cli: normalize-audio".into() };
+            let out = match on_daemon(&cli, "/api/audio/normalize", "normalize-audio", serde_json::to_value(&req)?).await? {
+                Some(out) => out,
+                None => {
+                    let state = open(&cli)?;
+                    tokio::task::spawn_blocking(move || kuma_daemon::sound::normalize(&state, &req, &|p, m| eprintln!("[{p:3}%] {m}"), &Default::default())).await??
                 }
             };
             println!("{}", serde_json::to_string_pretty(&out)?);

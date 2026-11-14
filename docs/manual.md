@@ -245,7 +245,7 @@ clip's own effects.
 
 **Effects are offered where they can act.** Each effect acts on the picture (transform,
 crop, blur, colour, grade, blend, fade, freeze) or the sound (volume, audio fade, limiter, auto
-level), so `+ add effect` lists
+level, high-pass, EQ, compressor), so `+ add effect` lists
 only what the selected clip can use: a colour or a still is not offered a volume, a song is not
 offered a picture fade. An effect that got there anyway — by an agent's patch, or on a clip
 moved to an audio track — stays, dimmed, and says *no effect here*; the validator warns too.
@@ -484,7 +484,7 @@ claude mcp add --scope user    kuma -- kuma mcp --project /abs/path.kuma.json  #
 `kuma mcp` starts the daemon in-process if none is running on the port, so the browser UI
 and the agent always share one state. Tools: `timeline_guide`, `get_project`, `get_schema`, `apply_edits`,
 `undo`, `redo`, `list_markers`, `validate_project`, `list_presets`, `add_media`, `probe_media`, `reprobe_media`, `unused_entries`,
-`transcribe`, **`sample_frames`**, `measure_audio`, `measure_media`, `measure_color`, `bake_overlay`, `render`, `export_subtitles`, `export_chapters`, `job_status`, `cancel_job`,
+`transcribe`, **`sample_frames`**, `measure_audio`, `measure_media`, `measure_color`, `sync_audio`, `normalize_audio`, `bake_overlay`, `render`, `export_subtitles`, `export_chapters`, `job_status`, `cancel_job`,
 `prune_cache`, `health`, for libraries `list_libraries`, `add_library`, `remove_library`,
 `list_design_systems`, `apply_design_system`, `list_effect_presets`, and for overlays
 `overlay_guide`, `new_overlay`, `check_overlay`, `import_overlay`, `make_overlay_unique`,
@@ -516,7 +516,9 @@ picture (overlays left out unless asked) as numbers in the grade's own terms —
 it, what is clipped or crushed — and with `match` solves a clip's white balance and exposure
 so its region is neutral or looks like a region elsewhere, measuring the clip without its
 grade on a copy of the project and answering the patch that writes the result
-(`POST /api/color/measure`, `kuma_core::color`). The tools that start a job (`render`, `measure_audio`, `measure_media`, `measure_color`, `transcribe`,
+(`POST /api/color/measure`, `kuma_core::color`). `sync_audio` lines a separately recorded sound up with the camera clip that heard the same
+scene and `normalize_audio` brings a media entry to a loudness by its `volume`: both measure,
+then make one edit (below, *Sound recorded apart*). The tools that start a job (`render`, `measure_audio`, `measure_media`, `measure_color`, `sync_audio`, `normalize_audio`, `transcribe`,
 `bake_overlay`, `sample_frames`) wait `wait_seconds` and then return it still running, with
 its id; `job_status` with that id and its own `wait_seconds` waits again, in calls as short
 as the client needs (Claude Code moves a call that runs past 120 s to the background), and
@@ -695,8 +697,35 @@ is content you are not editing and is what the render will show. A sequence cann
 sped up — MLT's `timewarp` takes a resource path, not a tractor, so render the part out
 and place the result as media.
 
-**A sequence has effects of its own, on its mix:** `volume`, `limiter` and `auto_level`
-in its `effects`, keyed in the sequence's own seconds. The master's are the render's master
+**Sound recorded apart.** A camera's own mic is poor and a lapel or wireless mic records the
+same words better, so the two are lined up: `sync_audio` (`POST /api/audio/sync`, `kuma
+sync-audio CLIP=AUDIO`, the inspector's *Sync sound from a mic…*) decodes both to mono at
+4 kHz, high-passed, and cross-correlates them through an FFT (`kuma_overlay::sync`, no
+dependency: a radix-2 transform of its own). The peak is the offset, to a quarter of a
+millisecond; the peak over the best correlation outside ±50 ms is the confidence, and under
+1.5 the pair is refused (measured: matched takes 2.6–5, unrelated ones about 1.03). Then one
+edit: the mic placed on the first audio track with room, `in` set so it plays what the camera
+heard at the same instant, the camera clip muted, both given one `group`. A clip's `in` is
+rounded to a frame by the compiler, so up to half a frame remains (`error_ms`). Sync the whole
+take, before cutting it; a pair synced before is moved, not placed again.
+
+A recording's treatment is a fact about it, like a camera's log, so a sound file's **bin entry
+carries a chain** on its source: `high_pass`, `eq`, `compressor`, a still `volume` and
+`limiter`, each once, run in order before every placement's own effects. The entry's `volume`
+is that chain's gain: it acts where the chain's `volume` sits, and first when there is none,
+always before the limiter (the validator refuses a `volume` after it). `normalize_audio` (`POST /api/audio/normalize`, `kuma
+normalize-audio`, the inspector's *Normalize loudness…*) sets it: the entry is measured whole,
+through its chain, on a one-clip timeline made for the measurement and never stored, then
+again until within 0.05 LU (a secant on the measured slope, since a compressor after the gain
+answers a dB with about a third of one); a target the chain cannot reach (a limiter caps it)
+is refused rather than chased. A mono file plays on both channels and is measured that way,
+which is Audacity's *dual mono*. MLT carries float between filters, so a gain over full scale
+does not clip before the limiter. Two of ffmpeg's filters cannot be used here: `arnndn` and
+`afftdn` fail inside MLT's avfilter wrapper ("Unexpected return format"), so denoising stays
+outside kuma.
+
+**A sequence has effects of its own, on its mix:** `volume`, `limiter`, `auto_level`,
+`high_pass`, `eq` and `compressor` in its `effects`, keyed in the sequence's own seconds. The master's are the render's master
 stage — a gain, then a peak limiter — and they are in the document, so the preview plays
 them, `measure_audio` measures after them and `render` renders them. A nested sequence's
 act on every placement of it, each placement with its own copy (a limiter keeps state from

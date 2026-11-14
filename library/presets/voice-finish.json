@@ -1,0 +1,13 @@
+{
+  "id": "voice-finish",
+  "name": "Voice finish",
+  "description": "A spoken voice's finish: rumble cut under the voice, sample peaks held under a ceiling. Put it on the recording's bin entry (On the source), then Normalize loudness there, so the gain is measured through it and runs before the limiter.",
+  "params": {
+    "cut": { "type": "number", "default": 80, "min": 40, "max": 200, "step": 5, "label": "High-pass (Hz)" },
+    "ceiling": { "type": "number", "default": -2, "min": -12, "max": 0, "step": 0.5, "label": "Ceiling (dBFS)" }
+  },
+  "effects": [
+    { "type": "high_pass", "freq": "$cut", "poles": 2 },
+    { "type": "limiter", "ceiling": "$ceiling", "attack": 1, "release": 20 }
+  ]
+}

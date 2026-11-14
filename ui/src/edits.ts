@@ -11,7 +11,7 @@ import { startJob, store, toast } from "./store";
 import type { ClipboardEntry, Found } from "./store";
 import type { MenuItem } from "./menu";
 import type { BinItem, BinSource, Clip, ColorReference, Effect, Grade, Marker, OverlayManifest, OverlaySource, PatchOp, Project, Region, Track, TrackKind, Transition } from "./types";
-import { LUMAS, actsOn, binItem, onePerClip, binPath, seqPath, sequenceOf, childrenOf, clipPathOf, clipStreams, covers, hasAudio, isFileSource, isOverlaySource, isTimedMedia, itemKind, orientation, parentOf, seqDuration, shiftEffect, trackFor, trackPathOf, trimEffect, wouldNest, wouldRecurse } from "./types";
+import { LUMAS, actsOn, binItem, sounds, onePerClip, binPath, seqPath, sequenceOf, childrenOf, clipPathOf, clipStreams, covers, hasAudio, isFileSource, isOverlaySource, isTimedMedia, itemKind, orientation, parentOf, seqDuration, shiftEffect, trackFor, trackPathOf, trimEffect, wouldNest, wouldRecurse } from "./types";
 
 /** Clip ids are minted by kind: `o1` for an overlay, `c1` for anything else. */
 const clipPrefix = (kind: TrackKind) => (kind === "overlay" ? "o" : "c");
@@ -435,6 +435,58 @@ export async function transcribe() {
     // Replacing overwrites one entry, which a split cannot; the daemon then keeps one.
     split: replacing ? undefined : seconds,
   }));
+}
+
+/**
+ * Line a mic up with the selected camera clip: pick the recording, and the daemon finds the
+ * offset by listening to both, places the mic under the clip, mutes the camera's sound and
+ * groups the two. Sync the whole take, before cutting it.
+ */
+export async function syncAudio() {
+  const p = store.state.project!;
+  const clip = store.findClip(store.selectedClip)?.clip;
+  const camera = clip && p.bin[clip.bin];
+  if (!clip || !camera || !hasAudio(camera) || itemKind(camera) !== "video") { toast("Select the camera's clip: a video whose own sound heard the scene", ""); return; }
+  const mics = Object.entries(p.bin).filter(([id, i]) => id !== clip.bin && sounds(i));
+  if (!mics.length) { toast("Add the mic's recording to the bin first", ""); return; }
+  // The likeliest first: an audio file named like the clip's source.
+  const stem = (s: string) => s.replace(/\.[^.]*$/, "").replace(/.*\//, "").toLowerCase();
+  const stemOf = (i: BinItem) => (isFileSource(i.source) ? stem(i.source.path) : "");
+  const own = stemOf(camera);
+  const rank = (i: BinItem) => (own && stemOf(i) === own ? 2 : 0) + (itemKind(i) === "audio" ? 1 : 0);
+  mics.sort(([, a], [, b]) => rank(b) - rank(a));
+  const pick = selectInput(mics.map(([id, i]) => ({ value: id, label: i.name || id })), mics[0][0], () => {});
+  const ok = await askForm({
+    title: "Sync sound from a mic",
+    note: `The mic is placed on an audio track under ${clip.label || clip.id}, lined up to a fraction of a millisecond by listening to both; the clip's own sound is muted and the two are grouped.`,
+    rows: [{ label: "Recording", input: pick }],
+    ok: "Sync",
+  });
+  if (!ok) return;
+  await startJob("Sync sound", () => api.syncAudio([{ clip: clip.id, audio: pick.value }]));
+}
+
+/** Bring a media entry — the one selected in the bin, else the selected clip's — to a
+ *  loudness by its `volume`, through its own effects. The target is remembered. */
+export async function normalizeAudio(binId?: string) {
+  const p = store.state.project!;
+  const sel = store.state.selection;
+  const id = binId ?? (sel?.kind === "bin" ? sel.id : store.findClip(store.selectedClip)?.clip.bin);
+  const item = id ? p.bin[id] : undefined;
+  if (!id || !item || !sounds(item)) { toast("Select a sound or video entry, or a clip of one", ""); return; }
+  const target = el("input");
+  Object.assign(target, { type: "number", step: "0.5", min: "-50", max: "-5", value: loadLocal("kuma.normalize.target") ?? "-20", title: "Integrated loudness, LUFS: a voice is usually -16 to -23" });
+  const ok = await askForm({
+    title: `Normalize loudness: ${item.name || id}`,
+    note: "Sets the entry's volume, for every clip that places it, measured through its own effects on the source. Put its chain (high-pass, EQ, limiter) on first.",
+    rows: [{ label: "Target (LUFS)", input: target }],
+    ok: "Normalize",
+  });
+  if (!ok) return;
+  const value = Number(target.value);
+  if (!Number.isFinite(value)) { toast("The target is a number of LUFS", "err"); return; }
+  saveLocal("kuma.normalize.target", String(value));
+  await startJob("Normalize loudness", () => api.normalizeAudio(id, value));
 }
 
 /** Landscape ⇄ portrait: swap the frame's width and height. Everything else follows — the

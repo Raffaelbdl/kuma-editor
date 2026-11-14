@@ -108,6 +108,14 @@ export const api = {
   whisperModels: () => json<{ whisper_models?: string[] }>("/api/health").then((h) => h.whisper_models ?? []),
   transcribe: (req: ({ bin: string } | { clip: string }) & { id?: string; language?: string; replace?: boolean; model?: string; snap?: boolean; split?: number }) =>
     json<{ job: number }>("/api/transcribe", { method: "POST", body: JSON.stringify({ ...req, origin: "ui: transcribe" }) }),
+  /** Line mic recordings up with camera clips: each mic placed under its clip, the clip
+   *  muted, both grouped, as one edit composed when the measuring ends. */
+  syncAudio: (pairs: { clip: string; audio: string; track?: string }[]) =>
+    json<{ job: number }>("/api/audio/sync", { method: "POST", body: JSON.stringify({ pairs, origin: "ui: sync audio" }) }),
+  /** Bring a media entry to an integrated loudness by its `volume`, measured through the
+   *  entry's own effects. */
+  normalizeAudio: (bin: string, target: number) =>
+    json<{ job: number }>("/api/audio/normalize", { method: "POST", body: JSON.stringify({ bin, target, origin: "ui: normalize audio" }) }),
   /** Queue a render of `sequence`, or of the project's master when it is left out — the
    *  daemon's own default, so the two agree without the client having to know which is
    *  the master. `output` is project-relative; the daemon names one when it is left out. */

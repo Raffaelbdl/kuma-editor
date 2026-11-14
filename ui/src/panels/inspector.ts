@@ -17,7 +17,7 @@ import { binName, fmtTime, isEntryTab, store, toast } from "../store";
 import type { BinItem, Clip, ColorReference, Cue, Ease, Effect, FontFamily, Grade, Keyframe, Mask, PatchOp, Project, Streams, Transition, VarSpec } from "../types";
 import { pickRegion } from "../regionpick";
 import { previewGrade, settle, showBefore } from "../gradepreview";
-import { blueprintActions, copyEffects, makeOverlayUnique, matchSelectedToReference, measureMatch, removeTransition, setTransitionDuration, setTransitionKind, updateTransition, manifestOf, moveBinItem, overlayError, placeBinItem, previewImg, renderPreview, saveAsBlueprint, sharersOf } from "../edits";
+import { blueprintActions, copyEffects, makeOverlayUnique, matchSelectedToReference, measureMatch, removeTransition, setTransitionDuration, setTransitionKind, updateTransition, manifestOf, moveBinItem, normalizeAudio, overlayError, placeBinItem, previewImg, renderPreview, saveAsBlueprint, sharersOf } from "../edits";
 import { Animation, animationOf } from "../keyframes";
 import { historyFor } from "./history";
 import { icon, svgEl } from "../icons";
@@ -26,7 +26,7 @@ import { keyStrip, numberField, showNumber, sliderField, vectorField } from "../
 import { colorField, wheelField } from "../colorfield";
 import { curveField } from "../curvefield";
 import type { CurveKind, CurvePoint } from "../curve";
-import { LUMAS, MASK_KEYED, maskAt, SEQUENCE_EFFECTS, sourceAfter, actsOn, ANIMATABLE, binItem, binPath, canPlace, canTimeWarp, childrenOf, clipStreams, covers, expandPreset, hasAudio, isColorSource, isFileSource, isFolderSource, isOverlaySource, isSequenceSource, isTimedMedia, itemKind, mediaFacts, placementsOf, seqDuration, seqPath, sequenceOf, sequenceStreams, streamsOf, wouldNest } from "../types";
+import { LUMAS, MASK_KEYED, maskAt, SEQUENCE_EFFECTS, entryTakes, sounds, sourceAfter, actsOn, ANIMATABLE, binItem, binPath, canPlace, canTimeWarp, childrenOf, clipStreams, covers, expandPreset, hasAudio, isColorSource, isFileSource, isFolderSource, isOverlaySource, isSequenceSource, isTimedMedia, itemKind, mediaFacts, placementsOf, seqDuration, seqPath, sequenceOf, sequenceStreams, streamsOf, wouldNest } from "../types";
 
 const presetsPromise = api.effectPresets().catch(() => []);
 
@@ -201,6 +201,30 @@ const EFFECTS: Partial<Record<Effect["type"], EffectSpec>> = {
       { kind: "num", key: "min_gain", label: "Most down", step: 1, min: -30, max: 0, suffix: "dB" },
     ],
   },
+  // A mic's chain, on its bin entry or a clip: the cut under the voice, the colour, the
+  // density. Nothing here animates.
+  high_pass: {
+    add: { type: "high_pass", freq: 80, poles: 2 },
+    props: [
+      { kind: "num", key: "freq", step: 5, min: 10, max: 1000, suffix: "Hz", title: "Cuts the sound under this: rumble, handling noise, a close mic's boom. 80 Hz leaves a voice whole" },
+      { kind: "num", key: "poles", step: 1, min: 1, max: 2, title: "How steeply it cuts: 1 is 6 dB an octave, 2 is 12" },
+    ],
+  },
+  eq: {
+    add: { type: "eq", bands: [{ freq: 3000, gain: 2, width: 1 }] },
+    props: [{ kind: "json", key: "bands", label: "Bands" }],
+  },
+  compressor: {
+    add: { type: "compressor", threshold: -20, ratio: 3, attack: 5, release: 80, knee: 2.8, makeup: 0 },
+    props: [
+      { kind: "num", key: "threshold", step: 0.5, min: -60, max: 0, suffix: "dB", title: "Over this the level rises `ratio` times slower" },
+      { kind: "num", key: "ratio", step: 0.1, min: 1, max: 20, title: "3 brings 3 dB over the threshold down to 1" },
+      { kind: "num", key: "attack", step: 0.5, min: 0.01, max: 2000, suffix: "ms", title: "How fast it clamps down" },
+      { kind: "num", key: "release", step: 5, min: 0.01, max: 9000, suffix: "ms", title: "How fast it lets go" },
+      { kind: "num", key: "knee", step: 0.1, min: 1, max: 8, suffix: "dB", title: "How softly it starts" },
+      { kind: "num", key: "makeup", step: 0.5, min: 0, max: 36, suffix: "dB", title: "Raised after; on a bin entry a volume after it does this, and Normalize sets it" },
+    ],
+  },
   freeze: {
     add: { type: "freeze", t: 0 },
     props: [{ kind: "num", key: "t", label: "Hold at", step: 1 / 30, suffix: "s", title: "Seconds from the clip's start: the frame shown there is held for the whole clip, while the sound runs on" }],
@@ -228,6 +252,11 @@ interface EffectOwner {
   /** What a new effect of a kind starts as, here. */
   add: (type: Effect["type"]) => Effect;
 }
+
+/** The patch that adds `effects` after an owner's own. One with none may have no list yet
+ *  (an entry writes none): then they are the list. */
+const appendOps = (owner: EffectOwner, effects: Effect[]): PatchOp[] =>
+  owner.effects.length ? effects.map((value) => ({ op: "add", path: `${owner.path}/-`, value })) : [{ op: "add", path: owner.path, value: effects }];
 
 /** Which effects have their curve view open, and on which parameter — by `clip/effect`,
  *  so the view survives the re-render every edit causes. View state; nothing saves it. */
@@ -647,7 +676,7 @@ export class Inspector {
       go.append(el("label", "", "Plays"), linkButton(`${item.name || clip.bin} →`, () => store.selectItem("bin", clip.bin), "Edit the bin entry (changes every clip that plays it)"));
       this.host.appendChild(go);
     }
-    this.renderEffects({
+    const owner: EffectOwner = {
       key: clip.id,
       clip: clip.id,
       what: "the clip",
@@ -659,12 +688,14 @@ export class Inspector {
       anim: (ei) => animationOf(clip.id, ei),
       // A freeze starts on the frame under the playhead, when the playhead is on the clip.
       add: (type) => (type === "freeze" && covers(clip, store.state.playhead) ? { type, t: store.snap(store.state.playhead - clip.start) } : EFFECTS[type]!.add),
-    });
-    this.host.appendChild(this.presetPicker(path));
+    };
+    this.renderEffects(owner);
+    this.host.appendChild(this.presetPicker(owner));
 
     const actions = el("div", "insp-actions");
     // The command reads the selection: from a clip the subtitles land over it, aligned.
     if (hasAudio(item)) actions.appendChild(button("Transcribe → subtitles", () => run(Cmd.transcribe), "Transcribe the audio and place aligned subtitles over this clip"));
+    if (hasAudio(item) && itemKind(item!) === "video" && !clip.muted) actions.appendChild(button("Sync sound from a mic…", () => run(Cmd.syncAudio), "Line a separately recorded sound up with this clip, place it under it, and mute the clip's own"));
     // Grouping is Ctrl+G, and a keyboard shortcut is not a way to find out a feature
     // exists — the desktop shell has a menu for it and a browser tab has nothing.
     if (clip.group) {
@@ -770,20 +801,24 @@ export class Inspector {
 
     this.host.appendChild(field("Name", textInput(item.name, (v) => store.patch([{ op: "replace", path: `${bp}/name`, value: v }], `name ${id}`))));
     this.renderSource(p, id, item, bp);
-    // What the footage is — its camera log, the grade that makes it match the rest — set
-    // once for every clip that places it.
-    const kind = itemKind(item);
-    if (kind === "video" || kind === "image") {
-      this.renderEffects({
+    // What the source is, set once for every clip that places it: the footage's camera log
+    // and the grade that makes it match the rest; the recording's chain, where the entry's
+    // Volume acts at its `volume` effect, else first, and Normalize sets it.
+    const picture = entryTakes(item, "grade");
+    const audible = sounds(item);
+    if (picture || audible) {
+      const owner: EffectOwner = {
         key: `bin:${id}`,
         what: "this entry",
         effects: item.effects ?? [],
         path: `${bp}/effects`,
-        carries: { video: true, audio: false },
-        offers: (type) => type === "grade",
+        carries: { video: picture, audio: audible },
+        offers: (type) => entryTakes(item, type),
         anim: () => null,
         add: (type) => EFFECTS[type]!.add,
-      }, "On the source");
+      };
+      this.renderEffects(owner, "On the source");
+      this.host.appendChild(this.presetPicker(owner));
     }
     if (isTimedMedia(item)) {
       this.host.appendChild(field("Volume", sliderField(item.volume ?? 1, (v) => void store.patch([{ op: "add", path: `${bp}/volume`, value: v }], `volume ${id}`), { min: 0, max: 2, step: 0.01, soft: true, title: "Gain for every placement of this entry: 1 is the source as recorded" })));
@@ -796,6 +831,7 @@ export class Inspector {
     // From the entry the subtitles are listed under it and left for you to place; to get
     // them aligned on the timeline, transcribe from a clip instead.
     if (hasAudio(item)) actions.appendChild(button("Transcribe → subtitles", () => run(Cmd.transcribe), "Run the local speech-to-text model and add a subtitles entry under this one"));
+    if (audible) actions.appendChild(button("Normalize loudness…", () => void normalizeAudio(id), "Set this entry's volume so it plays at a loudness, measured through its own effects"));
     if (isSequenceSource(item.source)) {
       const open = button("Open", () => store.openSequence(id), "Edit its own timeline");
       (open as HTMLButtonElement).disabled = id === store.state.sequence;
@@ -1028,11 +1064,8 @@ export class Inspector {
     add.onchange = () => {
       const kind = add.value as Effect["type"] | "";
       add.value = "";
-      // An owner with no effects may have no list yet (an entry writes none): the first is
-      // the list.
       if (!kind) return;
-      const value = owner.add(kind);
-      void store.patch([owner.effects.length ? { op: "add", path: `${owner.path}/-`, value } : { op: "add", path: owner.path, value: [value] }], `add ${kind}`);
+      void store.patch(appendOps(owner, [owner.add(kind)]), `add ${kind}`);
     };
     this.host.appendChild(add);
     if (followers.length) {
@@ -1042,13 +1075,15 @@ export class Inspector {
     }
   }
 
-  /** Presets expand to ordinary effects; their params are edited here before applying. */
-  private presetPicker(path: string): HTMLElement {
+  /** Presets expand to ordinary effects; their params are edited here before applying.
+   *  Only those `owner` can take whole are offered: a picture preset is no use on a sound. */
+  private presetPicker(owner: EffectOwner): HTMLElement {
     const wrap = el("div");
     const preset = el("select");
     preset.style.marginTop = "6px";
     const params = el("div");
-    presetsPromise.then((ps) => options(preset, ps.map((p) => ({ value: p.id, label: p.name, title: p.description })), undefined, "+ apply preset…"));
+    const fits = (p: { effects: unknown[] }) => p.effects.every((e) => owner.offers((e as Effect).type));
+    presetsPromise.then((ps) => options(preset, ps.filter(fits).map((p) => ({ value: p.id, label: p.name, title: p.description })), undefined, "+ apply preset…"));
     preset.onchange = async () => {
       params.innerHTML = "";
       const p = (await presetsPromise).find((x) => x.id === preset.value);
@@ -1061,8 +1096,7 @@ export class Inspector {
       params.appendChild(button("Apply", async () => {
         try {
           const { width, height } = store.state.project!;
-          const ops: PatchOp[] = expandPreset(p, { width, height, ...values }).map((e) => ({ op: "add", path: `${path}/effects/-`, value: e }));
-          if (await store.patch(ops, `preset ${p.id}`)) { preset.value = ""; params.innerHTML = ""; }
+          if (await store.patch(appendOps(owner, expandPreset(p, { width, height, ...values })), `preset ${p.id}`)) { preset.value = ""; params.innerHTML = ""; }
         } catch (e) {
           toast((e as Error).message, "err");
         }

@@ -27,8 +27,8 @@ nothing is: a drawing made for a white page needs a white colour entry under it.
 rasterise it to a PNG, or show it from an overlay.
 
 An effect acts on the picture or the sound (`mlt` on either): `transform`, `crop`, `blur`, `color`,
-`grade`, `blend`, `fade` and `freeze` on what a clip shows, `volume`, `audio_fade`, `limiter` and
-`auto_level` on what it sounds. A colour, a
+`grade`, `blend`, `fade` and `freeze` on what a clip shows, `volume`, `audio_fade`, `limiter`,
+`auto_level`, `high_pass`, `eq` and `compressor` on what it sounds. A colour, a
 still and an overlay never sound; nothing on an audio track shows. Put only what can act on the clip:
 anything else renders as nothing and comes back as a warning. Every effect with a quantity to move
 (`transform`, `crop`, `blur`, `color`, `volume`) has static values and optional `keyframes`,
@@ -86,9 +86,26 @@ a grade at several moments of each clip it is on, not one.
 drifting source's gain toward `target`, measured over the last `window`: no keyframes needed for
 a bed that swells and falls; it lags a sudden change by about a window, and after a seek it
 settles within one.
+`high_pass` `{freq (Hz, 80), poles (1 or 2: 6 or 12 dB an octave, 2)}` cuts rumble under a voice.
+`eq` `{bands: [{freq (Hz), gain (dB, ±24), width (octaves, 1)}]}` is peaking bands, one filter
+each. `compressor` `{threshold (dBFS, -20), ratio (3), attack (ms, 5), release (ms, 80), knee
+(dB, 2.8), makeup (dB, 0)}` brings loud syllables down towards quiet ones.
+
+**A sound file's bin entry carries a chain on its source** (`/bin/<id>/effects`, absent until it
+has one): `high_pass`, `eq`, `compressor`, a still `volume` and `limiter`, each once, before
+every placement's own effects — a mic's treatment, set once. The entry's `volume` acts at the
+chain's `volume`, else first, and always before its limiter (a `volume` after the `limiter` is refused): put a `volume` after a compressor,
+so a loudness gain is its makeup. `normalize_audio {bin, target}` sets the entry's `volume` to
+reach `target` LUFS, measured through that chain; put the chain on first.
+
+**A recording made apart from the picture** (a wireless mic beside the camera) is lined up with
+`sync_audio {pairs: [{clip, audio}]}`: the camera clip (whole take, speed 1) and the mic's bin
+entry. Both sounds are cross-correlated; the mic is placed under the clip on an audio track, the
+clip muted, both grouped, one edit for all pairs. Check `confidence` (refused under 1.5) and
+`error_ms` (frame rounding, under half a frame). Sync before cutting: a cut of a group cuts both.
 
 **A sequence's `effects` act on its mix** (`/bin/<seq>/source/effects`, always present):
-`volume`, `limiter` and `auto_level` only, keyframes in the sequence's own seconds, on every
+`volume`, `limiter`, `auto_level`, `high_pass`, `eq` and `compressor` only, keyframes in the sequence's own seconds, on every
 placement and when it is rendered itself. The master's are the master stage: e.g.
 `[{"type":"volume","gain":3.2},{"type":"limiter","ceiling":-2.5}]`. `limiter`
 `{ceiling (dBFS, -1), attack (ms, 5), release (ms, 50)}` holds sample peaks at the ceiling and

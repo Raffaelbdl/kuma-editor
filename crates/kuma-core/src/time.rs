@@ -106,6 +106,16 @@ impl Fps {
         self.frame(secs).max(1)
     }
 
+    /// Frame index → the seconds it starts at: the way back from [`Self::frame`].
+    pub fn secs(&self, frame: i64) -> f64 {
+        frame as f64 * self.den as f64 / self.num as f64
+    }
+
+    /// Seconds moved onto the nearest frame, as the compiler will play them.
+    pub fn snap(&self, secs: f64) -> f64 {
+        self.secs(self.frame(secs))
+    }
+
 }
 
 impl Default for Fps {

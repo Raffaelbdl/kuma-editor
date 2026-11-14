@@ -650,6 +650,41 @@ pub struct MeasureMedia {
     pub wait_seconds: Option<u64>,
 }
 
+#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
+pub struct SyncAudioPair {
+    /// The camera clip: a placed video whose own sound heard the scene. At speed 1.
+    pub clip: String,
+    /// Bin id of the better recording of the same scene (the mic): an audio or video file.
+    pub audio: String,
+    /// Audio track id for the mic's clip, on the camera clip's sequence. Default: the first
+    /// audio track with room over that stretch, else a new one.
+    #[serde(default)]
+    pub track: Option<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct SyncAudio {
+    /// Each camera clip and the mic recording to line up with it; several are one edit.
+    pub pairs: Vec<SyncAudioPair>,
+    /// Only measure the offsets; change nothing.
+    #[serde(default)]
+    pub dry_run: Option<bool>,
+    /// Seconds to wait before returning the job id instead (default 600).
+    #[serde(default)]
+    pub wait_seconds: Option<u64>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct NormalizeAudio {
+    /// Bin id of the media entry whose `volume` is set.
+    pub bin: String,
+    /// Integrated loudness to bring it to, LUFS (-50..-5): a voice is usually -16 to -23.
+    pub target: f64,
+    /// Seconds to wait before returning the job id instead (default 600).
+    #[serde(default)]
+    pub wait_seconds: Option<u64>,
+}
+
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct AddMedia {
     /// A media file, or a folder of them, relative to the project directory (or absolute).
@@ -1038,6 +1073,18 @@ impl KumaServer {
     async fn measure_media(&self, Parameters(p): Parameters<MeasureMedia>, ctx: RequestContext<RoleServer>) -> Result<CallToolResult, McpError> {
         let body = json!({ "bin": p.bin, "path": p.path, "range": p.range, "curve": p.curve, "step": p.step, "silence_db": p.silence_db, "silence_min": p.silence_min });
         self.job("/api/media/measure", body, Duration::from_secs(p.wait_seconds.unwrap_or(600)), &ctx).await
+    }
+
+    #[tool(description = "Line a separately recorded sound (a lapel or wireless mic) up with the camera that heard the same scene: both sounds are cross-correlated to a fraction of a millisecond, then, in one edit, the mic (`audio`, a bin entry) is placed on an audio track under the camera `clip` so the two play the same instant, the camera clip is muted, and both get one `group` so they move and cut together. Sync before cutting: the camera clip should be the whole take, at speed 1. Several `pairs` are one edit; a pair synced before is moved, not placed twice. Returns per pair `offset` (seconds into the audio at the camera's 0), `confidence` (2.5+ is typical, under 1.5 is refused as no match and the pair left alone with `skipped`), the mic's `audio_clip`, `track`, `start`/`end`/`in`, and `error_ms`: what rounding both clips to frames leaves, under half a frame. `dry_run` only measures. Takes no base_revision: the edit is composed against the project as it is when the measuring ends.")]
+    async fn sync_audio(&self, Parameters(p): Parameters<SyncAudio>, ctx: RequestContext<RoleServer>) -> Result<CallToolResult, McpError> {
+        let body = json!({ "pairs": p.pairs, "dry_run": p.dry_run.unwrap_or(false) });
+        self.job("/api/audio/sync", body, Duration::from_secs(p.wait_seconds.unwrap_or(600)), &ctx).await
+    }
+
+    #[tool(description = "Bring a media entry to an integrated loudness (`target`, LUFS) by setting its `volume`, for every placement at once: Audacity's Loudness Normalization. The entry is measured as it sounds — its whole length through its own effects on the source (`high_pass`, `eq`, `compressor`, `limiter`; its volume acts at the chain's `volume` effect, else first, always before the limiter) — on a timeline made for the measurement and never stored, and measured again until within 0.05 LU. One edit. Returns `before`/`after` LUFS, `true_peak`, the new `volume` and `gain_db`. Put the entry's chain on first, so the gain is measured through it; a placement's own `volume` and fades still apply on top.")]
+    async fn normalize_audio(&self, Parameters(p): Parameters<NormalizeAudio>, ctx: RequestContext<RoleServer>) -> Result<CallToolResult, McpError> {
+        let body = json!({ "bin": p.bin, "target": p.target });
+        self.job("/api/audio/normalize", body, Duration::from_secs(p.wait_seconds.unwrap_or(600)), &ctx).await
     }
 
     #[tool(description = "Delete what the project's `.kuma/` cache no longer uses: superseded bakes, sampled frames, thumbnails of removed entries. sample_frames leaves PNGs behind, so prune after a long session. Returns what was freed and what is left.")]

@@ -5,7 +5,7 @@
 import { Cmd, command } from "./commands";
 import { desktop, initDesktop, pickAndAddMedia } from "./desktop";
 import { el } from "./dom";
-import { addTrack, copySelection, createFromBlueprint, creatable, cutSelection, deleteSelectedClips, groupSelection, matchSelectedToReference, pasteClipboard, pasteEffects, promptNewOverlay, promptNewSequence, splitAt, swapOrientation, transcribe, ungroupSelection } from "./edits";
+import { addTrack, copySelection, createFromBlueprint, creatable, cutSelection, deleteSelectedClips, groupSelection, matchSelectedToReference, pasteClipboard, pasteEffects, promptNewOverlay, promptNewSequence, splitAt, swapOrientation, transcribe, ungroupSelection, syncAudio, normalizeAudio } from "./edits";
 import { panelCommands, panels } from "./panelhost";
 import { installPalette } from "./palette";
 import { agentPanel } from "./panels/agentpanel";
@@ -46,6 +46,8 @@ function projectCommands() {
   });
   command(Cmd.swapOrientation, "Switch Orientation", () => swapOrientation());
   command(Cmd.transcribe, "Transcribe → Subtitles", () => transcribe());
+  command(Cmd.syncAudio, "Sync sound from a mic…", () => syncAudio());
+  command(Cmd.normalizeAudio, "Normalize loudness…", () => normalizeAudio());
   command(Cmd.addMedia, "Add Media…", () => pickAndAddMedia());
   command(Cmd.split, "Split at Playhead", () => splitAt(store.state.playhead));
   command(Cmd.seekEdge, "Go to Clip Edge", (dir) => store.seekEdge(Number(dir) < 0 ? -1 : 1));

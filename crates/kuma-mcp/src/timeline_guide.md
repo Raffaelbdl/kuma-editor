@@ -93,19 +93,20 @@ each. `compressor` `{threshold (dBFS, -20), ratio (3), attack (ms, 5), release (
 
 **A sound file's bin entry carries a chain on its source** (`/bin/<id>/effects`, absent until it
 has one): `high_pass`, `eq`, `compressor`, a still `volume` and `limiter`, each once, before
-every placement's own effects — a mic's treatment, set once. The entry's `volume` acts at the
-chain's `volume`, else first, and always before its limiter (a `volume` after the `limiter` is refused): put a `volume` after a compressor,
-so a loudness gain is its makeup. `normalize_audio {bin, target}` sets the entry's `volume` to
-reach `target` LUFS, measured through that chain; put the chain on first.
+every placement's own effects. The entry's `volume` acts at the chain's `volume` (first if none)
+and before the `limiter`; with a compressor, put a `volume` after it so the gain is its makeup.
+`normalize_audio {bin, target}` sets that `volume` to reach `target` LUFS through the chain, so
+put the chain on first.
 
-**A recording made apart from the picture** (a wireless mic beside the camera) is lined up with
-`sync_audio {pairs: [{clip, audio}]}`: the camera clip (whole take, speed 1) and the mic's bin
-entry. Both sounds are cross-correlated; the mic is placed under the clip on an audio track, the
-clip muted, both grouped, one edit for all pairs. Check `confidence` (refused under 1.5) and
-`error_ms` (frame rounding, under half a frame). Sync before cutting: a cut of a group cuts both.
+**A recording made apart from the picture** (a wireless mic beside the camera):
+`sync_audio {pairs: [{clip, audio}]}`, each the camera clip (whole take, speed 1) and the mic's
+bin entry. One edit for all pairs: each mic under its clip on an audio track, the clip muted,
+both grouped. Check `confidence` (refused under 1.5) and `error_ms` (under half a frame). Sync
+before cutting: a cut of a group cuts both.
 
 **A sequence's `effects` act on its mix** (`/bin/<seq>/source/effects`, always present):
-`volume`, `limiter`, `auto_level`, `high_pass`, `eq` and `compressor` only, keyframes in the sequence's own seconds, on every
+`volume`, `limiter`, `auto_level`, `high_pass`, `eq` and `compressor` only, keyframes in the
+sequence's own seconds, on every
 placement and when it is rendered itself. The master's are the master stage: e.g.
 `[{"type":"volume","gain":3.2},{"type":"limiter","ceiling":-2.5}]`. `limiter`
 `{ceiling (dBFS, -1), attack (ms, 5), release (ms, 50)}` holds sample peaks at the ceiling and

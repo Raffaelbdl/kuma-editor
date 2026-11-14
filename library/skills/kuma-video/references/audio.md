@@ -41,24 +41,22 @@ against nothing.
 
 ## A mic recorded apart from the camera
 
-1. **Add both**, the camera's files and the mic's, and place each camera take **whole** on the
-   timeline (speed 1). Sync before cutting.
-2. **`sync_audio`** with every take at once: `pairs: [{clip, audio}]`, pairing by file name
+1. **Add both** and place each camera take **whole** (speed 1). Sync before cutting.
+2. **`sync_audio`** every take at once: `pairs: [{clip, audio}]`, paired by file name
    (`hook.MP4` with `hook.wav`). Each mic lands under its clip, the clip is muted and the two
-   are grouped, so later cuts and moves keep them together. Read `confidence` (a match is
-   2.5 and up; under 1.5 is refused and `skipped`, usually the wrong file or a take that is
-   mostly silence) and `error_ms` (the frame rounding, at most half a frame).
-3. **Treat the mic on its bin entry**, once for every placement: a chain of `high_pass`, `eq`,
+   are grouped, so later cuts keep them together. Read `confidence` (matches score 2.5 and up;
+   under 1.5 is `skipped`, usually the wrong file or a mostly silent take) and `error_ms`
+   (frame rounding, at most half a frame).
+3. **Treat the mic on its bin entry**, once for every placement: `high_pass`, `eq`,
    `compressor`, `volume`, `limiter` in `/bin/<mic>/effects`. A voice-over finish is
-   `high_pass` 80 Hz then `limiter` -2 dB (the `voice-finish` preset); to make one mic sound
-   like another, `eq` bands measured from the two (average speech spectrum of each in
-   third-octave bands, the difference fitted to a few peaking bands).
-4. **`normalize_audio {bin, target}`** sets the entry's `volume` so the mic plays at `target`
-   LUFS through its chain. With a compressor, put a `volume` after it: the gain then is the
-   compressor's makeup and the compressor sees the recording as it is, not hiss pushed up
-   into it. A refusal saying the chain "holds it there" means the limiter caps it: lower the
-   target or raise the ceiling.
-5. Then transcribe the **mic** entry, not the camera: it is the better sound.
+   `high_pass` 80 Hz then `limiter` -2 dB (the `voice-finish` preset). To make one mic sound
+   like another, fit a few `eq` bands to the difference of their average speech spectra in
+   third octaves.
+4. **`normalize_audio {bin, target}`** sets the entry's `volume` to `target` LUFS through its
+   chain. With a compressor, put the `volume` after it, so the compressor sees the recording,
+   not hiss pushed up into it. A refusal saying the chain "holds it there" means the limiter
+   caps it: lower the target or raise the ceiling.
+5. Transcribe the **mic** entry, not the camera: it is the better sound.
 
 ## Voice and music
 

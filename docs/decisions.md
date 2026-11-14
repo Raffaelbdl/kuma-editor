@@ -3506,71 +3506,60 @@ pipeline below, not done.
 
 ## Sound recorded apart: syncing a mic, and a mic's chain on its entry
 
-Asked for by a person who films to camera with a Lumix and records the voice on a wireless
-Boya mic, then lined the two up outside kuma (`align-videos-by-sound`), cleaned the mic in
-Audacity with two macros, and matched its colour to a Solocast 2 voice-over with scripts.
-The macros were read off the machine and only what they do was kept: normalize to -3 dB peak
-→ DC removal → high-pass 80 Hz 12 dB/oct, then loudness to -20 LUFS (dual mono) → limiter
--2 dB, 1 ms lookahead, 20 ms release, no makeup. The peak normalize is a gain the loudness
-normalize replaces, and the high-pass removes DC: the chain is a high-pass, a measured gain
-and a limiter. Version 12.
+Asked for by a person who films with a Lumix, records the voice on a wireless Boya mic, lined
+the two up outside kuma (`align-videos-by-sound`) and cleaned the mic with two Audacity macros.
+Only what the macros do was kept: peak normalize, DC removal, high-pass 80 Hz 12 dB/oct, then
+-20 LUFS (dual mono) and a limiter at -2 dB, 1 ms lookahead, 20 ms release. The loudness gain
+replaces the peak normalize and the high-pass removes DC, so the chain is a high-pass, a
+measured gain and a limiter. Version 12.
 
 **Sync by cross-correlation, in kuma** — adopted (`kuma_overlay::sync`, `sound::sync`). Both
-sounds decoded by ffmpeg to mono, high-passed at 100 Hz (rumble and hum are in both whatever
-the offset), normalised, correlated through an FFT. Measured on eleven real takes of one to
-two minutes: 4 kHz gives the 8 kHz offset to 0.3 ms, the clocks drift under a millisecond a
-take, matched pairs score 2.6–5 and unrelated ones about 1.03, so 1.5 is the refusal line.
-`align-videos-by-sound`, the tool it replaces, was **46–50 ms early** on every take checked
-(2048 samples at 44.1 kHz, its fingerprint's hop): more than a frame at 25 fps. The rate
-halves for long recordings so the FFT stays near `2^23` floats.
-- *No FFT crate*: a radix-2 transform of its own, forty lines and a DFT test, rather than a
-  dependency for one use (and the sandbox that built it had no registry).
-- *The result is an edit*, composed when the measuring ends (`apply_built`): the mic placed
-  under the camera clip, the clip muted, both one `group`. A group is already what "move and
-  cut these together" means; a nested sequence per take ("merged clip") was weighed and left,
-  since it would hide the mic from the timeline the agent already edits by transcript.
-- *Frame rounding stays*: a clip's `in` is frames to the compiler, so up to half a frame is
-  left (`error_ms`, 15.5 ms on the first take). An `adelay` for the remainder would make it
-  exact; not done, since it is under what is noticed and better than before.
+sounds go to mono at 4 kHz, high-passed at 100 Hz (rumble and hum are in both whatever the
+offset), and are correlated through an FFT. On eleven real takes of one to two minutes the
+offset is to 0.3 ms, the clocks drift under a millisecond a take, matched pairs score 2.6–5 and
+unrelated ones about 1.03, so 1.5 is the refusal line. `align-videos-by-sound` was **46–50 ms
+early** on every take (its fingerprint's hop), more than a frame at 25 fps. The rate halves for
+long recordings so the FFT stays near `2^23` floats.
+- *No FFT crate*: a forty-line radix-2 transform with a DFT test, not a dependency for one use.
+- *The result is one edit* (`apply_built`): the mic under the camera clip, the clip muted, both
+  one `group`, which already means "move and cut together". A nested sequence per take was
+  rejected: it would hide the mic from the timeline the agent edits by transcript.
+- *Frame rounding stays*: a clip's `in` is frames, so up to half a frame is left (`error_ms`).
+  An `adelay` for the remainder would make it exact; not done, it is below what is noticed.
 
-**A mic's chain on its bin entry** — adopted. The grade on the source was the precedent: a
-recording's treatment is a fact about the file. A sound file's entry takes `high_pass`, `eq`,
-`compressor`, a still `volume` and `limiter` (`Effect::fits_a_source_sound`); not `mlt`
-(opaque), fades (a placement's edges) or `auto_level` (follows the placement). The three new
-kinds are ffmpeg's `highpass`, `equalizer` (peaking, octave widths) and `acompressor`, and a
-sequence's mix takes them too. A placement compiles in **two stages**, each with its own gain:
-the entry's effects with the entry's `volume` (`clip_<id>_entry…` filters), then the clip's
-with the clip's. Before, an entry's volume was multiplied into the clip's fader, which folds
-into the clip's `volume` effect wherever that sits — after a clip's limiter, say — so where an
-entry's gain acted depended on the clip; a first cut of this kept that path for entries
-without a chain and staged only the rest, two rules for one field. Staging every entry costs
-an extra `volume` filter where an entry's volume is not 1 and renames an entry grade's filters
-(one preview reload); the reference file did not change, and the sound only changes where a
-clip's `volume` effect came after a nonlinear one, which is the fix.
+**A mic's chain on its bin entry** — adopted, on the grade's precedent: a recording's treatment
+is a fact about the file. A sound file's entry takes `high_pass`, `eq`, `compressor`, a still
+`volume` and `limiter` (`Effect::fits_a_source_sound`); not `mlt` (opaque), fades (a placement's
+edges) or `auto_level` (follows the placement). The new kinds are ffmpeg's `highpass`,
+`equalizer` (peaking, octave widths) and `acompressor`; a sequence's mix takes them too. A
+placement compiles in **two stages**, each with its own gain: the entry's effects with the
+entry's `volume` (`clip_<id>_entry…` filters), then the clip's with the clip's. Before, an
+entry's volume was multiplied into the clip's fader, so where it acted depended on the clip
+(after a clip's limiter, say). Keeping that path for entries without a chain was tried and
+dropped: two rules for one field. The cost is one `volume` filter where an entry's volume is
+not 1; the sound changes only where a clip's `volume` came after a nonlinear effect, which is
+the fix.
 
-**Where the entry's gain acts** — the first cut ran the entry's `volume` before the whole
-chain. Fine for the macros (linear up to the limiter), wrong with a compressor: `acompressor`
-answered a dB of input with 0.3 dB of output, so a normalisation needed about 3 dB per dB and
-lifted the hiss three times as fast as the voice. Rejected: a gain field of its own, and a
-fixed "after everything but the limiter". Adopted: the entry's `volume` folds into the chain's
-`volume` effect wherever it sits, as a clip's folds into the clip's, and acts first when there
-is none. A compressor then sees the recording as it is and the gain is its makeup.
+**Where the entry's gain acts** — the first cut ran it before the whole chain, which is wrong
+with a compressor: `acompressor` answered a dB of input with 0.3 dB, so normalising needed about
+3 dB per dB and lifted the hiss three times as fast as the voice. Rejected: a gain field of its
+own, and a fixed "after everything but the limiter". Adopted: the entry's `volume` folds into
+the chain's `volume` effect wherever it sits, as a clip's does, and acts first when there is
+none. The compressor then sees the recording as it is and the gain is its makeup.
 
 **Normalisation is measured, then written** — `normalize_audio` renders the entry alone through
-its chain on a timeline made for it and never stored, and sets `volume`; a secant on the
-measured slope, up to six passes, within 0.05 LU. A target the chain cannot reach (a limiter
-after the gain caps it) is refused, rather than answered with +56 dB. Rejected: `loudnorm` or
-`auto_level` as the normaliser, which ride the level rather than set it. MLT was checked to
-carry float between filters (+12 dB, an ffmpeg EQ, -12 dB gives the input back), so a gain over
-full scale reaches the limiter unclipped.
+its chain on a timeline never stored and sets `volume` by secant, up to six passes, within
+0.05 LU. A target the chain cannot reach (a limiter after the gain) is refused rather than
+answered with +56 dB. Rejected: `loudnorm` or `auto_level`, which ride the level rather than set
+it. MLT carries float between filters (+12 dB, an EQ, -12 dB gives the input back), so a gain
+over full scale reaches the limiter unclipped.
 
-Measured but **not in kuma**: denoising. `avfilter.arnndn` (what the person's script used) and
-`avfilter.afftdn` both fail in MLT's avfilter wrapper ("Unexpected return format"). It stays an
-outside step, or becomes derived media made by a job (like a proxy) — open.
+**Not in kuma: denoising.** `avfilter.arnndn` and `avfilter.afftdn` both fail in MLT's avfilter
+wrapper ("Unexpected return format"). It stays outside, or becomes derived media made by a job
+like a proxy — open.
 
-The person's two presets are theirs, in their library (`mat-voix`, `mat-boya-solocast`: the EQ
-measured on their takes, fitted to six bands within 1.1 dB); the starter library gained a
-generic `voice-finish`.
+The person's presets are in their library (`mat-voix`, `mat-boya-solocast`, its EQ fitted to six
+bands within 1.1 dB of their takes); the starter library gained a generic `voice-finish`.
 
 ## Still open
 

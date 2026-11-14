@@ -129,26 +129,38 @@ pub fn validate(p: &Project, ctx: &ValidationContext) -> Vec<Issue> {
             // A sequence's own contents are checked below, with every other timeline.
             BinSource::Sequence(_) | BinSource::Folder { .. } => {}
         }
-        let shows_a_file = matches!(&item.source, BinSource::File { kind, .. } if *kind != MediaKind::Audio);
-        let mut graded = false;
+        // What the source is, set once for every placement: a picture file's grade, a
+        // sound file's chain. Each kind once, over the whole source, holding still; and the
+        // entry's gain before its limiter, which is the limiter's whole point.
+        let mut kinds: HashSet<&str> = HashSet::new();
+        let mut limited = false;
         for (ei, e) in item.effects.iter().enumerate() {
             let ep = format!("{ip}/effects/{ei}");
-            let Effect::Grade(g) = e else {
-                issues.push(Issue::error(ep, format!("a bin entry's effects are a `grade` for now; put `{}` on the clips that place it", e.kind())));
+            let kind = e.kind();
+            if !item.takes(e) {
+                let why = match e {
+                    Effect::Grade(_) => "only a video or image file takes a grade of its own; grade the clips that place anything else".to_string(),
+                    _ if e.fits_a_source_sound() => format!("only a video or audio file with sound takes `{kind}` on its source; put it on the clips that place anything else"),
+                    _ => format!("a bin entry's effects are a `grade`, or a sound's `{}`; put `{kind}` on the clips that place it", Effect::ON_A_SOURCE_SOUND.join("`, `")),
+                };
+                issues.push(Issue::error(ep, why));
                 continue;
-            };
-            if !shows_a_file {
-                issues.push(Issue::error(ep, "only a video or image file takes a grade of its own; grade the clips that place anything else"));
-                continue;
             }
-            if std::mem::replace(&mut graded, true) {
-                issues.push(Issue::error(ep.clone(), "duplicate `grade` on this entry"));
+            match e {
+                Effect::Limiter { .. } => limited = true,
+                Effect::Volume { .. } if limited => issues.push(Issue::error(ep.clone(), "an entry's `volume` is its gain, and goes before its `limiter`, which holds the peaks the gain raises: move it up")),
+                _ => {}
             }
-            if g.mask.is_some() || !g.keyframes.is_empty() {
-                issues.push(Issue::error(ep.clone(), "an entry's grade is over the whole picture and holds still: a mask or keys go on a clip's grade"));
+            if !kinds.insert(kind) {
+                issues.push(Issue::error(ep.clone(), format!("duplicate `{kind}` on this entry")));
             }
-            check_grade(&mut issues, &ep, g);
-            check_grade_luts(&mut issues, &ep, g, ctx);
+            if e.mask().is_some() || !e.keyframes().is_empty() {
+                issues.push(Issue::error(ep.clone(), format!("an entry's {kind} is over the whole source and holds still: a mask or keys go on a clip's {kind}")));
+            }
+            check_effect(&mut issues, &ep, e, kind, ("entry", item.meta.as_ref().and_then(|m| m.duration).unwrap_or(f64::INFINITY)));
+            if let Effect::Grade(g) = e {
+                check_grade_luts(&mut issues, &ep, g, ctx);
+            }
         }
         if item.volume != 1.0 && !item.is_timed_media() {
             issues.push(Issue::error(format!("{ip}/volume"), "only a sound or video file, or a sequence, has a volume"));
@@ -544,19 +556,46 @@ fn check_effect(issues: &mut Vec<Issue>, ep: &str, e: &Effect, kind: &str, owner
                 }
             }
         }
-        // The ranges ffmpeg's `alimiter` and MLT's `dynamic_loudness` take: outside them
-        // the filter clamps or refuses, so the number would not mean what it says.
-        Effect::Limiter { .. } | Effect::AutoLevel { .. } => {
+        // The ranges ffmpeg's `alimiter`, `highpass` and `acompressor` and MLT's
+        // `dynamic_loudness` take: outside them the filter clamps or refuses, so the number
+        // would not mean what it says.
+        Effect::Limiter { .. } | Effect::AutoLevel { .. } | Effect::HighPass { .. } | Effect::Compressor { .. } => {
             let ranges = match *e {
                 Effect::Limiter { ceiling, attack, release } => vec![("ceiling", ceiling, -24.0, 0.0), ("attack", attack, 0.1, 80.0), ("release", release, 1.0, 8000.0)],
                 Effect::AutoLevel { target, window, max_gain, min_gain } => {
                     vec![("target", target, -50.0, -10.0), ("window", window, 1.0, 60.0), ("max_gain", max_gain, 0.0, 30.0), ("min_gain", min_gain, -30.0, 0.0)]
                 }
+                Effect::HighPass { freq, .. } => vec![("freq", freq, 10.0, 1000.0)],
+                Effect::Compressor { threshold, ratio, attack, release, knee, makeup } => vec![
+                    ("threshold", threshold, -60.0, 0.0),
+                    ("ratio", ratio, 1.0, 20.0),
+                    ("attack", attack, 0.01, 2000.0),
+                    ("release", release, 0.01, 9000.0),
+                    ("knee", knee, 1.0, 8.0),
+                    ("makeup", makeup, 0.0, 36.0),
+                ],
                 _ => vec![],
             };
             for (name, v, lo, hi) in ranges {
                 if !(lo..=hi).contains(&v) {
                     issues.push(Issue::error(format!("{ep}/{name}"), format!("{kind} {name} must be within {lo}..{hi}")));
+                }
+            }
+            if let Effect::HighPass { poles, .. } = e {
+                if !matches!(poles, 1 | 2) {
+                    issues.push(Issue::error(format!("{ep}/poles"), "high_pass poles is 1 (6 dB an octave) or 2 (12 dB an octave)"));
+                }
+            }
+        }
+        Effect::Eq { bands } => {
+            if bands.is_empty() {
+                issues.push(Issue::warn(format!("{ep}/bands"), "an eq with no bands does nothing"));
+            }
+            for (bi, b) in bands.iter().enumerate() {
+                for (name, v, lo, hi) in [("freq", b.freq, 20.0, 20000.0), ("gain", b.gain, -24.0, 24.0), ("width", b.width, 0.1, 4.0)] {
+                    if !(lo..=hi).contains(&v) {
+                        issues.push(Issue::error(format!("{ep}/bands/{bi}/{name}"), format!("eq band {name} must be within {lo}..{hi}")));
+                    }
                 }
             }
         }
@@ -684,7 +723,7 @@ fn check_sequence_effects(issues: &mut Vec<Issue>, p: &Project, seq_id: &str, se
         if !e.fits_a_sequence() {
             issues.push(Issue::error(
                 ep,
-                format!("a sequence carries only effects on its mix (`volume`, `limiter`, `auto_level`); put `{kind}` on the clips that place it"),
+                format!("a sequence carries only effects on its mix (`{}`); put `{kind}` on the clips that place it", Effect::ON_A_SEQUENCE.join("`, `")),
             ));
             continue;
         }
@@ -1104,6 +1143,62 @@ mod tests {
         for says in ["must be within -5..5", "duplicate `grade` on this entry", "only a video or image file", "put `blur` on the clips", "a mask or keys go on a clip's grade"] {
             assert!(m.iter().any(|m| m.contains(says)), "{says}: {m:?}");
         }
+    }
+
+    /// A sound file's entry takes a mic's chain — a high-pass, an equaliser, a compressor, a
+    /// still volume, a limiter, each once — and only a file that sounds does.
+    #[test]
+    fn an_entry_takes_a_sound_chain_of_its_own() {
+        let chain = json!([
+            { "type": "high_pass", "freq": 80, "poles": 2 },
+            { "type": "eq", "bands": [{ "freq": 4000, "gain": 5 }] },
+            { "type": "compressor", "threshold": -35 },
+            { "type": "volume" },
+            { "type": "limiter", "ceiling": -2 }
+        ]);
+        let p = project(json!({
+            "bin": {
+                "mic": { "source": { "path": "mic.wav", "kind": "audio" }, "volume": 1.4, "effects": chain },
+                "cam": { "source": { "path": "cam.mp4" }, "effects": [{ "type": "grade" }, { "type": "high_pass" }] },
+                "still": { "source": { "path": "x.png", "kind": "image" }, "effects": [{ "type": "high_pass" }] },
+                "mute": { "source": { "path": "m.mp4" }, "meta": { "has_audio": false, "duration": 2 }, "effects": [{ "type": "limiter" }] },
+                "late": { "source": { "path": "l.wav", "kind": "audio" }, "effects": [{ "type": "limiter" }, { "type": "volume" }] },
+                "bad": { "source": { "path": "b.wav", "kind": "audio" }, "effects": [
+                    { "type": "high_pass", "freq": 5, "poles": 3 },
+                    { "type": "eq", "bands": [{ "freq": 30000, "gain": 30, "width": 9 }] },
+                    { "type": "compressor", "ratio": 50 },
+                    { "type": "volume", "keyframes": [{ "t": 0, "gain": 2 }] },
+                    { "type": "high_pass" },
+                    { "type": "audio_fade", "in": 1 }
+                ] }
+            },
+            "tracks": []
+        }));
+        let m: Vec<String> = validate(&p, &Default::default()).into_iter().map(|i| format!("{}: {}", i.path, i.message)).collect();
+        assert!(!m.iter().any(|m| m.starts_with("/bin/mic") || m.starts_with("/bin/cam")), "a chain on a sound, and on a video's sound beside its grade: {m:?}");
+        for says in [
+            "/bin/still/effects/0: only a video or audio file with sound",
+            "/bin/mute/effects/0: only a video or audio file with sound",
+            "/bin/bad/effects/0/freq: high_pass freq must be within 10..1000",
+            "/bin/bad/effects/0/poles: high_pass poles is 1",
+            "/bin/bad/effects/1/bands/0/freq: eq band freq",
+            "/bin/bad/effects/1/bands/0/gain: eq band gain",
+            "/bin/bad/effects/1/bands/0/width: eq band width",
+            "/bin/bad/effects/2/ratio: compressor ratio",
+            "/bin/bad/effects/3: an entry's volume is over the whole source and holds still",
+            "/bin/bad/effects/4: duplicate `high_pass` on this entry",
+            "/bin/bad/effects/5: a bin entry's effects are a `grade`, or a sound's",
+            "/bin/late/effects/1: an entry's `volume` is its gain, and goes before its `limiter`",
+        ] {
+            assert!(m.iter().any(|m| m.starts_with(says)), "{says}: {m:?}");
+        }
+        // The same kinds act on a sequence's mix.
+        let seq = project(json!({ "bin": {}, "tracks": [] }));
+        let mut seq = seq;
+        if let Some(BinSource::Sequence(s)) = seq.bin.get_mut("main").map(|i| &mut i.source) {
+            s.effects = serde_json::from_value(json!([{ "type": "high_pass" }, { "type": "eq", "bands": [] }, { "type": "compressor" }])).unwrap();
+        }
+        assert!(!validate(&seq, &Default::default()).iter().any(|i| i.message.contains("a sequence carries only")), "{:?}", messages(&seq));
     }
 
     /// A keyframe's parameters are its unknown fields, so the validator is what says a

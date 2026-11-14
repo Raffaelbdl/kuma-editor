@@ -85,12 +85,20 @@ const EFFECT_STREAMS: Record<Effect["type"], Streams> = {
   volume: { video: false, audio: true },
   limiter: { video: false, audio: true },
   auto_level: { video: false, audio: true },
+  high_pass: { video: false, audio: true },
+  eq: { video: false, audio: true },
+  compressor: { video: false, audio: true },
   freeze: { video: true, audio: false },
   mlt: { video: true, audio: true },
 };
 
 /** The kinds a sequence may carry, on its mix. Mirrors `Effect::fits_a_sequence`. */
-export const SEQUENCE_EFFECTS: Effect["type"][] = ["volume", "limiter", "auto_level"];
+export const SEQUENCE_EFFECTS: Effect["type"][] = ["volume", "limiter", "auto_level", "high_pass", "eq", "compressor"];
+
+/** The kinds a sound file's bin entry may carry on its source. Mirrors
+ *  `Effect::fits_a_source_sound`: a mic's chain, the entry's own volume acting at its
+ *  `volume` (else first). */
+export const SOURCE_SOUND_EFFECTS: Effect["type"][] = ["high_pass", "eq", "compressor", "volume", "limiter"];
 
 /** What a sequence's own effects have to act on: its sound, if anything in it sounds. */
 export const sequenceStreams = (p: Project, id: string): Streams => ({ video: false, audio: sequenceSounds(p, id) });
@@ -116,7 +124,7 @@ export function clipStreams(p: Project, track: Track, clip: Clip): Streams {
   if (!item) return { video: false, audio: false };
   const kind = itemKind(item);
   const video = kind !== "audio" && kind !== "folder";
-  const audio = kind === "sequence" ? sequenceSounds(p, clip.bin) : isTimedMedia(item) && hasAudio(item);
+  const audio = kind === "sequence" ? sequenceSounds(p, clip.bin) : sounds(item);
   return { video: video && track.kind !== "audio", audio };
 }
 
@@ -146,8 +154,14 @@ export type Effect =
   | { type: "volume"; gain?: number; keyframes?: Keyframe[] }
   | { type: "limiter"; ceiling?: number; attack?: number; release?: number }
   | { type: "auto_level"; target?: number; window?: number; max_gain?: number; min_gain?: number }
+  | { type: "high_pass"; freq?: number; poles?: number }
+  | { type: "eq"; bands?: EqBand[] }
+  | { type: "compressor"; threshold?: number; ratio?: number; attack?: number; release?: number; knee?: number; makeup?: number }
   | { type: "freeze"; t?: number }
   | { type: "mlt"; service: string; properties?: Record<string, string> };
+
+/** One band of an `eq` (`kuma_core::EqBand`): Hz, dB, octaves. */
+export interface EqBand { freq: number; gain: number; width?: number }
 
 /** Where an effect acts (`kuma_core::Mask`): the rectangle `region` is, in composition
  *  pixels, or the ellipse inscribed in it. */
@@ -572,6 +586,16 @@ export const isTimedMedia = (item: BinItem | undefined): boolean =>
  *  own rule when nothing was probed (it tries). */
 export const hasAudio = (item: BinItem | undefined): boolean =>
   !!item && isFileSource(item.source) && (item.meta?.has_audio ?? true);
+
+/** A video or audio file with sound. Mirrors `BinItem::sounds`. */
+export const sounds = (item: BinItem | undefined): boolean => isTimedMedia(item) && hasAudio(item);
+
+/** Whether an entry may carry an effect of this kind on its source: a grade on a file that
+ *  shows a picture, a sound chain's kinds on one that sounds. Mirrors `BinItem::takes`. */
+export function entryTakes(item: BinItem, type: Effect["type"]): boolean {
+  const kind = itemKind(item);
+  return type === "grade" ? kind === "video" || kind === "image" : SOURCE_SOUND_EFFECTS.includes(type) && sounds(item);
+}
 
 /** Which way round the frame is. Nothing but its size decides it. */
 export const orientation = (p: { width: number; height: number }) => (p.height > p.width ? "portrait" : "landscape");

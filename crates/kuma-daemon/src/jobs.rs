@@ -109,6 +109,14 @@ impl<T> Asked<T> {
     pub fn split(self) -> (Option<AskedBy>, T) {
         (AskedBy::new(self.origin, self.call), self.req)
     }
+
+    /// [`Self::split`], with the origin a job's edit is made under too: the request's, else
+    /// [`default_origin`].
+    pub fn split_with_origin(self) -> (Option<AskedBy>, String, T) {
+        let origin = self.origin.clone().filter(|o| !o.trim().is_empty()).unwrap_or_else(default_origin);
+        let (by, req) = self.split();
+        (by, origin, req)
+    }
 }
 
 impl JobState {
@@ -483,8 +491,8 @@ pub fn transcribe(state: &AppState, req: &TranscribeRequest, progress: &dyn Fn(u
                     let ti = match tracks.iter().position(free) {
                         Some(ti) => ti,
                         None => {
-                            let new = kuma_core::Track { id: p.free_track_or_clip_id("o"), kind: kuma_core::TrackKind::Overlay, name: "Subtitles".into(), muted: false, hidden: false, clips: vec![], transitions: vec![] };
-                            ops.push(add_op(&format!("/bin/{seq}/source/tracks/-"), serde_json::to_value(new)?)?);
+                            let new = kuma_core::Track::empty(p.free_track_or_clip_id("o"), kuma_core::TrackKind::Overlay, "Subtitles");
+                            ops.push(bin_op(seq, "/source/tracks/-", serde_json::to_value(new)?)?);
                             tracks.len()
                         }
                     };
@@ -492,8 +500,8 @@ pub fn transcribe(state: &AppState, req: &TranscribeRequest, progress: &dyn Fn(u
                 }
                 let (seq, ti) = track.clone().unwrap_or_default();
                 let clip_id = clip_ids.next().unwrap_or_default();
-                let placed = kuma_core::Clip { id: clip_id, start, end, bin: id.clone(), source_in: 0.0, speed: c.speed, volume: 1.0, muted: false, effects: vec![], label: String::new(), group: String::new() };
-                ops.push(add_op(&format!("/bin/{seq}/source/tracks/{ti}/clips/-"), serde_json::to_value(placed)?)?);
+                let placed = kuma_core::Clip { speed: c.speed, ..kuma_core::Clip::placing(clip_id, id.as_str(), start, end) };
+                ops.push(bin_op(&seq, &format!("/source/tracks/{ti}/clips/-"), serde_json::to_value(placed)?)?);
             }
             written.push(Written { id: id.clone(), replaced: *replacing, placed, piece: (*piece).clone() });
         }
@@ -580,6 +588,11 @@ fn bin_pointer(id: &str, rest: &str) -> String {
 /// `add /bin/<id><rest>`.
 pub(crate) fn bin_op(id: &str, rest: &str, value: serde_json::Value) -> anyhow::Result<json_patch::PatchOperation> {
     add_op(&bin_pointer(id, rest), value)
+}
+
+/// `remove /bin/<id><rest>`.
+pub(crate) fn bin_remove_op(id: &str, rest: &str) -> anyhow::Result<json_patch::PatchOperation> {
+    Ok(json_patch::PatchOperation::Remove(json_patch::RemoveOperation { path: bin_pointer(id, rest).parse()? }))
 }
 
 /// `replace /bin/<id><rest>`.
@@ -1107,28 +1120,10 @@ pub fn measure_audio(state: &AppState, req: &MeasureRequest, progress: &dyn Fn(u
     let fps = project.fps;
     let frames = fps.clip_frames(from, to);
     // Where the file starts, in sequence seconds: the frame it was cut at.
-    let offset = frames.in_ as f64 / fps.as_f64();
+    let offset = fps.secs(frames.in_);
 
-    let mut opts = compile_options(state);
-    opts.sequence = Some(sequence.clone());
-    opts.streams = kuma_mlt::Streams::Audio;
-    let dir = state.config.cache_dir();
-    std::fs::create_dir_all(&dir)?;
-    let mlt = tempfile::Builder::new().prefix(".tmp-measure-").suffix(".mlt").tempfile_in(&dir)?;
-    std::fs::write(mlt.path(), compile_xml(&project, &opts)?)?;
-    let wav = tempfile::Builder::new().prefix(".tmp-measure-").suffix(".wav").tempfile_in(&dir)?;
-    let job = RenderJob {
-        mlt_file: mlt.path().to_path_buf(),
-        output: wav.path().to_path_buf(),
-        preset: &kuma_mlt::presets::AUDIO_ONLY,
-        range: Some((frames.in_, frames.out)),
-        tuning: kuma_mlt::Tuning::default(),
-        extra: vec![("ar".to_string(), project.sample_rate.to_string())],
-    };
-    progress(0, "rendering the sound");
-    kuma_mlt::render(&job, cancel, |p| progress((p.percent as u16 * 4 / 5) as u8, &format!("rendering the sound: frame {}", p.frame)))?;
+    let scan = scan_sound(state, &project, &sequence, (frames.in_, frames.out), &|p, m| progress((p as u16 * 4 / 5) as u8, m), cancel)?;
     progress(80, "measuring");
-    let scan = kuma_overlay::loudness::scan(wav.path()).map_err(|e| anyhow::anyhow!(e))?;
 
     let sections = req.sections.clone().unwrap_or_else(|| chapters(&project, &sequence));
     let measured: Vec<serde_json::Value> = sections
@@ -1169,13 +1164,38 @@ pub fn measure_audio(state: &AppState, req: &MeasureRequest, progress: &dyn Fn(u
     Ok(out)
 }
 
+/// The sound of `sequence` in `project` — a copy, which may hold sequences made for the
+/// measurement — compiled as the root, rendered over `frames` (inclusive) and metered.
+/// `progress` counts the render, 0 to 100.
+pub(crate) fn scan_sound(state: &AppState, project: &Project, sequence: &str, frames: (i64, i64), progress: &dyn Fn(u8, &str), cancel: &AtomicBool) -> anyhow::Result<kuma_overlay::loudness::Scan> {
+    let mut opts = compile_options(state);
+    opts.sequence = Some(sequence.to_string());
+    opts.streams = kuma_mlt::Streams::Audio;
+    let dir = state.config.cache_dir();
+    std::fs::create_dir_all(&dir)?;
+    let mlt = tempfile::Builder::new().prefix(".tmp-measure-").suffix(".mlt").tempfile_in(&dir)?;
+    std::fs::write(mlt.path(), compile_xml(project, &opts)?)?;
+    let wav = tempfile::Builder::new().prefix(".tmp-measure-").suffix(".wav").tempfile_in(&dir)?;
+    let job = RenderJob {
+        mlt_file: mlt.path().to_path_buf(),
+        output: wav.path().to_path_buf(),
+        preset: &kuma_mlt::presets::AUDIO_ONLY,
+        range: Some(frames),
+        tuning: kuma_mlt::Tuning::default(),
+        extra: vec![("ar".to_string(), project.sample_rate.to_string())],
+    };
+    progress(0, "rendering the sound");
+    kuma_mlt::render(&job, cancel, |p| progress(p.percent, &format!("rendering the sound: frame {}", p.frame)))?;
+    kuma_overlay::loudness::scan(wav.path()).map_err(|e| anyhow::anyhow!(e))
+}
+
 /// Seconds as results give them: to the hundredth, never `-0`.
-fn secs(v: f64) -> f64 {
+pub(crate) fn secs(v: f64) -> f64 {
     (v * 100.0).round() / 100.0 + 0.0
 }
 
 /// Decibels as results give them: to the tenth, `None` (null) for silence.
-fn db(v: f64) -> Option<f64> {
+pub(crate) fn db(v: f64) -> Option<f64> {
     v.is_finite().then(|| (v * 10.0).round() / 10.0)
 }
 
@@ -1812,28 +1832,8 @@ pub fn overlay_project(state: &AppState, doc: &Project, id: &str, req: &SampleRe
     let stamp = hash_str(&format!("{d}/{colour}/{}x{}", frame.0, frame.1));
     let seq_id = format!("sample-{id}-{stamp}");
     let bg_id = format!("{seq_id}-bg");
-    let clip = |cid: &str, bin: &str| kuma_core::Clip {
-        id: cid.into(),
-        start: 0.0,
-        end: d,
-        bin: bin.into(),
-        source_in: 0.0,
-        speed: 1.0,
-        volume: 1.0,
-        muted: false,
-        effects: Vec::new(),
-        label: String::new(),
-        group: String::new(),
-    };
-    let track = |tid: &str, kind: kuma_core::TrackKind, clip: kuma_core::Clip| kuma_core::Track {
-        id: tid.into(),
-        kind,
-        name: String::new(),
-        muted: false,
-        hidden: false,
-        clips: vec![clip],
-        transitions: Vec::new(),
-    };
+    let clip = |cid: &str, bin: &str| kuma_core::Clip::placing(cid, bin, 0.0, d);
+    let track = |tid: &str, kind: kuma_core::TrackKind, clip: kuma_core::Clip| kuma_core::Track { clips: vec![clip], ..kuma_core::Track::empty(tid, kind, "") };
     let entry = |source| kuma_core::BinItem::of("", source);
     let sequence = kuma_core::Sequence {
         tracks: vec![

@@ -646,7 +646,7 @@ describe("the effects a clip is offered", { skip: why ? `skipping: ${why}` : fal
     await selectClip(page, "c2");
     await page.until(`!!${ADD} && document.querySelector("#inspector h3 .mono")?.textContent === "c2"`);
     // A mute is a state: what the clip can do is unchanged by it, and so is the list.
-    assert.equal(await offered(), "audio_fade volume limiter auto_level mlt");
+    assert.equal(await offered(), "audio_fade volume limiter auto_level high_pass eq compressor mlt");
     assert.equal(await page.eval(`${ADD}.options[1].textContent`), "audio fade");
     assert.match(await labels(), /Volume.*Muted/);
   });
@@ -672,7 +672,7 @@ describe("the effects a clip is offered", { skip: why ? `skipping: ${why}` : fal
       window.dispatchEvent(new PointerEvent("pointerup", { bubbles: true })); return true; })()`);
     await page.until(`!!${ADD} && !document.querySelector("#inspector h3 .mono")`);
     assert.match(await page.eval(`[...document.querySelectorAll("#inspector h3")].map(h => h.textContent).join(" | ")`), /Master “Main” — on its mix/);
-    assert.equal(await offered(), "volume limiter auto_level");
+    assert.equal(await offered(), "volume limiter auto_level high_pass eq compressor");
     await page.eval(`(() => { const s = ${ADD}; s.value = "limiter"; s.dispatchEvent(new Event("change", { bubbles: true })); return true; })()`);
     const STAGE = `fetch("/api/project").then(r => r.json()).then(p => JSON.stringify(p.bin.main.source.effects))`;
     await page.until(`${STAGE}.then(s => s === '[{"type":"limiter","ceiling":-1,"attack":5,"release":50}]')`);

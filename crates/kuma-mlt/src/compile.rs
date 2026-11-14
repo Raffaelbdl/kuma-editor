@@ -720,6 +720,7 @@ fn emit_color(w: &mut XmlWriter, attrs: &[(&str, String)], resource: &str, lengt
 /// What effects are emitted against: the element whose id names the filters, the frames
 /// they span, and how many of those are dissolve handle before and after the owner's own
 /// range — which is where keyframe time and fades count from.
+#[derive(Clone)]
 struct Span {
     id: String,
     f_in: i64,
@@ -728,7 +729,7 @@ struct Span {
     post: i64,
 }
 
-/// A clip's filters: a sequence placement's mute, the placement's fader, then its effects.
+/// A clip's filters: a sequence placement's mute, then its entry's stage, then its own.
 fn emit_filters(ctx: &Ctx, p: &Plan, w: &mut XmlWriter) {
     let clip = p.clip;
     let (f_in, f_out) = p.entry();
@@ -744,10 +745,14 @@ fn emit_filters(ctx: &Ctx, p: &Plan, w: &mut XmlWriter) {
         w.close("filter");
     }
 
-    // Clip-level volume times the entry's (static); the entry's own effects first, since
-    // they are what the source is, before what this placement does with it.
-    let fader = clip.volume * ctx.project.item(clip).map_or(1.0, |i| i.volume);
-    emit_effects(ctx, w, &span, ctx.project.effects_on(clip), fader);
+    // Two stages, each with its own gain: the entry's — what the source is, its grade or
+    // its sound chain, the entry's volume folded into that chain's `volume` or else first,
+    // so before its limiter — then the clip's, with the clip's volume the same way. An
+    // entry with no effects and a volume of 1 has no stage.
+    if let Some(item) = ctx.project.item(clip).filter(|i| !i.effects.is_empty() || i.volume != 1.0) {
+        emit_effects(ctx, w, &Span { id: format!("{}_entry", span.id), ..span.clone() }, item.effects.iter(), item.volume);
+    }
+    emit_effects(ctx, w, &span, clip.effects.iter(), clip.volume);
 }
 
 /// `effects` as filters over `span`, those of them this graph carries, after a static
@@ -922,6 +927,35 @@ fn emit_effects<'e>(ctx: &Ctx, w: &mut XmlWriter, span: &Span, effects: impl Ite
                 w.property("window", num(*window));
                 w.property("max_gain", num(*max_gain));
                 w.property("min_gain", num(*min_gain));
+                w.close("filter");
+            }
+            Effect::HighPass { freq, poles } => {
+                open(w, "hipass", "avfilter.highpass");
+                w.property("av.f", num(*freq));
+                w.property("av.p", poles.to_string());
+                w.close("filter");
+            }
+            Effect::Eq { bands } => {
+                // A peaking band per filter, width in octaves. ffmpeg's `equalizer` is a
+                // biquad, so the bands cost nothing in latency.
+                for b in bands {
+                    open(w, "eq", "avfilter.equalizer");
+                    w.property("av.f", num(b.freq));
+                    w.property("av.t", "o");
+                    w.property("av.w", num(b.width));
+                    w.property("av.g", num(b.gain));
+                    w.close("filter");
+                }
+            }
+            Effect::Compressor { threshold, ratio, attack, release, knee, makeup } => {
+                // `acompressor` takes the threshold and makeup as linear gains, the knee in dB.
+                open(w, "comp", "avfilter.acompressor");
+                w.property("av.threshold", num(10f64.powf(threshold / 20.0)));
+                w.property("av.ratio", num(*ratio));
+                w.property("av.attack", num(*attack));
+                w.property("av.release", num(*release));
+                w.property("av.knee", num(*knee));
+                w.property("av.makeup", num(10f64.powf(makeup / 20.0)));
                 w.close("filter");
             }
             Effect::Mlt { service, properties } => {
@@ -1273,8 +1307,8 @@ mod tests {
         opts.logs = vec![PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../library/logs"))];
         let xml = compile(&p, &opts).unwrap();
         assert_eq!(xml.matches("lut3d").count(), 2, "{xml}");
-        assert!(xml.find("clip_a_grade").unwrap() < xml.find("clip_a_blur").unwrap(), "{xml}");
-        assert!(xml.contains("clip_b_grade"), "{xml}");
+        assert!(xml.find("clip_a_entry_grade").unwrap() < xml.find("clip_a_blur").unwrap(), "{xml}");
+        assert!(xml.contains("clip_b_entry_grade"), "{xml}");
     }
 
     /// A keyed grade's light is a gain that moves, between its input conversion and the rest
@@ -1373,7 +1407,8 @@ mod tests {
         assert!(!xml.contains(r#"in="0" out="0""#), "{xml}");
     }
 
-    /// An entry's volume multiplies the clip's fader, and a Volume effect's gain and keys.
+    /// An entry's volume is a gain of its own, before the clip's fader and its Volume
+    /// effect's gain and keys: the two stages multiply.
     #[test]
     fn an_entry_volume_multiplies_the_clips() {
         let p = project(json!({
@@ -1386,8 +1421,8 @@ mod tests {
         }));
         let xml = compile(&p, &CompileOptions::new("/proj")).unwrap();
         let level = |id: &str| xml.split(&format!(r#"<filter id="clip_{id}_vol"#)).nth(1).unwrap().split(r#"<property name="level">"#).nth(1).unwrap().split('<').next().unwrap().to_string();
-        assert_eq!(level("a"), "-12.0412");
-        assert_eq!(level("b"), "0=-6.0206");
+        assert_eq!((level("a_entry"), level("a")), ("-6.0206".to_string(), "-6.0206".to_string()), "{xml}");
+        assert_eq!((level("b_entry"), level("b")), ("-6.0206".to_string(), "0=0".to_string()), "{xml}");
     }
 
     #[test]

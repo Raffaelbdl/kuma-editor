@@ -75,6 +75,8 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/sample/job", post(sample_job))
         .route("/api/samples/{*file}", get(sample_file))
         .route("/api/audio/measure", post(measure_audio))
+        .route("/api/audio/sync", post(sync_audio))
+        .route("/api/audio/normalize", post(normalize_audio))
         .route("/api/color/measure", post(measure_color))
         .route("/api/grade/table", post(grade_table))
         .route("/api/media/measure", post(measure_media))
@@ -944,8 +946,7 @@ async fn unused_entries(State(st): S) -> Json<Value> {
 /// result names the new `subtitles` bin entry.
 async fn transcribe(State(st): S, Json(asked): Json<Asked<TranscribeRequest>>) -> Json<Value> {
     // The job's origin is its edit's too.
-    let origin = asked.origin.clone().filter(|o| !o.trim().is_empty()).unwrap_or_else(jobs::default_origin);
-    let (by, mut req) = asked.split();
+    let (by, origin, mut req) = asked.split_with_origin();
     req.origin = origin;
     let s2 = st.clone();
     let params = json!({ "bin": req.bin, "clip": req.clip });
@@ -1049,6 +1050,26 @@ async fn measure_audio(State(st): S, Json(asked): Json<Asked<MeasureRequest>>) -
     let s2 = st.clone();
     let params = json!({ "sequence": req.sequence, "mute": req.mute, "solo": req.solo });
     Json(json!({ "job": jobs::spawn_cancellable(st, "measure", params, by, move |progress, cancel| jobs::measure_audio(&s2, &req, progress, cancel)) }))
+}
+
+/// Line mic recordings up with their camera clips, as a cancellable job: it decodes both
+/// sounds of every pair. Ends in one edit unless `dry_run`; the result is `sound::sync`'s.
+async fn sync_audio(State(st): S, Json(asked): Json<Asked<crate::sound::SyncRequest>>) -> Json<Value> {
+    let (by, origin, mut req) = asked.split_with_origin();
+    req.origin = origin;
+    let s2 = st.clone();
+    let params = json!({ "pairs": req.pairs, "dry_run": req.dry_run });
+    Json(json!({ "job": jobs::spawn_cancellable(st, "sync-audio", params, by, move |progress, cancel| crate::sound::sync(&s2, &req, progress, cancel)) }))
+}
+
+/// Bring an entry to a loudness by its `volume`, as a cancellable job: it renders the
+/// entry's sound a few times. Ends in one edit; the result is `sound::normalize`'s.
+async fn normalize_audio(State(st): S, Json(asked): Json<Asked<crate::sound::NormalizeRequest>>) -> Json<Value> {
+    let (by, origin, mut req) = asked.split_with_origin();
+    req.origin = origin;
+    let s2 = st.clone();
+    let params = json!({ "bin": req.bin, "target": req.target });
+    Json(json!({ "job": jobs::spawn_cancellable(st, "normalize-audio", params, by, move |progress, cancel| crate::sound::normalize(&s2, &req, progress, cancel)) }))
 }
 
 /// What a region of the picture is, and with `match` the grade that makes a clip's region

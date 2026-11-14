@@ -115,15 +115,7 @@ impl Project {
     /// A fresh project with the three default tracks (video, overlays, audio). Used by
     /// `kuma init` and by the daemon when the project file does not exist yet.
     pub fn new_default(name: impl Into<String>, width: u32, height: u32, fps: Fps) -> Self {
-        let track = |id: &str, kind: TrackKind, name: &str| Track {
-            id: id.into(),
-            kind,
-            name: name.into(),
-            muted: false,
-            hidden: false,
-            clips: Vec::new(),
-            transitions: Vec::new(),
-        };
+        let track = Track::empty;
         let main = BinItem::of(
             "Main",
             BinSource::Sequence(Sequence {
@@ -207,6 +199,11 @@ impl Project {
         self.all_clips().find(|(_, _, c)| c.id == id)
     }
 
+    /// Where clip `id` is, as a patch addresses it: its sequence, track index and clip index.
+    pub fn clip_index(&self, id: &str) -> Option<(BinId, usize, usize)> {
+        self.sequences().find_map(|(sid, seq)| seq.tracks.iter().enumerate().find_map(|(ti, t)| t.clips.iter().position(|c| c.id == id).map(|ci| (sid.clone(), ti, ci))))
+    }
+
     /// Sequences reachable from `root`, **innermost first**: the order the compiler must
     /// emit tractors in, so an outer sequence only ever references one already written.
     /// `Err` carries the reference chain that closes a cycle, ending on the repeat.
@@ -249,7 +246,7 @@ impl Project {
         let item = self.item(clip)?;
         let (video, audio) = match &item.source {
             BinSource::File { kind: MediaKind::Image, .. } => (true, false),
-            BinSource::File { kind, .. } => (*kind != MediaKind::Audio, item.meta.as_ref().is_none_or(|m| m.has_audio)),
+            BinSource::File { kind, .. } => (*kind != MediaKind::Audio, item.sounds()),
             BinSource::Sequence(_) => (true, self.seq_has_audio(&clip.bin)),
             BinSource::Overlay { .. } | BinSource::Color { .. } => (true, false),
             BinSource::Folder { .. } => (false, false),
@@ -444,6 +441,11 @@ impl SequenceWalk {
 }
 
 impl Track {
+    /// A track with nothing on it.
+    pub fn empty(id: impl Into<String>, kind: TrackKind, name: impl Into<String>) -> Self {
+        Track { id: id.into(), kind, name: name.into(), muted: false, hidden: false, clips: vec![], transitions: vec![] }
+    }
+
     /// Clips with their index in `clips`, sorted by start time — the order the
     /// validator and the compiler walk.
     pub fn sorted_clips(&self) -> Vec<(usize, &Clip)> {
@@ -488,14 +490,19 @@ pub struct BinItem {
     /// only, like `parent`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub order: Option<u32>,
-    /// Linear audio gain multiplied into every placement's own `volume`, so a source is
-    /// levelled once. Timed media only; absent at 1.
+    /// Linear audio gain for every placement, so a source is levelled once: the gain of the
+    /// entry's own stage, which compiles before each placement's (where the clip's `volume`
+    /// is the gain). Inside the entry's sound chain it acts at its `volume` effect, else
+    /// first, and so always before its limiter; it is what a loudness normalisation writes.
+    /// Timed media only; absent at 1.
     #[serde(default = "one", skip_serializing_if = "is_one")]
     pub volume: f64,
     /// Effects on the source itself, before every placement's own: what the footage *is*
     /// — the camera log it was shot in, the grade that makes it match the rest — set once
-    /// for every clip that places it. A video or image file's, and only a `grade` for now,
-    /// over the whole picture and holding still: where and when are the clip's.
+    /// for every clip that places it. A video or image file's `grade`, over the whole
+    /// picture and holding still: where and when are the clip's. And a sound's chain
+    /// ([`Effect::fits_a_source_sound`]), on a video or audio file that sounds: what the
+    /// mic needs, in order, the entry's `volume` acting at its `volume` effect, else first.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub effects: Vec<Effect>,
 }
@@ -589,6 +596,21 @@ impl BinItem {
             BinSource::File { kind, .. } => *kind != MediaKind::Image,
             BinSource::Sequence(_) => true,
             _ => false,
+        }
+    }
+
+    /// A video or audio file with sound: unless the probe found none, a file is taken to
+    /// have it. What a sound chain on the entry needs.
+    pub fn sounds(&self) -> bool {
+        matches!(&self.source, BinSource::File { kind, .. } if *kind != MediaKind::Image) && self.meta.as_ref().is_none_or(|m| m.has_audio)
+    }
+
+    /// Whether this entry may carry `e` on its source: a grade on a file that shows a
+    /// picture, a sound chain's kinds ([`Effect::fits_a_source_sound`]) on one that sounds.
+    pub fn takes(&self, e: &Effect) -> bool {
+        match e {
+            Effect::Grade(_) => matches!(&self.source, BinSource::File { kind, .. } if *kind != MediaKind::Audio),
+            _ => e.fits_a_source_sound() && self.sounds(),
         }
     }
 
@@ -770,6 +792,37 @@ fn default_release() -> f64 {
 fn default_target() -> f64 {
     -23.0
 }
+fn default_high_pass() -> f64 {
+    80.0
+}
+fn default_poles() -> u8 {
+    2
+}
+fn default_threshold() -> f64 {
+    -20.0
+}
+fn default_ratio() -> f64 {
+    3.0
+}
+fn default_comp_release() -> f64 {
+    80.0
+}
+fn default_knee() -> f64 {
+    2.8
+}
+
+/// One band of an [`Effect::Eq`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct EqBand {
+    /// Centre, Hz, 20..20000.
+    pub freq: f64,
+    /// dB, -24..24: above 0 raises the band.
+    pub gain: f64,
+    /// Octaves, 0.1..4: how wide the band is where it has half its gain.
+    #[serde(default = "one")]
+    pub width: f64,
+}
 fn default_window() -> f64 {
     3.0
 }
@@ -781,6 +834,12 @@ fn default_min_gain() -> f64 {
 }
 
 impl Clip {
+    /// A plain placement of `bin` over `[start, end)`: from the source's start, at speed 1,
+    /// its own volume, no effects, label or group.
+    pub fn placing(id: impl Into<String>, bin: impl Into<String>, start: f64, end: f64) -> Self {
+        Clip { id: id.into(), start, end, bin: bin.into(), source_in: 0.0, speed: 1.0, volume: 1.0, muted: false, effects: vec![], label: String::new(), group: String::new() }
+    }
+
     pub fn duration(&self) -> f64 {
         self.end - self.start
     }
@@ -994,6 +1053,45 @@ pub enum Effect {
         /// The most it lowers the gain, dB, -30..0.
         #[serde(default = "default_min_gain")]
         min_gain: f64,
+    },
+    /// Cuts the sound under `freq` Hz — rumble, handling noise, a mic's proximity boom —
+    /// and leaves the voice: 6 dB an octave below it with one pole, 12 with two.
+    HighPass {
+        /// Hz, 10..1000.
+        #[serde(default = "default_high_pass")]
+        freq: f64,
+        /// 1 or 2: 6 or 12 dB an octave.
+        #[serde(default = "default_poles")]
+        poles: u8,
+    },
+    /// An equaliser: each band raises or lowers the sound around its `freq` by `gain` dB,
+    /// over `width` octaves (a peaking band). What turns one mic's colour into another's.
+    Eq {
+        #[serde(default)]
+        bands: Vec<EqBand>,
+    },
+    /// Narrows the sound's range: past `threshold` dBFS the level rises `ratio` times
+    /// slower, so the loud syllables come down towards the quiet ones. It only lowers, by
+    /// itself; `makeup` dB raises it all back after.
+    Compressor {
+        /// dBFS, -60..0.
+        #[serde(default = "default_threshold")]
+        threshold: f64,
+        /// 1..20: 3 means 3 dB in past the threshold comes out as 1.
+        #[serde(default = "default_ratio")]
+        ratio: f64,
+        /// Milliseconds to clamp down, 0.01..2000.
+        #[serde(default = "default_attack")]
+        attack: f64,
+        /// Milliseconds to let go, 0.01..9000.
+        #[serde(default = "default_comp_release")]
+        release: f64,
+        /// dB the threshold is softened over, 1..8.
+        #[serde(default = "default_knee")]
+        knee: f64,
+        /// dB added after, 0..36.
+        #[serde(default)]
+        makeup: f64,
     },
     /// Holds, for the clip's whole length, the frame it would show `t` seconds from its
     /// start. Picture only: the sound runs on. The clip's other effects act on the held
@@ -1272,7 +1370,13 @@ impl Effect {
     /// image filter nobody asks for an image from costs nothing.
     pub fn streams(&self) -> Streams {
         match self {
-            Effect::Volume { .. } | Effect::AudioFade { .. } | Effect::Limiter { .. } | Effect::AutoLevel { .. } => Streams::Audio,
+            Effect::Volume { .. }
+            | Effect::AudioFade { .. }
+            | Effect::Limiter { .. }
+            | Effect::AutoLevel { .. }
+            | Effect::HighPass { .. }
+            | Effect::Eq { .. }
+            | Effect::Compressor { .. } => Streams::Audio,
             Effect::Mlt { .. } => Streams::Both,
             Effect::Transform { .. }
             | Effect::Crop { .. }
@@ -1286,12 +1390,30 @@ impl Effect {
     }
 
     /// Whether a sequence may carry this kind: the ones that act on a mix as a whole and
-    /// read no clip's edges — a gain, a limiter, an auto-level. A picture effect on a whole
-    /// sequence belongs on the clips that place it, where it already acts per placement; a
-    /// fade is about a placement's edges; and `mlt` is opaque, so nothing can say it is
-    /// one of these.
+    /// read no clip's edges — a gain, a limiter, an auto-level, a filter, an equaliser, a
+    /// compressor. A picture effect on a whole sequence belongs on the clips that place it,
+    /// where it already acts per placement; a fade is about a placement's edges; and `mlt`
+    /// is opaque, so nothing can say it is one of these.
     pub fn fits_a_sequence(&self) -> bool {
-        matches!(self, Effect::Volume { .. } | Effect::Limiter { .. } | Effect::AutoLevel { .. })
+        Self::ON_A_SEQUENCE.contains(&self.kind())
+    }
+
+    /// The kinds a sequence's mix takes ([`Self::fits_a_sequence`]); `types.ts` mirrors it.
+    pub const ON_A_SEQUENCE: [&'static str; 6] = ["volume", "limiter", "auto_level", "high_pass", "eq", "compressor"];
+    /// The kinds a sound file's entry takes ([`Self::fits_a_source_sound`]); `types.ts`
+    /// mirrors it.
+    pub const ON_A_SOURCE_SOUND: [&'static str; 5] = ["high_pass", "eq", "compressor", "volume", "limiter"];
+
+    /// Whether a sound file's bin entry may carry this kind, on the source before every
+    /// placement: what a mic's chain is — a filter, an equaliser, a compressor, a limiter
+    /// — which is a fact about the recording, like a camera's log. And a static `volume`,
+    /// which says where in the chain the entry's own `volume` acts (it folds into it, as a
+    /// clip's volume folds into the clip's): first when there is none, which is right for
+    /// a linear chain, and after a compressor as its makeup, so that a loudness
+    /// normalisation does not push the recording, hiss and all, into the compressor. Not
+    /// a fade (a placement's edges) and not an auto-level (it follows the placement).
+    pub fn fits_a_source_sound(&self) -> bool {
+        Self::ON_A_SOURCE_SOUND.contains(&self.kind())
     }
 
     /// Where it acts, for an effect that can be limited to a shape and is.
@@ -1332,6 +1454,9 @@ impl Effect {
             Effect::Volume { .. } => "volume",
             Effect::Limiter { .. } => "limiter",
             Effect::AutoLevel { .. } => "auto_level",
+            Effect::HighPass { .. } => "high_pass",
+            Effect::Eq { .. } => "eq",
+            Effect::Compressor { .. } => "compressor",
             Effect::Freeze { .. } => "freeze",
             Effect::Mlt { .. } => "mlt",
         }
@@ -1351,8 +1476,9 @@ impl Effect {
     /// ones that are not have nothing a key could mean: a fade's numbers are lengths of
     /// time, so it is an animation already; a blend mode is a choice, and changing it
     /// mid-clip is a cut; `mlt` properties are strings MLT reads, where an animation
-    /// string can be written directly; a limiter's and an auto-level's settings say how
-    /// they follow the sound, which moves already; a freeze's `t` says which frame,
+    /// string can be written directly; a limiter's, an auto-level's and a compressor's
+    /// settings say how they follow the sound, which moves already, and a filter or an
+    /// equaliser that sweeps is a sound effect, not a correction; a freeze's `t` says which frame,
     /// where a moving one is the clip playing. A grade's light moves — a gain per channel
     /// beside its LUT — and the rest of it is one LUT for the whole clip.
     pub fn animatable(&self) -> &'static [&'static str] {
@@ -1369,6 +1495,9 @@ impl Effect {
             | Effect::Mlt { .. }
             | Effect::Limiter { .. }
             | Effect::AutoLevel { .. }
+            | Effect::HighPass { .. }
+            | Effect::Eq { .. }
+            | Effect::Compressor { .. }
             | Effect::Freeze { .. } => &[],
         }
     }
@@ -1388,6 +1517,9 @@ impl Effect {
             | Effect::Mlt { .. }
             | Effect::Limiter { .. }
             | Effect::AutoLevel { .. }
+            | Effect::HighPass { .. }
+            | Effect::Eq { .. }
+            | Effect::Compressor { .. }
             | Effect::Freeze { .. } => &[],
         }
     }

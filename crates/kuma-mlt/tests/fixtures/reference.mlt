@@ -360,8 +360,66 @@
       <property name="av.level">0</property>
     </filter>
   </chain>
+  <chain id="clip_voice" in="0" out="149">
+    <property name="mlt_service">avformat-novalidate</property>
+    <property name="resource">/proj/media/cam.mp4</property>
+    <filter id="clip_voice_entry_hipass1" in="30" out="149">
+      <property name="mlt_service">avfilter.highpass</property>
+      <property name="av.f">80</property>
+      <property name="av.p">2</property>
+    </filter>
+    <filter id="clip_voice_entry_eq2" in="30" out="149">
+      <property name="mlt_service">avfilter.equalizer</property>
+      <property name="av.f">250</property>
+      <property name="av.t">o</property>
+      <property name="av.w">1</property>
+      <property name="av.g">-2</property>
+    </filter>
+    <filter id="clip_voice_entry_eq3" in="30" out="149">
+      <property name="mlt_service">avfilter.equalizer</property>
+      <property name="av.f">3500</property>
+      <property name="av.t">o</property>
+      <property name="av.w">1.2</property>
+      <property name="av.g">3.5</property>
+    </filter>
+    <filter id="clip_voice_entry_comp4" in="30" out="149">
+      <property name="mlt_service">avfilter.acompressor</property>
+      <property name="av.threshold">0.063096</property>
+      <property name="av.ratio">3</property>
+      <property name="av.attack">5</property>
+      <property name="av.release">80</property>
+      <property name="av.knee">4</property>
+      <property name="av.makeup">1.258925</property>
+    </filter>
+    <filter id="clip_voice_entry_vol5" in="30" out="149">
+      <property name="mlt_service">volume</property>
+      <property name="level">2.922561</property>
+    </filter>
+    <filter id="clip_voice_entry_limit6" in="30" out="149">
+      <property name="mlt_service">avfilter.alimiter</property>
+      <property name="av.limit">0.794328</property>
+      <property name="av.attack">1</property>
+      <property name="av.release">20</property>
+      <property name="av.level">0</property>
+    </filter>
+    <filter id="clip_voice_vol1" in="30" out="149">
+      <property name="mlt_service">volume</property>
+      <property name="level">-1.9382</property>
+    </filter>
+    <filter id="clip_voice_afadein2" in="30" out="44">
+      <property name="mlt_service">volume</property>
+      <property name="gain">0</property>
+      <property name="end">1</property>
+    </filter>
+    <filter id="clip_voice_afadeout3" in="135" out="149">
+      <property name="mlt_service">volume</property>
+      <property name="gain">1</property>
+      <property name="end">0</property>
+    </filter>
+  </chain>
   <playlist id="mus_a">
     <entry producer="clip_lvl" in="30" out="299"/>
+    <entry producer="clip_voice" in="30" out="149"/>
   </playlist>
   <producer id="clip_o_c1" in="0" out="89">
     <property name="mlt_service">avformat</property>

@@ -100,6 +100,7 @@ difference: `references/storyboard-as-code.md`. In short:
 | Every overlay lost its helpers | an old copy of `kuma.js` in `overlays/_vendor/` | `overlays/_vendor/` holds only your own files; `check_overlay` names a shadowed helper |
 | A map or a sketch is unreadable | transparency shows the master's black where nothing is below | a white colour clip under it → `references/footage.md` |
 | A graphic must sit under a picture | overlays always draw over video | draw the picture in the overlay → `references/overlays.md` |
+| The face cam's sound is poor; a wireless mic recorded it too | two recordings of one take | `sync_audio` the mic to the camera clip, a chain on the mic's entry, `normalize_audio` → `references/audio.md` |
 | A music bed swells and sinks under the voice | the track's own loudness drifts | `auto_level` on the bed, or keys from `measure_media`'s curve → `references/audio.md` |
 | Cut together, two shots look like different days | each camera's white balance and exposure | a `grade` per clip: `temperature`/`tint` and `exposure` first, matched on something neutral in both → `references/footage.md` |
 | Every shot is fine but the video drags | an even rhythm with no beats | a hook, a beat on each change, trimmed holds → `references/pacing.md` |

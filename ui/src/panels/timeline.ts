@@ -10,7 +10,7 @@ import { keysFor } from "../shortcuts";
 import { panels } from "../panelhost";
 import { store } from "../store";
 import type { Clip, Marker, PatchOp, Project, Track, TrackKind, Transition } from "../types";
-import { binItem, clipKind, hasAudio, isFileSource, isOverlaySource, isSequenceSource, isTimedMedia, seqDuration, sourceAfter } from "../types";
+import { binItem, clipKind, sounds, isFileSource, isOverlaySource, isSequenceSource, isTimedMedia, seqDuration, sourceAfter } from "../types";
 import { drawStrip, drawWave } from "./clipmedia";
 
 const HEAD = 150;
@@ -452,7 +452,7 @@ export class Timeline {
     const { path, kind } = item.source;
     const h = this.heightOf(t) - CLIP_CHROME;
     const frames = kind !== "audio" && t.kind !== "audio";
-    const sound = isTimedMedia(item) && hasAudio(item) && h >= 24;
+    const sound = sounds(item) && h >= 24;
     if (!frames && !sound) return null;
     const media = el("div", `media${frames && sound ? " both" : ""}`);
     const waveH = frames ? Math.round(h * 0.4) : h;

@@ -1,5 +1,5 @@
 {
-  "version": 11,
+  "version": 12,
   "name": "reference",
   "master": "main",
   "fps": { "num": 30, "den": 1 },
@@ -9,6 +9,13 @@
   "bin": {
     "screen": { "name": "Screen recording", "source": { "path": "media/screen.mp4", "kind": "video" } },
     "cam": { "name": "Camera", "source": { "path": "media/cam.mp4", "kind": "video" } },
+    "camsound": { "name": "Camera, its sound treated", "source": { "path": "media/cam.mp4", "kind": "video" }, "volume": 1.4,
+      "effects": [
+        { "type": "high_pass", "freq": 80, "poles": 2 },
+        { "type": "eq", "bands": [ { "freq": 250, "gain": -2, "width": 1 }, { "freq": 3500, "gain": 3.5, "width": 1.2 } ] },
+        { "type": "compressor", "threshold": -24, "ratio": 3, "attack": 5, "release": 80, "knee": 4, "makeup": 2 },
+        { "type": "volume", "gain": 1 },
+        { "type": "limiter", "ceiling": -2, "attack": 1, "release": 20 } ] },
     "logo": { "name": "Logo", "source": { "path": "media/logo.png", "kind": "image" } },
     "navy": { "name": "Navy card", "source": { "color": "#102030" } },
     "paris": { "name": "Paris tag", "source": { "overlay": "overlays/location-tag", "vars": { "label": "Paris, France" } } },
@@ -109,7 +116,9 @@
             "id": "mus", "kind": "audio", "name": "Music",
             "clips": [
               { "id": "lvl", "start": 0.0, "end": 9.0, "bin": "screen", "in": 1.0,
-                "effects": [ { "type": "auto_level", "target": -20, "window": 2 }, { "type": "limiter", "ceiling": -6 } ] }
+                "effects": [ { "type": "auto_level", "target": -20, "window": 2 }, { "type": "limiter", "ceiling": -6 } ] },
+              { "id": "voice", "start": 9.0, "end": 13.0, "bin": "camsound", "in": 1.0, "volume": 0.8,
+                "effects": [ { "type": "audio_fade", "in": 0.5, "out": 0.5 } ] }
             ]
           },
           {

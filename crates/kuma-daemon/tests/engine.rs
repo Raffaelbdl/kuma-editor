@@ -114,12 +114,8 @@ impl Engine {
         seen
     }
 
-    fn frame(&mut self, want: i64) {
-        self.picture(want);
-    }
-
     /// The next message, which must be frame `want`: its picture.
-    fn picture(&mut self, want: i64) -> Vec<u8> {
+    fn frame(&mut self, want: i64) -> Vec<u8> {
         match self.out.recv_timeout(Duration::from_secs(10)) {
             Ok((_, Out::Frame(f, Jpeg(jpeg)))) => {
                 assert_eq!(f, want);
@@ -308,25 +304,18 @@ fn a_seek_overtaken_by_another_shows_nothing() {
     assert!(shown.len() < 10, "stale positions were drawn: {shown:?}");
 }
 
-/// The grey level at the middle of a JPEG the engine sent.
+/// The grey level at the middle of a 320×180 JPEG the engine sent.
 fn grey_at_centre(root: &Path, jpeg: &[u8]) -> i64 {
     let file = root.join("seen.jpg");
     std::fs::write(&file, jpeg).unwrap();
-    let out = Command::new("ffmpeg")
-        .args(["-v", "error", "-i"])
-        .arg(&file)
-        .args(["-vf", "crop=1:1:iw/2:ih/2,format=gray", "-f", "rawvideo", "-"])
-        .output()
-        .unwrap();
-    out.stdout[0] as i64
+    let rgb = kuma_overlay::media::rgb24(&file).unwrap();
+    rgb[(90 * 320 + 160) * 3] as i64
 }
 
-/// A baked overlay seeks backwards as it seeks forwards. Bakes were read by MLT's
-/// `avformat` producer, and ffmpeg's image2 demuxer cannot go back in a sequence: after
-/// one backward seek it serves the frame it had reached for every position, playing or
-/// paused. A render reads once in order and keeps that reader; the preview's does not. In the preview that is an overlay of a nested sequence that plays once and is
-/// gone the second time, since a finished overlay's last frame is transparent. Frame k of
-/// this bake is grey level 4k, so each frame the engine sends says which one it read.
+/// A baked overlay seeks backwards as it seeks forwards, as the preview compiles it
+/// (`scrubbed`; *The preview reads animated bakes with `qimage`* in docs/decisions.md):
+/// played past, gone back to and played again. Frame k of this bake is grey level 4k, so
+/// each frame the engine sends says which one it read.
 #[test]
 fn a_baked_overlay_seeks_backwards() {
     let Some(bin) = engine_bin() else { return };
@@ -351,7 +340,7 @@ fn a_baked_overlay_seeks_backwards() {
     .unwrap();
     let mut opts = CompileOptions::new(root);
     opts.streams = Streams::Video;
-    opts.scrubbed = true; // as the preview compiles it
+    opts.scrubbed = true;
     opts.bakes.insert("o".into(), kuma_mlt::OverlayBake { resource: pattern, is_still: false });
     let video = root.join("video.mlt");
     std::fs::write(&video, compile(&p, &opts).unwrap()).unwrap();
@@ -360,11 +349,9 @@ fn a_baked_overlay_seeks_backwards() {
     e.send(&format!("load-video {}", video.display()));
     e.expect_line("ok loaded video frames=60", Duration::from_secs(20));
     e.frame(0);
-    // Forward, back, and forward again from there: what playing past an overlay, going back
-    // and playing it again asks of the producer.
     for f in [45i64, 15, 30, 5, 50] {
         e.send(&format!("seek {f}"));
-        let grey = grey_at_centre(root, &e.picture(f));
+        let grey = grey_at_centre(root, &e.frame(f));
         assert!((grey - 4 * f).abs() <= 4, "timeline frame {f} shows bake frame ≈{}", grey / 4);
     }
 }

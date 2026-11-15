@@ -695,13 +695,9 @@ fn emit_source(ctx: &Ctx, p: &Plan, id: &str, w: &mut XmlWriter) -> Result<(), C
                 w.property("mlt_service", "pixbuf");
                 w.property("ttl", "1");
             } else if ctx.opts.scrubbed {
-                // ffmpeg's image2 demuxer cannot seek backwards in a sequence (MLT 7.22,
-                // FFmpeg 6.1): after one it serves the frame it was on for good, so in the
-                // preview a nested overlay played once and then stayed on its last,
-                // transparent frame. `qimage` reads one file per frame (`ttl`, from
-                // `frame_000001`), seeks anywhere and gives `avformat`'s pixels exactly, at
-                // about twice the decode time — which a render, reading once in order,
-                // has no reason to pay.
+                // `avformat` cannot seek backwards in an image sequence; `qimage` can, one
+                // file per frame from `frame_000001`, at a decode cost a render does not pay
+                // (docs/decisions.md, *The preview reads animated bakes with `qimage`*).
                 w.property("mlt_service", "qimage");
                 w.property("ttl", "1");
                 w.property("begin", "1");

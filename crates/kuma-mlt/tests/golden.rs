@@ -17,13 +17,19 @@ fn bake(path: &str, is_still: bool) -> OverlayBake {
     OverlayBake { resource: PathBuf::from(path), is_still }
 }
 
-#[test]
-fn reference_project_matches_golden_and_the_dtd() {
-    let p = reference_project();
+/// What the reference project is compiled with: an animated bake (`o_c1`) and a still.
+fn reference_options() -> CompileOptions {
     let mut opts = CompileOptions::new("/proj");
     opts.cache_dir = std::env::temp_dir().join("kuma-golden-cache");
     opts.bakes.insert("o_c1".into(), bake("/proj/.kuma/bakes/abc/frame_%06d.png", false));
     opts.bakes.insert("o_c2".into(), bake("/proj/.kuma/bakes/def/frame_000001.png", true));
+    opts
+}
+
+#[test]
+fn reference_project_matches_golden_and_the_dtd() {
+    let p = reference_project();
+    let opts = reference_options();
     // A grade's LUT is written under the cache, which is wherever the machine keeps its
     // temporary files; the golden file says where relative to it.
     let xml = compile(&p, &opts).unwrap().replace(&*opts.cache_dir.to_string_lossy(), "$CACHE");
@@ -90,31 +96,32 @@ fn unbaked_overlays_skip_or_fail_by_policy() {
     assert!(matches!(compile(&p, &opts), Err(CompileError::Unbaked(id)) if id == "o_c1"));
 }
 
-/// An animated bake is read by `avformat` in a graph read once in order (a render, a
-/// sample: the golden file) and by `qimage` in one the preview engine holds and seeks, since
-/// ffmpeg's image2 demuxer cannot seek backwards. Nothing else differs, and a still is
-/// `pixbuf` either way. `tests/engine.rs` in kuma-daemon plays the seeks themselves.
+/// A scrubbed graph — the preview's — reads the animated bake with `qimage` and changes
+/// nothing else; the golden file is the render's (*The preview reads animated bakes with
+/// `qimage`* in docs/decisions.md).
 #[test]
 fn a_scrubbed_graph_reads_animated_bakes_with_qimage() {
     let p = reference_project();
-    let mut opts = CompileOptions::new("/proj");
-    opts.cache_dir = std::env::temp_dir().join("kuma-golden-cache");
-    opts.bakes.insert("o_c1".into(), bake("/proj/.kuma/bakes/abc/frame_%06d.png", false));
-    opts.bakes.insert("o_c2".into(), bake("/proj/.kuma/bakes/def/frame_000001.png", true));
+    let mut opts = reference_options();
     let rendered = compile(&p, &opts).unwrap();
     opts.scrubbed = true;
     let scrubbed = compile(&p, &opts).unwrap();
 
-    let animated = |xml: &str| {
+    let producer = |xml: &str| {
         let at = xml.find(r#"<producer id="clip_o_c1""#).expect("the animated bake is in the graph");
         xml[at..at + xml[at..].find("</producer>").unwrap()].to_string()
     };
-    assert!(animated(&rendered).contains(r#"<property name="mlt_service">avformat</property>"#), "{}", animated(&rendered));
-    let seekable = animated(&scrubbed);
-    for prop in [r#"name="mlt_service">qimage<"#, r#"name="ttl">1<"#, r#"name="begin">1<"#] {
-        assert!(seekable.contains(prop), "{prop} missing from\n{seekable}");
-    }
-    assert!(!seekable.contains("force_fps"), "{seekable}");
-    // Only that producer changes.
-    assert_eq!(rendered.replace(&animated(&rendered), ""), scrubbed.replace(&seekable, ""));
+    let (before, after) = (producer(&rendered), producer(&scrubbed));
+    assert_eq!(
+        after,
+        r#"<producer id="clip_o_c1" in="0" out="89">
+    <property name="mlt_service">qimage</property>
+    <property name="ttl">1</property>
+    <property name="begin">1</property>
+    <property name="resource">/proj/.kuma/bakes/abc/frame_%06d.png</property>
+    <property name="length">90</property>
+    <property name="mlt_image_format">rgba</property>
+  "#
+    );
+    assert_eq!(rendered.replace(&before, ""), scrubbed.replace(&after, ""), "only that producer changes");
 }

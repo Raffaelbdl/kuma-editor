@@ -663,6 +663,12 @@ and seeks it: a render and a sample read once, in order, from a fresh process.
   (174 frames over a colour: 2.0 s against 4.4 s with four frame threads, 3.6 against 6.1
   with one). On the runwiththewind master the engine delivered about 5% fewer frames
   playing; the golden file is unchanged.
+- The cost of the split: the preview no longer shows what only `avformat` gets wrong. Two
+  of the bugs above were exactly that — the 25 fps rate and the alpha an RGB first frame
+  takes away — and `qimage`, reading each file on its own, would draw either right while
+  the render drew it wrong. Bake-reader regressions are caught by `tests/render.rs`, not by
+  looking at the preview. One reader everywhere would remove this cost; it was not timed on
+  a whole render, where encoding shares the frame time.
 - `a_baked_overlay_seeks_backwards` (kuma-daemon `tests/engine.rs`) seeks a bake whose frame
   k is grey 4k forward, back and forward again through the engine; it fails on `avformat`
   at the first backward seek. `a_scrubbed_graph_reads_animated_bakes_with_qimage` pins

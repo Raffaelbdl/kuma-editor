@@ -93,10 +93,6 @@ pub struct CompileOptions {
     /// as it is. Only the picture's graph reads them — the sound always comes from the
     /// media — and `None` (a render, the preview at full) reads no proxy at all.
     pub proxies: Option<HashMap<BinId, PathBuf>>,
-    /// The graph is held open and seeked back and forth — the preview engine's — rather
-    /// than read once from start to end, as a render or a sample is. Animated bakes then
-    /// come through a reader that can seek backwards, at a higher decode cost.
-    pub scrubbed: bool,
 }
 
 impl CompileOptions {
@@ -112,7 +108,6 @@ impl CompileOptions {
             sequence: None,
             streams: Streams::Both,
             proxies: None,
-            scrubbed: false,
         }
     }
 }
@@ -694,19 +689,15 @@ fn emit_source(ctx: &Ctx, p: &Plan, id: &str, w: &mut XmlWriter) -> Result<(), C
             if bake.is_still {
                 w.property("mlt_service", "pixbuf");
                 w.property("ttl", "1");
-            } else if ctx.opts.scrubbed {
-                // `avformat` cannot seek backwards in an image sequence; `qimage` can, one
-                // file per frame from `frame_000001`, at a decode cost a render does not pay
-                // (docs/decisions.md, *The preview reads animated bakes with `qimage`*).
+            } else {
+                // One file per frame (`ttl`), numbered from `frame_000001`, so a bake plays at
+                // the project's rate whatever it is. Not `avformat`: ffmpeg's image2 demuxer
+                // reads a sequence at 25 fps, cannot seek backwards in one, and slipped a
+                // frame inside a long render (docs/decisions.md, *Animated bakes are read
+                // with `qimage`*).
                 w.property("mlt_service", "qimage");
                 w.property("ttl", "1");
                 w.property("begin", "1");
-            } else {
-                w.property("mlt_service", "avformat");
-                // A bake has one frame per timeline frame, but an image sequence has no
-                // rate of its own and ffmpeg reads one at 25 fps: at any other project rate
-                // the overlay would drift, late by a fifth of its time into the clip at 30.
-                w.property("force_fps", ctx.fps.as_f64().to_string());
             }
             w.property("resource", bake.resource.to_string_lossy());
             w.property("length", len.to_string());

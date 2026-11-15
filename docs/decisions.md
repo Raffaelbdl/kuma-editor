@@ -636,7 +636,8 @@ how Kdenlive carries track effects and how a nested sequence's placements carry 
 Both were measured before the DTD was relaxed, and the evidence is written beside the
 declarations. Prefer fixing the copy over emitting worse XML to satisfy it.
 
-**A baked overlay is read at the project's rate, `force_fps`** — adopted, after subtitles
+**A baked overlay is read at the project's rate, `force_fps`** — adopted, then superseded
+by `qimage` (the next entry), after subtitles
 rendered later and later behind the preview. A bake is one PNG per timeline frame, but an
 image sequence carries no rate, and ffmpeg's image2 demuxer reads one at 25 fps: in a 30 fps
 project every animated overlay played at five sixths speed, a fifth of a second late per
@@ -647,32 +648,33 @@ live DOM, and the render test's bake was a box that does not move. The compiler 
 MLT's own sequence readers (`pixbuf`/`qimage` with a `%06d` resource) were measured frame
 exact too, by seek and in sequence; `force_fps` was kept as the one-line change.
 
-**The preview reads animated bakes with `qimage`, a render with `avformat`** — adopted,
-after a nested sequence's overlays played once in the preview and were gone the second
-time. ffmpeg's image2 demuxer cannot seek backwards in a sequence (MLT 7.22, FFmpeg 6.1):
-after one backward seek the `avformat` producer serves the frame it had reached for every
-position, paused or playing, and a finished overlay's last frame is transparent. Nothing
-on the producer helps — `force_fps` or not, `seekable=0`, `seek_threshold`,
-`noimagecache` — and only the engine is hurt, since it is the one reader that holds a graph
-and seeks it: a render and a sample read once, in order, from a fresh process.
-- `CompileOptions::scrubbed`, set by the preview compile, reads an animated bake with
-  `qimage` (`ttl=1`, `begin=1`), one file per frame. It gives `avformat`'s pixels exactly
-  (PSNR ∞ on a real 1080p bake; `pixbuf` came within 57 dB), so the preview still shows the
-  render.
-- Renders keep `avformat`: `qimage` and `pixbuf` decode a 1080p PNG at about half its speed
-  (174 frames over a colour: 2.0 s against 4.4 s with four frame threads, 3.6 against 6.1
-  with one). On the runwiththewind master the engine delivered about 5% fewer frames
-  playing; the golden file is unchanged.
-- The cost of the split: the preview no longer shows what only `avformat` gets wrong. Two
-  of the bugs above were exactly that — the 25 fps rate and the alpha an RGB first frame
-  takes away — and `qimage`, reading each file on its own, would draw either right while
-  the render drew it wrong. Bake-reader regressions are caught by `tests/render.rs`, not by
-  looking at the preview. One reader everywhere would remove this cost; it was not timed on
-  a whole render, where encoding shares the frame time.
+**Animated bakes are read with `qimage`, in the preview and the render alike** — adopted,
+replacing `avformat` and `force_fps`, after a nested sequence's overlays played once in the
+preview and were gone the second time. ffmpeg's image2 demuxer cannot seek backwards in a
+sequence (MLT 7.22, FFmpeg 6.1): after one backward seek the `avformat` producer serves the
+frame it had reached for every position, paused or playing, and a finished overlay's last
+frame is transparent. Nothing on the producer helps — `force_fps` or not, `seekable=0`,
+`seek_threshold`, `noimagecache`. `qimage` (`ttl=1`, `begin=1`) reads one file per frame, so
+it has no rate to force and seeks anywhere; `pixbuf` does too, but came within 57 dB of
+`avformat`'s pixels where `qimage` matched them exactly.
+- **Preview-only was tried first and dropped.** Only the engine seeks backwards, so a first
+  version kept `avformat` for renders, which decode a 1080p PNG about twice as fast with it.
+  A full render of the runwiththewind master (26 574 frames, `youtube-1080p`, six threads)
+  took 1399 s with `qimage` against 1172 s with `avformat`, the `qimage` run first and so
+  reading the footage cold: at most 19% slower. The two films were identical except for 130
+  frames, and in those `avformat` showed a map one frame ahead of where the timeline was
+  (bake file 23 for 22) while `qimage` was exact; read alone from its start, the same bake
+  was exact through either. So one reader is also the more accurate one, and the preview
+  reads bakes exactly as the render does. Not measured with `youtube-nvenc`, where a
+  cheaper encode leaves decoding a larger share of the frame.
+- Reading each file on its own, `qimage` does not take the whole sequence's pixel format
+  from its first file, so the alpha an RGB first frame took away (`first_frame_rgba`, in the
+  field report below) cannot be lost through it either. The repair is kept: it is cheap,
+  and a bake made by an older kuma may still be read by something else.
 - `a_baked_overlay_seeks_backwards` (kuma-daemon `tests/engine.rs`) seeks a bake whose frame
   k is grey 4k forward, back and forward again through the engine; it fails on `avformat`
-  at the first backward seek. `a_scrubbed_graph_reads_animated_bakes_with_qimage` pins
-  which graph gets which reader.
+  at the first backward seek. `a_baked_overlay_plays_at_the_project_rate` and
+  `parallel_frames_render_what_serial_frames_do` check the render through `qimage`.
 
 The frame cache of `sample_frames` is keyed on the compiled document, like the preview,
 rather than on the project revision and the bake paths: under the old key, a kuma that

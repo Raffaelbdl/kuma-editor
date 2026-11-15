@@ -17,19 +17,13 @@ fn bake(path: &str, is_still: bool) -> OverlayBake {
     OverlayBake { resource: PathBuf::from(path), is_still }
 }
 
-/// What the reference project is compiled with: an animated bake (`o_c1`) and a still.
-fn reference_options() -> CompileOptions {
+#[test]
+fn reference_project_matches_golden_and_the_dtd() {
+    let p = reference_project();
     let mut opts = CompileOptions::new("/proj");
     opts.cache_dir = std::env::temp_dir().join("kuma-golden-cache");
     opts.bakes.insert("o_c1".into(), bake("/proj/.kuma/bakes/abc/frame_%06d.png", false));
     opts.bakes.insert("o_c2".into(), bake("/proj/.kuma/bakes/def/frame_000001.png", true));
-    opts
-}
-
-#[test]
-fn reference_project_matches_golden_and_the_dtd() {
-    let p = reference_project();
-    let opts = reference_options();
     // A grade's LUT is written under the cache, which is wherever the machine keeps its
     // temporary files; the golden file says where relative to it.
     let xml = compile(&p, &opts).unwrap().replace(&*opts.cache_dir.to_string_lossy(), "$CACHE");
@@ -94,34 +88,4 @@ fn unbaked_overlays_skip_or_fail_by_policy() {
     assert!(!xml.contains("clip_o_c1"), "unbaked overlays are left out under Skip");
     opts.unbaked = UnbakedPolicy::Error;
     assert!(matches!(compile(&p, &opts), Err(CompileError::Unbaked(id)) if id == "o_c1"));
-}
-
-/// A scrubbed graph — the preview's — reads the animated bake with `qimage` and changes
-/// nothing else; the golden file is the render's (*The preview reads animated bakes with
-/// `qimage`* in docs/decisions.md).
-#[test]
-fn a_scrubbed_graph_reads_animated_bakes_with_qimage() {
-    let p = reference_project();
-    let mut opts = reference_options();
-    let rendered = compile(&p, &opts).unwrap();
-    opts.scrubbed = true;
-    let scrubbed = compile(&p, &opts).unwrap();
-
-    let producer = |xml: &str| {
-        let at = xml.find(r#"<producer id="clip_o_c1""#).expect("the animated bake is in the graph");
-        xml[at..at + xml[at..].find("</producer>").unwrap()].to_string()
-    };
-    let (before, after) = (producer(&rendered), producer(&scrubbed));
-    assert_eq!(
-        after,
-        r#"<producer id="clip_o_c1" in="0" out="89">
-    <property name="mlt_service">qimage</property>
-    <property name="ttl">1</property>
-    <property name="begin">1</property>
-    <property name="resource">/proj/.kuma/bakes/abc/frame_%06d.png</property>
-    <property name="length">90</property>
-    <property name="mlt_image_format">rgba</property>
-  "#
-    );
-    assert_eq!(rendered.replace(&before, ""), scrubbed.replace(&after, ""), "only that producer changes");
 }

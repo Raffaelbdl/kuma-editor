@@ -312,9 +312,8 @@ fn grey_at_centre(root: &Path, jpeg: &[u8]) -> i64 {
     rgb[(90 * 320 + 160) * 3] as i64
 }
 
-/// A baked overlay seeks backwards as it seeks forwards, as the preview compiles it
-/// (`scrubbed`; *The preview reads animated bakes with `qimage`* in docs/decisions.md):
-/// played past, gone back to and played again. Frame k of this bake is grey level 4k, so
+/// A baked overlay seeks backwards as it seeks forwards: played past, gone back to and
+/// played again (*Animated bakes are read with `qimage`* in docs/decisions.md). Frame k of this bake is grey level 4k, so
 /// each frame the engine sends says which one it read.
 #[test]
 fn a_baked_overlay_seeks_backwards() {
@@ -340,7 +339,6 @@ fn a_baked_overlay_seeks_backwards() {
     .unwrap();
     let mut opts = CompileOptions::new(root);
     opts.streams = Streams::Video;
-    opts.scrubbed = true;
     opts.bakes.insert("o".into(), kuma_mlt::OverlayBake { resource: pattern, is_still: false });
     let video = root.join("video.mlt");
     std::fs::write(&video, compile(&p, &opts).unwrap()).unwrap();

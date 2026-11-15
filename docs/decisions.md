@@ -667,14 +667,12 @@ it has no rate to force and seeks anywhere; `pixbuf` does too, but came within 5
   was exact through either. So one reader is also the more accurate one, and the preview
   reads bakes exactly as the render does. Not measured with `youtube-nvenc`, where a
   cheaper encode leaves decoding a larger share of the frame.
-- Reading each file on its own, `qimage` does not take the whole sequence's pixel format
-  from its first file, so the alpha an RGB first frame took away (`first_frame_rgba`, in the
-  field report below) cannot be lost through it either. The repair is kept: it is cheap,
-  and a bake made by an older kuma may still be read by something else.
-- `a_baked_overlay_seeks_backwards` (kuma-daemon `tests/engine.rs`) seeks a bake whose frame
-  k is grey 4k forward, back and forward again through the engine; it fails on `avformat`
-  at the first backward seek. `a_baked_overlay_plays_at_the_project_rate` and
-  `parallel_frames_render_what_serial_frames_do` check the render through `qimage`.
+- `qimage` reads each file on its own, so a timeline can no longer lose an overlay's alpha
+  to an RGB first frame. The repair (`first_frame_rgba`, in the field report below) is
+  kept: the moving WebP preview (`Baker::preview`) still reads the sequence through ffmpeg.
+- `begin=1` is a contract with the baker's `frame_name`, which numbers from 1.
+- `a_baked_overlay_seeks_backwards` (kuma-daemon `tests/engine.rs`) fails on `avformat` at
+  the first backward seek.
 
 The frame cache of `sample_frames` is keyed on the compiled document, like the preview,
 rather than on the project revision and the bake paths: under the old key, a kuma that

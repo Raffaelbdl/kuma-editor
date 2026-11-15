@@ -155,6 +155,25 @@ fn frames(msgs: &[(Instant, Out)]) -> Vec<(Instant, i64)> {
     msgs.iter().filter_map(|(at, m)| if let Out::Frame(f, _) = m { Some((*at, *f)) } else { None }).collect()
 }
 
+/// The frame every graph here is compiled at.
+const SIZE: (usize, usize) = (320, 180);
+
+/// A 30 fps project at `SIZE` with one entry, `clip`, placed by `track`, compiled as the
+/// preview compiles `streams` (with `bakes` for an overlay clip) and written to `name`.
+fn graph(root: &Path, name: &str, clip: serde_json::Value, track: serde_json::Value, streams: Streams, bakes: Option<(&str, kuma_mlt::OverlayBake)>) -> PathBuf {
+    let p: kuma_core::Project = serde_json::from_value(json!({
+        "fps": 30, "width": SIZE.0, "height": SIZE.1,
+        "bin": { "clip": clip, "main": { "source": { "tracks": [track] } } }
+    }))
+    .unwrap();
+    let mut opts = CompileOptions::new(root);
+    opts.streams = streams;
+    opts.bakes.extend(bakes.map(|(id, b)| (id.into(), b)));
+    let path = root.join(name);
+    std::fs::write(&path, compile(&p, &opts).unwrap()).unwrap();
+    path
+}
+
 /// Two seconds of moving picture and a tone, compiled as the preview compiles it: a video
 /// graph, and an audio graph at each of two volumes.
 fn fixture(root: &Path) -> (PathBuf, PathBuf, PathBuf) {
@@ -166,21 +185,8 @@ fn fixture(root: &Path) -> (PathBuf, PathBuf, PathBuf) {
         .collect::<Vec<_>>();
     kuma_overlay::media::ffmpeg(&args).expect("ffmpeg");
     let write = |name: &str, volume: f64, streams: Streams| {
-        let p: kuma_core::Project = serde_json::from_value(json!({
-            "fps": 30, "width": 320, "height": 180,
-            "bin": {
-                "clip": { "source": { "path": "clip.mp4" } },
-                "main": { "source": { "tracks": [
-                    { "id": "v1", "clips": [ { "id": "c1", "start": 0, "end": 2, "bin": "clip", "volume": volume } ] }
-                ] } }
-            }
-        }))
-        .unwrap();
-        let mut opts = CompileOptions::new(root);
-        opts.streams = streams;
-        let path = root.join(name);
-        std::fs::write(&path, compile(&p, &opts).unwrap()).unwrap();
-        path
+        let clip = json!({ "source": { "path": "clip.mp4" } });
+        graph(root, name, clip, json!({ "id": "v1", "clips": [ { "id": "c1", "start": 0, "end": 2, "bin": "clip", "volume": volume } ] }), streams, None)
     };
     (write("video.mlt", 1.0, Streams::Video), write("audio.mlt", 1.0, Streams::Audio), write("quiet.mlt", 0.3, Streams::Audio))
 }
@@ -304,17 +310,18 @@ fn a_seek_overtaken_by_another_shows_nothing() {
     assert!(shown.len() < 10, "stale positions were drawn: {shown:?}");
 }
 
-/// The grey level at the middle of a 320×180 JPEG the engine sent.
+/// The grey level at the middle of a frame the engine sent.
 fn grey_at_centre(root: &Path, jpeg: &[u8]) -> i64 {
     let file = root.join("seen.jpg");
     std::fs::write(&file, jpeg).unwrap();
     let rgb = kuma_overlay::media::rgb24(&file).unwrap();
-    rgb[(90 * 320 + 160) * 3] as i64
+    let (w, h) = SIZE;
+    rgb[((h / 2) * w + w / 2) * 3] as i64
 }
 
 /// A baked overlay seeks backwards as it seeks forwards: played past, gone back to and
-/// played again (*Animated bakes are read with `qimage`* in docs/decisions.md). Frame k of this bake is grey level 4k, so
-/// each frame the engine sends says which one it read.
+/// played again (*Animated bakes are read with `qimage`* in docs/decisions.md). Frame k of
+/// this bake is grey level 4k, so each frame the engine sends says which one it read.
 #[test]
 fn a_baked_overlay_seeks_backwards() {
     let Some(bin) = engine_bin() else { return };
@@ -322,26 +329,11 @@ fn a_baked_overlay_seeks_backwards() {
     let root = tmp.path();
     std::fs::create_dir_all(root.join("bake")).unwrap();
     let pattern = root.join("bake/frame_%06d.png");
-    kuma_overlay::media::ffmpeg(&[
-        "-f", "lavfi", "-i", "color=c=black:size=320x180:rate=30:duration=2,format=gray,geq=lum='N*4',format=rgba",
-        "-pix_fmt", "rgba", "-start_number", "1", &pattern.to_string_lossy(),
-    ].map(String::from))
-    .expect("ffmpeg");
-    let p: kuma_core::Project = serde_json::from_value(json!({
-        "fps": 30, "width": 320, "height": 180,
-        "bin": {
-            "tag": { "source": { "overlay": "overlays/tag" } },
-            "main": { "source": { "tracks": [
-                { "id": "o1", "kind": "overlay", "clips": [ { "id": "o", "start": 0, "end": 2, "bin": "tag" } ] }
-            ] } }
-        }
-    }))
-    .unwrap();
-    let mut opts = CompileOptions::new(root);
-    opts.streams = Streams::Video;
-    opts.bakes.insert("o".into(), kuma_mlt::OverlayBake { resource: pattern, is_still: false });
-    let video = root.join("video.mlt");
-    std::fs::write(&video, compile(&p, &opts).unwrap()).unwrap();
+    let ramp = format!("color=c=black:size={}x{}:rate=30:duration=2,format=gray,geq=lum='N*4',format=rgba", SIZE.0, SIZE.1);
+    kuma_overlay::media::ffmpeg(&["-f".into(), "lavfi".into(), "-i".into(), ramp, pattern.to_string_lossy().into_owned()]).expect("ffmpeg");
+    let bake = kuma_mlt::OverlayBake { resource: pattern, is_still: false };
+    let track = json!({ "id": "o1", "kind": "overlay", "clips": [ { "id": "o", "start": 0, "end": 2, "bin": "clip" } ] });
+    let video = graph(root, "video.mlt", json!({ "source": { "overlay": "overlays/tag" } }), track, Streams::Video, Some(("o", bake)));
 
     let mut e = Engine::start(&bin);
     e.send(&format!("load-video {}", video.display()));

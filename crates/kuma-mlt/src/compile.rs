@@ -690,11 +690,8 @@ fn emit_source(ctx: &Ctx, p: &Plan, id: &str, w: &mut XmlWriter) -> Result<(), C
                 w.property("mlt_service", "pixbuf");
                 w.property("ttl", "1");
             } else {
-                // One file per frame (`ttl`), numbered from `frame_000001`, so a bake plays at
-                // the project's rate whatever it is. Not `avformat`: ffmpeg's image2 demuxer
-                // reads a sequence at 25 fps, cannot seek backwards in one, and slipped a
-                // frame inside a long render (docs/decisions.md, *Animated bakes are read
-                // with `qimage`*).
+                // One file per frame (`ttl`), numbered from 1 as the baker names them
+                // (`begin`). Not `avformat`: docs/decisions.md, *Animated bakes are read with `qimage`*.
                 w.property("mlt_service", "qimage");
                 w.property("ttl", "1");
                 w.property("begin", "1");

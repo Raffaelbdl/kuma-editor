@@ -288,10 +288,9 @@ fn the_nvenc_preset_renders_where_there_is_a_gpu() {
     assert!(size(&coarse) < size(&own), "CQ 45 ({}) should be smaller than CQ 21 ({})", size(&coarse), size(&own));
 }
 
-/// A bake is one PNG per timeline frame, and an image sequence has no rate of its own:
-/// ffmpeg reads one at 25 fps unless told otherwise, which at 30 fps played every overlay
-/// at five sixths speed, so subtitles fell further behind the longer the clip ran. Frame k
-/// of this bake is grey level 4k, so the frame the timeline shows says which one it read.
+/// A bake is one PNG per timeline frame and plays at the project's rate, not 25 fps, which
+/// once played every overlay at five sixths speed in a 30 fps project (docs/decisions.md).
+/// Frame k of this bake is grey level 4k, so the frame the timeline shows says which one it read.
 #[test]
 fn a_baked_overlay_plays_at_the_project_rate() {
     if !have("ffmpeg") || !have("melt") {

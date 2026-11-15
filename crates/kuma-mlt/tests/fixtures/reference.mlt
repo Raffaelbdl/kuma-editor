@@ -422,8 +422,9 @@
     <entry producer="clip_voice" in="30" out="149"/>
   </playlist>
   <producer id="clip_o_c1" in="0" out="89">
-    <property name="mlt_service">avformat</property>
-    <property name="force_fps">30</property>
+    <property name="mlt_service">qimage</property>
+    <property name="ttl">1</property>
+    <property name="begin">1</property>
     <property name="resource">/proj/.kuma/bakes/abc/frame_%06d.png</property>
     <property name="length">90</property>
     <property name="mlt_image_format">rgba</property>

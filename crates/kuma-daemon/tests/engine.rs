@@ -15,7 +15,16 @@ use serde_json::json;
 #[derive(Debug)]
 enum Out {
     Line(String),
-    Frame(i64),
+    Frame(i64, Jpeg),
+}
+
+/// A frame's picture, kept for a test that looks at it; printed as its size.
+struct Jpeg(Vec<u8>);
+
+impl std::fmt::Debug for Jpeg {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "<{} bytes>", self.0.len())
+    }
 }
 
 struct Engine {
@@ -57,7 +66,7 @@ impl Engine {
                     let mut jpeg = vec![0u8; n];
                     rd.read_exact(&mut jpeg).unwrap();
                     assert_eq!(&jpeg[..2], &[0xff, 0xd8], "frame {f} is not a JPEG");
-                    Out::Frame(f)
+                    Out::Frame(f, Jpeg(jpeg))
                 } else {
                     Out::Line(l)
                 };
@@ -105,9 +114,13 @@ impl Engine {
         seen
     }
 
-    fn frame(&mut self, want: i64) {
+    /// The next message, which must be frame `want`: its picture.
+    fn frame(&mut self, want: i64) -> Vec<u8> {
         match self.out.recv_timeout(Duration::from_secs(10)) {
-            Ok((_, Out::Frame(f))) => assert_eq!(f, want),
+            Ok((_, Out::Frame(f, Jpeg(jpeg)))) => {
+                assert_eq!(f, want);
+                jpeg
+            }
             other => panic!("expected frame {want}, got {other:?}"),
         }
     }
@@ -139,7 +152,26 @@ fn engine_bin() -> Option<PathBuf> {
 }
 
 fn frames(msgs: &[(Instant, Out)]) -> Vec<(Instant, i64)> {
-    msgs.iter().filter_map(|(at, m)| if let Out::Frame(f) = m { Some((*at, *f)) } else { None }).collect()
+    msgs.iter().filter_map(|(at, m)| if let Out::Frame(f, _) = m { Some((*at, *f)) } else { None }).collect()
+}
+
+/// The frame every graph here is compiled at.
+const SIZE: (usize, usize) = (320, 180);
+
+/// A 30 fps project at `SIZE` with one entry, `clip`, placed by `track`, compiled as the
+/// preview compiles `streams` (with `bakes` for an overlay clip) and written to `name`.
+fn graph(root: &Path, name: &str, clip: serde_json::Value, track: serde_json::Value, streams: Streams, bakes: Option<(&str, kuma_mlt::OverlayBake)>) -> PathBuf {
+    let p: kuma_core::Project = serde_json::from_value(json!({
+        "fps": 30, "width": SIZE.0, "height": SIZE.1,
+        "bin": { "clip": clip, "main": { "source": { "tracks": [track] } } }
+    }))
+    .unwrap();
+    let mut opts = CompileOptions::new(root);
+    opts.streams = streams;
+    opts.bakes.extend(bakes.map(|(id, b)| (id.into(), b)));
+    let path = root.join(name);
+    std::fs::write(&path, compile(&p, &opts).unwrap()).unwrap();
+    path
 }
 
 /// Two seconds of moving picture and a tone, compiled as the preview compiles it: a video
@@ -153,21 +185,8 @@ fn fixture(root: &Path) -> (PathBuf, PathBuf, PathBuf) {
         .collect::<Vec<_>>();
     kuma_overlay::media::ffmpeg(&args).expect("ffmpeg");
     let write = |name: &str, volume: f64, streams: Streams| {
-        let p: kuma_core::Project = serde_json::from_value(json!({
-            "fps": 30, "width": 320, "height": 180,
-            "bin": {
-                "clip": { "source": { "path": "clip.mp4" } },
-                "main": { "source": { "tracks": [
-                    { "id": "v1", "clips": [ { "id": "c1", "start": 0, "end": 2, "bin": "clip", "volume": volume } ] }
-                ] } }
-            }
-        }))
-        .unwrap();
-        let mut opts = CompileOptions::new(root);
-        opts.streams = streams;
-        let path = root.join(name);
-        std::fs::write(&path, compile(&p, &opts).unwrap()).unwrap();
-        path
+        let clip = json!({ "source": { "path": "clip.mp4" } });
+        graph(root, name, clip, json!({ "id": "v1", "clips": [ { "id": "c1", "start": 0, "end": 2, "bin": "clip", "volume": volume } ] }), streams, None)
     };
     (write("video.mlt", 1.0, Streams::Video), write("audio.mlt", 1.0, Streams::Audio), write("quiet.mlt", 0.3, Streams::Audio))
 }
@@ -289,4 +308,40 @@ fn a_seek_overtaken_by_another_shows_nothing() {
     let shown: Vec<i64> = frames(&e.drain(Duration::from_millis(1500))).into_iter().map(|(_, f)| f).collect();
     assert_eq!(shown.last(), Some(&40), "the drag did not end where it stopped: {shown:?}");
     assert!(shown.len() < 10, "stale positions were drawn: {shown:?}");
+}
+
+/// The grey level at the middle of a frame the engine sent.
+fn grey_at_centre(root: &Path, jpeg: &[u8]) -> i64 {
+    let file = root.join("seen.jpg");
+    std::fs::write(&file, jpeg).unwrap();
+    let rgb = kuma_overlay::media::rgb24(&file).unwrap();
+    let (w, h) = SIZE;
+    rgb[((h / 2) * w + w / 2) * 3] as i64
+}
+
+/// A baked overlay seeks backwards as it seeks forwards: played past, gone back to and
+/// played again (*Animated bakes are read with `qimage`* in docs/decisions.md). Frame k of
+/// this bake is grey level 4k, so each frame the engine sends says which one it read.
+#[test]
+fn a_baked_overlay_seeks_backwards() {
+    let Some(bin) = engine_bin() else { return };
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    std::fs::create_dir_all(root.join("bake")).unwrap();
+    let pattern = root.join("bake/frame_%06d.png");
+    let ramp = format!("color=c=black:size={}x{}:rate=30:duration=2,format=gray,geq=lum='N*4',format=rgba", SIZE.0, SIZE.1);
+    kuma_overlay::media::ffmpeg(&["-f".into(), "lavfi".into(), "-i".into(), ramp, pattern.to_string_lossy().into_owned()]).expect("ffmpeg");
+    let bake = kuma_mlt::OverlayBake { resource: pattern, is_still: false };
+    let track = json!({ "id": "o1", "kind": "overlay", "clips": [ { "id": "o", "start": 0, "end": 2, "bin": "clip" } ] });
+    let video = graph(root, "video.mlt", json!({ "source": { "overlay": "overlays/tag" } }), track, Streams::Video, Some(("o", bake)));
+
+    let mut e = Engine::start(&bin);
+    e.send(&format!("load-video {}", video.display()));
+    e.expect_line("ok loaded video frames=60", Duration::from_secs(20));
+    e.frame(0);
+    for f in [45i64, 15, 30, 5, 50] {
+        e.send(&format!("seek {f}"));
+        let grey = grey_at_centre(root, &e.frame(f));
+        assert!((grey - 4 * f).abs() <= 4, "timeline frame {f} shows bake frame ≈{}", grey / 4);
+    }
 }

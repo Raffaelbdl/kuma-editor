@@ -690,11 +690,11 @@ fn emit_source(ctx: &Ctx, p: &Plan, id: &str, w: &mut XmlWriter) -> Result<(), C
                 w.property("mlt_service", "pixbuf");
                 w.property("ttl", "1");
             } else {
-                w.property("mlt_service", "avformat");
-                // A bake has one frame per timeline frame, but an image sequence has no
-                // rate of its own and ffmpeg reads one at 25 fps: at any other project rate
-                // the overlay would drift, late by a fifth of its time into the clip at 30.
-                w.property("force_fps", ctx.fps.as_f64().to_string());
+                // One file per frame (`ttl`), numbered from 1 as the baker names them
+                // (`begin`). Not `avformat`: docs/decisions.md, *Animated bakes are read with `qimage`*.
+                w.property("mlt_service", "qimage");
+                w.property("ttl", "1");
+                w.property("begin", "1");
             }
             w.property("resource", bake.resource.to_string_lossy());
             w.property("length", len.to_string());

@@ -608,6 +608,8 @@ impl Baker {
     }
 }
 
+/// Frames are numbered from 1: the compiler reads a sequence with `begin=1` (`compile.rs`),
+/// so numbering from anything else would shift every animated overlay a frame.
 fn frame_name(n: i64) -> String {
     format!("frame_{n:06}.png")
 }
@@ -617,6 +619,8 @@ fn frame_name(n: i64) -> String {
 /// transparent pixel as RGB: an overlay that opens on a full-frame flash lost its alpha for
 /// every frame after it. Only the first file decides — a later RGB frame is read as the
 /// opaque frame it is — so only the first is rewritten, and its pixels stay the same.
+/// Timelines read bakes with `qimage`, file by file, but the moving WebP preview
+/// (`Baker::preview`) still reads the sequence through ffmpeg, so this still matters.
 fn first_frame_rgba(frames: &Path) -> Result<(), String> {
     let first = frames.join(frame_name(1));
     if !png_lacks_alpha(&first) {

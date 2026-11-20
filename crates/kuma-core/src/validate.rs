@@ -215,7 +215,7 @@ pub fn validate(p: &Project, ctx: &ValidationContext) -> Vec<Issue> {
     // timeline, and a block cannot move on two at once.
     let mut groups: HashMap<&str, &str> = HashMap::new();
     for (seq_id, seq) in p.sequences() {
-        check_sequence(&mut issues, p, ctx, seq_id, seq, &mut track_ids, &mut clip_ids, &mut groups);
+        check_sequence(&mut issues, p, ctx, &manifests, seq_id, seq, &mut track_ids, &mut clip_ids, &mut groups);
     }
 
     issues
@@ -225,6 +225,7 @@ fn check_sequence<'a>(
     issues: &mut Vec<Issue>,
     p: &'a Project,
     ctx: &ValidationContext,
+    manifests: &HashMap<&str, Result<OverlayManifest, String>>,
     seq_id: &'a str,
     seq: &'a Sequence,
     track_ids: &mut HashSet<&'a str>,
@@ -314,6 +315,20 @@ fn check_sequence<'a>(
                         issues.push(Issue::error(format!("{cp}/in"), "in must be >= 0"));
                     } else if c.source_in > 0.0 && !item.is_timed_media() {
                         issues.push(Issue::error(format!("{cp}/in"), "in applies only to video, audio and sequence entries; this one is generated to fit the clip"));
+                    }
+                    // An overlay squeezed far below the length it is made for usually is not
+                    // meant: a neighbour's edge moved over it, and what is left bakes as a few
+                    // frames of its entrance, or nothing. Half a second at most, so a flash
+                    // made to be short says nothing.
+                    if let BinSource::Overlay { overlay, .. } = &item.source {
+                        if let Some(Ok(m)) = manifests.get(overlay.as_str()) {
+                            if c.duration() < (m.duration_default / 4.0).min(0.5) - 1e-9 {
+                                issues.push(Issue::warn(
+                                    format!("{cp}/end"),
+                                    format!("overlay clip lasts {:.2}s, a fraction of the {}s `{overlay}` is made for: it may show only part of its entrance, or nothing", c.duration(), m.duration_default),
+                                ));
+                            }
+                        }
                     }
                     // An empty sequence compiles to nothing, so a clip placing one would
                     // silently be a gap. Say so where it is placed.
@@ -1338,6 +1353,27 @@ mod tests {
         let ctx = ValidationContext { root: tmp.path().to_path_buf(), check_files: true, ..Default::default() };
         let m: Vec<_> = validate(&p, &ctx).into_iter().map(|i| i.message).collect();
         assert_eq!(m.iter().filter(|m| m.contains("nope")).count(), 1, "{m:?}");
+    }
+
+    /// A title cut to a few frames by its neighbour bakes as nothing, and used to be found
+    /// only when the render came back without it. One made short on purpose says nothing.
+    #[test]
+    fn an_overlay_far_shorter_than_it_is_made_for_is_flagged() {
+        let tmp = tempfile::tempdir().unwrap();
+        overlay_folder(tmp.path(), "overlays/title");
+        overlay_folder(tmp.path(), "overlays/flash");
+        std::fs::write(tmp.path().join("overlays/flash").join(crate::manifest::MANIFEST), r#"{ "duration_default": 0.4 }"#).unwrap();
+        let p = project(json!({
+            "bin": { "title": { "source": { "overlay": "overlays/title" } }, "flash": { "source": { "overlay": "overlays/flash" } } },
+            "tracks": [{ "id": "o1", "kind": "overlay", "clips": [
+                { "id": "a", "start": 0, "end": 0.2, "bin": "title" },
+                { "id": "b", "start": 1, "end": 1.5, "bin": "title" },
+                { "id": "c", "start": 2, "end": 2.2, "bin": "flash" }
+            ]}]
+        }));
+        let ctx = ValidationContext { root: tmp.path().to_path_buf(), check_files: true, ..Default::default() };
+        let short: Vec<_> = validate(&p, &ctx).into_iter().filter(|i| i.message.contains("a fraction of")).map(|i| (i.severity, i.path)).collect();
+        assert_eq!(short, [(Severity::Warning, format!("{}/end", clip_path("main", 0, 0)))], "0.2 s of a 4 s title, not half a second of it, nor 0.2 s of a 0.4 s flash");
     }
 
     /// Track kinds change what the compiler emits, so the rules differ by direction:

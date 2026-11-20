@@ -1577,6 +1577,14 @@ pub struct Marker {
     pub origin: Option<String>,
 }
 
+impl Marker {
+    /// What tells a marker from the others on its sequence, the format having no marker
+    /// ids: its time to the millisecond, `8.600`.
+    pub fn time_key(t: f64) -> String {
+        format!("{t:.3}")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::json;

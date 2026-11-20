@@ -668,8 +668,13 @@ impl AppState {
     /// meanwhile. `build` must stay cheap: it runs with the lock held. `base` is checked
     /// like any patch's.
     pub fn apply_built<T>(&self, origin: &str, base: Option<u64>, build: impl FnOnce(&Project) -> anyhow::Result<(Vec<json_patch::PatchOperation>, T)>) -> anyhow::Result<(T, u64, Vec<Issue>)> {
+        self.apply_built_answering(origin, base, &[], build)
+    }
+
+    /// [`Self::apply_built`], the edit answering the markers `answers` names, as a patch's does.
+    pub fn apply_built_answering<T>(&self, origin: &str, base: Option<u64>, answers: &[String], build: impl FnOnce(&Project) -> anyhow::Result<(Vec<json_patch::PatchOperation>, T)>) -> anyhow::Result<(T, u64, Vec<Issue>)> {
         let mut carried = None;
-        let step = Step { base_revision: base, ..Default::default() };
+        let step = Step { base_revision: base, answers };
         let (rev, warnings) = self.edit(origin, Kind::Edit, &step, |p| {
             let (ops, value) = build(p).map_err(|e| EditError::Patch(format!("{e:#}")))?;
             carried = Some(value);

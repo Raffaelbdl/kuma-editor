@@ -332,6 +332,8 @@ whether it is any good. Both have an answer that costs seconds.
    needed, times counted from the start of the overlay. Take 5 or 6 across the clip, and
    include `t0: 0`: an overlay that is already fully visible in its first frame has no
    entrance, which is the most common defect and invisible in a still.
+   Several variants of one design (other vars, other folders) go in one call:
+   `entries: ["<id>", "<id>", …]` with `times` and `tile` is one sheet, a row per entry.
 3. **Both orientations.** Pass `frame: [1080, 1920]` and look again. Text that fits in
    landscape overflows in portrait, and anchors that look centred move. The contract
    requires an overlay to survive both; this is how you find out that it does not.

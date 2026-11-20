@@ -6,7 +6,7 @@ use kuma_daemon::{locate_repo_root, user_library, Config, Libraries, RepoRoot};
 
 mod skill;
 
-const VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), " (", env!("KUMA_GIT"), ")");
+const VERSION: &str = kuma_daemon::BUILD;
 const DEFAULT_BIND: &str = "127.0.0.1:7455";
 
 #[derive(Parser)]
@@ -88,9 +88,10 @@ enum Cmd {
         #[arg(long)]
         sequence: Option<String>,
         /// Sample one overlay bin entry on its own instead of a timeline — what the
-        /// editor's overlay workbench shows. Times are seconds into the overlay.
-        #[arg(long)]
-        overlay: Option<String>,
+        /// editor's overlay workbench shows. Times are seconds into the overlay. Several,
+        /// comma-separated, are sampled at the same times: with --tile, a row each.
+        #[arg(long, value_delimiter = ',')]
+        overlay: Vec<String>,
         /// How long to run that overlay for (default: its manifest's own).
         #[arg(long)]
         duration: Option<f64>,
@@ -205,7 +206,39 @@ enum Cmd {
         /// Leave bin entries the document does not have, rather than remove them.
         #[arg(long)]
         keep: bool,
+        /// The document the script built last time, the one applied: send only what the
+        /// script changed since, and keep what was changed in the editor meanwhile.
+        #[arg(long)]
+        base: Option<PathBuf>,
     },
+    /// Make the project the document a script wrote, as one undoable edit: diffed against
+    /// the live project (three-way against the plan last applied from this path, so what was
+    /// changed in the editor since stays), validated, applied. Through the daemon when one
+    /// serves the project. Prints what it did as JSON; `kuma diff` is the same diff, printed.
+    Apply {
+        /// The plan: a project document in a file inside the project, e.g. `build/plan.json`.
+        file: PathBuf,
+        /// Leave bin entries the plan does not have, rather than remove them.
+        #[arg(long)]
+        keep: bool,
+        /// Make the project exactly the plan, putting back what was changed in the editor.
+        #[arg(long)]
+        exact: bool,
+        /// Say what would change, with the patch, and change nothing.
+        #[arg(long)]
+        dry_run: bool,
+        /// A label for the undo history, e.g. "chapter 3 b-roll".
+        #[arg(long)]
+        note: Option<String>,
+        /// Ids of the markers this edit answers (`master@8.600`), comma-separated.
+        #[arg(long, value_delimiter = ',')]
+        answers: Vec<String>,
+    },
+    /// Wait for a job on the daemon serving this project (one an MCP tool started, say) to
+    /// end, its progress on stderr, then print it as JSON. Exit 1 unless it is done. Run in
+    /// the background, it is one notification instead of polling `job_status`; Ctrl-C stops
+    /// waiting and leaves the job running.
+    Wait { id: u64 },
     /// Check the installation: repo, tools, engine, library, daemon, MCP config.
     Doctor,
     /// Scaffold a contract-abiding overlay folder in the project's `overlays/`. It is not
@@ -419,20 +452,11 @@ async fn running_daemon(cli: &Cli) -> Option<String> {
 async fn on_daemon(cli: &Cli, path: &str, command: &str, mut body: serde_json::Value) -> anyhow::Result<Option<serde_json::Value>> {
     let Some(url) = running_daemon(cli).await else { return Ok(None) };
     let c = kuma_mcp::client::Client::new(&url);
-    body["origin"] = serde_json::json!(format!("cli: {command}"));
+    body["origin"] = serde_json::json!(origin(command));
     let id = c.post(path, &body).await?["job"].as_u64().ok_or_else(|| anyhow::anyhow!("the daemon at {url} started no job"))?;
     eprintln!("job {id} on the daemon at {url}");
-    let mut said = String::new();
-    let each = |j: serde_json::Value| {
-        let line = format!("[{:3}%] {}", j["percent"].as_u64().unwrap_or(0), j["message"].as_str().unwrap_or(""));
-        if line != said {
-            eprintln!("{line}");
-            said = line;
-        }
-        async {}
-    };
     let j = tokio::select! {
-        j = c.poll_job(id, std::time::Duration::from_secs(7 * 24 * 3600), each) => j?,
+        j = follow(&c, id) => j?,
         _ = tokio::signal::ctrl_c() => {
             c.post(&format!("/api/jobs/{id}/cancel"), &serde_json::json!({})).await?;
             anyhow::bail!("cancelled job {id}");
@@ -443,6 +467,49 @@ async fn on_daemon(cli: &Cli, path: &str, command: &str, mut body: serde_json::V
     }
     anyhow::ensure!(j["state"] == "done", "job {id} was {}", j["state"]);
     Ok(Some(j["result"].clone()))
+}
+
+/// Who a command's edits and jobs are from, for the history, the activity feed and the
+/// markers it adds: the agent's when Claude Code runs it (`CLAUDECODE` in its shells), as
+/// over MCP, so an agent working from the shell is not taken for someone else; else `cli`.
+fn origin(what: &str) -> String {
+    if std::env::var_os("CLAUDECODE").is_some_and(|v| !v.is_empty()) {
+        format!("agent: cli {what}")
+    } else {
+        format!("cli: {what}")
+    }
+}
+
+/// What a diff, or a plan applied, did besides its ops, on stderr: the bin entries it
+/// removes, the places the editor's value was kept, the markers a two-way diff removes and
+/// `keeps` — what would have kept them.
+fn report_diff(removed: &[String], kept: &[String], lost_markers: usize, keeps: &str) {
+    if !removed.is_empty() {
+        eprintln!("kuma: removes {} bin entries the document does not have ({}); `--keep` leaves them", removed.len(), removed.join(", "));
+    }
+    if !kept.is_empty() {
+        eprintln!("kuma: {} changed in the editor as well as by the script; kept as the editor has them:", kept.len());
+        for path in kept {
+            eprintln!("  {path}");
+        }
+    }
+    if lost_markers > 0 {
+        eprintln!("kuma: removes {lost_markers} markers the document does not have; {keeps} keeps what was changed in the editor");
+    }
+}
+
+/// Job `id` once it has ended, its progress on stderr as it changes.
+async fn follow(c: &kuma_mcp::client::Client, id: u64) -> anyhow::Result<serde_json::Value> {
+    let mut said = String::new();
+    let each = |j: serde_json::Value| {
+        let line = format!("[{:3}%] {}", j["percent"].as_u64().unwrap_or(0), j["message"].as_str().unwrap_or(""));
+        if line != said {
+            eprintln!("{line}");
+            said = line;
+        }
+        async {}
+    };
+    c.poll_job(id, std::time::Duration::from_secs(7 * 24 * 3600), each).await
 }
 
 #[tokio::main]
@@ -576,7 +643,8 @@ async fn main() -> anyhow::Result<()> {
                 rect,
                 width: *width,
                 sequence: sequence.clone(),
-                overlay: overlay.clone(),
+                overlay: if overlay.len() == 1 { overlay.first().cloned() } else { None },
+                entries: if overlay.len() > 1 { overlay.clone() } else { Vec::new() },
                 duration: *duration,
                 backdrop: backdrop.clone(),
                 frame_width: frame.map(|(w, _)| w),
@@ -636,7 +704,7 @@ async fn main() -> anyhow::Result<()> {
                     Ok(kuma_daemon::sound::SyncPair { clip: clip.to_string(), audio: audio.to_string(), track: None })
                 })
                 .collect::<anyhow::Result<Vec<_>>>()?;
-            let req = kuma_daemon::sound::SyncRequest { pairs, dry_run: *dry_run, origin: "cli: sync-audio".into() };
+            let req = kuma_daemon::sound::SyncRequest { pairs, dry_run: *dry_run, origin: origin("sync-audio") };
             let out = match on_daemon(&cli, "/api/audio/sync", "sync-audio", serde_json::to_value(&req)?).await? {
                 Some(out) => out,
                 None => {
@@ -647,7 +715,7 @@ async fn main() -> anyhow::Result<()> {
             println!("{}", serde_json::to_string_pretty(&out)?);
         }
         Cmd::NormalizeAudio { bin, target } => {
-            let req = kuma_daemon::sound::NormalizeRequest { bin: bin.clone(), target: *target, origin: "cli: normalize-audio".into() };
+            let req = kuma_daemon::sound::NormalizeRequest { bin: bin.clone(), target: *target, origin: origin("normalize-audio") };
             let out = match on_daemon(&cli, "/api/audio/normalize", "normalize-audio", serde_json::to_value(&req)?).await? {
                 Some(out) => out,
                 None => {
@@ -664,7 +732,7 @@ async fn main() -> anyhow::Result<()> {
                 (None, Some(c)) => c.get("/api/cache").await?,
                 (None, None) => serde_json::to_value(kuma_daemon::cache::usage(&*open(&cli)?)?)?,
                 (Some(CacheCmd::Prune { all }), Some(c)) => {
-                    let v = c.post("/api/cache/prune", &serde_json::json!({ "all": all, "origin": "cli: cache prune" })).await?;
+                    let v = c.post("/api/cache/prune", &serde_json::json!({ "all": all, "origin": origin("cache prune") })).await?;
                     c.wait_job(v["job"].as_u64().unwrap_or_default(), std::time::Duration::from_secs(24 * 3600)).await?["result"].take()
                 }
                 (Some(CacheCmd::Prune { all }), None) => {
@@ -708,19 +776,47 @@ async fn main() -> anyhow::Result<()> {
             let text = if file.as_os_str() == "-" { std::io::read_to_string(std::io::stdin())? } else { std::fs::read_to_string(file)? };
             println!("{}", kuma_core::canonical(&text).map_err(|e| anyhow::anyhow!("{}: {e}", file.display()))?);
         }
-        Cmd::Diff { file, keep } => {
+        Cmd::Diff { file, keep, base } => {
             // The file the daemon saves on every edit: no daemon needed, none disturbed.
             let live = kuma_core::parse_project(&std::fs::read_to_string(&cli.project)?)?;
             let text = if file.as_os_str() == "-" { std::io::read_to_string(std::io::stdin())? } else { std::fs::read_to_string(file)? };
-            let patch = kuma_core::diff(&live, &text, *keep).map_err(|e| anyhow::anyhow!("{}: {e}", file.display()))?;
-            let ops = serde_json::to_value(&patch)?;
-            println!("{}", serde_json::to_string_pretty(&ops)?);
-            let entry = |op: &serde_json::Value| op["path"].as_str()?.strip_prefix("/bin/").filter(|id| op["op"] == "remove" && !id.contains('/')).map(String::from);
-            let removed: Vec<String> = ops.as_array().into_iter().flatten().filter_map(entry).collect();
-            eprintln!("kuma: {} ops against revision {}", patch.0.len(), live.revision);
-            if !removed.is_empty() {
-                eprintln!("kuma: removes {} bin entries the document does not have ({}); `--keep` leaves them", removed.len(), removed.join(", "));
-            }
+            let base_text = base.as_ref().map(std::fs::read_to_string).transpose()?;
+            let out = kuma_core::diff(&live, base_text.as_deref(), &text, *keep).map_err(|e| anyhow::anyhow!("{}: {e}", file.display()))?;
+            println!("{}", serde_json::to_string_pretty(&out.patch)?);
+            eprintln!("kuma: {} ops against revision {}", out.patch.0.len(), live.revision);
+            report_diff(&out.removed, &out.kept, out.lost_markers, "`--base <last applied document>`");
+        }
+        Cmd::Wait { id } => {
+            let url = running_daemon(&cli).await.ok_or_else(|| anyhow::anyhow!("no daemon serves {} at {}: jobs live in the daemon", cli.project.display(), cli.bind))?;
+            let j = follow(&kuma_mcp::client::Client::new(&url), *id).await?;
+            println!("{}", serde_json::to_string_pretty(&j)?);
+            anyhow::ensure!(j["state"] == "done", "job {id} was {}{}", j["state"], j["message"].as_str().map(|m| format!(": {m}")).unwrap_or_default());
+        }
+        Cmd::Apply { file, keep, exact, dry_run, note, answers } => {
+            let path = absolute(file)?.to_string_lossy().into_owned();
+            let origin = origin(note.as_deref().unwrap_or("apply"));
+            let req = kuma_daemon::plans::PlanRequest { path, keep: *keep, exact: *exact, dry_run: *dry_run, origin: Some(origin), answers: answers.clone() };
+            let out = if let Some(url) = running_daemon(&cli).await {
+                kuma_mcp::client::Client::new(&url).post("/api/project/plan", &serde_json::to_value(&req)?).await?
+            } else {
+                let state = open(&cli)?;
+                let applied = kuma_daemon::plans::apply(&state, &req).map_err(|e| match e.downcast_ref::<kuma_core::EditError>() {
+                    // The daemon's 422 lists the issues; in-process, say them too.
+                    Some(kuma_core::EditError::Invalid(issues)) => anyhow::anyhow!("validation failed:\n{}", issues.iter().map(|i| format!("  {:?} {}: {}", i.severity, i.path, i.message)).collect::<Vec<_>>().join("\n")),
+                    _ => e,
+                })?;
+                serde_json::to_value(applied)?
+            };
+            let strings = |k: &str| out[k].as_array().into_iter().flatten().filter_map(|v| v.as_str().map(String::from)).collect::<Vec<_>>();
+            eprintln!(
+                "kuma: {} ops{}, revision {} (diffed against {})",
+                out["ops"],
+                if out["applied"] == true { " applied" } else if *dry_run { " (dry run)" } else { "" },
+                out["revision"],
+                if out["base"] == "last-applied" { "the plan last applied" } else { "nothing: the project becomes the plan" }
+            );
+            report_diff(&strings("removed"), &strings("kept"), out["lost_markers"].as_u64().unwrap_or(0) as usize, "leaving out `--exact`");
+            println!("{}", serde_json::to_string_pretty(&out)?);
         }
         Cmd::NewOverlay { id, name, description, blueprint } => {
             let state = open(&cli)?;
@@ -739,7 +835,7 @@ async fn main() -> anyhow::Result<()> {
             // Absolute and through the daemon when one runs, as `add-media` does.
             let path = absolute(Path::new(path))?.to_string_lossy().into_owned();
             let (id, rev) = if let Some(url) = running_daemon(&cli).await {
-                let body = serde_json::json!({ "path": path, "id": id, "origin": "cli: import overlay" });
+                let body = serde_json::json!({ "path": path, "id": id, "origin": origin("import overlay") });
                 let v = kuma_mcp::client::Client::new(&url).post("/api/overlays/import", &body).await?;
                 (v["id"].as_str().unwrap_or_default().to_string(), v["revision"].as_u64().unwrap_or_default())
             } else {
@@ -808,7 +904,7 @@ async fn main() -> anyhow::Result<()> {
         Cmd::Library { action: Some(action), .. } => {
             // Through the daemon serving the project when one does, else the project is opened here.
             let daemon = running_daemon(&cli).await.map(|url| kuma_mcp::client::Client::new(&url));
-            let edit = |route: &'static str, path: PathBuf, origin: &'static str| (route, serde_json::json!({ "path": path, "origin": origin }));
+            let edit = |route: &'static str, path: PathBuf, what: &str| (route, serde_json::json!({ "path": path, "origin": origin(what) }));
             let (route, body) = match action {
                 LibraryCmd::List => {
                     let listed = match &daemon {
@@ -821,9 +917,9 @@ async fn main() -> anyhow::Result<()> {
                     }
                     return Ok(());
                 }
-                LibraryCmd::Add { path } => edit("/api/libraries", absolute(path)?, "cli: library add"),
+                LibraryCmd::Add { path } => edit("/api/libraries", absolute(path)?, "library add"),
                 // A path to the folder, or the name the project gives it.
-                LibraryCmd::Remove { path } => edit("/api/libraries/remove", if path.exists() { absolute(path)? } else { path.clone() }, "cli: library remove"),
+                LibraryCmd::Remove { path } => edit("/api/libraries/remove", if path.exists() { absolute(path)? } else { path.clone() }, "library remove"),
             };
             let (path, origin) = (body["path"].as_str().unwrap_or_default().to_string(), body["origin"].as_str().unwrap_or_default());
             let revision = match &daemon {
@@ -848,7 +944,7 @@ async fn main() -> anyhow::Result<()> {
             // than writing the file underneath it.
             let paths = paths.iter().map(|p| absolute(p)).collect::<anyhow::Result<Vec<_>>>()?;
             let v = if let Some(url) = running_daemon(&cli).await {
-                let body = serde_json::json!({ "paths": paths, "id": id, "parent": parent, "recursive": recursive, "origin": "cli: add media" });
+                let body = serde_json::json!({ "paths": paths, "id": id, "parent": parent, "recursive": recursive, "origin": origin("add media") });
                 kuma_mcp::client::Client::new(&url).post("/api/bin", &body).await?
             } else {
                 let state = open(&cli)?;
@@ -868,7 +964,7 @@ async fn main() -> anyhow::Result<()> {
         Cmd::Reprobe { bins } => {
             let bins = (!bins.is_empty()).then(|| bins.clone());
             let v = if let Some(url) = running_daemon(&cli).await {
-                let body = serde_json::json!({ "bins": bins, "origin": "cli: reprobe" });
+                let body = serde_json::json!({ "bins": bins, "origin": origin("reprobe") });
                 kuma_mcp::client::Client::new(&url).post("/api/bin/reprobe", &body).await?
             } else {
                 let state = open(&cli)?;
@@ -898,7 +994,7 @@ async fn main() -> anyhow::Result<()> {
                 Some(out) => out,
                 None => {
                     let state = open(&cli)?;
-                    let req = kuma_daemon::jobs::TranscribeRequest { bin: bin.clone(), clip: clip.clone(), id: id.clone(), replace: *replace, split: *split, options, origin: "cli: transcribe".into() };
+                    let req = kuma_daemon::jobs::TranscribeRequest { bin: bin.clone(), clip: clip.clone(), id: id.clone(), replace: *replace, split: *split, options, origin: origin("transcribe") };
                     tokio::task::spawn_blocking(move || kuma_daemon::jobs::transcribe(&state, &req, &|p, m| eprintln!("[{p:3}%] {m}"))).await??
                 }
             };
@@ -1143,7 +1239,7 @@ async fn resolve_daemon(cli: &Cli) -> anyhow::Result<(String, Option<String>)> {
     let url = format!("http://{}", cfg.bind);
     let wanted = cfg.project_file.clone();
     let note = match kuma_mcp::client::health(&url).await {
-        Some(h) if serves(&h, &wanted) => return Ok((url, None)),
+        Some(h) if serves(&h, &wanted) => return Ok((url.clone(), stale(&h, &url))),
         Some(h) => {
             let theirs = h["project"].as_str().unwrap_or("?");
             format!("This MCP server is connected to a PRIVATE daemon for {} because the daemon at {url} (the one behind the browser UI) serves a different project, {theirs}. Edits here will not show in that UI. To unify: run `kuma mcp-config --project {theirs}` and reconnect, or restart `kuma serve -p {}`.", wanted.display(), wanted.display())
@@ -1160,7 +1256,7 @@ async fn resolve_daemon(cli: &Cli) -> anyhow::Result<(String, Option<String>)> {
                         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
                         if let Some(h) = kuma_mcp::client::health(&url).await {
                             if serves(&h, &wanted) {
-                                return Ok((url, None));
+                                return Ok((url.clone(), stale(&h, &url)));
                             }
                             break;
                         }
@@ -1177,6 +1273,18 @@ async fn resolve_daemon(cli: &Cli) -> anyhow::Result<(String, Option<String>)> {
     Ok((format!("http://{addr}"), Some(format!("{note} Its own UI is at http://{addr}."))))
 }
 
+/// The note for an agent when the daemon this MCP server attaches to was started by another
+/// build of kuma: its tools may call routes that daemon lacks. None when the builds agree.
+fn stale(health: &serde_json::Value, url: &str) -> Option<String> {
+    let theirs = health["build"].as_str();
+    (theirs != Some(VERSION)).then(|| {
+        let theirs = theirs.map_or("an older kuma".to_string(), |b| format!("kuma {b}"));
+        let note = format!("The daemon at {url} runs {theirs}, this MCP server kuma {VERSION}: a tool may fail with \"no such route\". Restart that daemon (the editor window, or `kuma serve`) to run this build.");
+        tracing::warn!("{note}");
+        note
+    })
+}
+
 fn port_busy(addr: SocketAddr) -> bool {
     std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_millis(500)).is_ok()
 }
@@ -1184,6 +1292,17 @@ fn port_busy(addr: SocketAddr) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Attaching to a daemon another build started is said, so a tool failing for a route
+    /// that daemon lacks is not a mystery; one from before builds were reported is older.
+    #[test]
+    fn a_daemon_of_another_build_is_noted() {
+        let url = "http://127.0.0.1:7455";
+        assert_eq!(stale(&serde_json::json!({ "build": VERSION }), url), None);
+        let other = stale(&serde_json::json!({ "build": "0.1.0 (abc)" }), url).unwrap();
+        assert!(other.contains("kuma 0.1.0 (abc)") && other.contains(VERSION), "{other}");
+        assert!(stale(&serde_json::json!({}), url).unwrap().contains("an older kuma"));
+    }
 
     #[test]
     fn uptime_reads_in_one_unit() {

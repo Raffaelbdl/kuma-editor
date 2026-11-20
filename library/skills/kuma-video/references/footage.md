@@ -6,7 +6,7 @@ is also what makes it cheap: nothing is baked.
 ## Bringing it in
 
 - `add_media` with `paths` or a folder adds them in one edit and says what it skipped
-  (`probe_media` first to see a file's length, size, rate and audio). Keep originals under
+  (`add_media` with `dry_run` first to see a file's length, size, rate and audio). Keep originals under
   `media/` and never overwrite one a render or the preview is reading: write a new name and
   add that. If a file was replaced anyway, `reprobe_media` reads it again.
 - SVG is refused: rasterise it first (`rsvg-convert`, or ffmpeg where it has librsvg).

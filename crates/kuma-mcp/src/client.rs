@@ -56,6 +56,12 @@ impl Client {
         let text = r.text().await.unwrap_or_default();
         let body: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
         if !status.is_success() {
+            // A daemon from before `no_such_route` handed a route it lacked to the UI's file
+            // service, which answers a POST with an empty 405 and a GET with an empty 404:
+            // every route this client calls exists on a daemon as new as it.
+            if text.is_empty() && matches!(status, reqwest::StatusCode::METHOD_NOT_ALLOWED | reqwest::StatusCode::NOT_FOUND) {
+                anyhow::bail!("{status}: the daemon has no such route, so it is older than this kuma (another process started it); restart it (`kuma servers` lists it) and try again");
+            }
             let msg = body.get("error").and_then(Value::as_str).unwrap_or(if text.is_empty() { "request failed" } else { text.trim() });
             anyhow::bail!("{status}: {msg}{}", body.get("issues").map(|i| format!(" {i}")).unwrap_or_default());
         }

@@ -8,7 +8,7 @@ use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, Query, State};
 use axum::http::{header, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::{any, get, post};
 use axum::{Json, Router};
 use kuma_core::edit::EditError;
 use kuma_core::{BinSource, Project};
@@ -28,6 +28,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/health", get(health))
         .route("/api/project", get(get_project))
         .route("/api/project/patch", post(patch_project))
+        .route("/api/project/plan", post(apply_plan))
         .route("/api/project/undo", post(undo))
         .route("/api/project/redo", post(redo))
         .route("/api/project/validate", get(validate_project))
@@ -95,7 +96,11 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/overlay-entry/{id}", get(overlay_entry))
         .route("/overlay-entry/{id}/{*rest}", get(overlay_entry_file))
         .route("/blueprints/{id}/{*rest}", get(blueprint_static))
-        .route("/vendor/{*rest}", get(vendor));
+        .route("/vendor/{*rest}", get(vendor))
+        // An API route this daemon lacks is said so, as JSON, never handed to the UI's file
+        // service (an empty 405 for a POST): the usual reason is a client newer than the
+        // daemon, which another process started.
+        .route("/api/{*rest}", any(no_such_route));
     let ui = state.config.repo_root.join("ui/dist");
     if ui.is_dir() {
         app = app.fallback_service(ServeDir::new(ui).append_index_html_on_directories(true));
@@ -190,6 +195,7 @@ async fn health(State(st): S) -> Json<Value> {
     let revision = read(&st.project).revision;
     Json(json!({
         "ok": true,
+        "build": crate::BUILD,
         "project": st.config.project_file,
         "revision": revision,
         "hyperframes": st.baker.version,
@@ -251,6 +257,18 @@ async fn patch_project(State(st): S, Json(req): Json<PatchProject>) -> ApiResult
     })
     .await??;
     Ok(Json(out))
+}
+
+async fn no_such_route(uri: axum::http::Uri) -> ApiError {
+    ApiError(StatusCode::NOT_FOUND, json!({ "error": format!("no such route {}: this daemon is kuma {}, older than the client if it should have it; restart it", uri.path(), crate::BUILD), "build": crate::BUILD }))
+}
+
+/// Make the project the document a script wrote (`plans.rs`): diffed against the live one
+/// under the edit lock, three-way against the plan last applied from that path, and applied
+/// as one edit.
+async fn apply_plan(State(st): S, Json(req): Json<crate::plans::PlanRequest>) -> ApiResult {
+    let applied = blocking(move || crate::plans::apply(&st, &req)).await?.map_err(edit_or_bad_request)?;
+    Ok(Json(serde_json::to_value(applied).map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, e))?))
 }
 
 /// The JSON Patch in the file at `path`, which must be inside the project: relative to it,

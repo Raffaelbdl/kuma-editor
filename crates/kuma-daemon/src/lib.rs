@@ -16,6 +16,7 @@ pub mod libraries;
 pub mod markers;
 pub mod media;
 pub mod overlays;
+pub mod plans;
 pub mod preview;
 pub mod proxies;
 pub mod running;
@@ -25,6 +26,11 @@ pub mod state;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+
+/// This build of kuma, `0.1.0 (<commit>)`: what `kuma --version` prints and `/api/health`
+/// reports. A client attaching to a daemon another process started compares it with its
+/// own: a daemon older than its MCP server lacks routes the server's tools call.
+pub const BUILD: &str = concat!(env!("CARGO_PKG_VERSION"), " (", env!("KUMA_GIT"), ")");
 
 pub use state::{add_missing, copy_tree, user_library, AppState, Config, Libraries, LibrarySource};
 

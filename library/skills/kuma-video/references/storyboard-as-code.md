@@ -2,13 +2,12 @@
 
 Past a few dozen clips, hand-written patches stop scaling. Retiming a scene means editing
 every clip after it, and nobody can review a 100 KB patch. Keep the video as a program that
-generates the project, and let a diff decide what to send. It pays off most for a video
+generates the project, and let kuma work out what to change. It pays off most for a video
 built of many overlays; a footage edit of a few dozen cuts is often simpler by hand.
 
 ```
-assets/dsl.py         Chapter, bands, one helper per overlay component, build(), patch()
+assets/dsl.py         Chapter, bands, one helper per overlay component, build()
 assets/storyboard.py  the video, scene by scene: texts, positions, times; writes build/project.json
-patches/diff.json     generated: `kuma diff build/project.json`, the patch to apply
 ```
 
 ## Before the first scene
@@ -36,7 +35,7 @@ patches/diff.json     generated: `kuma diff build/project.json`, the patch to ap
   tracks `<cid>_<kind><band>_<lane>`. The stacking then follows the band, whatever order the
   storyboard wrote things in.
 - The script writes the whole project it means (every entry, every sequence) to a file.
-  It does not read the live one and does not work out patches: `kuma diff` does.
+  It does not read the live one and does not work out patches: `apply_plan` does.
 - A `sound(name, t)` helper that also knows each effect's length and default gain keeps the
   effects mix in one table.
 
@@ -72,44 +71,40 @@ Anything computed from the video itself (a chapter strip, a progress bar's marks
 clips on 36 tracks") is computed last, from the built data or from the project on disk.
 Re-run the storyboard after applying, so the counts include themselves.
 
-## The diff
+## Applying a plan
 
-`kuma -p project.kuma.json diff build/project.json > patches/diff.json` prints the JSON
-Patch that makes the stored project the one the script wrote, and on stderr the number of
-operations and the revision it read: the `base_revision` to send. Do not write a diff of
-your own; the traps are all in this one already.
+`apply_plan` with `path: "build/project.json"` (or `kuma -p project.kuma.json apply
+build/project.json`) makes the project the document the script wrote, as one undoable edit,
+three-way against the plan last applied from that path, which kuma keeps. Do not write a diff
+of your own; the traps are all in this one already.
 
+- **What a person changed in the editor since stays.** Clips and tracks are matched by id,
+  markers by time. Where the script and a person changed the same value, the person's stays
+  and `kept` lists the path, on every apply until one side gives way: fold it into the script, or ask. The first plan from a path has
+  nothing to merge with (`base: "none"`) and makes the project exactly the script's; `exact`
+  forces that, reverting every fade, mute, gain and marker set in the editor.
 - Both documents are compared **as kuma stores them**, so a field at its default that the
   script left out or spelled out (`"speed": 1`, a key's `ease: "linear"`) is no difference.
   `kuma canonical` prints that form, to read what the script's document comes to.
 - **`meta` and `revision` are kuma's**: an entry the script gives no `meta` for keeps the
   probed one. Add media with `add_media` once; the script then only names the entry.
-- **Entries the script does not write are removed**, and stderr names them. `--keep` leaves
-  them: use it while a person, or another script, also adds entries.
+- **Entries the script does not write are removed**, and `removed` names them. `keep`
+  leaves them: use it while a person, or another script, also adds entries. With it,
+  `unused_entries` lists what no clip places, and what is placed only where the master
+  never reaches.
+- **Apply again after a build: 0 ops** (`applied: false`) means the script and the project
+  agree. A refused plan changes nothing and lists the validator's issues.
 - A var written at its manifest default is a difference once (vars are stored as given),
   and none after it is applied.
 - Times are compared exactly. Round what the script computes (`round(t, 6)`), keep a clip
   inside its source (`in + (end − start) × speed ≤` the duration, floored to a frame for an
   effect cut to its length), and a music bed inside the sequence, or `validate_project`
   warns on every build.
-
-## Applying through MCP
-
-- Apply `patches/diff.json` with `apply_edits` and `patch_path`: the daemon reads the
-  file, so the whole patch lands in one atomic, undoable edit, exactly as the diff wrote
-  it. Pass the `base_revision` the diff printed. The answer's `ops` says how many
-  operations were applied.
-- For a small change, send targeted ops (`…/clips/<j>/volume`) inline rather than a whole
-  track.
-- Then **re-run the diff: it must print 0 ops**, and `validate_project` must be clean.
-- If the revision moved since you last looked, someone else edited. Read what the diff
-  would change and make sure every op is yours before sending it.
-- **A person editing in the editor between your turns** is the usual case, not the
-  exception. Before applying, diff the live project against the last one you wrote; fold
-  each of their changes into the script (a moved clip, a retimed title, a gain), then build
-  and apply. Never regenerate over them.
-- **Stale entries**: without `--keep` the diff removes what the script no longer makes;
-  with it, `unused_entries` lists what no clip places, and what is placed only where the
-  master never reaches.
+- **Fold into the script any change it should own**: your own targeted `apply_edits`
+  (`…/clips/<j>/volume`), or a person's moved clip or retimed title, so a later rewrite of
+  that scene starts from it. A person editing between your turns is the usual case.
+- `kuma diff --base <document> build/project.json` prints the same patch without applying
+  it, for a base you keep yourself; a conflict it reports is not reported again once you
+  copy the document over that base.
 - Before a sweeping change (a new time model, a shared helper), copy `assets/` and
   `overlays/` to scratch, so you can compare or roll back.

@@ -19,7 +19,7 @@ use crate::history;
 
 /// A marker's id: its sequence and its time to the millisecond, `master@8.600`.
 pub fn marker_id(sequence: &str, t: f64) -> String {
-    format!("{sequence}@{t:.3}")
+    format!("{sequence}@{}", Marker::time_key(t))
 }
 
 /// `agent`, `user` or `other`: who left `m`, read off its origin as an edit's author is. A

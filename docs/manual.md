@@ -482,22 +482,25 @@ claude mcp add --scope user    kuma -- kuma mcp --project /abs/path.kuma.json  #
 ```
 
 `kuma mcp` starts the daemon in-process if none is running on the port, so the browser UI
-and the agent always share one state. Tools: `timeline_guide`, `get_project`, `get_schema`, `apply_edits`,
-`undo`, `redo`, `list_markers`, `validate_project`, `list_presets`, `add_media`, `probe_media`, `reprobe_media`, `unused_entries`,
-`transcribe`, **`sample_frames`**, `measure_audio`, `measure_media`, `measure_color`, `sync_audio`, `normalize_audio`, `bake_overlay`, `render`, `export_subtitles`, `export_chapters`, `job_status`, `cancel_job`,
+and the agent always share one state. Tools: `timeline_guide`, `get_project`, `get_schema`, `apply_edits`, `apply_plan`,
+`undo`, `redo`, `list_markers`, `validate_project`, `list_export_presets`, `add_media` (`dry_run` probes without adding), `reprobe_media`, `unused_entries`,
+`transcribe`, **`sample_frames`**, `measure_audio`, `measure_media`, `measure_color`, `sync_audio`, `normalize_audio`, `render`, `export_subtitles`, `export_chapters`, `job_status`, `cancel_job`,
 `prune_cache`, `health`, for libraries `list_libraries`, `add_library`, `remove_library`,
-`list_design_systems`, `apply_design_system`, `list_effect_presets`, and for overlays
+`apply_design_system` (`list_libraries` lists the design systems), `list_effect_presets`, and for overlays
 `overlay_guide`, `new_overlay`, `check_overlay`, `import_overlay`, `make_overlay_unique`,
 `list_blueprints`, `add_blueprint`, `save_blueprint`. An agent scaffolds an overlay with `new_overlay`, checks it with
 `check_overlay` and adds it with `import_overlay`; `sample_frames` with `overlay` (a bin id)
-shows one entry on its own, and with `times` and `tile` a contact sheet of chosen moments.
+shows one entry on its own, `entries` several at the same times (a row each on the sheet),
+and with `times` and `tile` a contact sheet of chosen moments.
 `apply_edits` takes a patch inline or, with `patch_path`, from a file in the project, so a
 script's patch of any size is one exact edit. `add_media` takes a list of paths or a folder
 (its media files, by extension; `recursive` for subfolders) as one edit and says what it
 skipped; `reprobe_media` reads replaced files again and writes only what changed;
 `unused_entries` lists entries no clip places, and those placed only where the master never
-reaches. A script that builds the whole project gets its patch
-from `kuma diff plan.json`; one that diffs its own document against
+reaches. A script that builds the whole project writes it to a file and `apply_plan` (or
+`kuma apply plan.json`, `POST /api/project/plan`) makes the project that document as one
+edit, diffed under the edit lock and three-way against the plan last applied from that path
+(kept in `.kuma/plans/`, never pruned). One that diffs its own document against
 the stored one puts its own in kuma's form first — `kuma canonical plan.json`, or
 `POST /api/project/canonical` to the daemon, which answers the text the file would hold —
 since kuma leaves out every field at its default (a keyframe's `ease: "linear"`). `measure_audio` meters a sequence's sound (EBU
@@ -518,7 +521,7 @@ so its region is neutral or looks like a region elsewhere, measuring the clip wi
 grade on a copy of the project and answering the patch that writes the result
 (`POST /api/color/measure`, `kuma_core::color`). `sync_audio` and `normalize_audio` measure,
 then make one edit (*Sound recorded apart*, below). The tools that start a job (`render`, `measure_audio`, `measure_media`, `measure_color`, `sync_audio`, `normalize_audio`, `transcribe`,
-`bake_overlay`, `sample_frames`) wait `wait_seconds` and then return it still running, with
+`sample_frames`) wait `wait_seconds` and then return it still running, with
 its id; `job_status` with that id and its own `wait_seconds` waits again, in calls as short
 as the client needs (Claude Code moves a call that runs past 120 s to the background), and
 without an id lists the jobs. While a tool waits it sends MCP progress notifications when the
@@ -606,6 +609,7 @@ kuma render --preset youtube-1080p         # bakes overlays, compiles, renders w
 kuma sample 12.0 14.0 --count 4 --rect 400,300,800,400
 kuma sample 0 3 --count 6 --overlay paris          # one overlay entry on its own, no placement (--backdrop, --duration, --frame 1080x1920)
 kuma sample --times 3.2,3.8,41.7,42.3 --tile      # chosen moments, and one captioned contact sheet of them
+kuma sample --times 0.5,1.5,3 --tile --overlay title-a,title-b,title-c   # variants side by side: a row per entry
 kuma sample 0 60 --count 12 --no-overlays          # footage only: no overlay is baked first
 kuma measure-audio                         # loudness (LUFS), true peak, per chapter, loudest moments, silences
 kuma measure-audio --solo va,vb            # the same with only those tracks heard (nested ones too); --mute bed leaves one out
@@ -627,7 +631,9 @@ kuma new-overlay my-tag                    # a contract-abiding skeleton in the 
 kuma import-overlay overlays/my-tag        # add that folder to the bin (--id)
 kuma lint                                  # every blueprint and every folder the bin uses (exit 1 on errors); `kuma lint overlays/my-tag` or `kuma lint location-tag` for one
 kuma validate | thumbs | library | doctor  # validate also names text the entries' fonts will not draw
-kuma diff plan.json > patches/diff.json    # the JSON Patch that makes the project the one a script wrote (`--keep`: leave entries it lacks); ops and revision on stderr
+kuma apply build/plan.json                 # make the project the document a script wrote, as one edit, keeping the editor's changes since the last plan (`--keep`, `--exact`, `--dry-run`, `--note`); JSON on stdout
+kuma wait 12                               # wait for daemon job 12 (one an MCP tool started) to end: progress on stderr, the job on stdout, exit 1 unless done; Ctrl-C stops waiting, not the job
+kuma diff plan.json > patches/diff.json    # the JSON Patch that makes the project the one a script wrote (`--keep`: leave entries it lacks; `--base <last applied>`: three-way, keep the editor's changes); ops and revision on stderr
 kuma canonical plan.json                   # a project document (any version; `-` for stdin) in the form kuma stores it, to diff against
 ```
 

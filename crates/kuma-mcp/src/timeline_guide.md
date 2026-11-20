@@ -8,10 +8,9 @@ draw under, a still or a thumbnail, it draws itself, from a picture in its own f
 you read, so you never overwrite a human edit made meanwhile. Every edit is validated atomically and
 undoable; label your edits with `note`. A patch a script wrote goes in a file in the project, and
 `apply_edits` with `patch_path` applies it in one call, whatever its size. A script that builds the
-whole project does not diff it itself: `kuma -p <project> diff plan.json` prints the patch between the
-stored project and the script's, compared as kuma stores them (it leaves out every field at its
-default, a key's `ease: "linear"`), and the revision to send it at; `kuma canonical plan.json`
-prints that form.
+whole project writes it to a file and calls `apply_plan` (`kuma apply` on the command line), which
+compares documents as kuma stores them: a field at its default is no difference, and `kuma canonical
+plan.json` prints that form.
 
 Everything placeable lives in `bin`, keyed by a short id: media files (`{"source": {"path": …}}`),
 configured overlays (`{"source": {"overlay": "overlays/<name>", "vars": {…}}}`), colours, and *sequences*
@@ -143,7 +142,7 @@ If the project directory holds a `design-system/` folder, read `design-system/DE
 authoring or restyling an overlay and take its colours, type, geometry and motion from there;
 `tokens.css` beside it is the same values as a `:root` block to copy into an overlay. Nothing is
 injected at runtime — a design system is a document, and applying it is your edit.
-`list_design_systems` says what the project's libraries offer and which one it carries;
+`list_libraries` says what design systems the project's libraries offer and which one it carries;
 `apply_design_system` copies one in.
 
 When the user names a library to use ("use `/path/to/house-style`"), set it up before the first
@@ -187,15 +186,16 @@ unchanged one is cached. Changed overlays bake side by side, so the wait is the 
 not their sum; but a clip bakes in one process for its whole length, and any change to it rebakes
 all of it. So **compose many short overlays rather than one long one**: a title per scene, a callout
 per point, subtitles in stretches. While you are drawing, sample the overlay entry on its own (seconds),
-and sample the sequence once it looks right. A sample still baking after `wait_seconds` returns
+several variants with `entries`, and sample the sequence once it looks right. A sample still baking after `wait_seconds` returns
 its job id and what it is baking; call `sample_frames` with `job` set to that id to keep waiting.
 Asking again with the same arguments costs nothing extra either: an overlay already baking is
 waited for, not baked twice.
 
-Long jobs (`render`, `measure_audio`, `transcribe`, `bake_overlay`) likewise wait `wait_seconds`, then
+Long jobs (`render`, `measure_audio`, `transcribe`) likewise wait `wait_seconds`, then
 return the job still running with its id. Keep waiting with `job_status` (`id`, `wait_seconds` about
 100): a client may move a longer call to the background (Claude Code does at 120 s), where it still
-finishes. `job_status` without an id lists the jobs, to find one again.
+finishes; with a shell, `kuma -p <project> wait <id>` waits for one until it ends. `job_status`
+without an id lists the jobs, to find one again.
 
 Sound: `measure_audio` renders a sequence's sound through the real graph (no overlay is baked) and
 meters it: integrated loudness (LUFS), range and true peak (dBTP), overall and per chapter (each
@@ -245,3 +245,30 @@ the text unless `output`/`write` asks for a file.
 
 Vertical (9:16) is only
 `width`/`height`: patch them to 1080×1920 (or swap them) and every preset renders portrait.
+
+## Tools in detail
+
+What the sections above do not say.
+
+- `add_media`: a named file that cannot be added (missing, unreadable, an SVG) refuses the whole
+  call; `id` names the entry when adding one file; an overlay folder of the project is imported.
+- `reprobe_media` answers `changed` (per entry, each field `from`/`to`), `unchanged` and `failed`;
+  a kind change that breaks a placement (an `in` on what is now a still) is refused whole.
+- `transcribe` and `sync_audio` take no `base_revision`: they measure for minutes, and their patch
+  is composed against the project as it is when it lands.
+- `measure_color`'s `stats`: mean R'G'B' (0..1), luma min/p5/median/p95/max (×100 reads as IRE),
+  `saturation`, and the share of pixels `clipped` (a channel at full scale) and `crushed` (black).
+  `balance` is warm above 0 and magenta above 0, so a grade of minus it neutralises the cast. `match`
+  measures the clip without its grade and answers `before`, the predicted `after` and `reached`
+  (false when the grade's ranges or clipping hold it back).
+- `sync_audio`: `confidence` is typically 2.5 or more; each pair answers `offset` (seconds into the
+  audio at the camera's 0); a pair synced before is moved, not placed twice; `dry_run` only measures.
+- `normalize_audio` measures again until within 0.05 LU; a placement's own `volume` and fades still
+  apply on top.
+- `export_subtitles` never writes an empty file, and warns of subtitles entries nothing places and of
+  two showing at once. `export_chapters` warns when the first is not at 0:00, there are fewer than 3,
+  or one is under 10 s. Markers are never chapters.
+- Effect presets are not applied by name: write a preset's `effects` onto a clip with `apply_edits`,
+  replacing each `"$…"` value by the arithmetic it spells (param names, the project's `width` and
+  `height`, numbers, + - * / and parentheses), with the params' defaults for any you leave alone;
+  inside an `mlt` effect's `properties` the result is a string.

@@ -11,21 +11,22 @@
 - **Encoding.**
   - `draft`: x264 ultrafast, CRF 26. For review.
   - `youtube-1080p`: x264 slow, CRF 18. The final.
-  - `youtube-nvenc`: NVENC p6, CQ 21, when `list_presets` says it is `available`. Much
+  - `youtube-nvenc`: NVENC p6, CQ 21, when `list_export_presets` says it is `available`. Much
     faster than x264 slow, for about a third more bytes at matching quality.
   - `threads`, `quality` and `speed` override the preset for one render.
 - Renders queue one at a time. Editing the project while one encodes is safe: it compiled
   its graph when it started. Overwriting a media file it reads is not.
 - A long `render`, `measure_audio` or `transcribe` comes back with its job id when the wait
   runs out (Claude Code also moves any call past 120 s to the background, where it still
-  finishes). Keep waiting with `job_status`, its `id` and a `wait_seconds` of about 100;
-  `job_status` without an id lists the jobs.
+  finishes). `job_status` without an id lists the jobs.
 
 - **At length**, on a 12-core laptop with an NVIDIA GPU, 52 minutes of 1080p30: a
   whole-project bake 10 to 15 minutes, `measure_audio` about 6, `youtube-nvenc` about 17
   (some 90 frames a second). Render a short `range` first to learn your own figures.
-- **Waiting on a long job**: one `job_status` with `wait_seconds` at a time, or a
-  background shell command that ends when the job does. Never a tight polling loop.
+- **Waiting on a long job**: start it from the shell in the background (`kuma render …`,
+  `kuma transcribe …` run on the daemon, in the editor's queue), or `kuma wait <id>` for one
+  an MCP tool started; `job_status` with `wait_seconds` (about 100) is for a short wait.
+  Never a tight polling loop.
   `cancel_job` stops a render, a bake or a sample; killing the renderer by hand does not,
   the job starts its next bake.
 
@@ -44,7 +45,7 @@
 Before the final render:
 ```
 validate_project                                  # no issues, no font warnings
-python3 <your diff script> > patches/diff.json    # 0 ops, if you work as code
+apply_plan path=build/project.json               # 0 ops, if you work as code
 measure_audio                                     # ≈ -14…-16 LUFS, peak ≤ -1.5 dBTP, only the silences you meant
 sample_frames times=[…] tile=true                 # every cut ±0.3 s, each key moment, one sheet
 python3 <skill>/scripts/reading_audit.py          # if it shows text: none too short, few long holds

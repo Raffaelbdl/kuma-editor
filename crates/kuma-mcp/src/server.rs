@@ -27,7 +27,8 @@ const INSTRUCTIONS: &str = r#"kuma-editor: a hybrid video editor. **Call `timeli
 `overlay_guide` before writing an overlay; these instructions are only what must never be missed.
 
 - The project is JSON (`get_project`, schema from `get_schema`). Edit with `apply_edits` (JSON Patch),
-  passing the `base_revision` you read and a `note`. Every edit is validated atomically and undoable.
+  with `base_revision` and a `note`, or `apply_plan` a whole project a script wrote. Every edit is
+  validated atomically and undoable.
 - Times are seconds (f64); a clip's `end` is exclusive; `fps` is rational.
 - Everything placeable is a `bin` entry (media, overlays, colours, sequences). A clip is a placement:
   `bin`, `start`, `end`, `in`, `speed`, `effects`, never a source. What is shown lives on the entry.
@@ -234,7 +235,7 @@ fn job_summaries(all: &[Value]) -> Value {
 /// A job as a tool returns it, with how to keep waiting when it has not finished.
 fn resumable(mut j: Value) -> Value {
     if let (false, Some(id)) = (client::is_final(&j), j["id"].as_u64()) {
-        j["next"] = json!(format!("still {}: call job_status with id {id} and wait_seconds (up to about 100) to keep waiting, or cancel_job", j["state"].as_str().unwrap_or("running")));
+        j["next"] = json!(format!("still {}: call job_status with id {id} and wait_seconds (up to about 100) to keep waiting; for a long one (a render, a transcription) run `kuma wait {id}` as a background shell command instead, which ends when the job does; or cancel_job", j["state"].as_str().unwrap_or("running")));
     }
     j
 }
@@ -290,6 +291,29 @@ pub struct ApplyEdits {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct ApplyPlan {
+    /// The plan: the whole project document your script wrote, in a file inside the
+    /// project, e.g. `build/plan.json`.
+    pub path: String,
+    /// Leave bin entries the plan does not have, rather than remove them.
+    #[serde(default)]
+    pub keep: Option<bool>,
+    /// Make the project exactly the plan: ignore the plan last applied from this path, so
+    /// what the person changed in the editor since goes back too. Rarely what you want.
+    #[serde(default)]
+    pub exact: Option<bool>,
+    /// Say what would change, with the patch, and change nothing.
+    #[serde(default)]
+    pub dry_run: Option<bool>,
+    /// Short human-readable label for the undo history, e.g. "chapter 3 b-roll".
+    #[serde(default)]
+    pub note: Option<String>,
+    /// Ids of the markers (from `list_markers`) this edit answers, as `apply_edits` takes them.
+    #[serde(default)]
+    pub answers: Option<Vec<String>>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct NewOverlay {
     /// Folder name under `overlays/`: `[A-Za-z_][A-Za-z0-9_-]*`.
     pub id: String,
@@ -339,7 +363,7 @@ pub struct LibraryArg {
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct ApplyDesignSystem {
-    /// A design system id, as `list_design_systems` gives it.
+    /// A design system id, as `list_libraries` lists them.
     pub id: String,
     /// Replace the design system the project already carries.
     #[serde(default)]
@@ -395,8 +419,7 @@ pub struct SampleFrames {
     #[serde(default)]
     pub count: Option<usize>,
     /// Frames at exactly these times (seconds, up to 32) instead of `t0`/`t1`/`count`:
-    /// every cut and a moment either side, the key beat of each scene. Each bakes only the
-    /// overlays it shows.
+    /// every cut and a moment either side, the key beat of each scene.
     #[serde(default)]
     pub times: Option<Vec<f64>>,
     /// Return the frames as one contact sheet, left to right then down, each captioned with
@@ -428,22 +451,24 @@ pub struct SampleFrames {
     /// window among several.
     #[serde(default)]
     pub before: Option<Value>,
-    /// Bin id of an overlay **entry** to sample on its own, with no placement — the way to
-    /// check an animation you are authoring before it is in the cut. `t0`/`t1` are then
-    /// seconds into the overlay. Not combinable with `sequence`.
+    /// Bin id of an overlay **entry** to sample on its own, with no placement; `t0`/`t1`
+    /// are then seconds into the overlay. Not with `sequence`.
     #[serde(default)]
     pub overlay: Option<String>,
-    /// With `overlay`: how long to run it for. The manifest's `duration_default` when
-    /// omitted — an entry has no length until a clip gives it one.
+    /// Several overlay entries instead of one, at the same times: variants of a design side
+    /// by side, in one call: one sheet with a row per entry (`tile` defaults to true here).
+    /// At most 32 frames in all (entries × times).
+    #[serde(default)]
+    pub entries: Option<Vec<String>>,
+    /// With `overlay`: how long to run it for (the manifest's `duration_default` by default).
     #[serde(default)]
     pub duration: Option<f64>,
-    /// With `overlay`: the colour behind it (`#102030`), or `transparent` for straight
-    /// alpha. Black by default — an overlay over nothing is not a picture of anything.
+    /// With `overlay`: the colour behind it (`#102030`, black by default), or `transparent`
+    /// for straight alpha.
     #[serde(default)]
     pub backdrop: Option<String>,
-    /// With `overlay`: `[width, height]` to render it into instead of the project's frame.
-    /// An overlay must look right at 1920×1080 and 1080×1920 alike; this is how to check
-    /// the other way round without editing the project.
+    /// With `overlay`: `[width, height]` to render it into instead of the project's frame,
+    /// to check the other orientation without editing the project.
     #[serde(default)]
     pub frame: Option<(u32, u32)>,
     /// How long to wait for the frames, seconds (default 90). A sample that is still
@@ -473,18 +498,8 @@ pub struct PruneCache {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
-pub struct BakeOverlay {
-    /// Clip ids to bake; all overlay clips when omitted.
-    #[serde(default)]
-    pub clips: Option<Vec<String>>,
-    /// Seconds to wait before returning the job id instead (default 1800).
-    #[serde(default)]
-    pub wait_seconds: Option<u64>,
-}
-
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct Render {
-    /// Export preset id (see `list_presets`). Default `youtube-1080p`.
+    /// Export preset id (see `list_export_presets`). Default `youtube-1080p`.
     #[serde(default)]
     pub preset: Option<String>,
     /// Output path, relative to the project directory. Defaults to `renders/<name>-<preset>.<ext>`.
@@ -500,7 +515,7 @@ pub struct Render {
     /// same however many; fewer leaves the machine responsive.
     #[serde(default)]
     pub threads: Option<usize>,
-    /// Rate factor within the preset's `quality` (see `list_presets`): lower is better and
+    /// Rate factor within the preset's `quality` (see `list_export_presets`): lower is better and
     /// larger. The preset's own when omitted.
     #[serde(default)]
     pub quality: Option<u32>,
@@ -704,6 +719,10 @@ pub struct AddMedia {
     pub parent: Option<String>,
     #[serde(default)]
     pub base_revision: Option<u64>,
+    /// Probe the named files (`path`, `paths`) and say what each is — kind, duration, size,
+    /// fps, audio — adding nothing: to decide what to add, or where a clip can read to.
+    #[serde(default)]
+    pub dry_run: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -757,11 +776,6 @@ pub struct Transcribe {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
-pub struct PathArg {
-    pub path: String,
-}
-
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct AddFont {
     /// A `.ttf`, `.otf`, `.woff` or `.woff2` file, or a `.ttc`/`.otc` collection, relative to the project or absolute.
     pub path: String,
@@ -807,6 +821,13 @@ impl KumaServer {
         self.post("/api/project/patch", &body).await
     }
 
+    #[tool(description = "Make the project the document your script wrote (`path`, a file in the project), as one undoable edit: kuma diffs it against the live project, validates and applies it — no `kuma diff`, patch file or base_revision to carry. Three-way against the plan last applied from that path (kuma keeps it), so what the person changed in the editor since stays; where both of you changed one value theirs stays and `kept` lists it. Returns `revision`, `ops`, `applied`, `kept`, `removed` (bin entries the plan lacks; `keep` leaves them) and `warnings`. Refused whole, with the validator's issues, if the result is invalid. `dry_run` returns the patch and changes nothing.")]
+    async fn apply_plan(&self, Parameters(p): Parameters<ApplyPlan>) -> Result<CallToolResult, McpError> {
+        let origin = format!("mcp: {}", p.note.unwrap_or_else(|| format!("apply {}", p.path)));
+        let body = json!({ "path": p.path, "keep": p.keep.unwrap_or(false), "exact": p.exact.unwrap_or(false), "dry_run": p.dry_run.unwrap_or(false), "origin": origin, "answers": p.answers.unwrap_or_default() });
+        self.post("/api/project/plan", &body).await
+    }
+
     #[tool(description = "The markers of every sequence (the master's first), each with an id (`<sequence>@<t>`), its sequence, number, time, label, who left it (`origin`, `author`: `user`, `agent` or `other`) and whether a revision answered it (`done`, `done_by`). The ones a person left with a comment are requests for you: `waiting` until answered — answer them by passing their ids in `apply_edits`' `answers`. Markers with `author: \"agent\"` are yours (notes, TODOs, zone edges — two markers for a zone; the daemon marks the ones your edits add): never answer your own.")]
     async fn list_markers(&self) -> Result<CallToolResult, McpError> {
         self.get("/api/markers").await
@@ -847,10 +868,11 @@ impl KumaServer {
         self.post("/api/overlays/import", &body).await
     }
 
-    #[tool(description = "The asset libraries this project reads, lowest precedence first: the user's own (`user`, every project's), the starter set standing in for it, the ones this project names (`project`, from its `libraries`), and KUMA_LIBRARY's. Each with what it holds — blueprints, effect presets, design systems, font families — and `docs`: the files it carries about itself (README.md, CLAUDE.md…), to read before using it.")]
+    #[tool(description = "The asset libraries this project reads, lowest precedence first: the user's own (`user`, every project's), the starter set standing in for it, the ones this project names (`project`, from its `libraries`), and KUMA_LIBRARY's. Each with what it holds — blueprints, effect presets, design systems, font families — and `docs`: the files it carries about itself (README.md, CLAUDE.md…), to read before using it. Also `design_systems`, the ones they offer (id, title, library, the `DESIGN.md` to read), and `design_system`, the one this project carries in its `design-system/`, if any.")]
     async fn list_libraries(&self) -> Result<CallToolResult, McpError> {
         let out = self.client.get("/api/libraries?detail=true").await.map_err(err)?;
-        Ok(ok_json(&out["libraries"]))
+        let systems = self.client.get("/api/design-systems").await.map_err(err)?;
+        Ok(ok_json(&json!({ "libraries": out["libraries"], "design_systems": systems["design_systems"], "design_system": systems["project"] })))
     }
 
     #[tool(description = "Use a library in this project — a folder holding any of `blueprints/`, `presets/`, `fonts/`, `design-systems/` (its `blueprints/` folder names it too) — as one edit; nothing is copied and no other project sees it. Returns the `library` with its `contents`, among them the `docs` to read next, and the `revision` (null when the project already used it). When the user names a library for a video, call this first.")]
@@ -864,17 +886,12 @@ impl KumaServer {
         Ok(ok_json(&json!({ "revision": out["revision"] })))
     }
 
-    #[tool(description = "The design systems this project's libraries offer (`DESIGN.md` + `tokens.css`): id, title, library and the `DESIGN.md` to read, and which one, if any, the project carries in its `design-system/`.")]
-    async fn list_design_systems(&self) -> Result<CallToolResult, McpError> {
-        self.get("/api/design-systems").await
-    }
-
     #[tool(description = "Copy a design system into the project's `design-system/`, where you read it from: `DESIGN.md` says how the videos look and move, `tokens.css` holds the `:root` block overlays copy. Nothing applies it for you — it is a document, and following it is your edits to overlays and vars. Refused over the one the project carries unless `force`. Not an edit of the document.")]
     async fn apply_design_system(&self, Parameters(p): Parameters<ApplyDesignSystem>) -> Result<CallToolResult, McpError> {
         self.post(&format!("/api/design-systems/{}", p.id), &json!({ "force": p.force })).await
     }
 
-    #[tool(description = "The effect presets this project can use, from its libraries and its own `presets/`: id, name, description, the `library` it comes from (absent for the project's), typed `params`, and the `effects` it expands to. A preset is not applied by name: write its `effects` onto a clip with `apply_edits`, replacing each `\"$…\"` value by the arithmetic it spells (param names, the project's `width` and `height`, numbers, + - * / and parentheses), with the params' defaults for any you leave alone; inside an `mlt` effect's `properties` the result is a string.")]
+    #[tool(description = "The effect presets this project can use, from its libraries and its own `presets/`, with typed `params` and the `effects` each expands to. A preset is not applied by name: write its `effects` onto a clip with `apply_edits`, working out each `\"$…\"` value; how, in `timeline_guide`.")]
     async fn list_effect_presets(&self) -> Result<CallToolResult, McpError> {
         self.get("/api/presets/effects").await
     }
@@ -900,22 +917,26 @@ impl KumaServer {
     }
 
     #[tool(description = "List export presets (YouTube 1080p/4K, YouTube on the NVIDIA GPU, draft, VP9, ProRes); a 9:16 project renders vertical with any. Each has `quality` {min, max, default} and `speed` {options fastest first, default} that `render` may override (null where the codec has none), and `unavailable`: why this machine cannot use it, else null.")]
-    async fn list_presets(&self) -> Result<CallToolResult, McpError> {
+    async fn list_export_presets(&self) -> Result<CallToolResult, McpError> {
         self.get("/api/presets").await
     }
 
-    #[tool(description = "Probe a media file with ffprobe: duration, size, fps, audio. Does not change the project.")]
-    async fn probe_media(&self, Parameters(p): Parameters<PathArg>) -> Result<CallToolResult, McpError> {
-        Ok(ok_json(&self.client.get_query("/api/media/probe", &[("path", &p.path)]).await.map_err(err)?))
-    }
-
-    #[tool(description = "Probe media and add it to the project bin, as one undoable edit: a file (`path`), a list (`paths`), or a folder, which adds the media files directly in it (with `recursive`, its subfolders' too) and returns the rest as `skipped`, with why. A file a folder holds that is already in the bin is skipped, so adding a folder again adds what is new. Ids are minted from the file names, never colliding; `id` names the entry when adding one file. A named file that cannot be added (missing, unreadable, an SVG) refuses the whole call. One overlay folder of the project is imported instead. Returns `ids` (and `id` when there is one) to reference from clips.")]
+    #[tool(description = "Probe media and add it to the bin as one undoable edit: a file (`path`), a list (`paths`) or a folder (its media files; `recursive` for subfolders). What is skipped is said, and a file already in the bin is skipped, so adding a folder again adds what is new. Returns `ids` to reference from clips. `dry_run` probes the files and adds nothing. More in `timeline_guide`.")]
     async fn add_media(&self, Parameters(p): Parameters<AddMedia>) -> Result<CallToolResult, McpError> {
+        if p.dry_run.unwrap_or(false) {
+            let mut probed = Vec::new();
+            for path in p.path.iter().chain(p.paths.iter().flatten()) {
+                let mut one = self.client.get_query("/api/media/probe", &[("path", path)]).await.map_err(|e| err(anyhow::anyhow!("`{path}`: {e:#} (a dry run probes files, not folders)")))?;
+                one["path"] = json!(path);
+                probed.push(one);
+            }
+            return Ok(ok_json(&json!({ "probed": probed })));
+        }
         let body = json!({ "path": p.path, "paths": p.paths.unwrap_or_default(), "recursive": p.recursive.unwrap_or(false), "id": p.id, "parent": p.parent, "base_revision": p.base_revision, "origin": "mcp: add media" });
         self.post("/api/bin", &body).await
     }
 
-    #[tool(description = "Probe media entries' files again (`bins`, or every media file entry) after a file was replaced on disk, and write what changed as one undoable edit: `meta` (duration, size, fps, audio, alpha) and `kind` if the file is now another kind. Returns `changed` (per entry, each field `from`/`to`), `unchanged` and `failed` (a file ffprobe cannot read). Nothing changed, nothing written. A kind change that breaks a placement (an `in` on what is now a still) is refused whole, with the validator's issues.")]
+    #[tool(description = "Read media entries' files again (`bins`, or every one) after a file was replaced on disk, and write what changed (`meta`, `kind`) as one undoable edit; nothing changed, nothing written. More in `timeline_guide`.")]
     async fn reprobe_media(&self, Parameters(p): Parameters<ReprobeMedia>) -> Result<CallToolResult, McpError> {
         self.post("/api/bin/reprobe", &json!({ "bins": p.bins, "base_revision": p.base_revision, "origin": "mcp: reprobe media" })).await
     }
@@ -925,7 +946,7 @@ impl KumaServer {
         self.get("/api/bin/unused").await
     }
 
-    #[tool(description = "Transcribe media audio with a local whisper.cpp model into `subtitles` overlay entries (cues in source seconds, editable as their `cues` var), listed under the media: one per stretch of about `split` seconds (default 60), cut at pauses, each with its own cues and `offset`. Cue edges are moved onto the pauses in the sound, so sentence boundaries can be cut at. Pass `clip` to place them over that clip, aligned, on an overlay track (the pieces it plays, each over its stretch); pass `bin` for the entries alone. Ids are minted when the words are in and returned as `bin` and, for several, `pieces` (`bin`, source `start`/`end`, `cues`); it takes no base_revision, since the model runs for minutes and the patch is composed against the project as it is when it lands.")]
+    #[tool(description = "Transcribe a media entry's audio with a local whisper.cpp model into `subtitles` overlay entries listed under it: cues in source seconds, an entry per stretch of about `split` s, cue edges on the pauses. `clip` also places them over that clip; `bin` makes the entries alone. Takes no base_revision. More in `timeline_guide`.")]
     async fn transcribe(&self, Parameters(p): Parameters<Transcribe>, ctx: RequestContext<RoleServer>) -> Result<CallToolResult, McpError> {
         let body = json!({
             "bin": p.bin, "clip": p.clip, "id": p.id, "replace": p.replace.unwrap_or(false), "language": p.language, "max_chars": p.max_chars,
@@ -961,19 +982,21 @@ impl KumaServer {
         self.post("/api/overlays/save-blueprint", &json!({ "bin": p.bin, "id": p.id, "force": p.force.unwrap_or(false) })).await
     }
 
-    #[tool(description = "Render exact composited frames (through the real MLT graph, overlays included) and return them as images: evenly over `t0`..`t1`, or at exactly the `times` given, and with `tile` as one captioned contact sheet (every cut ±0.3 s in one image). Use a rect to zoom into a region. Pass `sequence` to look at a nested sequence instead of the master, or `overlay` to look at one overlay bin entry on its own — no placement needed, times counted from the start of the overlay, which is how to check an animation you are authoring before it is in the cut. One frame comes back 960 px wide and several 480 px each unless `width` says. `before` compares: the same moments of the document at an earlier `revision` (to see what an edit did) or `without` some effects (to see what a grade does), as before/after pairs — with `tile`, one sheet of rows, before on the left. Frames are also written as PNGs whose paths are returned. An overlay changed since it was last baked is baked for its whole clip first, which can take a minute or more per overlay: after `wait_seconds` a sample still baking returns its job id and progress, and calling again with `job` set to that id picks it up.")]
+    #[tool(description = "Render exact composited frames through the real MLT graph (overlays included) and return them as images: evenly over `t0`..`t1` or at the `times` given, as one captioned sheet with `tile`. Look at a nested `sequence`, at one overlay entry on its own (`overlay`, times into the overlay: check an animation before it is in the cut) or at several side by side (`entries`). `before` compares with an earlier revision or with effects taken out. Changed overlays bake first, a minute or more each: a sample still baking after `wait_seconds` returns its job id, and calling again with `job` picks it up.")]
     async fn sample_frames(&self, Parameters(p): Parameters<SampleFrames>, ctx: RequestContext<RoleServer>) -> Result<CallToolResult, McpError> {
         let id = match p.job {
             Some(id) => id,
             None => {
-                let tile = p.tile.unwrap_or(false);
+                // Several entries are compared on one sheet unless asked otherwise: one image,
+                // where each frame alone would be up to 32.
+                let tile = p.tile.unwrap_or(p.entries.as_ref().is_some_and(|e| e.len() > 1));
                 let body = json!({
                     "t0": p.t0, "t1": p.t1, "count": p.count, "times": p.times, "tile": tile, "columns": p.columns,
                     "rect": p.rect,
                     "width": p.width,
                     "overlays": p.overlays.unwrap_or(true),
                     "sequence": p.sequence,
-                    "overlay": p.overlay, "duration": p.duration, "backdrop": p.backdrop,
+                    "overlay": p.overlay, "entries": p.entries.unwrap_or_default(), "duration": p.duration, "backdrop": p.backdrop,
                     "frame_width": p.frame.map(|f| f.0), "frame_height": p.frame.map(|f| f.1),
                     "before": p.before,
                 });
@@ -1001,7 +1024,11 @@ impl KumaServer {
         let mut content = Vec::new();
         let samples = j["result"]["samples"].as_array().cloned().unwrap_or_default();
         let earlier = j["result"]["before"].as_array().cloned();
-        let list = |frames: &[Value]| -> Vec<Value> { frames.iter().map(|s| json!({ "t": s["t"], "frame": s["frame"], "path": s["path"] })).collect() };
+        let list = |frames: &[Value]| -> Vec<Value> { frames.iter().map(|s| json!({ "t": s["t"], "frame": s["frame"], "path": s["path"], "overlay": s.get("overlay") })).collect() };
+        // A sample of several entries tags each frame with its own; the sheet's rows follow them.
+        let mut rows: Vec<&str> = samples.iter().filter_map(|s| s["overlay"].as_str()).collect();
+        rows.dedup();
+        let entries = (!rows.is_empty() && p.overlay.is_none()).then(|| rows.join(", "));
         let sheet = j["result"]["sheet"].as_str();
         // `warnings`: an overlay that baked blank is why a frame is empty, and nothing else says so.
         content.push(ContentBlock::text(serde_json::to_string_pretty(&json!({ "samples": list(&samples), "before": earlier.as_deref().map(list), "sheet": sheet, "warnings": j["result"]["warnings"] })).unwrap()));
@@ -1016,7 +1043,10 @@ impl KumaServer {
         let at = |s: &Value| s["t"].as_f64().unwrap_or(0.0);
         match (sheet, &earlier) {
             (Some(path), Some(_)) => image(format!("before and after, one row per moment ({}), before on the left", samples.len()), path),
-            (Some(path), None) => image(format!("contact sheet, {} frames in the order listed, left to right then down", samples.len()), path),
+            (Some(path), None) => match &entries {
+                Some(ids) => image(format!("contact sheet, one row per overlay entry ({ids}), its times left to right"), path),
+                None => image(format!("contact sheet, {} frames in the order listed, left to right then down", samples.len()), path),
+            },
             (None, Some(earlier)) => {
                 for (b, a) in earlier.iter().zip(&samples) {
                     image(format!("t={:.3}s before", at(b)), b["path"].as_str().unwrap_or_default());
@@ -1025,42 +1055,38 @@ impl KumaServer {
             }
             (None, None) => {
                 for s in &samples {
-                    image(format!("t={:.3}s", at(s)), s["path"].as_str().unwrap_or_default());
+                    let of = s["overlay"].as_str().map(|id| format!("{id} ")).unwrap_or_default();
+                    image(format!("{of}t={:.3}s", at(s)), s["path"].as_str().unwrap_or_default());
                 }
             }
         }
         Ok(CallToolResult::success(content))
     }
 
-    #[tool(description = "Bake overlay clips to alpha frame sequences now (normally done automatically at render): the named `clips`, or every overlay clip in the project. Cached by content. Returns how many are baked (`baked`) and `warnings`: a clip on whose page a script threw (with the error), or that baked fully transparent. `cancel_job` stops it.")]
-    async fn bake_overlay(&self, Parameters(p): Parameters<BakeOverlay>, ctx: RequestContext<RoleServer>) -> Result<CallToolResult, McpError> {
-        self.job("/api/bake", json!({ "clips": p.clips }), Duration::from_secs(p.wait_seconds.unwrap_or(1800)), &ctx).await
-    }
-
-    #[tool(description = "Render the timeline to a video file with an export preset. Renders the master unless `sequence` names another one. `threads`, `quality` and `speed` change this render only and default to the preset's (see list_presets). Renders run one at a time: a render asked for while another encodes waits `queued`. `cancel_job` stops it.")]
+    #[tool(description = "Render the timeline to a video file with an export preset. Renders the master unless `sequence` names another one. `threads`, `quality` and `speed` change this render only and default to the preset's (see `list_export_presets`). Renders run one at a time: a render asked for while another encodes waits `queued`. `cancel_job` stops it.")]
     async fn render(&self, Parameters(p): Parameters<Render>, ctx: RequestContext<RoleServer>) -> Result<CallToolResult, McpError> {
         self.job("/api/render", p.body(), Duration::from_secs(p.wait_seconds.unwrap_or(900)), &ctx).await
     }
 
-    #[tool(description = "The subtitles a sequence shows (the master unless `sequence` names another) as SRT, to upload as YouTube captions: every line its `subtitles` overlays draw, in that sequence's seconds, through every cut and nesting. Hidden tracks count: hide a subtitles track to keep captions off the picture and in the SRT. `words_per_line` regroups the words into longer captions than the picture's. Returns `text`, or with `output` or `write` writes the file (never an empty one) and returns its `path`; `warnings` name subtitles entries nothing places and two entries showing at once. Reads only.")]
+    #[tool(description = "A sequence's subtitles (the master's by default) as SRT for YouTube captions, through every cut and nesting; hidden tracks count. Returns `text`, or writes the file with `output` or `write`. Reads only. More in `timeline_guide`.")]
     async fn export_subtitles(&self, Parameters(p): Parameters<ExportSubtitles>) -> Result<CallToolResult, McpError> {
         let body = json!({ "sequence": p.sequence, "entries": p.entries, "words_per_line": p.words_per_line, "output": p.output, "write": p.write });
         self.post("/api/export/subtitles", &body).await
     }
 
-    #[tool(description = "A sequence's chapters (the master's by default) as YouTube description timestamps, one `M:SS Title` line per clip that places another sequence, titled by the clip's label or else the placed sequence's name — the same chapters `measure_audio` measures. Returns `text` (or writes it, like `export_subtitles`) and `warnings` where YouTube would not read the lines as chapters: the first not at 0:00, fewer than 3, one shorter than 10 s. Markers are never chapters. Reads only.")]
+    #[tool(description = "A sequence's chapters (the master's by default) as YouTube description lines, `M:SS Title`, one per clip placing another sequence; `warnings` say where YouTube would not read them as chapters. Reads only. More in `timeline_guide`.")]
     async fn export_chapters(&self, Parameters(p): Parameters<ExportChapters>) -> Result<CallToolResult, McpError> {
         let body = json!({ "sequence": p.sequence, "output": p.output, "write": p.write });
         self.post("/api/export/chapters", &body).await
     }
 
-    #[tool(description = "Measure how loud a sequence is (the master by default): its sound rendered through the real graph, no bakes needed, and metered to EBU R128. Returns integrated loudness (LUFS), loudness range and true peak (dBTP) overall and per section (by default each clip placing a sequence, i.e. each chapter), the five loudest moments, and silent stretches of a second or more. Measured after the sequence's own effects, so a master stage (`volume` then `limiter` in the master's `effects`) is measured as it renders. Check this before a final render: a fade that silences music, or effects stacking on a peak, show up here. `solo` (track ids, nested ones too) measures the voice or the music alone and `mute` leaves tracks out, for this measurement only: the project is not edited.")]
+    #[tool(description = "Meter a sequence's sound (the master by default) to EBU R128, through the real graph and after its own effects, no bakes: integrated loudness, loudness range and true peak, overall and per chapter, the loudest moments and the silences. `solo` and `mute` tracks for this measurement only. Check it before a final render. More in `timeline_guide`.")]
     async fn measure_audio(&self, Parameters(p): Parameters<MeasureAudio>, ctx: RequestContext<RoleServer>) -> Result<CallToolResult, McpError> {
         let body = json!({ "sequence": p.sequence, "range": p.range, "sections": p.sections, "mute": p.mute.unwrap_or_default(), "solo": p.solo.unwrap_or_default() });
         self.job("/api/audio/measure", body, Duration::from_secs(p.wait_seconds.unwrap_or(600)), &ctx).await
     }
 
-    #[tool(description = "Measure the colour of a region of the picture (the whole frame by default) at some moments, through the real graph with overlays left out unless asked: `stats` with the mean R'G'B' (0..1), luma levels (min, p5, median, p95, max; ×100 reads as IRE), `exposure` (its light in stops from mid grey), `balance` (its cast as the grade's own `temperature` and `tint`: warm above 0, magenta above 0, so a grade of minus these neutralises it), `saturation`, and the share of pixels `clipped` (a channel at full scale) and `crushed` (black). To compare two shots, measure the same thing in each — a face, a white wall — and grade the difference in `exposure` and `balance`. With `match: {clip, reference}` it also solves the clip's `grade` (its white balance and exposure, the rest kept) so the region looks like the reference: `{\"neutral\": true}`, a `{\"color\"}`, or `{\"t\", \"region\"?}` elsewhere in the video. It measures the clip without its grade, answers `before`, the predicted `after`, `reached` (false when the reference is past the grade's ranges or clipping holds it back) and the `patch` to pass to `apply_edits` as is. Nothing is stored.")]
+    #[tool(description = "Measure the colour of a region (the whole frame by default) at some moments: levels, `exposure`, `balance` as the grade's own `temperature`/`tint`, saturation, clipping. With `match: {clip, reference}` it also solves that clip's `grade` to look like the reference and returns the `patch` for `apply_edits`. Nothing is stored. How to read it in `timeline_guide`.")]
     async fn measure_color(&self, Parameters(p): Parameters<MeasureColor>, ctx: RequestContext<RoleServer>) -> Result<CallToolResult, McpError> {
         let body = json!({
             "sequence": p.sequence, "times": p.times, "t0": p.t0, "overlays": p.overlays.unwrap_or(false), "match": p.matching, "before": p.before,
@@ -1069,19 +1095,19 @@ impl KumaServer {
         self.job("/api/color/measure", body, Duration::from_secs(p.wait_seconds.unwrap_or(600)), &ctx).await
     }
 
-    #[tool(description = "Measure one source, a media entry (`bin`) or a file in the project (`path`), optionally over a `range` of it, in its own seconds: integrated loudness (LUFS), loudness range and true peak (dBTP); its loudness over time (`curve`: short-term by default, about 120 values unless `step` says, at most 1200); and its quiet stretches as `{start, end}` (every sample under `silence_db`, default -35 dB, for `silence_min`, default 0.15 s; at most 500 listed). A silence's end is where sound starts: a take, a sentence or a sound effect's onset. For a level a volume keyframe can follow, a pause to cut at, or a take to place. Nothing is stored.")]
+    #[tool(description = "Meter one source, a media entry (`bin`) or a file in the project (`path`), optionally over a `range` of its own seconds: loudness, loudness range, true peak, a loudness `curve`, and its quiet stretches, whose ends are where a take or a sentence starts. Nothing is stored. More in `timeline_guide`.")]
     async fn measure_media(&self, Parameters(p): Parameters<MeasureMedia>, ctx: RequestContext<RoleServer>) -> Result<CallToolResult, McpError> {
         let body = json!({ "bin": p.bin, "path": p.path, "range": p.range, "curve": p.curve, "step": p.step, "silence_db": p.silence_db, "silence_min": p.silence_min });
         self.job("/api/media/measure", body, Duration::from_secs(p.wait_seconds.unwrap_or(600)), &ctx).await
     }
 
-    #[tool(description = "Line a separately recorded sound (a lapel or wireless mic) up with the camera that heard the same scene: both sounds are cross-correlated to a fraction of a millisecond, then, in one edit, the mic (`audio`, a bin entry) is placed on an audio track under the camera `clip` so the two play the same instant, the camera clip is muted, and both get one `group` so they move and cut together. Sync before cutting: the camera clip should be the whole take, at speed 1. Several `pairs` are one edit; a pair synced before is moved, not placed twice. Returns per pair `offset` (seconds into the audio at the camera's 0), `confidence` (2.5+ is typical, under 1.5 is refused as no match and the pair left alone with `skipped`), the mic's `audio_clip`, `track`, `start`/`end`/`in`, and `error_ms`: what rounding both clips to frames leaves, under half a frame. `dry_run` only measures. Takes no base_revision: the edit is composed against the project as it is when the measuring ends.")]
+    #[tool(description = "Line a separately recorded mic (`audio`) up with the camera `clip` that heard the same scene, by cross-correlating the two sounds, then in one edit place it under the clip, mute the camera and group the two. Sync before cutting (the camera clip whole, at speed 1); several `pairs` are one edit; `dry_run` only measures. More in `timeline_guide`.")]
     async fn sync_audio(&self, Parameters(p): Parameters<SyncAudio>, ctx: RequestContext<RoleServer>) -> Result<CallToolResult, McpError> {
         let body = json!({ "pairs": p.pairs, "dry_run": p.dry_run.unwrap_or(false) });
         self.job("/api/audio/sync", body, Duration::from_secs(p.wait_seconds.unwrap_or(600)), &ctx).await
     }
 
-    #[tool(description = "Bring a media entry to an integrated loudness (`target`, LUFS) by setting its `volume`, for every placement at once: Audacity's Loudness Normalization. The entry is measured as it sounds — its whole length through its own effects on the source (`high_pass`, `eq`, `compressor`, `limiter`; its volume acts at the chain's `volume` effect, else first, always before the limiter) — on a timeline made for the measurement and never stored, and measured again until within 0.05 LU. One edit. Returns `before`/`after` LUFS, `true_peak`, the new `volume` and `gain_db`. Put the entry's chain on first, so the gain is measured through it; a placement's own `volume` and fades still apply on top.")]
+    #[tool(description = "Set a media entry's `volume` so it reaches an integrated loudness (`target`, LUFS), measured through its own effects, for every placement at once; one edit. Put the entry's chain on first. More in `timeline_guide`.")]
     async fn normalize_audio(&self, Parameters(p): Parameters<NormalizeAudio>, ctx: RequestContext<RoleServer>) -> Result<CallToolResult, McpError> {
         let body = json!({ "bin": p.bin, "target": p.target });
         self.job("/api/audio/normalize", body, Duration::from_secs(p.wait_seconds.unwrap_or(600)), &ctx).await
@@ -1092,7 +1118,7 @@ impl KumaServer {
         self.job("/api/cache/prune", json!({ "all": p.all }), Duration::from_secs(3600), &ctx).await
     }
 
-    #[tool(description = "Status of a background job (render, bake, sample, measure, transcribe): state (queued, running, done, failed, cancelled), percent, message, result. With `wait_seconds`, waits up to that long for it to finish and returns it either way: the way to keep waiting on a long job in bounded calls. Without `id`, lists the jobs the daemon remembers and who asked for each (`asked_by.author`: `agent` is you, `user` the person in the editor), to find one whose call was moved to the background.")]
+    #[tool(description = "A background job's state (queued, running, done, failed, cancelled), percent, message and result; with `wait_seconds`, waits up to that long. Without `id`, lists the jobs and who asked for each (`asked_by.author`: `agent` is you). More in `timeline_guide`.")]
     async fn job_status(&self, Parameters(p): Parameters<JobStatus>, ctx: RequestContext<RoleServer>) -> Result<CallToolResult, McpError> {
         let Some(id) = p.id else {
             let all = self.client.get("/api/jobs").await.map_err(err)?;

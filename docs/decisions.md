@@ -3588,6 +3588,139 @@ like a proxy — open.
 The person's presets are in their library (`mat-voix`, `mat-boya-solocast`, its EQ fitted to six
 bands within 1.1 dB of their takes); the starter library gained a generic `voice-finish`.
 
+## Field report: four Shorts cut from a long video
+
+Four 9:16 Shorts built by an agent as code from a 16:9 video's material, with the person
+adjusting fades, mutes and the music in the editor between builds and leaving markers.
+Its pain points were read against the code; two were kuma's and are fixed here.
+
+- **`kuma diff --base`: a rebuild no longer undoes the editor.** The builder described the
+  whole project, and the two-way diff made the project exactly that: one patch put back
+  the person's fades, music and muted tracks, and would have emptied the markers. Only the
+  revision jump showed it. The history is session state and the diff runs without a
+  daemon; the script's previous document is a base that always exists. So the diff takes it
+  and merges three ways (`kuma_core::diff`): what the script changed since the base is
+  sent, what someone else changed stays, and where both changed one value the editor's
+  stays and stderr lists the path. Tracks and clips are matched by id, markers by time,
+  so a moved clip or an added marker is one change, not an index shift. Without a base it is the old
+  diff, which now says how many markers it would remove.
+
+  Weighed and not done: **markers in a file of their own**, beside the answers. It protects
+  markers only; the fades and mutes were lost the same way. A marker is part of the cut someone reviews: adding one is an undoable
+  edit, an agent's `apply_edits` adds its notes in the same atomic patch as the change
+  they explain, and the project file carries its comments when it is copied. Moving them
+  out would trade all three for a problem the base solves in general.
+
+- **An overlay far shorter than it is made for is a warning.** Merging two text tracks,
+  the agent's "the neighbour wins" rule cut source captions to 0.1–0.3 s, which baked
+  fully transparent and was found after the render. `validate` now warns when an overlay
+  clip is under a quarter of its manifest's `duration_default`, at most half a second, so
+  an overlay made to be short (a flash) says nothing.
+
+Read and left as they are:
+
+- *An overlay ignores `in`*: it does not, it refuses one (`in applies only to video, audio
+  and sequence entries`), and a split leaves both halves at their start. An overlay lasts
+  as long as its clip; continuing one across a cut would need a length of its own on the
+  clip, and is open.
+- *One orientation per project*, and *one MCP server per project*: still so. Portrait is
+  `width`/`height` by decision; a sequence of its own size would need nested scaling and
+  is open. An MCP server that attaches to a daemon on another port is the cheaper half.
+- *Progress lines before the CLI's JSON*: they are on stderr; the script merged the
+  streams.
+- *`measure-media --path` refuses a file outside the project*: kept, as for every path
+  the daemon reads.
+
+## Field report: the edit loop agents built around MCP
+
+Raised as "MCP is a bad tool for kuma: the agent has to chain several tools". Eleven Claude
+Code transcripts were read call by call: a 78-second release trailer made in one 24-minute turn
+(91 tool calls), and the Tetsumusu video and its Shorts (about 1,200). What they show is
+narrower than the complaint. kuma's MCP calls were a minority (31 of 91 in the trailer, about
+430 of 1,200 in Tetsumusu, against about 510 Bash calls), and chains of small kuma verbs were
+rare. Three things were the cost:
+
+1. **Editing went around the MCP, through the CLI** — **built: `apply_plan`**. Past the first
+   blueprint neither session wrote a patch by hand. Both kept the video in a script writing the
+   whole document, ran `kuma diff` from the shell (28 times in Tetsumusu) and sent the result
+   with `apply_edits`' `patch_path` (39 of 62 edits), carrying the revision between the two by
+   hand. `get_project` was never called: the agents read the file off disk. Each change was a
+   `str.replace` on the script, a build, a diff and an apply: two surfaces for one edit, joined
+   by a file and a revision.
+
+   `plans::apply` is that loop as one call (`apply_plan`, `kuma apply`, `POST
+   /api/project/plan`). It diffs under the edit lock, so an edit landing between read and write
+   is merged rather than refused or overwritten, and three-way against the plan last applied
+   from that path, which kuma keeps in `.kuma/plans/` (never pruned, like `.kuma/answers/`), so
+   the script keeps no base and the storyboard reference's post-apply `cp` is gone. A plan with
+   nothing to change makes no revision: that is the new "0 ops". The base kept is the plan
+   except where `kept` held the editor's value, which keeps the old base's
+   (`Diff::next_base`): storing the plan whole, as first built, made a conflict vanish on the
+   next apply, which then answered 0 ops while the two still differed — found by running it.
+   `a_plan_is_applied_and_the_next_keeps_the_editors_changes`,
+   `a_dry_run_and_a_refused_plan_change_nothing`.
+
+2. **Long jobs were polled** — **built: `kuma wait`; the skill says to use the shell**. 66
+   `job_status` calls, about 1 h 50 of waiting; one 32-minute transcription took 18 calls.
+   Claude Code backgrounds an MCP call past 120 s (item 25 of an earlier report), hence
+   `next`'s "about 100": a client limit no tool can lift, and the shell has none. The CLI
+   already ran jobs on the daemon (`on_daemon`), so a background shell command ends in one
+   notification, and `kuma wait <id>` does the same for a job an MCP tool started.
+
+   The shell used to stamp an agent's work `cli: …`, author `other`: its jobs opened no
+   activity record and its markers were not its own, so `list_markers` could hand them back
+   as someone's requests. The CLI now stamps `agent: cli <command>` when `CLAUDECODE` is set,
+   which Claude Code puts in its shells. A person's command through Claude Code's `!` prefix
+   then counts as the agent's: the price of not adding a flag every agent would forget.
+
+3. **Batches were made one call at a time** — **half built: `sample_frames` with
+   `entries`**. 30 `import_overlay` and 34 `sample_frames` calls to prototype three variants of
+   each overlay, one import and one sample per variant; `add_blueprint` ten times for the
+   Shorts; `render` four. A plan covers the adding; looking at the variants is now one call, a
+   sheet with a row per entry, each sampled exactly as `overlay` samples one.
+   `several_entries_sample_as_rows_of_one_sheet`. A render of several sequences in one call
+   remains.
+
+Smaller things:
+
+- **A tool the daemon lacked answered `405 Method Not Allowed`** — **fixed**. `kuma mcp` had
+  attached to an older daemon, started by another process, without `sync_audio`, and unknown
+  API routes fell through to the UI's file service. The daemon now answers an unknown `/api/*`
+  route itself, with a JSON 404 naming its build; `/api/health` reports the build, and `kuma
+  mcp` opens with a note when it attaches to another one. Two builds of one dirty commit read
+  the same; the 405 message covers that. `a_daemon_of_another_build_is_noted`.
+- **Errors a check before sending would have caught** (a var past its range, a float for an
+  integer, malformed cues, 38 sample times of 32, an entry renamed since): a plan is refused
+  whole with every issue at once, as early as the daemon sees it.
+- **Pictures are most of the context**: of about 4.2 MB of tool results in the trailer, 2.6 MB
+  were contact sheets the agent made with ffmpeg from raw b-roll and 1.5 MB `sample_frames`. A
+  contact sheet of an unplaced media entry is open.
+
+**The tool list, pruned.** Across every Claude Code session on the machine (1,789 kuma calls in
+8 projects) seven tools were never called and several overlapped, and every tool's schema and
+description costs context in every session, used or not. `bake_overlay` left the MCP
+(`sample_frames` and `render` bake what they show; `kuma bake` stays); `list_presets` became
+`list_export_presets`, being confused with `list_effect_presets`; `list_design_systems` folded
+into `list_libraries`, and `probe_media` into `add_media` as `dry_run`. The long descriptions now
+say what a tool does and when; their detail moved to `timeline_guide`, where all but the facts in
+its *Tools in detail* turned out to be said already. Measured from `tools/list`: 44 tools and
+46.4 K characters on `main`, 42 and 41.9 K here with `apply_plan` added, about 1.1 K tokens a
+session. Most of the rest is the parameters' JSON schemas, which is why pruning stops here.
+Kept though rarely called: `undo`, `redo`, `save_blueprint`, `make_overlay_unique` (a person's
+requests with no other route), `apply_edits` (small targeted edits), `health` (the stale-daemon
+check). One `list {kind}` for the six `list_*` tools, and one `guide`, are open: fewer tools, but
+a parameter an agent must get right.
+
+Weighed and not done:
+
+- **Dropping the MCP for the CLI and the skill.** The transcripts argue for the shell where a
+  call outlives the client's patience, and for a plan rather than patches, not for dropping MCP:
+  it returns pictures inline, it is what clients other than Claude Code speak, and it is how the
+  editor knows what the agent did. Both surfaces share one implementation per verb.
+- **A script runtime in the daemon** ("code mode"). The agents already write the program, in
+  Python, beside the project; what they lacked was one place to hand its result to.
+  `apply_plan` is that place, without a sandbox, an interpreter or an API to keep stable.
+
 ## Still open
 
 Nested sequences are done and the editor is an application now, so this list is the whole

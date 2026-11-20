@@ -23,7 +23,7 @@ const MAX_PATHS: usize = 32;
 
 /// Tools that edit, and answer the revision they made ([`revision_made`]). A transcription
 /// edits too, but as a job: the daemon reads its revision off the job's result.
-const EDITS: &[&str] = &["apply_edits", "undo", "redo", "add_blueprint", "add_media", "reprobe_media", "import_overlay", "make_overlay_unique"];
+const EDITS: &[&str] = &["apply_edits", "apply_plan", "undo", "redo", "add_blueprint", "add_media", "reprobe_media", "import_overlay", "make_overlay_unique"];
 /// Tools [`summary`] reduces to more than whether they finished.
 const SUMMARISED: &[&str] = &["check_overlay", "sample_frames"];
 
@@ -77,11 +77,13 @@ fn first_text(r: &CallToolResult) -> Option<&str> {
 }
 
 /// The revision a call made, off the JSON it answered: `None` for a tool that does not
-/// edit, and a re-probe that found nothing to change. The daemon reads `None` as "made
+/// edit, a re-probe that found nothing to change, and a plan that changed nothing (it
+/// answers the revision it found). The daemon reads `None` as "made
 /// none", so a call is never credited with an edit that landed while it ran.
 fn revision_made(tool: &str, v: &Value) -> Option<u64> {
     match tool {
         "reprobe_media" if !v["changed"].as_array().is_some_and(|c| !c.is_empty()) => None,
+        "apply_plan" if v["applied"] != true => None,
         t if EDITS.contains(&t) => v["revision"].as_u64(),
         _ => None,
     }
@@ -161,6 +163,8 @@ mod tests {
         assert_eq!(revision("undo", json!({ "revision": 60 })), json!(60));
         assert_eq!(revision("reprobe_media", json!({ "changed": [], "revision": 61 })), Value::Null, "nothing to change");
         assert_eq!(revision("reprobe_media", json!({ "changed": [{ "id": "a" }], "revision": 62 })), json!(62));
+        assert_eq!(revision("apply_plan", json!({ "applied": false, "ops": 0, "revision": 62 })), Value::Null, "a plan already in place made nothing");
+        assert_eq!(revision("apply_plan", json!({ "applied": true, "ops": 3, "revision": 63 })), json!(63));
         assert_eq!(revision("get_project", json!({ "revision": 62 })), Value::Null, "reads only");
     }
 

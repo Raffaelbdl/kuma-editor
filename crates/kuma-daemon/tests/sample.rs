@@ -17,6 +17,7 @@ const PROJECT: &str = r##"{
   "fps": { "num": 30, "den": 1 }, "width": 320, "height": 240, "sample_rate": 48000,
   "bin": {
     "tag": { "name": "Tag", "source": { "overlay": "overlays/probe", "vars": {} } },
+    "tag2": { "name": "Tag, again", "source": { "overlay": "overlays/probe", "vars": {} } },
     "navy": { "name": "Navy", "source": { "color": "#102030" } },
     "main": { "name": "Main", "source": { "tracks": [
       { "id": "v1", "kind": "video", "name": "V", "muted": false, "hidden": false, "transitions": [],
@@ -180,4 +181,34 @@ fn frames_at_chosen_times_tile_into_one_sheet() {
     for times in [vec![], vec![-1.0], vec![0.1; 33]] {
         assert!(sample_frames(&state, &SampleRequest { times: Some(times.clone()), ..Default::default() }, &|_, _| {}, None).is_err(), "{times:?}");
     }
+}
+
+/// Several entries at once: what was one call per variant. Refusals first, which need no
+/// renderer; then, where one is, the frames in entry order and a sheet with a row each.
+#[test]
+fn several_entries_sample_as_rows_of_one_sheet() {
+    let (state, dir) = fixture();
+    let several = |entries: &[&str]| SampleRequest { entries: entries.iter().map(|e| e.to_string()).collect(), times: Some(vec![0.5, 1.5]), tile: true, ..Default::default() };
+    let why = |r: &SampleRequest| format!("{:#}", kuma_daemon::jobs::sample(&state, r, &|_, _| {}, None).expect_err("should have been refused"));
+    assert!(why(&SampleRequest { overlay: Some("tag".into()), ..several(&["tag", "tag2"]) }).contains("leave out `overlay`"));
+    assert!(why(&SampleRequest { sequence: Some("main".into()), ..several(&["tag", "tag2"]) }).contains("leave out `overlay`"));
+    assert!(why(&SampleRequest { times: Some(vec![0.1; 17]), ..several(&["tag", "tag2"]) }).contains("at most 32"), "34 frames in all");
+    assert!(why(&several(&["tag", "navy"])).contains("not an overlay entry"));
+
+    if !kuma_overlay::media::ffprobe_available() || !kuma_mlt::melt::melt_available() {
+        eprintln!("ffmpeg/melt not available; skipping the render");
+        return;
+    }
+    // A page with no animation says so, or hyperframes waits for a timeline that never comes.
+    std::fs::write(dir.path().join("overlays/probe/index.html"), "<html><body data-composition-id=\"root\" data-no-timeline></body></html>").unwrap();
+    let out = match kuma_daemon::jobs::sample(&state, &several(&["tag", "tag2", "tag"]), &|_, _| {}, None) {
+        Ok(out) => out,
+        Err(e) => return eprintln!("no overlay renderer on this machine, so only the request was checked: {e:#}"),
+    };
+    let samples = out["samples"].as_array().unwrap();
+    let shown: Vec<(&str, f64)> = samples.iter().map(|s| (s["overlay"].as_str().unwrap(), s["t"].as_f64().unwrap())).collect();
+    assert_eq!(shown, [("tag", 0.5), ("tag", 1.5), ("tag2", 0.5), ("tag2", 1.5)], "each entry once, in the order asked, at every time");
+    // A row per entry, a column per time: 2 × 480 by 2 × 360 (the project is 320×240).
+    let probe = kuma_overlay::probe(std::path::Path::new(out["sheet"].as_str().expect("a sheet"))).unwrap();
+    assert_eq!((probe.meta.width, probe.meta.height), (Some(960), Some(720)));
 }

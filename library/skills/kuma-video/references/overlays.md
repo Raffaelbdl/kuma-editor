@@ -162,5 +162,6 @@ A wipe, a shutter, a page turn drawn by an overlay over a cut:
   `const` of an inline `<script>` was not visible to a file loaded after it when baked;
   values handed over on `window` were.
 
-- `sample_frames` with `overlay` renders the entry on its own, before any clip places it.
+- `sample_frames` with `overlay` renders the entry on its own, before any clip places it
+  (`entries` for several).
 - Sample over **white and black** backdrops if it can sit over footage.

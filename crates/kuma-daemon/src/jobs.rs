@@ -1436,6 +1436,12 @@ pub struct SampleRequest {
     /// combined with `sequence`.
     #[serde(default)]
     pub overlay: Option<String>,
+    /// Several overlay entries, each sampled as `overlay` samples one, at the same times:
+    /// variants of a design side by side, which was one call per variant. With `tile`, one
+    /// sheet, a row per entry. Each runs for its own manifest's length unless `duration`
+    /// says. Refuses `overlay`, `sequence` and `before` beside it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub entries: Vec<String>,
     /// How long to run that overlay for. The overlay's own default when absent — an
     /// entry has no length until a clip gives it one.
     #[serde(default)]
@@ -1569,6 +1575,9 @@ pub struct Sample {
     pub t: f64,
     pub frame: i64,
     pub path: PathBuf,
+    /// The overlay entry it shows, in a sample of several `entries`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub overlay: Option<String>,
 }
 
 /// Render exact frames of the composite through MLT, optionally cropped. Frames are
@@ -1610,18 +1619,7 @@ pub(crate) fn sample_frames_of(state: &AppState, doc: Project, req: &SampleReque
             (doc, seq, req.overlays)
         }
     };
-    let times: Vec<f64> = match &req.times {
-        Some(times) => {
-            anyhow::ensure!((1..=MAX_FRAMES).contains(&times.len()), "`times` takes 1 to {MAX_FRAMES} times, not {}", times.len());
-            anyhow::ensure!(times.iter().all(|t| t.is_finite() && *t >= 0.0), "every time in `times` is seconds, 0 or more");
-            times.clone()
-        }
-        None => {
-            let t1 = req.t1.unwrap_or(req.t0);
-            let count = req.count.unwrap_or(if t1 > req.t0 { RANGE_COUNT } else { 1 }).clamp(1, MAX_FRAMES);
-            (0..count).map(|i| if count == 1 { req.t0 } else { req.t0 + (t1 - req.t0) * i as f64 / (count - 1) as f64 }).collect()
-        }
-    };
+    let times = sample_times(req)?;
     // Only the overlays this sample can actually show: one frame must not pay for a bake
     // of every overlay on the timeline, nor fail because one somewhere else is broken.
     let (bakes, warnings) = bake_for(state, &project, &sequence, scope, Some(&times), &|p, m| progress(p / 2, m), cancel)?;
@@ -1685,7 +1683,23 @@ pub(crate) fn sample_frames_of(state: &AppState, doc: Project, req: &SampleReque
         }
     });
     let paths: HashMap<i64, PathBuf> = rendered.into_iter().map(|(f, p)| Ok((f, p?))).collect::<anyhow::Result<_>>()?;
-    Ok((times.iter().map(|&t| (t, project.fps.frame(t))).map(|(t, frame)| Sample { t, frame, path: paths[&frame].clone() }).collect(), warnings))
+    Ok((times.iter().map(|&t| (t, project.fps.frame(t))).map(|(t, frame)| Sample { t, frame, path: paths[&frame].clone(), overlay: req.overlay.clone() }).collect(), warnings))
+}
+
+/// The moments a sample shows: `times` as given, else `count` evenly over `[t0, t1]`.
+fn sample_times(req: &SampleRequest) -> anyhow::Result<Vec<f64>> {
+    Ok(match &req.times {
+        Some(times) => {
+            anyhow::ensure!((1..=MAX_FRAMES).contains(&times.len()), "`times` takes 1 to {MAX_FRAMES} times, not {}", times.len());
+            anyhow::ensure!(times.iter().all(|t| t.is_finite() && *t >= 0.0), "every time in `times` is seconds, 0 or more");
+            times.clone()
+        }
+        None => {
+            let t1 = req.t1.unwrap_or(req.t0);
+            let count = req.count.unwrap_or(if t1 > req.t0 { RANGE_COUNT } else { 1 }).clamp(1, MAX_FRAMES);
+            (0..count).map(|i| if count == 1 { req.t0 } else { req.t0 + (t1 - req.t0) * i as f64 / (count - 1) as f64 }).collect()
+        }
+    })
 }
 
 /// Produce `target` in `dir` through `f(tmp)` and publish it with a rename, unless it is
@@ -1702,6 +1716,9 @@ fn publish(dir: &Path, target: &Path, f: &dyn Fn(&Path) -> anyhow::Result<()>) -
 
 /// What `/api/sample` answers: the frames, and with `tile` the sheet of them.
 pub fn sample(state: &AppState, req: &SampleRequest, progress: &dyn Fn(u8, &str), cancel: Option<&AtomicBool>) -> anyhow::Result<serde_json::Value> {
+    if !req.entries.is_empty() {
+        return sample_entries(state, req, progress, cancel);
+    }
     let Some(before) = &req.before else {
         let (samples, warnings) = sample_frames_warned(state, req, progress, cancel)?;
         let tiles: Vec<_> = samples.iter().map(|s| (s.path.as_path(), format!("{:.2} s", s.t))).collect();
@@ -1716,6 +1733,77 @@ pub fn sample(state: &AppState, req: &SampleRequest, progress: &dyn Fn(u8, &str)
     let tiles: Vec<_> = earlier.iter().zip(&samples).flat_map(|(b, a)| [(b.path.as_path(), format!("{:.2} s before", b.t)), (a.path.as_path(), format!("{:.2} s after", a.t))]).collect();
     let sheet = if req.tile { Some(contact_sheet(state, &tiles, Some(req.columns.unwrap_or(2)))?) } else { None };
     Ok(serde_json::json!({ "samples": samples, "before": earlier, "sheet": sheet, "warnings": warnings }))
+}
+
+/// [`sample`] of several overlay `entries` at the same moments: each sampled as `overlay`
+/// samples one (its own synthetic timeline, bake and melt), side by side up to the baker's
+/// [`concurrency`](kuma_overlay::Baker::concurrency), and on the sheet a row per entry. The
+/// frames together are held to [`MAX_FRAMES`], as one sample's.
+fn sample_entries(state: &AppState, req: &SampleRequest, progress: &dyn Fn(u8, &str), cancel: Option<&AtomicBool>) -> anyhow::Result<serde_json::Value> {
+    anyhow::ensure!(req.overlay.is_none() && req.sequence.is_none(), "`entries` samples overlay entries on their own: leave out `overlay` and `sequence`");
+    anyhow::ensure!(req.before.is_none() && req.version.is_none(), "`before` compares versions of a timeline; sample overlay entries without it");
+    let mut seen = HashSet::new();
+    let ids: Vec<&String> = req.entries.iter().filter(|id| seen.insert(*id)).collect();
+    let times = sample_times(req)?;
+    let total = ids.len() * times.len();
+    anyhow::ensure!(total <= MAX_FRAMES, "{} entries at {} times are {total} frames; one sample renders at most {MAX_FRAMES}", ids.len(), times.len());
+    let mut each = req.clone();
+    each.entries = Vec::new();
+    each.tile = false;
+    // Every frame the size of a sheet's, as several frames of one sample would be.
+    if each.width.is_none() && each.rect.is_none() {
+        each.width = req.frame_width(total);
+    }
+    // One document for every entry, each checked before any is baked: a misspelt last one
+    // must not cost the bakes of the others first.
+    let doc = read(&state.project).clone();
+    for id in &ids {
+        entry_view(state, &doc, id, each.duration, each.frame_width, each.frame_height)?;
+    }
+    // Each entry is a bake and a melt of its own; the baker caps the processes across them.
+    let workers = state.baker.concurrency.clamp(1, ids.len());
+    let next = AtomicUsize::new(0);
+    let mut results: Vec<Option<anyhow::Result<(Vec<Sample>, Vec<Issue>)>>> = (0..ids.len()).map(|_| None).collect();
+    std::thread::scope(|s| {
+        let (tx, rx) = std::sync::mpsc::channel();
+        for _ in 0..workers {
+            let (tx, next, ids, each, doc) = (tx.clone(), &next, &ids, &each, &doc);
+            s.spawn(move || {
+                loop {
+                    let i = next.fetch_add(1, Ordering::SeqCst);
+                    let Some(&id) = ids.get(i) else { break };
+                    let one = SampleRequest { overlay: Some(id.clone()), ..each.clone() };
+                    let report = |p: u8, m: &str| drop(tx.send((i, Some((p, m.to_string())), None)));
+                    let got = sample_frames_of(state, doc.clone(), &one, &report, cancel);
+                    let _ = tx.send((i, None, Some(got)));
+                }
+            });
+        }
+        drop(tx);
+        let mut percent = vec![0usize; ids.len()];
+        for (i, step, done) in rx {
+            if let Some((p, m)) = step {
+                percent[i] = p as usize;
+                progress((percent.iter().sum::<usize>() / ids.len()) as u8, &format!("{}: {m}", ids[i]));
+            }
+            if let Some(got) = done {
+                results[i] = Some(got);
+            }
+        }
+    });
+    let (mut samples, mut warnings) = (Vec::new(), Vec::new());
+    for got in results {
+        let (got, warned) = got.expect("every entry was sampled")?;
+        samples.extend(got);
+        warnings.extend(warned);
+    }
+    let sheet = if req.tile {
+        let tiles: Vec<_> = samples.iter().map(|s| (s.path.as_path(), format!("{} {:.2} s", s.overlay.as_deref().unwrap_or_default(), s.t))).collect();
+        Some(contact_sheet(state, &tiles, Some(req.columns.unwrap_or(times.len() as u32)))?)
+    } else {
+        None
+    };
+    Ok(serde_json::json!({ "samples": samples, "sheet": sheet, "warnings": warnings }))
 }
 
 /// Frames tiled into one image, left to right then down, each with its caption (its time,

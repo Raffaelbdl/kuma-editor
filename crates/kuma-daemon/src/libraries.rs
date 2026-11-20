@@ -133,7 +133,7 @@ pub fn design_systems(state: &AppState) -> Value {
 /// for it; refused over one already there unless `force`. Not an edit of the document: what
 /// applying it changes is the overlays and vars an agent then edits, each an edit of its own.
 pub fn apply_design_system(state: &AppState, id: &str, force: bool) -> anyhow::Result<Value> {
-    let (src, title) = state.config.installed_design_systems().remove(id).ok_or_else(|| anyhow::anyhow!("no design system `{id}` in this project's libraries (`list_design_systems`, `kuma design-system`)"))?;
+    let (src, title) = state.config.installed_design_systems().remove(id).ok_or_else(|| anyhow::anyhow!("no design system `{id}` in this project's libraries (`list_libraries`, `kuma design-system`)"))?;
     let dst = state.config.project_root().join("design-system");
     if dst.exists() {
         anyhow::ensure!(force, "{} already exists: pass `force` to replace it", dst.display());

@@ -1,4 +1,5 @@
-// Stamp the git commit into `kuma --version` so a stale binary on PATH is obvious.
+// Stamp the git commit into the build (`kuma --version`, `/api/health`), so a stale binary
+// on PATH, or a daemon older than the MCP server attaching to it, is obvious.
 use std::process::Command;
 
 fn git(args: &[&str]) -> Option<String> {

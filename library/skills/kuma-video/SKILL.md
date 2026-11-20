@@ -20,7 +20,7 @@ notes elsewhere.
 1. Read `timeline_guide` and `overlay_guide`; they change with kuma. A tool result that
    starts "kuma was rebuilt after this MCP server started" means your tools are the old
    build's: say so and ask for the MCP server to be restarted.
-2. `health`, `list_presets` (note what is `available`, e.g. `youtube-nvenc`),
+2. `health`, `list_export_presets` (note what is `available`, e.g. `youtube-nvenc`),
    `list_blueprints` (ready-made titles, lower thirds, subtitles, callouts…) and
    `list_fonts` (each family's `scripts`: one without `han`/`kana` cannot set Japanese).
 3. `validate_project`. Besides errors, it warns about every entry whose font is not
@@ -68,14 +68,12 @@ Most videos mix these. The shape below holds for all of them.
 
 ## Work as code past ~50 clips
 
-Keep the video in a script that builds the project, generate the patch, and send only the
-difference: `references/storyboard-as-code.md`. In short:
+Keep the video in a script that builds the project, and let kuma apply the difference:
+`references/storyboard-as-code.md`. In short:
 
-- The script writes the whole project it means; `kuma diff` compares that with the live
-  one and prints the JSON Patch between them. Apply it with `apply_edits` and
-  `patch_path`: one call, exact, whatever its size, with the `base_revision` the diff read.
-- **Run the diff again afterwards: it must print 0 ops.** That proves nothing was left out,
-  and that nobody else's edit is being overwritten.
+- The script writes the whole project it means to a file; `apply_plan` (or `kuma apply`)
+  makes the project that in one undoable edit, keeping what a person changed in the editor.
+- **Apply it again after a build: it must answer 0 ops.** That proves nothing was left out.
 - Clip ids from content (`<entry>_<start ms>`); pin the ids of entries you insert later.
 - Retime with cuts (a time warp applied when the script builds), never by editing every
   time by hand.
@@ -120,10 +118,11 @@ difference: `references/storyboard-as-code.md`. In short:
   pixels, where everything looks small and sparse; and sample a scene near its end (about
   80% in), since at 10% the layout is half built and looks empty.
 - **While building**, sample the part you are working on, or an overlay entry on its own,
-  over a short range. `sample_frames` bakes only the changed overlays its frames show,
+  over a short range, and variants of one design together with `entries`. `sample_frames`
+  bakes only the changed overlays its frames show,
   nested sequences included, and `tile` returns them as one contact sheet; `cancel_job`
   stops a sample or a bake that turns out larger than you meant.
-- **Before the final render**: `validate_project` (no font warnings), the diff at 0 ops if
+- **Before the final render**: `validate_project` (no font warnings), `apply_plan` at 0 ops if
   you work as code, `measure_audio` (loudness overall and per part, true peak, the loudest
   moments, silences), `sample_frames` with `times` at every cut ±0.3 s and `tile`, and
   `scripts/reading_audit.py` if the video shows text to read.
@@ -139,6 +138,9 @@ difference: `references/storyboard-as-code.md`. In short:
 - **Publishing on YouTube**: `export_subtitles` (the SRT) and `export_chapters` (the
   description's `0:00 Title` lines); see `references/render-and-review.md`, and pass on
   their `warnings`.
+- **Long jobs** (a render, a transcription): run them as a background shell command
+  (`kuma -p <project> render …`), or `kuma wait <id>` for one an MCP tool started: one
+  notification, where polling `job_status` costs a turn every 100 s.
 - Final preset: `youtube-1080p` (x264 slow, CRF 18), or `youtube-nvenc` where available
   (much faster, somewhat larger). `threads`, `quality` and `speed` change one render only.
 
@@ -172,6 +174,6 @@ a venv: `python3 -m venv .venv && .venv/bin/pip install numpy pillow fonttools`.
 - `references/overlays.md`: authoring overlays beyond the contract
 - `references/audio.md`: loudness with gains only, voice and music, measuring the mix
 - `references/pacing.md`: readable text, hooks, beats, punch-ins, trimming
-- `references/storyboard-as-code.md`: a video as a script, stable ids, cuts, the diff, applying it
+- `references/storyboard-as-code.md`: a video as a script, stable ids, cuts, applying a plan
 - `references/japanese-type.md`: CJK fonts, fallback, glyph forms, glossing words
 - `references/render-and-review.md`: costs, presets, versions, the checklist with commands

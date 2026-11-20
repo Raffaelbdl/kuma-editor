@@ -13,6 +13,16 @@ fn reference_project() -> Project {
     kuma_core::parse_project(include_str!("fixtures/reference.kuma.json")).unwrap()
 }
 
+/// Options for a project at `/proj`, which need not exist: everything the compiler writes (a
+/// grade's LUT, a wipe's luma) goes to a temporary cache of the test's own, since `/proj`
+/// cannot be created on most machines. Keep the directory alive while compiling.
+fn options() -> (CompileOptions, tempfile::TempDir) {
+    let cache = tempfile::tempdir().unwrap();
+    let mut opts = CompileOptions::new("/proj");
+    opts.cache_dir = cache.path().join("cache");
+    (opts, cache)
+}
+
 fn bake(path: &str, is_still: bool) -> OverlayBake {
     OverlayBake { resource: PathBuf::from(path), is_still }
 }
@@ -20,12 +30,11 @@ fn bake(path: &str, is_still: bool) -> OverlayBake {
 #[test]
 fn reference_project_matches_golden_and_the_dtd() {
     let p = reference_project();
-    let mut opts = CompileOptions::new("/proj");
-    opts.cache_dir = std::env::temp_dir().join("kuma-golden-cache");
+    let (mut opts, _cache) = options();
     opts.bakes.insert("o_c1".into(), bake("/proj/.kuma/bakes/abc/frame_%06d.png", false));
     opts.bakes.insert("o_c2".into(), bake("/proj/.kuma/bakes/def/frame_000001.png", true));
-    // A grade's LUT is written under the cache, which is wherever the machine keeps its
-    // temporary files; the golden file says where relative to it.
+    // A grade's LUT is written under the cache, a temporary directory; the golden file says
+    // where relative to it.
     let xml = compile(&p, &opts).unwrap().replace(&*opts.cache_dir.to_string_lossy(), "$CACHE");
 
     let golden_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/reference.mlt");
@@ -64,7 +73,7 @@ fn a_hidden_track_gives_only_its_sound() {
         }
     }))
     .unwrap();
-    let mut opts = CompileOptions::new("/proj");
+    let (mut opts, _cache) = options();
     opts.unbaked = UnbakedPolicy::Error;
     let xml = compile(&p, &opts).expect("no bake is needed for an overlay nothing shows");
     assert!(!xml.contains("clip_oh"), "{xml}");
@@ -75,7 +84,8 @@ fn a_hidden_track_gives_only_its_sound() {
     for t in &mut main.tracks {
         t.hidden = t.id == "mus" || t.id == "o1";
     }
-    let xml = compile(&p, &CompileOptions::new("/proj")).unwrap();
+    let (opts, _cache) = options();
+    let xml = compile(&p, &opts).unwrap();
     assert!(xml.contains(r#"hide="video""#) && !xml.contains(r#"hide="both""#), "{xml}");
     assert!(!xml.contains("clip_o_c1"), "the hidden overlay track is gone");
 }
@@ -83,7 +93,7 @@ fn a_hidden_track_gives_only_its_sound() {
 #[test]
 fn unbaked_overlays_skip_or_fail_by_policy() {
     let p = reference_project();
-    let mut opts = CompileOptions::new("/proj");
+    let (mut opts, _cache) = options();
     let xml = compile(&p, &opts).unwrap();
     assert!(!xml.contains("clip_o_c1"), "unbaked overlays are left out under Skip");
     opts.unbaked = UnbakedPolicy::Error;
